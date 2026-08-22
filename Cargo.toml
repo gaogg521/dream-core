@@ -1,0 +1,247 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/dream-core-assets",
+    "crates/dream-core-common",
+    "crates/dream-core-db",
+    "crates/dream-core-api-types",
+    "crates/dream-core-realtime",
+    "crates/dream-core-runtime",
+    "crates/dream-core-process",
+    "crates/dream-core-session",
+    "crates/dream-core-auth",
+    "crates/dream-core-system",
+    "crates/dream-core-file",
+    "crates/dream-core-office",
+    "crates/dream-core-shell",
+    "crates/dream-core-ai-agent",
+    "crates/dream-core-codex-bridge",
+    "crates/dream-core-claude-bridge",
+    "crates/dream-core-mcp",
+    "crates/dream-core-conversation",
+    "crates/dream-core-extension",
+    "crates/dream-core-channel",
+    "crates/dream-core-team-prompts",
+    "crates/dream-core-team",
+    "crates/dream-core-project",
+    "crates/dream-core-cron",
+    "crates/dream-core-assistant",
+    "crates/dream-core-app",
+    "crates/dream-domain-org",
+    "crates/dream-domain-employee",
+    "crates/dream-domain-sso",
+    "crates/dream-domain-devops",
+    "crates/dream-domain-enterprise",
+    "crates/dream-domain-billing",
+    "crates/dream-domain-platform",
+]
+
+[workspace.package]
+version = "0.1.70-one.1"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+# Internal crates
+dream-core-common = { path = "crates/dream-core-common" }
+dream-core-assets = { path = "crates/dream-core-assets" }
+dream-core-db = { path = "crates/dream-core-db" }
+dream-core-api-types = { path = "crates/dream-core-api-types" }
+dream-core-realtime = { path = "crates/dream-core-realtime" }
+dream-core-runtime = { path = "crates/dream-core-runtime" }
+dream-core-process = { path = "crates/dream-core-process" }
+dream-core-session = { path = "crates/dream-core-session" }
+dream-core-auth = { path = "crates/dream-core-auth" }
+dream-core-system = { path = "crates/dream-core-system" }
+dream-core-file = { path = "crates/dream-core-file" }
+dream-core-office = { path = "crates/dream-core-office" }
+dream-core-shell = { path = "crates/dream-core-shell" }
+dream-core-ai-agent = { path = "crates/dream-core-ai-agent" }
+dream-core-codex-bridge = { path = "crates/dream-core-codex-bridge" }
+dream-core-claude-bridge = { path = "crates/dream-core-claude-bridge" }
+dream-core-mcp = { path = "crates/dream-core-mcp" }
+dream-core-conversation = { path = "crates/dream-core-conversation" }
+dream-core-extension = { path = "crates/dream-core-extension" }
+dream-core-channel = { path = "crates/dream-core-channel" }
+dream-core-team-prompts = { path = "crates/dream-core-team-prompts" }
+dream-core-team = { path = "crates/dream-core-team" }
+dream-core-project = { path = "crates/dream-core-project" }
+dream-core-cron = { path = "crates/dream-core-cron" }
+dream-core-assistant = { path = "crates/dream-core-assistant" }
+dream-core-app = { path = "crates/dream-core-app" }
+dream-domain-org = { path = "crates/dream-domain-org" }
+dream-domain-employee = { path = "crates/dream-domain-employee" }
+dream-domain-sso = { path = "crates/dream-domain-sso" }
+dream-domain-devops = { path = "crates/dream-domain-devops" }
+dream-domain-enterprise = { path = "crates/dream-domain-enterprise" }
+dream-domain-billing = { path = "crates/dream-domain-billing" }
+dream-domain-platform = { path = "crates/dream-domain-platform" }
+
+# Pinned to fork gaogg521/aionrs (master) = upstream v0.2.8 + fork-only patches
+# (textualize tool replay, empty tool_call args, deferred schema promote, GLM
+# guidance, bounded output-truncation continuation).
+# Never switch to iOfficeAI/aionrs tag. Sync only upstream -> fork.
+dream-engine-agent = { git = "https://github.com/gaogg521/dream-engine.git", branch = "main" }
+dream-engine-providers = { git = "https://github.com/gaogg521/dream-engine.git", branch = "main" }
+dream-engine-types = { git = "https://github.com/gaogg521/dream-engine.git", branch = "main" }
+dream-engine-protocol = { git = "https://github.com/gaogg521/dream-engine.git", branch = "main" }
+dream-engine-config = { git = "https://github.com/gaogg521/dream-engine.git", branch = "main" }
+dream-engine-mcp = { git = "https://github.com/gaogg521/dream-engine.git", branch = "main" }
+
+# Core framework
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["multipart", "ws"] }
+tower = { version = "0.5" }
+tower-http = { version = "0.6", features = ["cors", "trace", "limit", "fs"] }
+http = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Async utilities
+futures-util = "0.3"
+
+# Async trait (dyn-compatible async traits)
+async-trait = "0.1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# LDAP (dream-domain-sso password login)
+ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-ring"] }
+
+# Logging
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Auth / Crypto
+# rust_crypto: jsonwebtoken 10 dropped its implicit crypto-provider default and
+# now requires picking one explicitly. rust_crypto is pure-Rust (no cmake/NASM
+# toolchain like aws_lc_rs needs) and covers the HMAC (HS256) signing this
+# workspace uses.
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
+bcrypt = "0.17"
+aes-gcm = "0.10"
+
+# UUID
+uuid = { version = "1", features = ["v7"] }
+url = "2"
+
+# HTTP client — use rustls with native roots to align backend trust with the host system.
+reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls-native-roots"], default-features = false }
+
+# Concurrency
+dashmap = "6"
+
+# WebSocket
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+
+# Protobuf
+prost = "0.13"
+
+# Semver
+semver = "1"
+
+# Directories
+dirs = "6"
+
+# Regex
+regex = "1"
+
+# File system
+dunce = "1"
+include_dir = "0.7"
+notify = "8"
+walkdir = "2"
+ignore = "0.4"
+zip = "2"
+git2 = { version = "0.21.0", default-features = false }
+# Source-control discard sends untracked files to the platform trash instead of
+# unlinking them (mac/win/linux, x64 + arm64).
+trash = "5"
+mime_guess = "2"
+rust-embed = "8"
+
+# Runtime embedding
+fs2 = "0.4"
+zstd = "0.13"
+
+# Cron
+cron = "0.15"
+chrono = "0.4"
+chrono-tz = "0.10"
+iana-time-zone = "0.1"
+
+# Shell
+open = "5"
+which = "7"
+# Text-only clipboard. default-features off: `image-data` pulls `image`/`zune-jpeg`
+# which we don't use and currently fails to build. No `wayland-data-control` either:
+# it pulls wl-clipboard-rs → wayland-scanner (build-time) → the vulnerable quick-xml
+# 0.39 (RUSTSEC-2026-0194/0195). Without it, arboard uses its unconditional x11rb
+# backend on Linux (works under X11/XWayland); macOS/Windows unaffected.
+arboard = { version = "3", default-features = false }
+
+# Office
+calamine = "0.36"
+rust_xlsxwriter = "0.82"
+sha1 = "0.10"
+sha2 = "0.10"
+
+# AWS
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-bedrock = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client"] }
+aws-sdk-bedrockruntime = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client"] }
+
+# TLS
+rustls = "0.23"
+rustls-native-certs = "0.8"
+
+# Pin rustls-webpki to fix RUSTSEC-2026-{0098,0099,0104}
+rustls-webpki = "0.103.13"
+
+# OAuth / MCP
+oauth2 = "5.0.0-rc.1"
+toml = "0.8"
+
+# Ed25519
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+
+# Encoding
+base64 = "0.22"
+
+# HTTP body utilities (testing)
+http-body-util = "0.1"
+
+# Testing
+tempfile = "3"
+wiremock = "0.6"
+proptest = "1"
+
+# Random
+getrandom = "0.2"
+hex = "0.4"
+libc = "0.2"
+
+# Shrink target/debug: minimal debuginfo, sidecar files, no incremental cache.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+incremental = false
+
+[profile.test]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+incremental = false
+

@@ -1,0 +1,35 @@
+[package]
+name = "dream-core-shell"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dream-core-common.workspace = true
+dream-core-api-types.workspace = true
+dream-core-auth.workspace = true
+dream-core-system.workspace = true
+dream-core-runtime.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+base64.workspace = true
+futures-util.workspace = true
+open.workspace = true
+which.workspace = true
+arboard.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+dream-core-db.workspace = true
+http-body-util.workspace = true
+sqlx.workspace = true
+tempfile.workspace = true
+tower = { workspace = true, features = ["util"] }
+wiremock.workspace = true

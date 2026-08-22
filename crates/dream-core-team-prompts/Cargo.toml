@@ -1,0 +1,9 @@
+[package]
+name = "dream-core-team-prompts"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dream-core-api-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true

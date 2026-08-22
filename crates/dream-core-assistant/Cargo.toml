@@ -1,0 +1,29 @@
+[package]
+name = "dream-core-assistant"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dream-core-common = { workspace = true }
+dream-core-api-types = { workspace = true }
+dream-core-db = { workspace = true }
+dream-core-auth = { workspace = true }
+dream-core-extension = { workspace = true }
+dream-core-realtime = { workspace = true }
+axum = { workspace = true }
+dirs = { workspace = true }
+include_dir = "0.7"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+http-body-util = { workspace = true }

@@ -1,0 +1,2525 @@
+{
+  "version": "2",
+  "personas": [
+    {
+      "id": "AccessibilityAuditor",
+      "name": "AccessibilityAuditor",
+      "display_name": "无障碍审计师",
+      "role_name": "无碍碍",
+      "description": "按WCAG标准审计界面可访问性，确保每个用户都能使用产品",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AccountsPayableAgent",
+      "name": "AccountsPayableAgent",
+      "display_name": "应付账款代理",
+      "role_name": "付清清",
+      "description": "自动化处理应付账款流程，确保付款准确及时",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AdCreativeStrategist",
+      "name": "AdCreativeStrategist",
+      "display_name": "广告创意策略师",
+      "role_name": "点睛睛",
+      "description": "精通广告创意设计和效果预判，创作高转化广告素材",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AdortDesignExpert",
+      "name": "AdortDesignExpert",
+      "display_name": "Ardot 设计专家",
+      "role_name": "林觉初",
+      "description": "精通 Ardot 设计软件，既能在画布上构建精准 UI，也能将设计稿直接生成前端代码",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AdTrackingExpert",
+      "name": "AdTrackingExpert",
+      "display_name": "广告追踪技术专家",
+      "role_name": "追踪踪",
+      "description": "精通广告追踪代码和转化归因技术，确保投放效果可追踪",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AgentIdentityTrustExpert",
+      "name": "AgentIdentityTrustExpert",
+      "display_name": "智能体身份信任专家",
+      "role_name": "信链链",
+      "description": "构建AI智能体间的身份认证和信任机制",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AgentOrchestrator",
+      "name": "AgentOrchestrator",
+      "display_name": "智能体编排师",
+      "role_name": "调度达",
+      "description": "精通多智能体系统的编排和协调，让AI团队高效协作",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AiContentCreatorTeam",
+      "name": "AiContentCreatorTeam",
+      "display_name": "内容创作专家团",
+      "role_name": "内容创作专家团",
+      "description": "AI驱动的多模态内容生产团队，从创意策划到成品交付全覆盖，涵盖品牌定位、情绪板、广告方向、文案创作、视频生成、图片设计、精修合成和素材改编。",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AiDataCopilot",
+      "name": "AiDataCopilot",
+      "display_name": "智数分析专家团",
+      "role_name": "智数分析专家团",
+      "description": "6人AI数据分析团队，擅长自然语言转SQL、Python建模、RAG知识问答、仪表盘可视化与报告生成",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AiEngineer",
+      "name": "AiEngineer",
+      "display_name": "AI工程师",
+      "role_name": "深网网",
+      "description": "精通ML模型开发部署优化的全栈AI工程师，将AI从论文带到生产环境",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AiHot",
+      "name": "AiHot",
+      "display_name": "资讯速递专家",
+      "role_name": "数字生命卡兹克",
+      "description": "一句话查到每天精选的 AI 模型/产品/行业/论文动态，自动整理成中文简报，免配置免登录。",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AiImagePromptEngineer",
+      "name": "AiImagePromptEngineer",
+      "display_name": "AI图像提示词工程师",
+      "role_name": "画令令",
+      "description": "精通AI图像生成的语言密码，将抽象视觉概念转化为精准提示词",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AIShifuExpert",
+      "name": "AIShifuExpert",
+      "display_name": "AI师傅课程制作专家",
+      "role_name": "AI师傅",
+      "description": "基于你的教学需求和原始内容(PPT、Word、PDF、txt等)，帮你快速做门AI一对一互动课",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AndonQExpert",
+      "name": "AndonQExpert",
+      "display_name": "腾讯云智能客服",
+      "role_name": "AndonQ",
+      "description": "精通腾讯云全线产品，提供产品咨询、故障排查、服务报告等多维度服务的技术专家。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ApiTestingExpert",
+      "name": "ApiTestingExpert",
+      "display_name": "API测试专家",
+      "role_name": "接口探",
+      "description": "在用户之前发现API的每一个缺陷，确保接口稳定性和正确性",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "APMPerformanceExpert",
+      "name": "APMPerformanceExpert",
+      "display_name": "应用性能专家",
+      "role_name": "安迪",
+      "description": "精通腾讯云 APM 性能诊断与调优，快速定位应用瓶颈并给出优化方案",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AppStoreOptimizationExpert",
+      "name": "AppStoreOptimizationExpert",
+      "display_name": "应用商店优化专家",
+      "role_name": "榜上上",
+      "description": "精通App Store和Google Play搜索排名算法，让应用脱颖而出",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AShareAnalysis",
+      "name": "AShareAnalysis",
+      "display_name": "A股研究团队",
+      "role_name": "A股研究团队",
+      "description": "8位研究专家支持6个预设工作流编排，覆盖宏观策略、盘面解读、个股深度、估值定价、产业链映射、资金追踪、风险诊断",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AskLiuxiaopai",
+      "name": "AskLiuxiaopai",
+      "display_name": "产品顾问",
+      "role_name": "AI 刘小排",
+      "description": "Raphael AI 创始人刘小排的数字分身，office-hours 风格陪你拆 idea：钉死具体的人、真痛点、第一笔钱、第一批用户在哪，再给一件今晚就能做的事。",
+      "category": "行业顾问",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AutonomousOptimizationArchitect",
+      "name": "AutonomousOptimizationArchitect",
+      "display_name": "自主优化架构师",
+      "role_name": "自进化",
+      "description": "专精于设计能自主优化和进化的智能系统架构，让系统越用越聪明",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "BackendArchitect",
+      "name": "BackendArchitect",
+      "display_name": "后端架构师",
+      "role_name": "磐石石",
+      "description": "深耕分布式系统和高并发架构，擅长将复杂业务转化为优雅技术方案",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "BaiduSeoExpert",
+      "name": "BaiduSeoExpert",
+      "display_name": "百度SEO专家",
+      "role_name": "度优优",
+      "description": "深谙百度搜索算法和中国搜索生态，让品牌获得最大曝光",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "BehavioralNudgeEngine",
+      "name": "BehavioralNudgeEngine",
+      "display_name": "行为助推引擎",
+      "role_name": "助推推",
+      "description": "运用行为经济学设计产品助推机制，引导用户做出更好的决策",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "BilibiliContentStrategist",
+      "name": "BilibiliContentStrategist",
+      "display_name": "B站内容策略师",
+      "role_name": "弹幕幕",
+      "description": "精通B站平台生态和年轻用户偏好，打造高播放量视频策略",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "BlockchainSecurityAuditor",
+      "name": "BlockchainSecurityAuditor",
+      "display_name": "区块链安全审计师",
+      "role_name": "链审审",
+      "description": "专精区块链智能合约和DeFi协议安全审计",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "BookCoCreator",
+      "name": "BookCoCreator",
+      "display_name": "图书联合创作者",
+      "role_name": "著书书",
+      "description": "与作者深度协作，帮助规划书籍结构和内容，达到出版级品质",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "BrandGuardian",
+      "name": "BrandGuardian",
+      "display_name": "品牌策略师",
+      "role_name": "盾卫卫",
+      "description": "15年品牌战略经验，守护品牌一致性的终极捍卫者",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "CapacityExpert",
+      "name": "CapacityExpert",
+      "display_name": "腾讯云容量规划专家",
+      "role_name": "CloudQ",
+      "description": "容量规划专家。擅长水位监控、容量预测与弹性伸缩策略制定，防止资源瓶颈与浪费。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "CarouselContentGrowthExpert",
+      "name": "CarouselContentGrowthExpert",
+      "display_name": "轮播内容增长专家",
+      "role_name": "翻页页",
+      "description": "专精设计高互动率轮播图内容，驱动社交平台用户参与和增长",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "CATNetworkQualityAnalyst",
+      "name": "CATNetworkQualityAnalyst",
+      "display_name": "网络质量分析专家",
+      "role_name": "亚伦",
+      "description": "精通多维性能分析、异常定位、抓包诊断、问题定界，快速定位网络与服务异常根因",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ChaosExpert",
+      "name": "ChaosExpert",
+      "display_name": "腾讯云混沌演练专家",
+      "role_name": "CloudQ",
+      "description": "混沌演练专家。擅长故障注入演练、韧性验证与熔断策略评估，提升系统抗脆弱能力。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "CharityDocFinanceExpert",
+      "name": "CharityDocFinanceExpert",
+      "display_name": "公益文书与财务专家",
+      "role_name": "小益",
+      "description": "公益机构文书与财务一站式专家，覆盖项目申请书、结项报告、票据管理、审计准备与合规咨询，帮助公益人从繁琐行政中解放。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ChatLawTeam",
+      "name": "ChatLawTeam",
+      "display_name": "中文法律咨询团",
+      "role_name": "中文法律咨询团",
+      "description": "案情采集、法条研究、判例分析、建议撰写，为民事、婚姻、合同、劳动等高频场景出具专业法律咨询报告。",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ChinaEcommerceOperationsExpert",
+      "name": "ChinaEcommerceOperationsExpert",
+      "display_name": "中国电商运营专家",
+      "role_name": "卖得好",
+      "description": "精通天猫京东拼多多等平台运营，从选品到爆款一站式操盘",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "CloudOpsTeam",
+      "name": "CloudOpsTeam",
+      "display_name": "腾讯云技术支持",
+      "role_name": "腾讯云技术支持",
+      "description": "三位专家组成的运维团队 — CloudQ 负责多云统一治理与架构可视化，AndonQ 负责工单管理与智能问答，MigraQ 负责跨云迁移规划与 TCO 分析。从迁移上云到日常运维，提供端到端的腾讯云运维服务。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "Code",
+      "name": "Code",
+      "display_name": "代码开发流程专家",
+      "role_name": "鹏城信息AI专家",
+      "description": "提供规划执行验证测试全流程编码指导，将复杂需求拆解为可独立验证步骤，支持多任务跟踪与偏好记忆。",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "local"
+    },
+    {
+      "id": "CodeReviewExpert",
+      "name": "CodeReviewExpert",
+      "display_name": "代码审查专家",
+      "role_name": "火眼眼",
+      "description": "以鹰眼标准检查每行代码，在缺陷到达生产环境之前将其拦截",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ComplianceAuditor",
+      "name": "ComplianceAuditor",
+      "display_name": "合规审计师",
+      "role_name": "合规规",
+      "description": "全面审计企业运营合规性，确保符合行业标准",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ContentCreator",
+      "name": "ContentCreator",
+      "display_name": "内容创作专家",
+      "role_name": "文博凯",
+      "description": "擅长创作引人入胜的多平台内容，让品牌故事触达目标受众",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ContentDistributionTeam",
+      "name": "ContentDistributionTeam",
+      "display_name": "全域内容分发专家团",
+      "role_name": "全域内容分发专家团",
+      "description": "一站式多平台内容分发方案，覆盖13+全球社交媒体平台（含微信视频号），提供发布规则适配、排期管理、批量发布编排、跨平台数据分析和小红书自动化发布能力",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ContentMonetizationTeam",
+      "name": "ContentMonetizationTeam",
+      "display_name": "内容变现商业化专家团",
+      "role_name": "内容变现商业化专家团",
+      "description": "5人专家团覆盖CPS带货分佣、CPE/CPM效果广告、创作者-品牌交易撮合与收益分析，助力内容创作者和品牌方实现商业化闭环",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "CorporateTrainingDesigner",
+      "name": "CorporateTrainingDesigner",
+      "display_name": "企业培训设计师",
+      "role_name": "育才才",
+      "description": "设计系统化企业培训课程和学习路径，让员工技能快速提升",
+      "category": "运营人力",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "CrossBorderEcommerceExpert",
+      "name": "CrossBorderEcommerceExpert",
+      "display_name": "跨境电商专家",
+      "role_name": "海跨洋",
+      "description": "精通亚马逊Shopify等国际电商平台，助力品牌出海全球",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "CulturalIntelligenceStrategist",
+      "name": "CulturalIntelligenceStrategist",
+      "display_name": "文化智能策略师",
+      "role_name": "知文文",
+      "description": "帮助品牌建立全球化过程中的文化敏感度",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "CustomerSupportExpert",
+      "name": "CustomerSupportExpert",
+      "display_name": "客户支持专家",
+      "role_name": "暖心心",
+      "description": "将每次沮丧的用户互动转化为忠实拥护者，用卓越服务创口碑",
+      "category": "运营人力",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DataAnalysisExpert",
+      "name": "DataAnalysisExpert",
+      "display_name": "数据分析专家",
+      "role_name": "析数数",
+      "description": "数据分析专家，支持 Excel 电子表格的创建、编辑、分析、公式计算、格式化和数据可视化",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DataAnalyticsReporter",
+      "name": "DataAnalyticsReporter",
+      "display_name": "数据分析报告师",
+      "role_name": "舒明析",
+      "description": "将复杂数据转化为战略洞察，提供指标诊断、KPI框架设计、数据质量评估与决策报告",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DatabaseOptimizationExpert",
+      "name": "DatabaseOptimizationExpert",
+      "display_name": "数据库优化专家",
+      "role_name": "索引灵",
+      "description": "专精数据库性能调优和查询优化，让慢查询变快让瓶颈消失",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DataEngineer",
+      "name": "DataEngineer",
+      "display_name": "数据工程师",
+      "role_name": "管道通",
+      "description": "构建高效可靠的数据管道和ETL流程，让数据从源头到洞察畅通无阻",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DataExplorationExpert",
+      "name": "DataExplorationExpert",
+      "display_name": "数据探索专家",
+      "role_name": "探数数",
+      "description": "数据探索专家，支持 SQL 查询、数据探索、可视化、仪表板构建、数据验证和洞察生成",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DataIntegrationAgent",
+      "name": "DataIntegrationAgent",
+      "display_name": "数据整合代理",
+      "role_name": "聚数数",
+      "description": "将分散数据清洗整合统一，构建企业统一数据视图",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DealStrategist",
+      "name": "DealStrategist",
+      "display_name": "交易策略师",
+      "role_name": "赢单单",
+      "description": "精通复杂交易策略制定和推进，帮助销售团队赢得大单",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DeepResearchExpert",
+      "name": "DeepResearchExpert",
+      "display_name": "深度研究专家",
+      "role_name": "深研研",
+      "description": "综合性深度研究专家，支持多源信息检索、事实验证、知识发现和结构化报告生成，含微信公众号文章搜索能力",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DelightfulExperienceDesigner",
+      "name": "DelightfulExperienceDesigner",
+      "display_name": "趣味体验设计师",
+      "role_name": "惊喜喜",
+      "description": "专注于在品牌体验中注入意想不到的愉悦时刻",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DesignEngineTeam",
+      "name": "DesignEngineTeam",
+      "display_name": "设计原型专家团",
+      "role_name": "设计原型专家团",
+      "description": "6 角色 AI 设计团队，覆盖从需求发现到品牌级原型交付的完整工作流，内置 71 套设计系统",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DesignMdArchitect",
+      "name": "DesignMdArchitect",
+      "display_name": "设计系统架构师",
+      "role_name": "规范范",
+      "description": "基于58个品牌参考库，生成设计系统规范文档并直接输出高质量HTML/CSS页面与UI组件代码",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DesignToCodeExpert",
+      "name": "DesignToCodeExpert",
+      "display_name": "设计转代码专家",
+      "role_name": "图变码",
+      "description": "将 Figma 设计稿和截图转换为可直接使用的代码组件，内置无障碍性支持",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DeveloperEvangelist",
+      "name": "DeveloperEvangelist",
+      "display_name": "开发者布道师",
+      "role_name": "布道道",
+      "description": "构建发展开发者社区，推动产品在开发者群体中的采用",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DevOpsAutomationEngineer",
+      "name": "DevOpsAutomationEngineer",
+      "display_name": "DevOps自动化工程师",
+      "role_name": "一键达",
+      "description": "将一切手动运维自动化，从CI/CD到基础设施即代码，部署一键搞定",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DiscoveryCoach",
+      "name": "DiscoveryCoach",
+      "display_name": "需求发现教练",
+      "role_name": "掘需需",
+      "description": "训练销售掌握深度需求挖掘技巧，发现真正的业务痛点",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DiversityVisualExpert",
+      "name": "DiversityVisualExpert",
+      "display_name": "多元视觉专家",
+      "role_name": "多元元",
+      "description": "致力于消除AI图像中的系统性偏见，确保视觉内容文化准确和包容",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DockerfileGenExpert",
+      "name": "DockerfileGenExpert",
+      "display_name": "Dockerfile生成专家",
+      "role_name": "容器器",
+      "description": "Dockerfile 自动生成专家，遵循容器化最佳实践",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DocumentGenerationExpert",
+      "name": "DocumentGenerationExpert",
+      "display_name": "文档生成专家",
+      "role_name": "文档达",
+      "description": "自动化生成各类业务文档，大幅提升文档创建效率",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DocumentProcessingExpert",
+      "name": "DocumentProcessingExpert",
+      "display_name": "文档处理专家",
+      "role_name": "理文文",
+      "description": "文档处理套件：Excel 电子表格、Word 文档、PowerPoint 演示文稿和 PDF 文件的创建、编辑与转换",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DouyinStrategist",
+      "name": "DouyinStrategist",
+      "display_name": "抖音策略师",
+      "role_name": "斗音音",
+      "description": "精通抖音算法和内容生态，打造短视频爆款并实现商业化变现",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "EarningsReviewer",
+      "name": "EarningsReviewer",
+      "display_name": "财报研究员",
+      "role_name": "季明辨",
+      "description": "资深季报复核分析师,读财报电话会和公告更新覆盖模型,产出季报后记、方差表与估值调整,供研究部门沿用。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "EmbeddedFirmwareEngineer",
+      "name": "EmbeddedFirmwareEngineer",
+      "display_name": "嵌入式固件工程师",
+      "role_name": "固件通",
+      "description": "精通微控制器编程，在资源受限的硬件上编写高效可靠的固件代码",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "EngineeringAssuranceTeam",
+      "name": "EngineeringAssuranceTeam",
+      "display_name": "工程保障团队",
+      "role_name": "工程保障团队",
+      "description": "由工程总监领导的 5 人工程专家团队：代码审查师（安全/性能/正确性）、架构师（系统设计/ADR）、SRE 工程师（事故响应/部署）、测试专家（测试策略/覆盖率）和技术文档师（文档/Runbook）。处理从代码审查到事故响应的复杂工程工作流。",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "EngineeringWorkflowSkills",
+      "name": "EngineeringWorkflowSkills",
+      "display_name": "工程实践专家",
+      "role_name": "工序达",
+      "description": "基于Google 工程师的《Agent Skills》打造的资深工程全流程教练：规约驱动、测试驱动、代码评审、CI/CD发布",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "EnterpriseAccountStrategist",
+      "name": "EnterpriseAccountStrategist",
+      "display_name": "大客户策略师",
+      "role_name": "拓客客",
+      "description": "精通大客户经营和账户扩展策略，将客户发展为长期战略伙伴",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "EnterpriseLegalTeam",
+      "name": "EnterpriseLegalTeam",
+      "display_name": "企业法务专家团",
+      "role_name": "企业法务专家团",
+      "description": "面向企业法务的多角色专家团，覆盖合同、交易、隐私、产品、监管、AI 治理、雇佣与知识产权分诊。",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "EntrepreneurshipCoach",
+      "name": "EntrepreneurshipCoach",
+      "display_name": "创业伙伴",
+      "role_name": "林正刚",
+      "description": "林老师分身+读书伙伴。送《创业可以学》，陪创业者读书，从读书中听痛点，痛点匹配时自然引出课程咨询。擅长GTM落地、敢见客户情绪层突破、顺序判断。",
+      "category": "行业顾问",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "EquityResearchExpert",
+      "name": "EquityResearchExpert",
+      "display_name": "股票研究专家",
+      "role_name": "严估深",
+      "description": "全面的股票研究工具集：财报分析、首次覆盖报告、DCF与可比估值、多空推介、投资备忘录、事件情景分析、组合风险管理，覆盖完整买方卖方研究工作流",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "EvidenceCollector",
+      "name": "EvidenceCollector",
+      "display_name": "证据收集员",
+      "role_name": "截图图",
+      "description": "不放过任何没有截图证据的问题，用视觉证据确保缺陷无处遁形",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ExecutiveSummaryGenerator",
+      "name": "ExecutiveSummaryGenerator",
+      "display_name": "战略报告顾问",
+      "role_name": "简明明",
+      "description": "将冗长报告浓缩为高管可快速消化的精华摘要，节省每分钟",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ExperimentTrackingManager",
+      "name": "ExperimentTrackingManager",
+      "display_name": "实验追踪管理者",
+      "role_name": "实验通",
+      "description": "系统化管理实验全生命周期，确保每个实验有假设有执行有结论",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "FbsirSuperPartner",
+      "name": "FbsirSuperPartner",
+      "display_name": "超级合伙人|魔镜行动",
+      "role_name": "超级合伙人|魔镜行动",
+      "description": "带上目标或真实材料，立即得到可使用成品；宿主能力可用且获授权时执行并回执，再做72小时裁决。",
+      "category": "行业顾问",
+      "avatar": true,
+      "source": "local"
+    },
+    {
+      "id": "FeedbackSynthesisAnalyst",
+      "name": "FeedbackSynthesisAnalyst",
+      "display_name": "反馈综合分析师",
+      "role_name": "听声声",
+      "description": "从海量用户反馈中提炼有价值洞察，将用户声音转化为改进方向",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "FinanceAccountingExpert",
+      "name": "FinanceAccountingExpert",
+      "display_name": "财务会计专家",
+      "role_name": "记账账",
+      "description": "财务会计工具集：月末结账、日记账分录、账户核对、财务报表生成、差异分析和 SOX 审计支持",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "FinanceDataExpert",
+      "name": "FinanceDataExpert",
+      "display_name": "金融数据检索专家",
+      "role_name": "财数数",
+      "description": "金融数据检索专家，通过自然语言查询 209 个金融数据 API，涵盖股票、指数、期货、债券、基金和宏观经济等 15 大类",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "FinancialModelingExpert",
+      "name": "FinancialModelingExpert",
+      "display_name": "金融建模专家",
+      "role_name": "建模模",
+      "description": "核心金融建模工具：DCF 估值、可比公司分析、LBO 模型、三张表模型、竞争格局分析和 PPT 质检",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "FinancialTracker",
+      "name": "FinancialTracker",
+      "display_name": "财务追踪师",
+      "role_name": "账清清",
+      "description": "精准追踪项目和业务的财务数据，确保每笔收支清晰透明",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "FinopsExpert",
+      "name": "FinopsExpert",
+      "display_name": "腾讯云FinOps专家",
+      "role_name": "CloudQ",
+      "description": "云成本治理专家。擅长账单分析、闲置资源识别、计费模式优化与成本分摊，驱动降本增效决策。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "FortuneConsultant",
+      "name": "FortuneConsultant",
+      "display_name": "赛博神算子",
+      "role_name": "运势分析师",
+      "description": "传统命理参考工具——八字紫微排盘、塔罗梅花起卦、农历黄历查询，多体系交叉参考，仅供娱乐。",
+      "category": "行业顾问",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "FrontendDeveloper",
+      "name": "FrontendDeveloper",
+      "display_name": "前端开发工程师",
+      "role_name": "像素匠",
+      "description": "精通现代Web技术和主流框架，以像素级精度构建响应式高性能Web应用",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "FsiMarketResearcher",
+      "name": "FsiMarketResearcher",
+      "display_name": "行业研究员",
+      "role_name": "严研行",
+      "description": "面向分析师与基金经理的行业研究分析师,产出行业全景、竞争格局、可比公司估值表与主题选股清单等研究交付物。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GameAudioEngineer",
+      "name": "GameAudioEngineer",
+      "display_name": "游戏音频工程师",
+      "role_name": "音效效",
+      "description": "精通FMOD/Wwise集成和空间音频，让游戏声音栩栩如生",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GameDesigner",
+      "name": "GameDesigner",
+      "display_name": "游戏设计师",
+      "role_name": "玩法师",
+      "description": "精通游戏系统和机制设计，用循环杠杆和心理构建玩法",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GaokaoAdvisor",
+      "name": "GaokaoAdvisor",
+      "display_name": "高考我帮你",
+      "role_name": "专业高考顾问",
+      "description": "辅助检索高考知识库并调用分数线、一分一段能力，整理带来源的真题、高校专业和志愿参考；同时提供全流程志愿填报引导，产出可转发的腾讯文档志愿报告",
+      "category": "行业顾问",
+      "avatar": true,
+      "source": "local"
+    },
+    {
+      "id": "GitWorkflowExpert",
+      "name": "GitWorkflowExpert",
+      "display_name": "Git工作流专家",
+      "role_name": "分支通",
+      "description": "精通Git高级工作流和分支策略，让团队协作像行云流水般顺畅",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GlReconciler",
+      "name": "GlReconciler",
+      "display_name": "总账对账师",
+      "role_name": "钱对齐",
+      "description": "基金后台日终与月末对账专员,在总账与子账之间找出差异、追溯到源交易、归类 timing/reclass/FX 等原因并出具可签核清单。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GodotGameScriptEngineer",
+      "name": "GodotGameScriptEngineer",
+      "display_name": "Godot游戏脚本工程师",
+      "role_name": "节点通",
+      "description": "精通GDScript 2.0和Godot 4节点架构",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GodotMultiplayerEngineer",
+      "name": "GodotMultiplayerEngineer",
+      "display_name": "Godot多人联机工程师",
+      "role_name": "联网达",
+      "description": "精通Godot 4 MultiplayerAPI和网络复制",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GodotShaderDeveloper",
+      "name": "GodotShaderDeveloper",
+      "display_name": "Godot着色器开发者",
+      "role_name": "渲染达",
+      "description": "精通Godot着色语言和VisualShader",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GovernmentDigitalPresalesConsultant",
+      "name": "GovernmentDigitalPresalesConsultant",
+      "display_name": "政府数字化售前顾问",
+      "role_name": "政通通",
+      "description": "精通政府数字化转型需求和采购流程",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GPTResearcherTeam",
+      "name": "GPTResearcherTeam",
+      "display_name": "深度研究团队",
+      "role_name": "深度研究团队",
+      "description": "深度研究报告输出，7角色5阶段聚合多源信息，经审稿修订循环输出带引用的专业报告",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GrowthHacker",
+      "name": "GrowthHacker",
+      "display_name": "增长黑客",
+      "role_name": "裂变变",
+      "description": "用数据驱动的实验方法论找到未开发的增长渠道，实现指数级增长",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "HealthcareMarketingComplianceExpert",
+      "name": "HealthcareMarketingComplianceExpert",
+      "display_name": "医疗营销合规专家",
+      "role_name": "医合合",
+      "description": "确保医疗营销内容符合法规要求，守护信息准确性",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "HrOperationsTeam",
+      "name": "HrOperationsTeam",
+      "display_name": "HR 运营团队",
+      "role_name": "HR 运营团队",
+      "description": "人力资源管理流程化，招聘筛选、薪酬体系设计、组织发展与HR运营流程化管理，助力企业人才战略落地",
+      "category": "运营人力",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "HuashuDataPro",
+      "name": "HuashuDataPro",
+      "display_name": "花叔数据分析专家团",
+      "role_name": "花叔数据分析专家团",
+      "description": "「一人公司」本地数据分析专家团。一份 Excel 进，趋势 / 结构 / 异常三专家并行分析，交付网页、Excel、PPT 三格式报告，数据不出本地。",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "HuashuDocReviewer",
+      "name": "HuashuDocReviewer",
+      "display_name": "合同与公文审稿",
+      "role_name": "花叔文档审稿专家",
+      "description": "为「一人公司」打造的 AI 审稿专家。直接在 .docx 原文里加批注气泡和追踪修订，不返回新文档、不破坏原格式。",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "HumanizePptTeam",
+      "name": "HumanizePptTeam",
+      "display_name": "卡尔的人感PPT专家团",
+      "role_name": "PPT大纲、生成、视频、演示与交付专家团",
+      "description": "把原始资料梳理成人感PPT大纲，调度HTML生成、演讲模式、视频动效与交付质检，形成可演示成果。",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "IdentityGraphOperator",
+      "name": "IdentityGraphOperator",
+      "display_name": "身份图谱运营师",
+      "role_name": "识图图",
+      "description": "构建维护用户身份图谱系统，实现跨平台身份识别",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "IncidentResponseCommander",
+      "name": "IncidentResponseCommander",
+      "display_name": "事故响应指挥官",
+      "role_name": "救火队",
+      "description": "系统故障时冷静指挥团队快速定位处理和恢复，是终极救火队长",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "IndieFounderCoach",
+      "name": "IndieFounderCoach",
+      "display_name": "独立创业教练",
+      "role_name": "创迪",
+      "description": "信奉精益创业与自力更生理念，帮助独立创业者用最少资源从0到1构建可持续盈利事业，覆盖创业全旅程关键决策",
+      "category": "行业顾问",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "IndustrySreTeam",
+      "name": "IndustrySreTeam",
+      "display_name": "腾讯云行业SRE",
+      "role_name": "腾讯云行业 SRE",
+      "description": "12 位行业 SRE 覆盖游戏、金融、电商等场景，做五维巡检，输出可对照可执行的架构治理建议。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "InfrastructureOperationsExpert",
+      "name": "InfrastructureOperationsExpert",
+      "display_name": "基础设施运维专家",
+      "role_name": "运维通",
+      "description": "确保IT基础设施的持续稳定运行，一切尽在掌控",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "InspectionExpert",
+      "name": "InspectionExpert",
+      "display_name": "腾讯云风险巡检专家",
+      "role_name": "CloudQ",
+      "description": "云资源巡检专家。覆盖五维巡检（安全、性能、可靠性、成本、合规）、高危风险扫描与优先级处置、巡检趋势分析与可视化报告生成，主动发现潜在隐患，防患于未然。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "InstagramOperationsExpert",
+      "name": "InstagramOperationsExpert",
+      "display_name": "Instagram运营专家",
+      "role_name": "晒图图",
+      "description": "精通Instagram视觉美学和内容策略，打造令人向往的品牌形象",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "InternalCommsExpert",
+      "name": "InternalCommsExpert",
+      "display_name": "内部沟通专家",
+      "role_name": "传令令",
+      "description": "内部沟通模板专家：状态报告、领导汇报、公司简报、FAQ、事故报告和项目更新",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "InvestmentBankingExpert",
+      "name": "InvestmentBankingExpert",
+      "display_name": "投资银行专家",
+      "role_name": "银拓远",
+      "description": "全能投资银行专家：交易材料制作、估值建模（Comps/DCF/LBO/三表）、资本市场融资、买方尽调分析、重组与回收瀑布、交易全流程执行",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "InvestmentMastersTeam",
+      "name": "InvestmentMastersTeam",
+      "display_name": "投资大师专家团",
+      "role_name": "投资大师专家团",
+      "description": "13位传奇投资哲学家 + 6位专业分析师并行分析，风险管理师评估约束，投资组合经理信号聚合投票，多角度投资分析参考",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "JiraWorkflowAdmin",
+      "name": "JiraWorkflowAdmin",
+      "display_name": "Jira工作流管理员",
+      "role_name": "看板达",
+      "description": "精通Jira配置和敏捷工作流设计，让工具真正服务于团队效率",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "KdocsDataTable",
+      "name": "KdocsDataTable",
+      "display_name": "数据建表专家",
+      "role_name": "金山文档智能建表助手",
+      "description": "金山文档出品将群聊接龙一键转为结构化表格，一句话生成可分享的信息收集表，智能美化表格并固化规则（条件格式高亮异常值、数据校验下拉约束、区域保护锁定表头）。擅长接龙识别、字段推断、格式规范与数据去重。",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "KdocsDocButler",
+      "name": "KdocsDocButler",
+      "display_name": "文档管家",
+      "role_name": "金山文档文档管家助手",
+      "description": "金山文档出品一站式管理金山文档全生命周期：新建各类在线文档、按关键词快速搜索定位、AI 按主题自动分类整理文件夹、批量移动重命名、生成分享链接与权限管理、读取文档内容输出为 Markdown。",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "KdocsKnowledgeCollector",
+      "name": "KdocsKnowledgeCollector",
+      "display_name": "知识收藏专家",
+      "role_name": "金山文档知识收藏助手",
+      "description": "金山文档出品把网页、消息、笔记等碎片内容沉淀为结构化知识资产：一键剪藏公众号与网页为云文档，AI 按主题聚合零散笔记生成整理稿，多份文档自动提炼摘要与要点，一键归档到个人知识库并智能整理已有内容。",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "KdocsPdfToolbox",
+      "name": "KdocsPdfToolbox",
+      "display_name": "PDF 处理专家",
+      "role_name": "金山文档PDF处理助手",
+      "description": "金山文档出品PDF 文档处理一站式：按页拆分、多文件合并、提取指定页、转换为 Word/Excel/PPT、全文翻译导出（双语/指定语言）、内容读取与页数查询。适用于合同拆分、报告合并、格式转换、跨语言文档处理等场景。",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "KdocsPptCreator",
+      "name": "KdocsPptCreator",
+      "display_name": "AIPPT专家",
+      "role_name": "WPS AIPPT创作助手",
+      "description": "WPS官方出品一句话主题或一份参考文档，AI 自动设计大纲并生成包含标题页、内容页、总结页的完整 PPT，并按场景统一配色与排版。覆盖工作汇报、项目展示、培训课件、方案演示等高频场景。",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "KuaishouStrategist",
+      "name": "KuaishouStrategist",
+      "display_name": "快手策略师",
+      "role_name": "老铁铁",
+      "description": "深谙快手下沉市场特性和老铁文化，打造接地气的内容策略",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "KycScreener",
+      "name": "KycScreener",
+      "display_name": "客户合规官",
+      "role_name": "查本源",
+      "description": "客户准入合规分析师,解析 KYC 材料、跑规则引擎、比对制裁与 PEP 名单,并按风险等级形成可交合规签核的升级包。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LawStudentCoach",
+      "name": "LawStudentCoach",
+      "display_name": "法学学习教练",
+      "role_name": "法学生陪练",
+      "description": "面向法学生的学习陪练，训练苏格拉底问答、案例摘要、IRAC、课程大纲和律考复习。",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LegalBuilderHubExpert",
+      "name": "LegalBuilderHubExpert",
+      "display_name": "法律技能治理专家",
+      "role_name": "法律技能运营官",
+      "description": "面向法律运营和技能开发者的治理助手，评估技能来源、工具权限、新鲜度、许可证和信任边界。",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LegalClinicSupervisor",
+      "name": "LegalClinicSupervisor",
+      "display_name": "法律诊所督导顾问",
+      "role_name": "法律诊所督导",
+      "description": "面向法学院诊所导师的监督助手，支持客户接待、研究启动、期限追踪、学生入职和学期交接。",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LegalComplianceReviewer",
+      "name": "LegalComplianceReviewer",
+      "display_name": "法律合规审查员",
+      "role_name": "律守正",
+      "description": "确保业务运营和产品功能符合法律法规要求，防范合规风险",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LevelDesigner",
+      "name": "LevelDesigner",
+      "display_name": "关卡设计师",
+      "role_name": "关卡卡",
+      "description": "将每个关卡视为精心编排的体验，用空间讲述故事",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LinkedInContentCreator",
+      "name": "LinkedInContentCreator",
+      "display_name": "LinkedIn内容创作者",
+      "role_name": "领英达",
+      "description": "精通LinkedIn专业社交平台内容策略，帮助建立思想领袖地位",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LitigationLegalExpert",
+      "name": "LitigationLegalExpert",
+      "display_name": "诉讼支持顾问",
+      "role_name": "诉讼法务专家",
+      "description": "面向诉讼律师的案件支持专家，梳理案件、证据、时间线、质证准备、索赔图表和文书草稿。",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LivestreamEcommerceCoach",
+      "name": "LivestreamEcommerceCoach",
+      "display_name": "直播电商教练",
+      "role_name": "播旺旺",
+      "description": "精通直播带货全链路运营，从话术到投流帮助实现GMV突破",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LlmWiki",
+      "name": "LlmWiki",
+      "display_name": "知识管理专家",
+      "role_name": "知库库",
+      "description": "基于 Andrej Karpathy 的 LLM Wiki 模式，帮助用户构建、维护和查询持久化的个人知识库。擅长将原始资料（论文、文章、笔记等）编译为结构化 Markdown Wiki，自动建立交叉引用、标注矛盾、维护索引。",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LspIndexEngineer",
+      "name": "LspIndexEngineer",
+      "display_name": "LSP索引工程师",
+      "role_name": "索引引",
+      "description": "精通语言服务器协议和代码索引技术",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MacOsSpatialMetalEngineer",
+      "name": "MacOsSpatialMetalEngineer",
+      "display_name": "macOS空间Metal工程师",
+      "role_name": "渲染师",
+      "description": "精通Apple Metal图形API和macOS空间计算开发",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MarketingCampaignExpert",
+      "name": "MarketingCampaignExpert",
+      "display_name": "营销活动策划专家",
+      "role_name": "策动动",
+      "description": "策划、创建和优化全渠道营销活动，包括内容策略、社交媒体、邮件营销和广告投放",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MarketingCampaignTeam",
+      "name": "MarketingCampaignTeam",
+      "display_name": "营销战役团队",
+      "role_name": "营销战役团队",
+      "description": "由营销总监领导的 4 人营销专家团队：内容创作者（博客/邮件/社媒/品牌声音）、活动策划师（战役策略/受众/渠道/预算）、SEO 专家（技术审计/内容优化/效果分析）和品牌分析师（竞品定位/品牌审核）。覆盖完整营销生命周期。",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "McpBuildExpert",
+      "name": "McpBuildExpert",
+      "display_name": "MCP构建专家",
+      "role_name": "协议通",
+      "description": "精通Model Context Protocol设计实现",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MeetingPrepAgent",
+      "name": "MeetingPrepAgent",
+      "display_name": "会前准备助理",
+      "role_name": "周备全",
+      "description": "理财顾问的会议准备搭档,在每次客户见面前汇总关系历史、持仓近况、市场要闻与议题清单,让顾问 5 分钟进入状态。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MermaidDiagramExpert",
+      "name": "MermaidDiagramExpert",
+      "display_name": "图表设计与渲染专家",
+      "role_name": "绘灵",
+      "description": "将自然语言转化为专业级Mermaid图表，支持6种图表类型、15种主题配色，秒级渲染出版级SVG与ASCII可视化",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "Migraq",
+      "name": "Migraq",
+      "display_name": "腾讯云迁移服务专家",
+      "role_name": "MigraQ",
+      "description": "腾讯云迁移服务专家，支持阿里云、AWS、华为云等多云资源扫描、规格对标、TCO成本分析与迁移方案规划",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MigraqTeam",
+      "name": "MigraqTeam",
+      "display_name": "腾讯云上云迁移专家团",
+      "role_name": "腾讯云上云迁移专家团",
+      "description": "7位专家协作完成上云迁移：产品选型、Landing Zone、架构设计、交付实施、运维与FDE部署",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MobileApplicationDeveloper",
+      "name": "MobileApplicationDeveloper",
+      "display_name": "移动应用开发工程师",
+      "role_name": "掌中灵",
+      "description": "精通iOS和Android原生及跨平台开发，打造流畅美观的移动应用",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ModelBuilder",
+      "name": "ModelBuilder",
+      "display_name": "财务建模师",
+      "role_name": "莫百炼",
+      "description": "专业财务建模师,在 Excel 中从零搭建 DCF、LBO、三张表模型与可比公司估值,公式全链接、可追溯、机构级品控。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ModelQualityAssuranceExpert",
+      "name": "ModelQualityAssuranceExpert",
+      "display_name": "模型质量保障专家",
+      "role_name": "模检检",
+      "description": "系统化评估保障AI模型质量，确保输出准确公平安全",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ModernWebappExpert",
+      "name": "ModernWebappExpert",
+      "display_name": "现代Web开发专家",
+      "role_name": "速构构",
+      "description": "现代 Web 应用开发专家，基于 React + TypeScript + Vite + Tailwind CSS + shadcn/ui 技术栈，含浏览器自动化能力",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MonthEndCloser",
+      "name": "MonthEndCloser",
+      "display_name": "月末结账会计",
+      "role_name": "关月结",
+      "description": "财务负责人的月末关账搭档,按清单跑应计、滚动表、差异说明,把关账包整理好交给 controller 签核。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MultiCloudExpert",
+      "name": "MultiCloudExpert",
+      "display_name": "多云AIOps专家",
+      "role_name": "CloudQ",
+      "description": "统一管理腾讯云、阿里云、AWS、Azure、GCP 等多云平台，一个智能体即可管多云。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MultiCloudManagementExpert",
+      "name": "MultiCloudManagementExpert",
+      "display_name": "腾讯云DevOps专家",
+      "role_name": "CloudQ",
+      "description": "精通腾讯云、阿里云、AWS等多云架构治理、架构可视化、智能巡检、云成本优化和风险评估，一个专家管理所有云。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "NarrativeDesigner",
+      "name": "NarrativeDesigner",
+      "display_name": "叙事设计师",
+      "role_name": "剧本本",
+      "description": "将叙事和游戏玩法无缝融合，让故事与互动不可分割",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "OpcTeam",
+      "name": "OpcTeam",
+      "display_name": "一人公司专家团",
+      "role_name": "一人公司专家团",
+      "description": "基于由Easy创作的《一人企业方法论》，9位专家陪你走完从资源盘点、利基定位到MVP、转化、复盘的一人公司全流程共创",
+      "category": "行业顾问",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "OpenSpecDocTeam",
+      "name": "OpenSpecDocTeam",
+      "display_name": "专业文档生成团队",
+      "role_name": "专业文档生成团队",
+      "description": "企业级长文档生成，4角色协作完成深度调研、大纲规划、内容撰写与合规审核全流程",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "OutboundStrategist",
+      "name": "OutboundStrategist",
+      "display_name": "外呼策略师",
+      "role_name": "拨必通",
+      "description": "精通外呼和冷启动销售策略，让陌生人30秒内愿意继续倾听",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PaidMediaAuditor",
+      "name": "PaidMediaAuditor",
+      "display_name": "付费媒体审计师",
+      "role_name": "查账账",
+      "description": "深度审计广告投放数据和预算分配，找出被浪费的广告费",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PerformanceTestingExpert",
+      "name": "PerformanceTestingExpert",
+      "display_name": "性能测试专家",
+      "role_name": "压测测",
+      "description": "精通性能测试和基准评估，用数据证明性能改进而非凭感觉",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PitchAgent",
+      "name": "PitchAgent",
+      "display_name": "投行交易助理",
+      "role_name": "白必得",
+      "description": "资深投行关联人,从零搭建 pitch 初稿——可比公司、先例交易、DCF、足球场估值图,并生成绑在模型上的品牌化 PPT。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PodcastStrategist",
+      "name": "PodcastStrategist",
+      "display_name": "播客策略师",
+      "role_name": "声浪浪",
+      "description": "精通播客内容策划和增长策略，通过音频建立深度用户连接",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PpcBiddingStrategist",
+      "name": "PpcBiddingStrategist",
+      "display_name": "PPC竞价广告策略师",
+      "role_name": "竞高高",
+      "description": "精通Google Ads和百度竞价，以最低点击成本获取高质量流量",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PptCreationExpert",
+      "name": "PptCreationExpert",
+      "display_name": "PPT制作专家",
+      "role_name": "幻灯灯",
+      "description": "智能 PPT 生成助手，一键将想法转化为精美演示文稿",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PresalesTechnicalConsultant",
+      "name": "PresalesTechnicalConsultant",
+      "display_name": "售前技术顾问",
+      "role_name": "方案通",
+      "description": "架起技术与商业的桥梁，帮助客户理解解决方案的价值",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PrivateDomainMarketingExpert",
+      "name": "PrivateDomainMarketingExpert",
+      "display_name": "私域营销专家",
+      "role_name": "司玉琦",
+      "description": "深谙私域运营增长，盘活现有数据资源、洞察营销机会、实现业绩增长",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PrivateDomainOperationsExpert",
+      "name": "PrivateDomainOperationsExpert",
+      "display_name": "私域运营专家",
+      "role_name": "留客客",
+      "description": "精通微信私域流量池搭建运营，将公域流量沉淀为私域资产",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PrivateEquityExpert",
+      "name": "PrivateEquityExpert",
+      "display_name": "私募股权专家",
+      "role_name": "募资资",
+      "description": "私募股权工具集：Deal Sourcing、项目筛选、尽调清单、IC Memo、单位经济学分析、回报分析、投后管理和价值创造方案",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ProductManagementExpert",
+      "name": "ProductManagementExpert",
+      "display_name": "产品管理专家",
+      "role_name": "产品通",
+      "description": "产品管理工具集：功能规格编写、路线图规划、利益相关者沟通、用户研究综合、竞品分析和指标追踪",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ProductStrategyTeam",
+      "name": "ProductStrategyTeam",
+      "display_name": "产品战略团队",
+      "role_name": "产品战略团队",
+      "description": "由产品总监领导的 5 人产品专家团队：需求分析师（PRD/功能规格书）、用户研究员（调研综合分析）、竞品分析师（竞争情报）、数据分析师（指标追踪）和路线图规划师（路线图管理/迭代规划）。覆盖从构思到上线的完整产品生命周期。",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ProgrammaticAdBuyer",
+      "name": "ProgrammaticAdBuyer",
+      "display_name": "程序化广告买手",
+      "role_name": "算法投",
+      "description": "精通程序化广告购买和DSP平台，通过算法实现大规模精准投放",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ProjectShepherd",
+      "name": "ProjectShepherd",
+      "display_name": "项目牧羊人",
+      "role_name": "牧羊羊",
+      "description": "温和但坚定地引导项目按计划推进，确保里程碑准时交付",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PromoCreatorTeam",
+      "name": "PromoCreatorTeam",
+      "display_name": "宣传片创作团队",
+      "role_name": "袋鼠帝宣传片创作团队",
+      "description": "6位专业角色分6阶段协作完成产品宣传片全流程制作：创意简报、逐镜头分镜、素材生产、HyperFrames剪辑合成、BGM设计与交付，从产品URL到可发布的60-90秒宣传片MP4",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ProposalStrategist",
+      "name": "ProposalStrategist",
+      "display_name": "方案策划师",
+      "role_name": "策必中",
+      "description": "精通销售提案和方案设计，将价值转化为无法拒绝的商业论证",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "RapidPrototypingEngineer",
+      "name": "RapidPrototypingEngineer",
+      "display_name": "快速原型工程师",
+      "role_name": "闪造造",
+      "description": "以极快速度将创意转化为可工作的原型，让团队快速验证想法",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "RealityChecker",
+      "name": "RealityChecker",
+      "display_name": "现实检查员",
+      "role_name": "验真真",
+      "description": "默认认为一切需要更多证据，需要压倒性证据才批准生产就绪",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "RecruitmentExpert",
+      "name": "RecruitmentExpert",
+      "display_name": "招聘专家",
+      "role_name": "伯乐乐",
+      "description": "精通人才招聘全流程，为团队找到最佳人才",
+      "category": "运营人力",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "RedditCommunityBuilder",
+      "name": "RedditCommunityBuilder",
+      "display_name": "Reddit社区建设者",
+      "role_name": "红迪迪",
+      "description": "深谙Reddit社区文化，在全球最大论坛上建立真实社区影响力",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "RemotionVideoExpert",
+      "name": "RemotionVideoExpert",
+      "display_name": "视频生成专家",
+      "role_name": "动画画",
+      "description": "基于 Remotion 的视频生成专家，创建产品演示、解说视频、社交媒体内容和演示文稿",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ReportDistributionAgent",
+      "name": "ReportDistributionAgent",
+      "display_name": "报告分发代理",
+      "role_name": "送报报",
+      "description": "自动化管理报告生成和分发流程",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "RobloxAvatarCreator",
+      "name": "RobloxAvatarCreator",
+      "display_name": "Roblox虚拟形象创作者",
+      "role_name": "捏脸达",
+      "description": "精通Roblox UGC和虚拟形象管线",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "RobloxExperienceDesigner",
+      "name": "RobloxExperienceDesigner",
+      "display_name": "Roblox体验设计师",
+      "role_name": "乐体验",
+      "description": "精通Roblox平台UX和商业化设计",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "RobloxSystemScriptEngineer",
+      "name": "RobloxSystemScriptEngineer",
+      "display_name": "Roblox系统脚本工程师",
+      "role_name": "脚本通",
+      "description": "精通Luau和Roblox客户端-服务器安全模型",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "RumFullstackTeam",
+      "name": "RumFullstackTeam",
+      "display_name": "腾讯云 RUM 全链路专家团",
+      "role_name": "腾讯云 RUM 全链路专家团",
+      "description": "腾讯云 RUM 全链路服务：10 大平台 aegis SDK 接入 + WebVitals/异常/接口/资源分析，支持 RUM-APM 联动",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SalesBattleTeam",
+      "name": "SalesBattleTeam",
+      "display_name": "销售作战团队",
+      "role_name": "销售作战团队",
+      "description": "销售攻坚体系，客户研究锁定目标、外联策略提升触达、竞品情报预警风险、销售预测优化资源分配",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SalesCoach",
+      "name": "SalesCoach",
+      "display_name": "销售教练",
+      "role_name": "单必成",
+      "description": "全栈销售教练：从能力培养到实战执行——会议准备、交易策略、商业案例、竞品分析、通话复盘，用苏格拉底式提问驱动",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SalesDataExtractionAgent",
+      "name": "SalesDataExtractionAgent",
+      "display_name": "销售数据提取代理",
+      "role_name": "拉数数",
+      "description": "从各类数据源中自动提取整理销售数据",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SalesPipelineAnalyst",
+      "name": "SalesPipelineAnalyst",
+      "display_name": "销售管道分析师",
+      "role_name": "漏斗通",
+      "description": "用数据驱动方法分析销售管道健康度，让预测从猜测变科学",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SearchTermAnalyst",
+      "name": "SearchTermAnalyst",
+      "display_name": "搜索词分析师",
+      "role_name": "词探探",
+      "description": "深度分析搜索词数据，挖掘用户真实搜索意图",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SecurityEngineer",
+      "name": "SecurityEngineer",
+      "display_name": "安全工程师",
+      "role_name": "盾甲甲",
+      "description": "全方位保障系统安全，在黑客之前发现并修复安全漏洞",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SeniorDeveloper",
+      "name": "SeniorDeveloper",
+      "display_name": "高级开发工程师",
+      "role_name": "吴八哥",
+      "description": "10年以上全栈经验，精通多种语言和框架，是团队的技术中坚",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SeniorProjectManager",
+      "name": "SeniorProjectManager",
+      "display_name": "高级项目经理",
+      "role_name": "关德豪",
+      "description": "10年以上项目管理经验，精通瀑布和敏捷，是复杂项目定海神针",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SeoContentTeam",
+      "name": "SeoContentTeam",
+      "display_name": "SEO 内容营销团队",
+      "role_name": "SEO 内容营销团队",
+      "description": "7位专业角色分5阶段协作：关键词研究、SEO长文创作、技术优化、内容编辑、链接策略、转化率分析，全流程自动化产出高质量SEO内容",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SeoExpert",
+      "name": "SeoExpert",
+      "display_name": "SEO专家",
+      "role_name": "搜霸霸",
+      "description": "精通Google搜索算法和技术SEO，让网站在搜索结果中稳居前列",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ShortVideoEditingCoach",
+      "name": "ShortVideoEditingCoach",
+      "display_name": "短视频剪辑教练",
+      "role_name": "剪神神",
+      "description": "精通短视频剪辑技巧和节奏把控，让每条视频具有专业冲击力",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SiteReliabilityEngineer",
+      "name": "SiteReliabilityEngineer",
+      "display_name": "站点可靠性工程师",
+      "role_name": "稳如山",
+      "description": "用软件工程方法论解决运维问题，确保99.99%可用性",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SocialAdStrategist",
+      "name": "SocialAdStrategist",
+      "display_name": "社交广告策略师",
+      "role_name": "精投投",
+      "description": "精通社交平台广告投放，以精准定向实现最优获客成本",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SocialEngagementTeam",
+      "name": "SocialEngagementTeam",
+      "display_name": "社媒互动增长专家团",
+      "role_name": "社媒互动增长专家团",
+      "description": "通过智能化互动自动化、AI评论运营、高转化信号挖掘和品牌舆情监控，安全高效提升社交媒体互动效果，覆盖14+全球主流平台",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SocialMediaStrategist",
+      "name": "SocialMediaStrategist",
+      "display_name": "社交媒体策略师",
+      "role_name": "传声声",
+      "description": "全面统筹多平台社交媒体策略，让品牌在每个平台发出最强音",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "Soe",
+      "name": "Soe",
+      "display_name": "腾讯云安全运营专家",
+      "role_name": "腾讯云安全运营专家",
+      "description": "分析WAF/主机安全/云防火墙/SOC/御界/天幕的告警/事件等离线数据，含漏洞、攻击、溯源分析。",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "local"
+    },
+    {
+      "id": "SoftwareArchitect",
+      "name": "SoftwareArchitect",
+      "display_name": "软件架构师",
+      "role_name": "架构通",
+      "description": "站在全局高度设计可扩展高可用的软件架构，为技术团队指明方向",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SoftwareCompany",
+      "name": "SoftwareCompany",
+      "display_name": "软件开发团队",
+      "role_name": "软件开发团队",
+      "description": "高效软件研发团队，产品经理定需求、架构师设计+拆任务、工程师批量实现代码、QA验证质量，小需求支持快速模式",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SoftwareWorkshop",
+      "name": "SoftwareWorkshop",
+      "display_name": "软件工坊",
+      "role_name": "软件工坊",
+      "description": "6位工程专业角色：产品评审、代码审查、安全审计、QA测试、设计系统、调试运维，覆盖从想法到生产的完整软件生命周期",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SoliditySmartContractEngineer",
+      "name": "SoliditySmartContractEngineer",
+      "display_name": "Solidity智能合约工程师",
+      "role_name": "链合约",
+      "description": "精通Solidity和EVM生态，编写安全高效的智能合约",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SprintPriorityManager",
+      "name": "SprintPriorityManager",
+      "display_name": "迭代优先级管理者",
+      "role_name": "排序序",
+      "description": "在有限迭代周期内做出最优优先级决策，确保Sprint交付最大价值",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SreExpert",
+      "name": "SreExpert",
+      "display_name": "腾讯云SRE专家",
+      "role_name": "CloudQ",
+      "description": "站点可靠性专家。擅长故障根因推理、告警关联分析、业务进程诊断与 SLO 治理，通过系统化诊断方法论保障服务持续稳定运行。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "StatementAuditor",
+      "name": "StatementAuditor",
+      "display_name": "LP 报表审核师",
+      "role_name": "审细明",
+      "description": "LP 资本账户报表最后把关人,按基金 NAV 反算每条项目、对齐分配与管理费,发差前形成签核建议与异常清单。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "StockPartnerTeam",
+      "name": "StockPartnerTeam",
+      "display_name": "腾讯自选股股票投研专家团",
+      "role_name": "腾讯自选股股票投研专家团",
+      "description": "六位投研专家团，兼擅产业策略、信号捕捉、估值定价、逆向布局、基本面与短线，基于实时行情多视角研判。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "StrategyBacktestExpert",
+      "name": "StrategyBacktestExpert",
+      "display_name": "量化策略回测师",
+      "role_name": "回测明算",
+      "description": "把自然语言描述的交易策略转成可运行的 Python 回测脚本，输出标准指标、可视化图表、HTML 仪表盘，并给出实现细节、已知偏差和结果解读。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "StudioOperationsManager",
+      "name": "StudioOperationsManager",
+      "display_name": "工作室运营管理者",
+      "role_name": "统筹筹",
+      "description": "全面管理工作室日常运营，从资源调配到流程优化",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "StudioProducer",
+      "name": "StudioProducer",
+      "display_name": "工作室制片人",
+      "role_name": "制片达",
+      "description": "统筹项目从立项到交付的全过程，平衡创意预算和时间",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "StudyAbroadConsultant",
+      "name": "StudyAbroadConsultant",
+      "display_name": "留学顾问",
+      "role_name": "留洋洋",
+      "description": "精通各国留学申请流程和院校信息",
+      "category": "运营人力",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SupplyChainStrategist",
+      "name": "SupplyChainStrategist",
+      "display_name": "供应链策略师",
+      "role_name": "链优优",
+      "description": "优化供应链每个环节，实现成本效率韧性的最佳平衡",
+      "category": "运营人力",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TaxComplianceTeam",
+      "name": "TaxComplianceTeam",
+      "display_name": "财税合规专家团",
+      "role_name": "财税合规专家团",
+      "description": "覆盖票据处理、记账核算、报表编制、税务申报、合规审计五大环节的企业财税合规全链路管理专家团",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TechnicalArtist",
+      "name": "TechnicalArtist",
+      "display_name": "技术美术",
+      "role_name": "技美美",
+      "description": "在美术愿景与引擎实现之间架起桥梁，精通着色器和VFX",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TechnicalDocumentationEngineer",
+      "name": "TechnicalDocumentationEngineer",
+      "display_name": "技术文档工程师",
+      "role_name": "文通通",
+      "description": "将复杂技术概念转化为清晰准确的文档，让技术知识可传播",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TencentCharityExpert",
+      "name": "TencentCharityExpert",
+      "display_name": "腾讯技术公益智能化专家",
+      "role_name": "小益",
+      "description": "精通公益行业产品和技术解决方案的腾讯技术公益智能化专家",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TencentCloudPriceExpert",
+      "name": "TencentCloudPriceExpert",
+      "display_name": "腾讯云刊例价查询助手",
+      "role_name": "腾讯云刊例价查询助手",
+      "description": "腾讯云销售刊例价查询助手。支持产品咨询、单产品/批量询价、图片配置识别，价格来自实时 API。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TencentRtcExpert",
+      "name": "TencentRtcExpert",
+      "display_name": "腾讯云实时音视频专家",
+      "role_name": "CloudQ",
+      "description": "TRTC 技术支持专家：通话用量与质量查询、单次通话诊断、云端巡检解读、故障排查与友商代码迁移。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TencentSecurityExpert",
+      "name": "TencentSecurityExpert",
+      "display_name": "腾讯安全专家",
+      "role_name": "云鼎安全专家",
+      "description": "深耕安全领域多年，提供威胁建模、漏洞评估、安全代码审查、架构设计、事件响应、安全咨询等服务",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TerminalIntegrationExpert",
+      "name": "TerminalIntegrationExpert",
+      "display_name": "终端集成专家",
+      "role_name": "终端通",
+      "description": "精通终端应用与空间计算环境的集成",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TestResultsAnalyst",
+      "name": "TestResultsAnalyst",
+      "display_name": "测试结果分析师",
+      "role_name": "析测测",
+      "description": "像侦探解读证据一样分析测试结果，发现隐藏的质量问题",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ThreatDetectionEngineer",
+      "name": "ThreatDetectionEngineer",
+      "display_name": "威胁检测工程师",
+      "role_name": "猎威威",
+      "description": "专精构建威胁检测系统，在攻击者造成损害前发现拦截威胁",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TikTokStrategist",
+      "name": "TikTokStrategist",
+      "display_name": "TikTok策略师",
+      "role_name": "拓刻刻",
+      "description": "精通TikTok算法和海外短视频生态，帮助品牌在全球平台爆发",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ToolEvaluationExpert",
+      "name": "ToolEvaluationExpert",
+      "display_name": "工具评估专家",
+      "role_name": "选品品",
+      "description": "系统化评估推荐最适合团队的工具，避免浪费时间在错误工具上",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TradingAgentTeam",
+      "name": "TradingAgentTeam",
+      "display_name": "交易分析团队",
+      "role_name": "交易分析团队",
+      "description": "13位专业角色分5阶段协作完成投资分析：技术面、基本面、新闻面、情绪面数据采集 → 多空辩论 → 交易决策 → 三方风险评估 → 最终报告，输出 BUY/SELL/HOLD 建议及完整操作方案",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TrendResearcher",
+      "name": "TrendResearcher",
+      "display_name": "行业趋势专家",
+      "role_name": "风向标",
+      "description": "持续追踪行业和技术趋势，为产品战略提供前瞻性洞察",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TripStarAgent",
+      "name": "TripStarAgent",
+      "display_name": "旅游攻略管家",
+      "role_name": "路小鲜",
+      "description": "生活服务管家，一站式搞定行程规划、景点/酒店/天气/预算与美团红包领取",
+      "category": "行业顾问",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TwitterOperationsExpert",
+      "name": "TwitterOperationsExpert",
+      "display_name": "Twitter运营专家",
+      "role_name": "推文文",
+      "description": "精通Twitter/X平台互动策略和话题运营，让品牌占据全球对话",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "Txzhaopin",
+      "name": "Txzhaopin",
+      "display_name": "腾讯招聘专家",
+      "role_name": "腾讯招聘专家",
+      "description": "腾讯官方招聘助手：覆盖校招/社招全流程，含需求沟通、搜简历、面试安排、出题、面评、待办与数据看板。",
+      "category": "运营人力",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UiDesigner",
+      "name": "UiDesigner",
+      "display_name": "UI设计师",
+      "role_name": "像素君",
+      "description": "精通设计系统和组件库，追求像素级完美，打造无障碍用户界面",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UnityArchitect",
+      "name": "UnityArchitect",
+      "display_name": "Unity架构师",
+      "role_name": "解耦达",
+      "description": "精通ScriptableObjects和解耦系统设计",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UnityEditorToolDeveloper",
+      "name": "UnityEditorToolDeveloper",
+      "display_name": "Unity编辑器工具开发者",
+      "role_name": "插件达",
+      "description": "精通Unity自定义EditorWindow和管线自动化",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UnityMultiplayerEngineer",
+      "name": "UnityMultiplayerEngineer",
+      "display_name": "Unity多人联机工程师",
+      "role_name": "同步达",
+      "description": "精通Netcode for GameObjects和网络预测",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UnityShaderGraphArtist",
+      "name": "UnityShaderGraphArtist",
+      "display_name": "Unity着色器图表艺术家",
+      "role_name": "着色师",
+      "description": "精通Unity Shader Graph和HLSL",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UnrealMultiplayerArchitect",
+      "name": "UnrealMultiplayerArchitect",
+      "display_name": "Unreal多人架构师",
+      "role_name": "联机达",
+      "description": "精通Unreal Actor复制和服务器权威架构",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UnrealSystemEngineer",
+      "name": "UnrealSystemEngineer",
+      "display_name": "Unreal系统工程师",
+      "role_name": "虚幻通",
+      "description": "精通C++/Blueprint和Nanite/Lumen",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UnrealTechnicalArtist",
+      "name": "UnrealTechnicalArtist",
+      "display_name": "Unreal技术美术",
+      "role_name": "材质通",
+      "description": "精通UE5材质编辑器和Niagara VFX",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UnrealWorldBuilder",
+      "name": "UnrealWorldBuilder",
+      "display_name": "Unreal世界构建师",
+      "role_name": "造世界",
+      "description": "精通UE5 World Partition和大世界流式加载",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UserExperienceArchitect",
+      "name": "UserExperienceArchitect",
+      "display_name": "用户体验架构师",
+      "role_name": "体验达",
+      "description": "为开发者提供坚实的技术基础和CSS系统，是设计与开发之间的桥梁",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UserExperienceResearcher",
+      "name": "UserExperienceResearcher",
+      "display_name": "用户体验研究员",
+      "role_name": "探真真",
+      "description": "用真实数据而非假设验证设计决策，专精用户行为分析和可用性测试",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ValuationReviewer",
+      "name": "ValuationReviewer",
+      "display_name": "组合估值主管",
+      "role_name": "顾估衡",
+      "description": "PE/VC 基金组合估值主管,收 GP 估值包、跑标准估值模板、算基金 NAV 与 LP 分配、出 LP 报告草稿交投资者关系签核。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "VideoDissection",
+      "name": "VideoDissection",
+      "display_name": "视频解剖专家团",
+      "role_name": "苍何视频解剖",
+      "description": "专业拆解火爆抖音视频拍摄手法的专家团。输入抖音链接，自动提取视频、转录文案、分析景别运镜、剪辑节奏、色调风格，生成完整拍摄脚本拆解文档，并提供可落地的仿拍建议。",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "VideoGenTeam",
+      "name": "VideoGenTeam",
+      "display_name": "AI视频创作团队",
+      "role_name": "苍何视频生成团队",
+      "description": "三位一体的AI视频创作团队：灵阅负责采集AI/科技热点，灵枢负责策划选题与脚本，灵映负责渲染MP4视频成品（配音+字幕）。全流程自动化，60秒短视频一键生成。",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "VisionOsSpatialEngineer",
+      "name": "VisionOsSpatialEngineer",
+      "display_name": "visionOS空间工程师",
+      "role_name": "空间通",
+      "description": "精通visionOS平台开发，打造Apple Vision Pro空间应用",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "VisualStorytellingExpert",
+      "name": "VisualStorytellingExpert",
+      "display_name": "视觉叙事专家",
+      "role_name": "图说说",
+      "description": "擅长将复杂信息转化为引人入胜的视觉故事",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "WealthManagementExpert",
+      "name": "WealthManagementExpert",
+      "display_name": "财富管理专家",
+      "role_name": "理财财",
+      "description": "财富管理工具集：客户回顾、财务规划、投资组合再平衡、税损收割、投资提案和客户报告生成",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "WebappTestingExpert",
+      "name": "WebappTestingExpert",
+      "display_name": "Web应用测试专家",
+      "role_name": "端测测",
+      "description": "Web 应用测试助手，引导用户完成 Web 应用的启动、配置和测试流程",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "WeChatMiniProgramDeveloper",
+      "name": "WeChatMiniProgramDeveloper",
+      "display_name": "微信小程序开发者",
+      "role_name": "小程达",
+      "description": "精通微信小程序开发框架和生态，打造流畅微信原生体验应用",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "WechatOfficialAccountExpert",
+      "name": "WechatOfficialAccountExpert",
+      "display_name": "微信公众号运营专家",
+      "role_name": "郝文昌",
+      "description": "精通公众号内容策略和粉丝增长，打造10万+品牌自媒体矩阵",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "WeiboStrategist",
+      "name": "WeiboStrategist",
+      "display_name": "微博策略师",
+      "role_name": "热搜搜",
+      "description": "精通微博话题营销和舆论传播规律，让品牌在热搜持续出圈",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "WellArchExpert",
+      "name": "WellArchExpert",
+      "display_name": "腾讯云卓越架构专家",
+      "role_name": "CloudQ",
+      "description": "卓越架构专家。擅长架构可视化评估、资源拓扑梳理、Well-Architected 六支柱评估与架构风险识别，确保架构符合最佳实践。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "WorkflowOptimizationExpert",
+      "name": "WorkflowOptimizationExpert",
+      "display_name": "工作流优化专家",
+      "role_name": "流畅畅",
+      "description": "找到瓶颈修复流程自动化一切，让团队效率最大化",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "XiaohongshuOperationsExpert",
+      "name": "XiaohongshuOperationsExpert",
+      "display_name": "小红书运营专家",
+      "role_name": "薛红笙",
+      "description": "深谙小红书种草生态和推荐机制，打造高互动率种草内容",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "XrCockpitInteractionExpert",
+      "name": "XrCockpitInteractionExpert",
+      "display_name": "XR座舱交互专家",
+      "role_name": "座舱师",
+      "description": "专精XR环境下的座舱式交互设计",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "XrImmersiveDeveloper",
+      "name": "XrImmersiveDeveloper",
+      "display_name": "XR沉浸式开发者",
+      "role_name": "沉浸达",
+      "description": "精通XR沉浸式体验开发，创造身临其境的VR/MR应用",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "XrInterfaceArchitect",
+      "name": "XrInterfaceArchitect",
+      "display_name": "XR界面架构师",
+      "role_name": "空间界",
+      "description": "设计XR环境中的用户界面架构，让3D空间交互直观自然",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "YahooFinanceCli",
+      "name": "YahooFinanceCli",
+      "display_name": "行情洞察与趋势发现专家",
+      "role_name": "鹏城信息AI专家",
+      "description": "查询全球股票实时行情、基本面、财报预期、评级、历史走势与估值洞察，发现热门趋势标的，支持模糊检索与并排对比。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "local"
+    },
+    {
+      "id": "YunzhiQaAssistant",
+      "name": "YunzhiQaAssistant",
+      "display_name": "腾讯云知识问答专家",
+      "role_name": "腾讯云知（乐享）",
+      "description": "基于腾讯云知（乐享）平台的检索增强问答专家。调用乐享 MCP 的语义向量检索多路并行召回；基于检索结果生成结构化回答；",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ZeroKnowledgeProofAdmin",
+      "name": "ZeroKnowledgeProofAdmin",
+      "display_name": "零知识证明管理员",
+      "role_name": "零知知",
+      "description": "精通零知识证明技术的应用和管理",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ZhihuStrategist",
+      "name": "ZhihuStrategist",
+      "display_name": "知乎策略师",
+      "role_name": "答有道",
+      "description": "精通知乎推荐机制和知识营销策略，通过高质量回答建立权威",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    }
+  ]
+}

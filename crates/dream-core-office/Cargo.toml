@@ -1,0 +1,31 @@
+[package]
+name = "dream-core-office"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dream-core-common.workspace = true
+dream-core-api-types.workspace = true
+dream-core-realtime.workspace = true
+dream-core-auth.workspace = true
+dream-core-file.workspace = true
+dream-core-project.workspace = true
+dream-core-runtime.workspace = true
+axum.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+which.workspace = true
+calamine.workspace = true
+sha1.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dashmap.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+rust_xlsxwriter.workspace = true
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+dream-core-db.workspace = true

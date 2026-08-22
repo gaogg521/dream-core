@@ -1,0 +1,27 @@
+[package]
+name = "dream-domain-employee"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dream-core-ai-agent.workspace = true
+dream-core-api-types.workspace = true
+dream-core-auth.workspace = true
+async-trait.workspace = true
+dream-core-common.workspace = true
+dream-core-conversation.workspace = true
+dream-core-cron.workspace = true
+dream-core-db.workspace = true
+dream-core-team.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+tower = { workspace = true, features = ["util"] }
