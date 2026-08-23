@@ -4,6 +4,12 @@
 
 **dream-core** 是 **One Work** 平台的本地后端服务（Rust），编译产物为单个可执行文件 `dreamcore`。本项目最初基于开源项目 [AionCore](https://github.com/iOfficeAI/AionCore) 二次开发，**现已完全独立成自有平台，不再跟随或合并上游**，技术与协议层统一使用小写前缀 `dream`。
 
+> **新会话/新 AI 首读**：本仓库持久化数据迁移的详细过程（改了哪些文件、发现的真实 bug、
+> 迁移文件生命周期踩坑）记录在
+> [session-2026-08-23-dream-rebrand-data-migration.zh-CN.md](./docs/guides/session-2026-08-23-dream-rebrand-data-migration.zh-CN.md)；
+> 跨仓完整叙述（含前端 bug 与 CodeMirror 排查）见 dream-ui 同名文档。本 CLAUDE.md 只保留
+> 长期有效的规则，过程性细节请去读那份文档。
+
 ## 三仓架构
 
 | 仓库 | 角色 | 关键产物 |

@@ -27,15 +27,15 @@ async fn resolves_legacy_backend_to_agent_metadata_id() {
 async fn resolves_internal_agent_type_when_backend_is_null() {
     let db = init_database_memory().await.unwrap();
 
-    let resolved = resolve_agent_binding(db.pool(), "aionrs")
+    let resolved = resolve_agent_binding(db.pool(), "dream")
         .await
         .unwrap()
-        .expect("aionrs should resolve");
+        .expect("dream should resolve");
 
     assert_eq!(resolved.agent_id, "632f31d2");
     assert_eq!(resolved.agent_source, "internal");
-    assert_eq!(resolved.agent_type, "aionrs");
-    assert_eq!(resolved.runtime_backend, "aionrs");
+    assert_eq!(resolved.agent_type, "dream");
+    assert_eq!(resolved.runtime_backend, "dream");
 }
 
 #[tokio::test]

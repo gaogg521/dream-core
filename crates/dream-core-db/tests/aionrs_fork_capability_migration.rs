@@ -9,7 +9,7 @@ async fn aionrs_builtin_agent_declares_at_turn_fork_capability() {
     let repo = SqliteAgentMetadataRepository::new(db.pool().clone());
 
     let aionrs = repo.get("632f31d2").await.unwrap().expect("seeded Aion CLI row");
-    assert_eq!(aionrs.agent_type, "aionrs");
+    assert_eq!(aionrs.agent_type, "dream");
     assert_eq!(aionrs.backend, None, "aionrs resolves by agent_type, not backend");
 
     let capabilities: serde_json::Value =
