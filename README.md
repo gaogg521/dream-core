@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/v/release/gaogg521/1oneUI?display_name=tag&sort=semver&style=flat-square&color=32CD32" alt="Bundled Version">
+  <img src="https://img.shields.io/github/v/release/gaogg521/dream-ui?display_name=tag&sort=semver&style=flat-square&color=32CD32" alt="Bundled Version">
   &nbsp;
   <img src="https://img.shields.io/badge/license-Apache--2.0-32CD32?style=flat-square" alt="License">
   &nbsp;
@@ -16,25 +16,25 @@
 </p>
 
 <p align="center">
-  前端仓库：<a href="https://github.com/gaogg521/1oneUI">gaogg521/1oneUI</a>（<strong>1ONE Code</strong> 桌面）
+  前端仓库：<a href="https://github.com/gaogg521/dream-ui">gaogg521/dream-ui</a>（<strong>1ONE Code</strong> 桌面）
   &nbsp;·&nbsp;
   <a href="https://1one.1oneclaw.com">官网</a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/gaogg521/1oneUI/blob/one-main/docs/guides/fork-dev-onboarding.zh-CN.md">开发者上手指南</a>
+  <a href="https://github.com/gaogg521/dream-ui/blob/main/docs/guides/fork-dev-onboarding.zh-CN.md">开发者上手指南</a>
 </p>
 
 ---
 
 ## 这是什么
 
-**1oneCore**（GitHub：`gaogg521/1oneCore`）是 [1ONE Code](https://github.com/gaogg521/1oneUI) 的**本地后端服务**。编译产物为单个可执行文件：
+**dream-core**（对应旧仓库 1oneCore，GitHub：`gaogg521/dream-core`）是 [One Work](https://github.com/gaogg521/dream-ui) 的**本地后端服务**。编译产物为单个可执行文件：
 
 | 平台 | 二进制名 |
 |---|---|
 | Windows | `aioncore.exe` |
 | macOS / Linux | `aioncore` |
 
-[1oneUI](https://github.com/gaogg521/1oneUI) 桌面版启动时自动 spawn 该进程；WebUI 模式通过 HTTP API + WebSocket 连接同一实例。用户通常**只安装桌面包**，无需单独下载本仓库——本仓库面向**继续开发后端**的工程师。
+[dream-ui](https://github.com/gaogg521/dream-ui) 桌面版启动时自动 spawn 该进程；WebUI 模式通过 HTTP API + WebSocket 连接同一实例。用户通常**只安装桌面包**，无需单独下载本仓库——本仓库面向**继续开发后端**的工程师。
 
 ---
 
@@ -117,8 +117,8 @@ flowchart LR
 ### 克隆
 
 ```powershell
-git clone -b one-main https://github.com/gaogg521/1oneCore.git
-git clone -b one-main https://github.com/gaogg521/1oneUI.git
+git clone https://github.com/gaogg521/dream-core.git
+git clone https://github.com/gaogg521/dream-ui.git
 ```
 
 推荐与前端并列：
@@ -148,7 +148,7 @@ cd ..
 ```
 
 或使用工作区脚本（若已配置）：`backend-rebuild.ps1` → `frontend-dev.ps1`  
-详见 [AionUi 开发者指南](https://github.com/gaogg521/1oneUI/blob/one-main/docs/guides/fork-dev-onboarding.zh-CN.md)。
+详见 [One Work 开发者指南](https://github.com/gaogg521/dream-ui/blob/main/docs/guides/fork-dev-onboarding.zh-CN.md)。
 
 ### 仅跑后端 API（不启桌面）
 
@@ -175,7 +175,7 @@ cd ..
 
 本仓库由 Cowork 生态的 AionCore 演进而来，在 `one-main` 分支维护 **1ONE** 定制（`one-*` crates、1ONE CLI 品牌、企业/DevOps 等）。  
 
-- **用户安装包**：只下 [AionUi Releases](https://github.com/gaogg521/1oneUI/releases)  
+- **用户安装包**：只下 [One Work Releases](https://github.com/gaogg521/dream-ui/releases)  
 - **后端单独发布**：当前随桌面包 bundled；独立发版策略见团队文档  
 
 ---
@@ -184,16 +184,16 @@ cd ..
 
 | 链接 | 内容 |
 |---|---|
-| [1oneUI readme](https://github.com/gaogg521/1oneUI/blob/one-main/readme.md) | 产品能力、对比表、用户上手 |
-| [fork-dev-onboarding](https://github.com/gaogg521/1oneUI/blob/one-main/docs/guides/fork-dev-onboarding.zh-CN.md) | 双仓库 dev / 打包 |
-| [repository-independence](https://github.com/gaogg521/1oneUI/blob/one-main/docs/guides/repository-independence.zh-CN.md) | 脱离上游 fork 网络 |
+| [dream-ui readme](https://github.com/gaogg521/dream-ui/blob/main/readme.md) | 产品能力、对比表、用户上手 |
+| [fork-dev-onboarding](https://github.com/gaogg521/dream-ui/blob/main/docs/guides/fork-dev-onboarding.zh-CN.md) | 双仓库 dev / 打包 |
+| [repository-independence](https://github.com/gaogg521/dream-ui/blob/main/docs/guides/repository-independence.zh-CN.md) | 脱离上游 fork 网络 |
 
 ---
 
 ## 参与贡献
 
-- 后端 Issue：[gaogg521/1oneCore](https://github.com/gaogg521/1oneCore/issues)  
-- 界面 Issue：[gaogg521/1oneUI](https://github.com/gaogg521/1oneUI/issues)  
+- 后端 Issue：[gaogg521/dream-core](https://github.com/gaogg521/dream-core/issues)  
+- 界面 Issue：[gaogg521/dream-ui](https://github.com/gaogg521/dream-ui/issues)  
 - 官网：[1one.1oneclaw.com](https://1one.1oneclaw.com)
 
 <p align="center">
