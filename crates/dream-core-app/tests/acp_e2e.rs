@@ -41,7 +41,7 @@ async fn management_list_returns_array() {
     assert_eq!(body["success"], true);
     assert!(body["data"].is_array());
     let agents = body["data"].as_array().unwrap();
-    assert!(agents.iter().any(|a| a["agent_type"] == "aionrs"));
+    assert!(agents.iter().any(|a| a["agent_type"] == "dream"));
 }
 
 #[tokio::test]

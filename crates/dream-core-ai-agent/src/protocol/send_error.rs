@@ -78,7 +78,7 @@ impl AgentSendError {
                 stream_error: AgentStreamErrorData {
                     message: "Current Agent failed to run in this workspace path".into(),
                     code: Some(AgentErrorCode::WorkspacePathRuntimeUnavailable),
-                    ownership: Some(AgentErrorOwnership::Aionui),
+                    ownership: Some(AgentErrorOwnership::Dream),
                     detail: Some(bound_error_detail(&detail)),
                     workspace_path: Some(path.clone()),
                     retryable: Some(false),
@@ -120,8 +120,8 @@ impl AgentSendError {
             ),
             AgentError::Internal(_) => Self::new(
                 "AionUI failed while sending the message",
-                AgentErrorCode::AionuiInternalError,
-                AgentErrorOwnership::Aionui,
+                AgentErrorCode::DreamInternalError,
+                AgentErrorOwnership::Dream,
                 Some(detail),
                 true,
                 true,
@@ -132,8 +132,8 @@ impl AgentSendError {
             ),
             AgentError::Forbidden(_) => Self::new(
                 "AionUI blocked the request before it reached the Agent",
-                AgentErrorCode::AionuiPermissionError,
-                AgentErrorOwnership::Aionui,
+                AgentErrorCode::DreamPermissionError,
+                AgentErrorOwnership::Dream,
                 Some(detail),
                 false,
                 true,
@@ -959,8 +959,8 @@ fn classify_aionui_state(lower: &str) -> Option<ClassifiedError> {
     if lower.contains("conversation is already processing") {
         return Some(ClassifiedError {
             message: "The current response is still running",
-            code: AgentErrorCode::AionuiConversationBusy,
-            ownership: AgentErrorOwnership::Aionui,
+            code: AgentErrorCode::DreamConversationBusy,
+            ownership: AgentErrorOwnership::Dream,
             retryable: true,
             feedback_recommended: false,
             resolution_kind: Some(AgentErrorResolutionKind::WaitForCurrentResponse),
@@ -1462,7 +1462,7 @@ mod tests {
             AgentSendError::from_agent_error(AgentError::workspace_path_runtime_unavailable("/Users/test/Archive "));
 
         assert_eq!(err.code(), Some(AgentErrorCode::WorkspacePathRuntimeUnavailable));
-        assert_eq!(err.ownership(), Some(AgentErrorOwnership::Aionui));
+        assert_eq!(err.ownership(), Some(AgentErrorOwnership::Dream));
         assert_eq!(
             err.stream_error().workspace_path.as_deref(),
             Some("/Users/test/Archive ")
@@ -2069,8 +2069,8 @@ mod tests {
     fn classifies_dream_core_conversation_busy_after_agent_and_provider_checks() {
         assert_classification(
             "Conflict: Conversation is already processing a message",
-            AgentErrorCode::AionuiConversationBusy,
-            AgentErrorOwnership::Aionui,
+            AgentErrorCode::DreamConversationBusy,
+            AgentErrorOwnership::Dream,
             AgentErrorResolutionKind::WaitForCurrentResponse,
         );
     }

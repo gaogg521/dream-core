@@ -69,7 +69,7 @@ fn make_cli_args(project_dir: PathBuf, provider: &str, model: &str) -> CliArgs {
 fn resolve_aionui_config_discards_standalone_max_token_settings() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
-        project.path().join(".aionrs.toml"),
+        project.path().join(".dream.toml"),
         r#"
 [default]
 max_tokens = 1234
@@ -104,7 +104,7 @@ max_tokens = 3456
 fn resolve_aionui_config_keeps_builtin_provider_max_token_policy() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
-        project.path().join(".aionrs.toml"),
+        project.path().join(".dream.toml"),
         r#"
 [providers.anthropic.compat]
 default_max_tokens = 42

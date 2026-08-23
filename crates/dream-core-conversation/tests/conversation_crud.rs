@@ -141,7 +141,7 @@ async fn t1_1_create_with_defaults() {
     assert!(!resp.id.is_empty());
     assert_eq!(resp.r#type, AgentType::Acp);
     assert_eq!(resp.status, ConversationStatus::Pending);
-    assert_eq!(resp.source, Some(ConversationSource::Aionui));
+    assert_eq!(resp.source, Some(ConversationSource::DreamUi));
     assert!(!resp.pinned);
     assert!(resp.pinned_at.is_none());
     assert_eq!(resp.extra["workspace"], workspace);
@@ -157,7 +157,7 @@ async fn t1_1_create_with_defaults() {
     assert_eq!(events[0].name, "conversation.listChanged");
     assert_eq!(events[0].data["action"], "created");
     assert_eq!(events[0].data["conversation_id"], resp.id);
-    assert_eq!(events[0].data["source"], "aionui");
+    assert_eq!(events[0].data["source"], "dream");
 }
 
 #[tokio::test]
@@ -167,7 +167,7 @@ async fn t1_2_create_each_agent_type() {
     let types = vec![("acp", AgentType::Acp), ("aionrs", AgentType::DreamEngine)];
 
     for (type_str, expected_type) in types {
-        let body = if type_str == "aionrs" {
+        let body = if type_str == "dream" {
             json!({
                 "type": type_str,
                 "model": { "provider_id": "p1", "model": "m1" },
@@ -182,7 +182,7 @@ async fn t1_2_create_each_agent_type() {
         let req: CreateConversationRequest = serde_json::from_value(body).unwrap();
         let resp = svc.create(USER_ID, req).await.unwrap();
         assert_eq!(resp.r#type, expected_type, "Type mismatch for {type_str}");
-        if type_str == "aionrs" {
+        if type_str == "dream" {
             assert!(resp.model.is_some(), "aionrs should keep top-level model");
         } else {
             assert!(resp.model.is_none(), "{type_str} should have no top-level model");

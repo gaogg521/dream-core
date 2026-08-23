@@ -14,7 +14,7 @@ use tracing::debug;
 use crate::error::ChannelError;
 use crate::types::PluginType;
 
-const DEFAULT_AGENT_TYPE: &str = "aionrs";
+const DEFAULT_AGENT_TYPE: &str = "dream";
 
 /// Per-plugin agent/model configuration read from `client_preferences`.
 ///
@@ -131,6 +131,9 @@ impl ChannelSettingsService {
             }
 
             if let Some(at) = setting.agent_type.as_deref() {
+                // Canonicalize the pre-migration "aionrs" wire value that may
+                // still be sitting in persisted client_preferences JSON.
+                let at = if at == "aionrs" { "dream" } else { at };
                 let backend = if agent_type_carries_backend(at) {
                     setting.backend.clone()
                 } else {
@@ -538,7 +541,10 @@ fn parse_channel_model_setting(value: &str) -> Option<ChannelDefaultModelSetting
 /// Non-ACP backends map to their specific agent type.
 fn backend_to_agent_type(backend: &str) -> String {
     match backend {
-        "aionrs" | "aion-cli" => "aionrs".to_owned(),
+        // "aionrs"/"aion-cli" are pre-migration input aliases kept for
+        // backward compatibility with channel preferences persisted before
+        // the Dream rebrand; the canonical value going forward is "dream".
+        "dream" | "aionrs" | "aion-cli" => "dream".to_owned(),
         "openclaw-gateway" => "openclaw-gateway".to_owned(),
         "nanobot" => "nanobot".to_owned(),
         "remote" => "remote".to_owned(),
@@ -889,8 +895,8 @@ mod tests {
 
     #[test]
     fn aionrs_backends_map_to_aionrs() {
-        assert_eq!(backend_to_agent_type("aionrs"), "aionrs");
-        assert_eq!(backend_to_agent_type("aion-cli"), "aionrs");
+        assert_eq!(backend_to_agent_type("aionrs"), "dream");
+        assert_eq!(backend_to_agent_type("aion-cli"), "dream");
     }
 
     #[test]
@@ -928,7 +934,7 @@ mod tests {
         let svc = ChannelSettingsService::new(repo);
 
         let config = svc.get_agent_config(TEST_USER_ID, PluginType::Telegram).await.unwrap();
-        assert_eq!(config.agent_type, "aionrs");
+        assert_eq!(config.agent_type, "dream");
         assert!(config.backend.is_none());
     }
 
@@ -954,7 +960,7 @@ mod tests {
         let svc = ChannelSettingsService::new(repo);
 
         let config = svc.get_agent_config(TEST_USER_ID, PluginType::Lark).await.unwrap();
-        assert_eq!(config.agent_type, "aionrs");
+        assert_eq!(config.agent_type, "dream");
         assert!(config.backend.is_none());
     }
 
@@ -982,7 +988,7 @@ mod tests {
         let svc = ChannelSettingsService::new(repo);
 
         let config = svc.get_agent_config(TEST_USER_ID, PluginType::Lark).await.unwrap();
-        assert_eq!(config.agent_type, "aionrs");
+        assert_eq!(config.agent_type, "dream");
         assert!(config.backend.is_none());
     }
 
@@ -1180,7 +1186,7 @@ mod tests {
         let definition_repo = Arc::new(MockAssistantDefinitionRepo {
             rows: vec![
                 make_definition("bare-claude", "claude"),
-                make_definition("bare-aionrs", "aionrs"),
+                make_definition("bare-aionrs", "dream"),
             ],
         });
         let overlay_repo = Arc::new(MockAssistantOverlayRepo { rows: vec![] });
@@ -1272,7 +1278,7 @@ mod tests {
         let definition_repo = Arc::new(MockAssistantDefinitionRepo {
             rows: vec![
                 make_definition("bare-claude", "claude"),
-                make_definition("bare-aionrs", "aionrs"),
+                make_definition("bare-aionrs", "dream"),
             ],
         });
         let overlay_repo = Arc::new(MockAssistantOverlayRepo { rows: vec![] });

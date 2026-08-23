@@ -1640,7 +1640,7 @@ async fn insert_conversation_with_type(repo: &Arc<MockRepo>, user_id: &str, agen
         .to_string(),
         model: None,
         status: Some("finished".into()),
-        source: Some("aionui".into()),
+        source: Some("dream".into()),
         channel_chat_id: None,
         pinned: false,
         pinned_at: None,
@@ -1845,7 +1845,7 @@ async fn create_returns_conversation_with_defaults() {
     assert!(!resp.id.is_empty());
     assert_eq!(resp.r#type, AgentType::Acp);
     assert_eq!(resp.status, ConversationStatus::Pending);
-    assert_eq!(resp.source, Some(ConversationSource::Aionui));
+    assert_eq!(resp.source, Some(ConversationSource::DreamUi));
     assert!(!resp.pinned);
     assert!(resp.pinned_at.is_none());
     assert_eq!(resp.extra["workspace"], workspace);
@@ -1858,7 +1858,7 @@ async fn create_returns_conversation_with_defaults() {
     assert_eq!(events[0].name, "conversation.listChanged");
     assert_eq!(events[0].data["action"], "created");
     assert_eq!(events[0].data["conversation_id"], resp.id);
-    assert_eq!(events[0].data["source"], "aionui");
+    assert_eq!(events[0].data["source"], "dream");
 }
 
 // ── Project-bind side branch tests ─────────────────────────────────
@@ -6704,7 +6704,7 @@ async fn send_message_records_agent_availability_feedback_on_send_failure() {
 
     let mut create_req = make_create_req();
     create_req.name = Some("Feedback Conversation".into());
-    create_req.source = Some(ConversationSource::Aionui);
+    create_req.source = Some(ConversationSource::DreamUi);
     create_req.extra = json!({
         "backend": "claude",
         "agent_id": "agent-feedback-1",
@@ -6758,7 +6758,7 @@ async fn send_message_records_agent_availability_feedback_on_send_success() {
 
     let mut create_req = make_create_req();
     create_req.name = Some("Feedback Success Conversation".into());
-    create_req.source = Some(ConversationSource::Aionui);
+    create_req.source = Some(ConversationSource::DreamUi);
     create_req.extra = json!({
         "backend": "claude",
         "agent_id": "agent-feedback-success",
@@ -8811,7 +8811,7 @@ async fn warmup_restores_skill_links_for_recreated_auto_workspace() {
     .unwrap();
     let resp = svc.create("user-1", req).await.unwrap();
     let workspace = PathBuf::from(resp.extra["workspace"].as_str().unwrap());
-    assert!(workspace.join(".aionrs/skills/cron").is_dir());
+    assert!(workspace.join(".dream/skills/cron").is_dir());
 
     std::fs::remove_dir_all(&workspace).unwrap();
     assert!(!workspace.exists());
@@ -8821,11 +8821,11 @@ async fn warmup_restores_skill_links_for_recreated_auto_workspace() {
         Arc::new(MockTaskManagerWithWorkspace::new(workspace.to_str().unwrap()));
     svc.warmup("user-1", &resp.id, &task_mgr).await.unwrap();
 
-    assert!(workspace.join(".aionrs/skills/cron").is_dir());
+    assert!(workspace.join(".dream/skills/cron").is_dir());
     let calls = links.lock().unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].workspace, workspace);
-    assert_eq!(calls[0].rel_dirs, vec![".aionrs/skills"]);
+    assert_eq!(calls[0].rel_dirs, vec![".dream/skills"]);
     assert_eq!(calls[0].skill_names, vec!["cron"]);
 }
 
@@ -8957,7 +8957,7 @@ async fn get_backfills_legacy_row_and_persists() {
         .unwrap(),
         model: None,
         status: Some("finished".into()),
-        source: Some("aionui".into()),
+        source: Some("dream".into()),
         channel_chat_id: None,
         pinned: false,
         pinned_at: None,
@@ -9144,7 +9144,7 @@ async fn seed_aionrs_conversation_with_snapshot(
         id: format!("aionrs-seed-{}", dream_core_common::generate_short_id()),
         user_id: "user_1".into(),
         name: "aionrs seed".into(),
-        r#type: "aionrs".into(),
+        r#type: "dream".into(),
         extra: json!({
             "session_mode": session_mode,
             "workspace": ensure_test_workspace_path()
@@ -9152,7 +9152,7 @@ async fn seed_aionrs_conversation_with_snapshot(
         .to_string(),
         model: None,
         status: Some("finished".into()),
-        source: Some("aionui".into()),
+        source: Some("dream".into()),
         channel_chat_id: None,
         pinned: false,
         pinned_at: None,

@@ -1723,8 +1723,8 @@ impl CronService {
             .as_ref()
             .map(|snapshot| snapshot.assistant_id.trim().to_owned())
             .filter(|value| !value.is_empty());
-        let legacy_agent_label = if row.r#type == "aionrs" {
-            Some("aionrs".to_owned())
+        let legacy_agent_label = if row.r#type == "dream" {
+            Some("dream".to_owned())
         } else {
             model
                 .map(|value| value.provider_id.clone())
@@ -1794,13 +1794,13 @@ impl CronService {
                 .unwrap_or(None))
         };
 
-        let backend = if row.r#type == "aionrs" {
+        let backend = if row.r#type == "dream" {
             model
                 .map(|value| value.provider_id.clone())
                 .filter(|value| !value.is_empty())
                 .or_else(|| get_string(&extra, &["backend"]))
                 .or_else(|| assistant_backend.clone())
-                .unwrap_or_else(|| "aionrs".to_owned())
+                .unwrap_or_else(|| "dream".to_owned())
         } else {
             assistant_backend
                 .clone()
@@ -1867,7 +1867,7 @@ impl CronService {
                         .as_ref()
                         .and_then(|snapshot| snapshot.resolved_model_id.clone())
                 }),
-            model: (row.r#type == "aionrs").then(|| model.cloned()).flatten(),
+            model: (row.r#type == "dream").then(|| model.cloned()).flatten(),
             config_options: None,
             workspace: get_string(&extra, &["workspace"]),
         };
@@ -2128,7 +2128,7 @@ fn get_string(extra: &serde_json::Value, keys: &[&str]) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 fn runtime_agent_type_for_backend(backend: &str) -> &'static str {
-    if backend == "aionrs" { "aionrs" } else { "acp" }
+    if backend == "dream" { "dream" } else { "acp" }
 }
 
 fn normalize_model(
@@ -2146,7 +2146,7 @@ fn normalize_model(
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
 
-    if runtime_agent_type == "aionrs" && (model.provider_id.is_empty() || model.model.is_empty()) {
+    if runtime_agent_type == "dream" && (model.provider_id.is_empty() || model.model.is_empty()) {
         return Err(CronError::InvalidAgentConfig(
             "aionrs cron jobs require agent_config.model.provider_id and agent_config.model.model".into(),
         ));
@@ -2163,7 +2163,7 @@ fn validate_aionrs_agent_config(
     agent_type: &str,
     agent_config: Option<&dream_core_api_types::CronAgentConfigWriteDto>,
 ) -> Result<(), CronError> {
-    if agent_type != "aionrs" {
+    if agent_type != "dream" {
         return Ok(());
     }
     let model_ok = agent_config.is_some_and(|c| {
@@ -2493,26 +2493,26 @@ mod tests {
     #[test]
     fn validate_aionrs_accepts_valid_config() {
         let cfg = agent_cfg_dto("4056cdea");
-        assert!(validate_aionrs_agent_config("aionrs", Some(&cfg)).is_ok());
+        assert!(validate_aionrs_agent_config("dream", Some(&cfg)).is_ok());
     }
 
     #[test]
     fn validate_aionrs_rejects_missing_config() {
-        let err = validate_aionrs_agent_config("aionrs", None).unwrap_err();
+        let err = validate_aionrs_agent_config("dream", None).unwrap_err();
         assert!(matches!(err, CronError::InvalidAgentConfig(_)));
     }
 
     #[test]
     fn validate_aionrs_rejects_empty_provider_id() {
         let cfg = agent_cfg_dto("");
-        let err = validate_aionrs_agent_config("aionrs", Some(&cfg)).unwrap_err();
+        let err = validate_aionrs_agent_config("dream", Some(&cfg)).unwrap_err();
         assert!(matches!(err, CronError::InvalidAgentConfig(_)));
     }
 
     #[test]
     fn validate_aionrs_rejects_whitespace_provider_id() {
         let cfg = agent_cfg_dto("   ");
-        let err = validate_aionrs_agent_config("aionrs", Some(&cfg)).unwrap_err();
+        let err = validate_aionrs_agent_config("dream", Some(&cfg)).unwrap_err();
         assert!(matches!(err, CronError::InvalidAgentConfig(_)));
     }
 

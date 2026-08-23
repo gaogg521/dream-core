@@ -182,7 +182,7 @@ impl TeamSessionService {
     }
 
     pub(crate) async fn default_model_for_backend(&self, user_id: &str, backend: &str) -> Option<String> {
-        if backend == "aionrs" {
+        if backend == "dream" {
             return self.collect_provider_models(user_id).await.into_iter().next();
         }
         let row = self

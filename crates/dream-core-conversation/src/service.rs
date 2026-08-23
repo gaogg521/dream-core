@@ -606,7 +606,7 @@ impl ConversationService {
             .ok_or_else(|| ConversationError::BadRequest {
                 reason: "project service unavailable; cannot resolve file attachments".to_owned(),
             })?;
-        let upload_root = std::env::temp_dir().join("aionui");
+        let upload_root = std::env::temp_dir().join("dream");
         project
             .resolve_chat_message(user_id, content, files, &upload_root)
             .await
@@ -1038,7 +1038,7 @@ impl ConversationService {
     ) -> Result<ConversationResponse, ConversationError> {
         let id = generate_short_id();
         let now = now_ms();
-        let source = req.source.unwrap_or(ConversationSource::Aionui);
+        let source = req.source.unwrap_or(ConversationSource::DreamUi);
 
         let mut extra = req.extra;
         strip_request_owner_user_id(&mut extra);
@@ -3031,7 +3031,7 @@ impl ConversationService {
             return Ok(snapshot.agent_id);
         }
         Ok(self
-            .resolve_assistant_agent_binding(user_id, "aionrs")
+            .resolve_assistant_agent_binding(user_id, "dream")
             .await?
             .map(|binding| binding.agent_id)
             .unwrap_or_default())
@@ -6090,7 +6090,7 @@ mod tests {
 
     #[test]
     fn enum_to_db_source() {
-        assert_eq!(enum_to_db(&ConversationSource::Aionui).unwrap(), "aionui");
+        assert_eq!(enum_to_db(&ConversationSource::DreamUi).unwrap(), "dream");
         assert_eq!(enum_to_db(&ConversationSource::Telegram).unwrap(), "telegram");
     }
 
@@ -6178,7 +6178,7 @@ mod tests {
         let response = response_with_type(AgentType::DreamEngine);
         let extra = json!({ "preset_assistant_id": "preset-xyz" });
         let lineage = AssistantLineage::from_response_and_extra(&response, &extra);
-        assert_eq!(lineage.agent_type, "aionrs");
+        assert_eq!(lineage.agent_type, "dream");
         assert_eq!(lineage.preset_assistant_id, "preset-xyz");
         assert!(lineage.has_any_identity());
     }

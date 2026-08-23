@@ -103,7 +103,7 @@ pub struct AcpBuildExtra {
 
 /// DreamEngine-specific fields extracted from `extra` in build task options.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct AionrsBuildExtra {
+pub struct DreamEngineBuildExtra {
     #[serde(default)]
     pub system_prompt: Option<String>,
     #[serde(default)]
@@ -203,7 +203,7 @@ mod tests {
     #[test]
     fn aionrs_build_extra_ignores_legacy_fields() {
         let legacy_key = concat!("guide", "_mcp_config");
-        let parsed: AionrsBuildExtra = serde_json::from_value(serde_json::json!({
+        let parsed: DreamEngineBuildExtra = serde_json::from_value(serde_json::json!({
             "backend": "aionrs",
             "max_tokens": 8192,
             legacy_key: {"port": 1234, "token": "legacy", "binary_path": "/bin/aioncore"}

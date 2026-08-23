@@ -975,7 +975,7 @@ mod tests {
         let rows = repo.list_all().await.unwrap();
         let aionrs = rows
             .iter()
-            .find(|row| row.agent_type == "aionrs" && row.agent_source == "internal")
+            .find(|row| row.agent_type == "dream" && row.agent_source == "internal")
             .expect("seeded aion cli row");
         // Fork: migration 021 rebrands the dream row icon to the 1ONE logo.
         assert_eq!(aionrs.icon.as_deref(), Some("/api/assets/logos/brand/1one.png"));

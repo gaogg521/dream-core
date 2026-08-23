@@ -8,7 +8,7 @@ use dream_core_ai_agent::session_context::{
 };
 use dream_core_ai_agent::shared_kernel::{ConfigKey, ConfigValue, ModeId, ModelId, PersistedSessionState};
 use dream_core_ai_agent::types::BuildTaskOptions;
-use dream_core_api_types::{AcpBuildExtra, AionrsBuildExtra, TeamSessionBinding};
+use dream_core_api_types::{AcpBuildExtra, DreamEngineBuildExtra, TeamSessionBinding};
 use dream_core_common::{AgentType, WorkspacePathValidationError, validate_workspace_path_availability};
 use dream_core_db::models::ConversationRow;
 use dream_core_db::{IAcpSessionRepository, IAgentMetadataRepository};
@@ -448,7 +448,7 @@ fn build_aionrs_context(
     team: Option<TeamSessionBinding>,
     permission_seed: Option<AionrsRuntimePermissionSeed>,
 ) -> AionrsSessionBuildContext {
-    let mut config: AionrsBuildExtra = match serde_json::from_value(extra.clone()) {
+    let mut config: DreamEngineBuildExtra = match serde_json::from_value(extra.clone()) {
         Ok(config) => config,
         Err(err) => {
             warn!(
@@ -456,7 +456,7 @@ fn build_aionrs_context(
                 error = %err,
                 "session_context: invalid aionrs extra; using defaults"
             );
-            AionrsBuildExtra::default()
+            DreamEngineBuildExtra::default()
         }
     };
     config.user_id = Some(row.user_id.clone());
@@ -482,7 +482,7 @@ fn build_aionrs_context(
 fn apply_runtime_permission_seed(
     seed: AionrsRuntimePermissionSeed,
     row: &ConversationRow,
-    config: &mut AionrsBuildExtra,
+    config: &mut DreamEngineBuildExtra,
 ) {
     // `fixed` (and any unknown mode): keep the create-time seed
     // (== create-time default_permission_value); never adopt the runtime
@@ -519,7 +519,7 @@ fn apply_team_seed_to_acp_config(team: &Option<TeamSessionBinding>, config: &mut
     }
 }
 
-fn apply_team_seed_to_aionrs_config(team: &Option<TeamSessionBinding>, config: &mut AionrsBuildExtra) {
+fn apply_team_seed_to_aionrs_config(team: &Option<TeamSessionBinding>, config: &mut DreamEngineBuildExtra) {
     let Some(team) = team else {
         return;
     };
@@ -1238,7 +1238,7 @@ mod tests {
         let context = repos.builder().build(&row).await.unwrap();
         assert!(!context.workspace.is_custom);
         assert!(context.workspace.stored_path.is_empty());
-        assert!(context.workspace.path.ends_with("aionrs-temp-conv-1"));
+        assert!(context.workspace.path.ends_with("dream-temp-conv-1"));
     }
 
     #[tokio::test]

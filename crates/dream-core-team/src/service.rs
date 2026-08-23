@@ -4267,7 +4267,7 @@ mod tests {
             .clear_agent_context("user-test", &created.id, &butler.slot_id)
             .await
             .unwrap_err();
-        assert!(matches!(unsupported, TeamError::MemberUnsupported { backend, .. } if backend == "aionrs"));
+        assert!(matches!(unsupported, TeamError::MemberUnsupported { backend, .. } if backend == "dream"));
         assert!(task_manager.kills().is_empty());
     }
 

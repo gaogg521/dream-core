@@ -44,7 +44,7 @@ pub use acp::{
 };
 pub use acp_prompt_hook::AcpPromptHookWarningPayload;
 pub use agent_build_extra::{
-    AcpBuildExtra, AcpModelInfo, AionrsBuildExtra, ForkSpec, SessionMcpServer, SessionMcpTransport,
+    AcpBuildExtra, AcpModelInfo, DreamEngineBuildExtra, ForkSpec, SessionMcpServer, SessionMcpTransport,
     SlashCommandCompletionBehavior, SlashCommandItem,
 };
 pub use agent_discovery::{

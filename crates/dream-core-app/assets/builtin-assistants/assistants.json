@@ -20,7 +20,7 @@
         "uk-UA": "Створюйте, редагуйте та аналізуйте професійні документи Word за допомогою officecli: звіти, пропозиції, листи, нотатки тощо."
       },
       "avatar": "avatars/word-creator.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [
         "officecli-docx"
       ],
@@ -75,7 +75,7 @@
         "uk-UA": "Створюйте, редагуйте та аналізуйте професійні презентації PowerPoint за допомогою officecli: виразний дизайн, різноманітні макети та візуальний вплив."
       },
       "avatar": "avatars/ppt-creator.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [
         "officecli-pptx"
       ],
@@ -130,7 +130,7 @@
         "uk-UA": "Створюйте, редагуйте та аналізуйте професійні таблиці Excel за допомогою officecli: фінансові моделі, дашборди, трекери та аналіз даних."
       },
       "avatar": "avatars/excel-creator.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [
         "officecli-xlsx"
       ],
@@ -185,7 +185,7 @@
         "uk-UA": "Створюйте професійні презентації з анімацією Morph за допомогою officecli. Підтримує різні візуальні стилі та повний робочий процес від ідеї до готових слайдів."
       },
       "avatar": "avatars/morph-ppt.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [
         "morph-ppt"
       ],
@@ -236,7 +236,7 @@
         "zh-CN": "把 GLB 3D 模型变成电影感 Morph 演示文稿。模型是视觉主角——特写看细节、俯视看结构、仰拍看气势，每页之间用 Morph 转场做流畅的镜头运动。注意：3D 模型和 Morph 转场效果需要在微软 PowerPoint 中打开才能正常显示。"
       },
       "avatar": "avatars/morph-ppt-3d.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [
         "morph-ppt-3d",
         "morph-ppt"
@@ -282,7 +282,7 @@
         "uk-UA": "Створюйте інвесторські пітч-деки, презентації продуктів та корпоративні продажі: градієнтний дизайн, графіки, таблиці конкурентів, слайди команди та нотатки доповідача. Підходить для стадій від Seed до Series A+."
       },
       "avatar": "avatars/pitch-deck-creator.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [
         "officecli-pitch-deck"
       ],
@@ -337,7 +337,7 @@
         "uk-UA": "Перетворюйте CSV або табличні дані на професійні дашборди Excel: KPI-картки, графіки з прив'язкою до даних, спарклайни та умовне форматування. Автоматично масштабує складність під обсяг даних."
       },
       "avatar": "avatars/dashboard-creator.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [
         "officecli-data-dashboard"
       ],
@@ -392,7 +392,7 @@
         "uk-UA": "Створюйте структуровані академічні статті, наукові роботи та White Papers: зміст Word, формули LaTeX в OMML, бібліографія (APA/Physics/Chicago), виноски та багатоколонкова верстка."
       },
       "avatar": "avatars/academic-paper.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [
         "officecli-academic-paper"
       ],
@@ -447,7 +447,7 @@
         "uk-UA": "Будуйте фінансові моделі на основі формул за текстовим запитом: три фінансові форми, DCF-оцінка, Cap Tables, сценарний аналіз та графіки боргів."
       },
       "avatar": "avatars/financial-model-creator.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [
         "officecli-financial-model"
       ],
@@ -502,7 +502,7 @@
         "uk-UA": "Експертний посібник зі встановлення, розгортання, налаштування та усунення несправностей OpenClaw. Допомагає з налаштуванням та безпекою."
       },
       "avatar": "avatars/openclaw-setup.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [
         "openclaw-setup",
         "aionui-webui-setup"
@@ -558,7 +558,7 @@
         "uk-UA": "Автономне виконання завдань з роботою з файлами, обробкою документів та багатокроковим плануванням робочих процесів."
       },
       "avatar": "avatars/cowork.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [
         "skill-creator",
         "officecli-pptx",
@@ -617,7 +617,7 @@
         "uk-UA": "Генеруйте повноцінну 3D-гру-платформер зі збором предметів в одному HTML-файлі."
       },
       "avatar": "avatars/game-3d.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [],
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
@@ -670,7 +670,7 @@
         "uk-UA": "Професійний UI/UX-помічник з 57 стилями, 95 кольоровими палітрами, 56 поєднаннями шрифтів та найкращими практиками для різних технологій."
       },
       "avatar": "avatars/ui-ux-pro-max.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [],
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
@@ -723,7 +723,7 @@
         "uk-UA": "Файлове планування в стилі Manus для складних завдань. Використовує task_plan.md, findings.md та progress.md для збереження контексту."
       },
       "avatar": "avatars/planning-with-files.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [],
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
@@ -776,7 +776,7 @@
         "uk-UA": "Коуч з особистого розвитку на основі фреймворка HUMAN 3.0: 4 квадранти (Розум/Тіло/Дух/Призвання), 3 рівні та 3 фази росту."
       },
       "avatar": "avatars/human-3-coach.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [],
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
@@ -829,7 +829,7 @@
         "uk-UA": "Розгортає запит на найм у повноцінний опис вакансії та зображення, а потім публікує це в соцмережах через конектори."
       },
       "avatar": "avatars/social-job-publisher.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [
         "xiaohongshu-recruiter",
         "x-recruiter"
@@ -885,7 +885,7 @@
         "uk-UA": "Соціальна мережа для AI-агентів. Публікації, коментарі, голосування та створення спільнот."
       },
       "avatar": "avatars/moltbook.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [
         "moltbook"
       ],
@@ -940,7 +940,7 @@
         "uk-UA": "Створюйте блок-схеми, діаграми послідовності, станів, класів та ER-діаграми з красивими темами оформлення."
       },
       "avatar": "avatars/beautiful-mermaid.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [
         "mermaid"
       ],
@@ -995,7 +995,7 @@
         "uk-UA": "Іммерсивний сюжетний рольовий режим. Можна почати трьома способами: описати персонажів словами, вставити PNG-зображення або відкрити папку з картками персонажів та лором світу."
       },
       "avatar": "avatars/story-roleplay.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [
         "story-roleplay"
       ],
@@ -1050,7 +1050,7 @@
         "uk-UA": "Створюйте заповнювані форми Word (.docx) зі справжніми елементами керування вмістом, полями-прапорцями, MERGEFIELD для злиття пошти та захистом документа — редагуються лише задані поля, решта залишається заблокованою. HR-анкети, опитування, шаблони контрактів / SOW, комплаєнс-чеклисти, медичні анкети."
       },
       "avatar": "📋",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [
         "officecli-word-form"
       ],
@@ -1105,7 +1105,7 @@
         "uk-UA": "Ваш універсальний дворецький 1ONE: налаштування асистентів, навичок, серверів MCP і провайдерів LLM; налаштування віддаленого доступу, щоб відкривати 1ONE з телефона або ділитися посиланням; і діагностика проблем — зависань розмов, збоїв моделей або чому не виконалося заплановане завдання."
       },
       "avatar": "avatars/aionui-assistant.jpg",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [
         "aionui-config",
         "aionui-troubleshooting",
@@ -1163,7 +1163,7 @@
         "ru-RU": "Install, connect, and troubleshoot Star-Office-UI visualization for 1ONE preview."
       },
       "avatar": "📺",
-      "agent_ref": "aionrs",
+      "agent_ref": "dream",
       "enabled_skills": [
         "star-office-helper"
       ],

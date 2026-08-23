@@ -330,7 +330,7 @@ fn agent_type_serde_all_variants() {
         (AgentType::OpenclawGateway, "\"openclaw-gateway\""),
         (AgentType::Nanobot, "\"nanobot\""),
         (AgentType::Remote, "\"remote\""),
-        (AgentType::DreamEngine, "\"aionrs\""),
+        (AgentType::DreamEngine, "\"dream\""),
     ] {
         let json = serde_json::to_string(&variant).unwrap();
         assert_eq!(json, expected_json, "Failed for {:?}", variant);

@@ -141,7 +141,7 @@ pub struct ShutdownAgentInput {
 // ---------------------------------------------------------------------------
 
 pub fn is_builtin_mcp_backend(backend: &str) -> bool {
-    backend == dream_core_common::constants::AIONRS_RUNTIME_BACKEND
+    backend == dream_core_common::constants::DREAM_RUNTIME_BACKEND
 }
 
 // ---------------------------------------------------------------------------
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn builtin_mcp_backend_check() {
-        assert!(is_builtin_mcp_backend("aionrs"));
+        assert!(is_builtin_mcp_backend("dream"));
         assert!(!is_builtin_mcp_backend("claude"));
         assert!(!is_builtin_mcp_backend("codex"));
         assert!(!is_builtin_mcp_backend("gpt"));

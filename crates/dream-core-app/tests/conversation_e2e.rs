@@ -52,7 +52,7 @@ async fn t1_1_create_conversation_success() {
     assert_eq!(data["name"], "Code Review");
     assert_eq!(data["type"], "acp");
     assert_eq!(data["status"], "pending");
-    assert_eq!(data["source"], "aionui");
+    assert_eq!(data["source"], "dream");
     assert_eq!(data["pinned"], false);
     assert!(data["id"].as_str().is_some());
     assert!(data["created_at"].as_i64().is_some());
@@ -65,8 +65,11 @@ async fn t1_2_create_supported_agent_types_and_reject_legacy_types() {
     let (mut app, services) = build_app().await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
 
-    let types = ["acp", "aionrs"];
-    for agent_type in types {
+    // "aionrs" is the pre-Dream-rebrand wire value for the dream-engine
+    // backend; it's still accepted on input (serde alias) but every
+    // response now reports the canonical "dream" value going forward.
+    let types = [("acp", "acp"), ("aionrs", "dream"), ("dream", "dream")];
+    for (agent_type, expected_type) in types {
         let body = json!({
             "type": agent_type,
             "extra": {}
@@ -75,7 +78,7 @@ async fn t1_2_create_supported_agent_types_and_reject_legacy_types() {
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::CREATED, "type={agent_type}");
         let json = body_json(resp).await;
-        assert_eq!(json["data"]["type"], agent_type);
+        assert_eq!(json["data"]["type"], expected_type, "type={agent_type}");
     }
 
     for agent_type in ["openclaw-gateway", "nanobot", "remote", "gemini"] {

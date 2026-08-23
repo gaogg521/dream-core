@@ -117,7 +117,7 @@ const BACKEND_CAPABILITY_DESCRIPTORS: &[BackendCapabilityDescriptor] = &[
         fork: None,
     },
     BackendCapabilityDescriptor {
-        backend_id: "aionrs",
+        backend_id: "dream",
         mcp: McpTransportCapabilities {
             stdio: true,
             sse: false,

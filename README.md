@@ -1,7 +1,7 @@
-<h1 align="center">1oneCore</h1>
+<h1 align="center">dream-core</h1>
 
 <p align="center">
-  <strong>1ONE Code 本地后端 · Rust · 单二进制 <code>aioncore</code></strong><br>
+  <strong>One Work 本地后端 · Rust · 单二进制 <code>dreamcore</code></strong><br>
   <em>会话、助手、Agent 探测、MCP、渠道、定时任务与企业 API 的统一运行时</em>
 </p>
 
@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  前端仓库：<a href="https://github.com/gaogg521/dream-ui">gaogg521/dream-ui</a>（<strong>1ONE Code</strong> 桌面）
+  前端仓库：<a href="https://github.com/gaogg521/dream-ui">gaogg521/dream-ui</a>（<strong>One Work</strong> 桌面）
   &nbsp;·&nbsp;
   <a href="https://1one.1oneclaw.com">官网</a>
   &nbsp;·&nbsp;
@@ -27,12 +27,12 @@
 
 ## 这是什么
 
-**dream-core**（对应旧仓库 1oneCore，GitHub：`gaogg521/dream-core`）是 [One Work](https://github.com/gaogg521/dream-ui) 的**本地后端服务**。编译产物为单个可执行文件：
+**dream-core**（GitHub：`gaogg521/dream-core`）是 [One Work](https://github.com/gaogg521/dream-ui) 的**本地后端服务**。编译产物为单个可执行文件：
 
 | 平台 | 二进制名 |
 |---|---|
-| Windows | `aioncore.exe` |
-| macOS / Linux | `aioncore` |
+| Windows | `dreamcore.exe` |
+| macOS / Linux | `dreamcore` |
 
 [dream-ui](https://github.com/gaogg521/dream-ui) 桌面版启动时自动 spawn 该进程；WebUI 模式通过 HTTP API + WebSocket 连接同一实例。用户通常**只安装桌面包**，无需单独下载本仓库——本仓库面向**继续开发后端**的工程师。
 
@@ -46,7 +46,7 @@
 |---|---|
 | **会话与消息** | SQLite 持久化、流式输出、工作区文件变更 |
 | **助手** | 官方/自定义助手、Skills、生成型 CLI 助手探测 |
-| **Agent 运行时** | 内置 **1ONE CLI**（`aionrs`）、ACP 子进程（Claude/Codex/Cursor…）、可用性扫描 |
+| **Agent 运行时** | 内置 **1ONE CLI**（`dream` 引擎）、ACP 子进程（Claude/Codex/Cursor…）、可用性扫描 |
 | **MCP** | 服务端注册、工具调用、与助手绑定 |
 | **渠道** | Telegram、飞书、钉钉、微信等 Bot 接入 |
 | **Cron** | 定时任务调度与 Keep-awake |
@@ -66,7 +66,7 @@
 
 ```text
 crates/
-├── dream-core-app/          # 二进制入口 → aioncore
+├── dream-core-app/          # 二进制入口 → dreamcore
 ├── dream-core-db/           # SQLite + migrations/
 ├── dream-core-ai-agent/     # Agent 注册、ACP、探测
 ├── dream-core-conversation/
@@ -75,7 +75,7 @@ crates/
 ├── dream-core-cron/
 ├── dream-core-mcp/
 ├── dream-core-team/
-├── dream-domain-org/             # 1ONE fork 扩展：项目组
+├── dream-domain-org/             # dream fork 扩展：项目组
 ├── dream-domain-enterprise/      #   企业层
 ├── dream-domain-sso/             #   SSO（含 OIDC）
 ├── dream-domain-billing/         #   授权 / 订阅 / 席位 / 模型管控
@@ -92,8 +92,8 @@ crates/
 
 ```mermaid
 flowchart LR
-  UI["1oneUI<br/>Electron / WebUI"]
-  API["aioncore<br/>HTTP + WS"]
+  UI["dream-ui<br/>Electron / WebUI"]
+  API["dreamcore<br/>HTTP + WS"]
   DB[(SQLite)]
   W["Worker 子进程<br/>ACP / 1ONE CLI"]
 
@@ -124,24 +124,24 @@ git clone https://github.com/gaogg521/dream-ui.git
 推荐与前端并列：
 
 ```text
-aionui-m0/
-├── 1oneCore/    ← 本仓库
-└── 1oneUI/
+dream/
+├── dream-core/    ← 本仓库
+└── dream-ui/
 ```
 
 ### 编译
 
 ```powershell
-cd 1oneCore
+cd dream-core
 cargo build -p dream-core-app --release
-# 产物：target\release\aioncore.exe
+# 产物：target\release\dreamcore.exe
 ```
 
 ### 让前端用上刚编译的后端
 
 ```powershell
-cd ..\AionUi
-$env:AIONUI_BACKEND_LOCAL_PATH = '..\1oneCore\target\release\aioncore.exe'
+cd ..\dream-ui
+$env:DREAM_BACKEND_LOCAL_PATH = '..\dream-core\target\release\dreamcore.exe'
 node scripts/prepareAioncore.js
 cd ..
 # 然后在前端目录 bun run dev
@@ -153,7 +153,7 @@ cd ..
 ### 仅跑后端 API（不启桌面）
 
 ```powershell
-.\target\release\aioncore.exe --local
+.\target\release\dreamcore.exe --local
 # 默认端口见启动日志；可用 curl 测 /health
 ```
 
@@ -167,13 +167,13 @@ cd ..
 | `cargo test -p dream-core-db` | 单 crate 测试 |
 | `cargo clippy -p dream-core-app -- -D warnings` | Lint（CI 同等严格度视项目配置） |
 
-改 `migrations/*.sql` 后**必须**重新编译并让 1oneUI bundled 目录更新，否则桌面仍跑旧 schema。
+改 `migrations/*.sql` 后**必须**重新编译并让 dream-ui bundled 目录更新，否则桌面仍跑旧 schema。
 
 ---
 
 ## 与上游的关系
 
-本仓库由 Cowork 生态的 AionCore 演进而来，在 `one-main` 分支维护 **1ONE** 定制（`one-*` crates、1ONE CLI 品牌、企业/DevOps 等）。  
+本仓库最初基于开源项目 AionCore 二次开发，现已作为独立仓库维护（`main` 分支），不再跟随或合并上游——技术身份、内部协议与运行时命名空间均已切换为 `dream` 前缀，新增能力（`dream-domain-*` 系列 crate：项目组、企业、SSO、计费、数字员工、DevOps 等）只在本仓库演进。
 
 - **用户安装包**：只下 [One Work Releases](https://github.com/gaogg521/dream-ui/releases)  
 - **后端单独发布**：当前随桌面包 bundled；独立发版策略见团队文档  
@@ -184,7 +184,7 @@ cd ..
 
 | 链接 | 内容 |
 |---|---|
-| [dream-ui readme](https://github.com/gaogg521/dream-ui/blob/main/readme.md) | 产品能力、对比表、用户上手 |
+| [dream-ui README](https://github.com/gaogg521/dream-ui/blob/main/README.md) | 产品能力、对比表、用户上手 |
 | [fork-dev-onboarding](https://github.com/gaogg521/dream-ui/blob/main/docs/guides/fork-dev-onboarding.zh-CN.md) | 双仓库 dev / 打包 |
 | [repository-independence](https://github.com/gaogg521/dream-ui/blob/main/docs/guides/repository-independence.zh-CN.md) | 脱离上游 fork 网络 |
 
@@ -197,5 +197,5 @@ cd ..
 - 官网：[1one.1oneclaw.com](https://1one.1oneclaw.com)
 
 <p align="center">
-  <sub>Part of <strong>1ONE Code</strong> · <a href="https://github.com/gaogg521">gaogg521</a> · Apache-2.0</sub>
+  <sub>Part of <strong>One Work</strong> · <a href="https://github.com/gaogg521">gaogg521</a> · Apache-2.0</sub>
 </p>

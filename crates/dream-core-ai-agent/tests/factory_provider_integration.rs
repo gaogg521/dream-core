@@ -9,7 +9,7 @@ use dream_core_ai_agent::session_context::{
     AgentSessionContext, AgentSessionKind, AionrsSessionBuildContext, ConversationContext, WorkspaceContext,
 };
 use dream_core_ai_agent::types::BuildTaskOptions;
-use dream_core_api_types::AionrsBuildExtra;
+use dream_core_api_types::DreamEngineBuildExtra;
 use dream_core_common::{AgentType, ProviderWithModel, encrypt_string};
 use dream_core_db::{
     CreateProviderParams, IAcpSessionRepository, IProviderRepository, SqliteAcpSessionRepository,
@@ -107,7 +107,7 @@ fn make_aionrs_options(
     conversation_id: &str,
     workspace: &str,
     model: ProviderWithModel,
-    config: AionrsBuildExtra,
+    config: DreamEngineBuildExtra,
 ) -> BuildTaskOptions {
     BuildTaskOptions::new(AgentSessionContext {
         conversation: ConversationContext {
@@ -146,7 +146,7 @@ async fn aionrs_factory_returns_error_for_missing_provider() {
             model: "gpt-4o".into(),
             use_model: None,
         },
-        AionrsBuildExtra::default(),
+        DreamEngineBuildExtra::default(),
     );
 
     let result = factory(options).await;
@@ -176,7 +176,7 @@ async fn aionrs_factory_resolves_provider_from_db() {
             model: "gpt-4o".into(),
             use_model: None,
         },
-        AionrsBuildExtra::default(),
+        DreamEngineBuildExtra::default(),
     );
 
     let result = factory(options).await;
@@ -197,7 +197,7 @@ async fn aionrs_factory_respects_use_model_override() {
             model: "gpt-4o".into(),
             use_model: Some("gpt-5.4".into()),
         },
-        AionrsBuildExtra::default(),
+        DreamEngineBuildExtra::default(),
     );
 
     let result = factory(options).await;

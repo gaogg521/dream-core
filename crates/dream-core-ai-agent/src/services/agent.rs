@@ -218,5 +218,5 @@ fn is_bridge_launched_row(row: &dream_core_db::AgentMetadataRow) -> bool {
 }
 
 fn is_internal_aion_cli_row(row: &dream_core_db::AgentMetadataRow) -> bool {
-    row.agent_type.eq_ignore_ascii_case("aionrs") && row.agent_source.eq_ignore_ascii_case("internal")
+    row.agent_type.eq_ignore_ascii_case("dream") && row.agent_source.eq_ignore_ascii_case("internal")
 }

@@ -3,7 +3,7 @@ use dream_engine_types::message::ImageInputCapability;
 
 use crate::capability::image_input::resolve_image_input_capability;
 
-use super::{resolve_aionrs_url_and_compat_with_mode, resolve_model_compat_overrides};
+use super::{resolve_dream_engine_url_and_compat_with_mode, resolve_model_compat_overrides};
 
 #[test]
 fn model_settings_resolve_explicit_vision_and_api_overrides() {
@@ -64,7 +64,7 @@ fn invalid_model_settings_are_rejected() {
 
 #[test]
 fn explicit_chat_completions_overrides_gpt_5_6_responses_default() {
-    let (base_url, compat) = resolve_aionrs_url_and_compat_with_mode(
+    let (base_url, compat) = resolve_dream_engine_url_and_compat_with_mode(
         "openai",
         "https://api.openai.com/v1",
         "openai",
@@ -80,7 +80,7 @@ fn explicit_chat_completions_overrides_gpt_5_6_responses_default() {
 
 #[test]
 fn explicit_responses_overrides_non_responses_model_default() {
-    let (_, compat) = resolve_aionrs_url_and_compat_with_mode(
+    let (_, compat) = resolve_dream_engine_url_and_compat_with_mode(
         "custom",
         "https://proxy.example.com/v1",
         "openai",
@@ -95,7 +95,7 @@ fn explicit_responses_overrides_non_responses_model_default() {
 
 #[test]
 fn explicit_api_mode_rewrites_known_complete_endpoints_in_both_directions() {
-    let (chat_url, chat_compat) = resolve_aionrs_url_and_compat_with_mode(
+    let (chat_url, chat_compat) = resolve_dream_engine_url_and_compat_with_mode(
         "custom",
         "https://proxy.example.com/v1/responses",
         "openai",
@@ -103,7 +103,7 @@ fn explicit_api_mode_rewrites_known_complete_endpoints_in_both_directions() {
         true,
         Some(OpenAiApiMode::ChatCompletions),
     );
-    let (responses_url, responses_compat) = resolve_aionrs_url_and_compat_with_mode(
+    let (responses_url, responses_compat) = resolve_dream_engine_url_and_compat_with_mode(
         "custom",
         "https://proxy.example.com/v1/chat/completions",
         "openai",
@@ -123,7 +123,7 @@ fn explicit_api_mode_rewrites_known_complete_endpoints_in_both_directions() {
 
 #[test]
 fn explicit_api_mode_keeps_unrecognized_complete_url_but_controls_wire_format() {
-    let (base_url, compat) = resolve_aionrs_url_and_compat_with_mode(
+    let (base_url, compat) = resolve_dream_engine_url_and_compat_with_mode(
         "custom",
         "https://proxy.example.com/generate",
         "openai",

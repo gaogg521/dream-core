@@ -62,7 +62,7 @@ async fn setup_repo() -> (Arc<SqliteConversationRepository>, dream_core_db::Data
         extra: "{}".into(),
         model: None,
         status: Some("running".into()),
-        source: Some("aionui".into()),
+        source: Some("dream".into()),
         channel_chat_id: None,
         pinned: false,
         pinned_at: None,

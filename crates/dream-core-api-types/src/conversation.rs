@@ -473,7 +473,7 @@ mod tests {
                     "mcp_ids": ["mcp-a"]
                 }
             },
-            "source": "aionui",
+            "source": "dream",
             "channel_chat_id": "user:123",
             "extra": { "workspace": "/project" }
         });
@@ -497,7 +497,7 @@ mod tests {
                 }),
             })
         );
-        assert_eq!(req.source, Some(ConversationSource::Aionui));
+        assert_eq!(req.source, Some(ConversationSource::DreamUi));
         assert_eq!(req.channel_chat_id.as_deref(), Some("user:123"));
         assert_eq!(req.extra["workspace"], "/project");
     }
@@ -740,7 +740,7 @@ mod tests {
             }),
             status: ConversationStatus::Pending,
             runtime: None,
-            source: Some(ConversationSource::Aionui),
+            source: Some(ConversationSource::DreamUi),
             pinned: false,
             pinned_at: None,
             channel_chat_id: None,
@@ -756,7 +756,7 @@ mod tests {
         assert_eq!(json["id"], "conv_1");
         assert_eq!(json["type"], "acp");
         assert_eq!(json["status"], "pending");
-        assert_eq!(json["source"], "aionui");
+        assert_eq!(json["source"], "dream");
         assert_eq!(json["created_at"], 1712345678000_i64);
         assert_eq!(json["modified_at"], 1712345678000_i64);
         assert_eq!(json["extra"]["workspace"], "/project");

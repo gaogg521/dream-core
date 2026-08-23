@@ -1,4 +1,4 @@
-use dream_core_api_types::{AcpBuildExtra, AionrsBuildExtra, TeamSessionBinding};
+use dream_core_api_types::{AcpBuildExtra, DreamEngineBuildExtra, TeamSessionBinding};
 use dream_core_common::{AgentType, ProviderWithModel};
 
 use crate::shared_kernel::PersistedSessionState;
@@ -71,7 +71,7 @@ pub struct AntigravitySessionBuildContext {
 
 #[derive(Debug, Clone)]
 pub struct AionrsSessionBuildContext {
-    pub config: AionrsBuildExtra,
+    pub config: DreamEngineBuildExtra,
     pub team: Option<TeamSessionBinding>,
     pub belongs_to_team: bool,
 }

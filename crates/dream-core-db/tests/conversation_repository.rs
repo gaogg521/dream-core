@@ -32,7 +32,7 @@ fn make_conversation(suffix: &str) -> ConversationRow {
         extra: r#"{"workspace":"/home/user/project"}"#.to_string(),
         model: Some(r#"{"providerId":"prov_1","model":"claude-sonnet-4-20250514"}"#.to_string()),
         status: Some("pending".to_string()),
-        source: Some("aionui".to_string()),
+        source: Some("dream".to_string()),
         channel_chat_id: None,
         pinned: false,
         pinned_at: None,
@@ -235,7 +235,7 @@ async fn filter_by_source_and_pinned_combined() {
     let (repo, _db) = setup().await;
 
     let mut c1 = make_conversation("aionui-pinned");
-    c1.source = Some("aionui".to_string());
+    c1.source = Some("dream".to_string());
     c1.pinned = true;
     c1.pinned_at = Some(dream_core_common::now_ms());
     repo.create(&c1).await.unwrap();
@@ -247,7 +247,7 @@ async fn filter_by_source_and_pinned_combined() {
     repo.create(&c2).await.unwrap();
 
     let mut c3 = make_conversation("aionui-unpinned");
-    c3.source = Some("aionui".to_string());
+    c3.source = Some("dream".to_string());
     c3.pinned = false;
     repo.create(&c3).await.unwrap();
 
@@ -256,7 +256,7 @@ async fn filter_by_source_and_pinned_combined() {
         .list_paginated(
             USER_ID,
             &ConversationFilters {
-                source: Some("aionui".to_string()),
+                source: Some("dream".to_string()),
                 pinned: Some(true),
                 limit: 20,
                 ..Default::default()

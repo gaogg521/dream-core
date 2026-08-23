@@ -8,7 +8,7 @@ use crate::factory::AgentFactoryDeps;
 use crate::factory::acp_assembler::{WorkspaceInfo, assemble_acp_params};
 use crate::factory::acp_launch_policy::{AcpLaunchPolicyInput, apply_acp_launch_policy};
 use crate::factory::dream_engine::{
-    map_aionrs_provider, resolve_aionrs_url_and_compat_with_mode, resolve_model_compat_overrides,
+    map_dream_engine_provider, resolve_dream_engine_url_and_compat_with_mode, resolve_model_compat_overrides,
 };
 use crate::factory::context::FactoryContext;
 use crate::factory::session_mcp::load_session_mcp_rows;
@@ -268,7 +268,7 @@ async fn resolve_bridged_target_vision_policy(
             };
         }
     };
-    let provider = match map_aionrs_provider(&row.platform, model, row.model_protocols.as_deref()) {
+    let provider = match map_dream_engine_provider(&row.platform, model, row.model_protocols.as_deref()) {
         Ok(provider) => provider,
         Err(error) => {
             warn!(error = %error, provider_id, model, "bridge image policy could not map the configured provider");
@@ -286,7 +286,7 @@ async fn resolve_bridged_target_vision_policy(
             };
         }
     };
-    let (base_url, _) = resolve_aionrs_url_and_compat_with_mode(
+    let (base_url, _) = resolve_dream_engine_url_and_compat_with_mode(
         &row.platform,
         &row.base_url,
         &provider,

@@ -1,4 +1,4 @@
-pub use dream_core_common::constants::AIONRS_RUNTIME_BACKEND;
+pub use dream_core_common::constants::DREAM_RUNTIME_BACKEND;
 use dream_core_common::constants::{is_team_capable, supports_team_cli_fallback, supports_team_mcp};
 
 /// Determine if a backend supports team mode.
@@ -24,10 +24,10 @@ mod tests {
 
     #[test]
     fn builtin_backend_is_mcp_capable_regardless_of_capabilities() {
-        assert!(is_team_capable_backend("aionrs", None));
-        assert!(supports_team_mcp_backend("aionrs", None));
-        assert!(supports_team_mcp_backend("aionrs", Some(&json!({}))));
-        assert_eq!(AIONRS_RUNTIME_BACKEND, "aionrs");
+        assert!(is_team_capable_backend("dream", None));
+        assert!(supports_team_mcp_backend("dream", None));
+        assert!(supports_team_mcp_backend("dream", Some(&json!({}))));
+        assert_eq!(DREAM_RUNTIME_BACKEND, "dream");
     }
 
     #[test]

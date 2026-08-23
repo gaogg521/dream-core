@@ -1416,7 +1416,7 @@ async fn create_job_derives_runtime_type_from_aionrs_assistant() {
 
     let job = svc.add_job("u1", req).await.unwrap();
 
-    assert_eq!(job.agent_type, "aionrs");
+    assert_eq!(job.agent_type, "dream");
 }
 
 #[tokio::test]
@@ -1449,7 +1449,7 @@ async fn create_job_derives_runtime_type_from_assistant_overlay_override() {
 
     let job = svc.add_job("u1", req).await.unwrap();
 
-    assert_eq!(job.agent_type, "aionrs");
+    assert_eq!(job.agent_type, "dream");
 }
 
 #[tokio::test]

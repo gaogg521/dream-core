@@ -80,7 +80,7 @@ impl TeamToolCapabilityPort for TestTeamToolCapabilityPort {
                 ..Default::default()
             },
             cli_fallback: !matches!(backend, "aionrs"),
-            origin: if backend == "aionrs" {
+            origin: if backend == "dream" {
                 CapabilityOrigin::InternalDescriptor
             } else if constructed {
                 CapabilityOrigin::DirectDescriptor

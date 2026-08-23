@@ -32,7 +32,7 @@ use crate::extract::extract_token_from_headers;
 /// only ever make the check *stricter*, never weaker. The proxy sets it
 /// unconditionally (overwriting any client-supplied copy), so a remote client
 /// cannot strip it.
-pub const WEBUI_PROXY_HEADER: &str = "x-aionui-forwarded-origin";
+pub const WEBUI_PROXY_HEADER: &str = "x-dream-forwarded-origin";
 
 /// Value paired with [`WEBUI_PROXY_HEADER`].
 pub const WEBUI_PROXY_VALUE: &str = "webui";
@@ -58,7 +58,7 @@ pub fn is_webui_proxied(headers: &axum::http::HeaderMap) -> bool {
 /// who actually connected. For a non-proxied request (standalone server with
 /// no reverse proxy in front, or the desktop's direct-to-backend traffic),
 /// `ConnectInfo` is the real peer and this header is not consulted.
-pub const CLIENT_IP_HEADER: &str = "x-aionui-client-ip";
+pub const CLIENT_IP_HEADER: &str = "x-dream-client-ip";
 
 /// Resolve the caller's real IP for IP-allowlist enforcement.
 ///

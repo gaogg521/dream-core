@@ -448,7 +448,7 @@ async fn send_to_agent_without_saved_binding_defaults_to_bare_aionrs_assistant()
         .upsert(&bare_assistant_definition_params(
             "asstdef-channel-aionrs",
             "bare-aionrs",
-            "aionrs",
+            "dream",
         ))
         .await
         .unwrap();
@@ -459,7 +459,7 @@ async fn send_to_agent_without_saved_binding_defaults_to_bare_aionrs_assistant()
     let session = AssistantSessionRow {
         id: "session-assisted-default-aionrs".to_owned(),
         user_id: "channel-user-default".to_owned(),
-        agent_type: "aionrs".to_owned(),
+        agent_type: "dream".to_owned(),
         conversation_id: None,
         workspace: None,
         chat_id: Some("7088048018".to_owned()),
@@ -486,7 +486,7 @@ async fn send_to_agent_without_saved_binding_defaults_to_bare_aionrs_assistant()
     assert_eq!(snapshot.assistant_id, "bare-aionrs");
     assert_eq!(snapshot.agent_id, "632f31d2");
     assert_eq!(conversation.r#type, AgentType::DreamEngine.serde_name());
-    assert_eq!(conversation.name, "tg-aionrs-70880480");
+    assert_eq!(conversation.name, "tg-dream-70880480");
 }
 
 #[tokio::test]

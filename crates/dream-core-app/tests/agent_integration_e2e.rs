@@ -256,7 +256,7 @@ async fn management_endpoint_keeps_deprecated_runtime_rows_for_diagnostics() {
 
     for (id, agent_type) in [
         ("test-visible-acp", "acp"),
-        ("test-visible-aionrs", "aionrs"),
+        ("test-visible-aionrs", "dream"),
         ("test-visible-openclaw", "openclaw-gateway"),
         ("test-visible-nanobot", "nanobot"),
         ("test-visible-remote", "remote"),
@@ -276,7 +276,7 @@ async fn management_endpoint_keeps_deprecated_runtime_rows_for_diagnostics() {
     let types: Vec<&str> = agents.iter().filter_map(|agent| agent["agent_type"].as_str()).collect();
 
     assert!(types.contains(&"acp"));
-    assert!(types.contains(&"aionrs"));
+    assert!(types.contains(&"dream"));
     assert!(types.contains(&"openclaw-gateway"));
     assert!(types.contains(&"nanobot"));
     assert!(types.contains(&"remote"));
@@ -349,7 +349,7 @@ async fn agent_logos_endpoint_returns_backend_to_logo_catalog() {
     // Dream CLI has no vendor `backend` (NULL); it must still be keyed by its
     // agent_type ("dream") so dream conversations resolve a logo. Migration
     // 021 rebranded the seeded icon from aion.svg to the 1ONE mascot.
-    assert_eq!(logo_for("aionrs").as_deref(), Some("/api/assets/logos/brand/1one.png"));
+    assert_eq!(logo_for("dream").as_deref(), Some("/api/assets/logos/brand/1one.png"));
 
     // Every entry carries a non-empty backend + logo, and backends are unique.
     let mut seen = std::collections::HashSet::new();
@@ -747,7 +747,7 @@ async fn npx_bridged_agent_rejects_command_override() {
 async fn internal_aion_cli_rejects_overrides() {
     let (mut app, services, _mock_tm) = build_app_with_mock_tasks().await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "Pass123!").await;
-    upsert_visible_agent_metadata(&services, "632f31d2", "aionrs").await;
+    upsert_visible_agent_metadata(&services, "632f31d2", "dream").await;
     services.agent_registry.hydrate().await.unwrap();
     services.agent_registry.refresh_availability().await;
 

@@ -17,7 +17,7 @@ use regex::Regex;
 use tracing::{info, warn};
 
 use crate::factory::dream_engine::{
-    map_aionrs_provider, resolve_aionrs_url_and_compat_with_mode, resolve_bedrock_config,
+    map_dream_engine_provider, resolve_dream_engine_url_and_compat_with_mode, resolve_bedrock_config,
     resolve_model_compat_overrides,
 };
 use crate::types::AionrsResolvedConfig;
@@ -70,9 +70,9 @@ impl ProviderHealthCheckService {
     fn resolve_probe_config(&self, row: &Provider, model_id: &str) -> Result<AionrsResolvedConfig, AgentError> {
         let api_key = dream_core_common::decrypt_string(&row.api_key_encrypted, &self.encryption_key)
             .map_err(|e| AgentError::internal(e.to_string()))?;
-        let provider = map_aionrs_provider(&row.platform, model_id, row.model_protocols.as_deref())?;
+        let provider = map_dream_engine_provider(&row.platform, model_id, row.model_protocols.as_deref())?;
         let model_overrides = resolve_model_compat_overrides(model_id, &row.model_settings)?;
-        let (base_url, mut compat_overrides) = resolve_aionrs_url_and_compat_with_mode(
+        let (base_url, mut compat_overrides) = resolve_dream_engine_url_and_compat_with_mode(
             &row.platform,
             &row.base_url,
             &provider,

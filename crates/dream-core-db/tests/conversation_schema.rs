@@ -495,7 +495,7 @@ async fn conversation_row_from_row() {
     assert_eq!(row.extra, "{\"workspace\":\"/home\"}");
     assert_eq!(row.model.as_deref(), Some("{\"providerId\":\"p1\",\"model\":\"m1\"}"));
     assert_eq!(row.status.as_deref(), Some("finished"));
-    assert_eq!(row.source.as_deref(), Some("aionui"));
+    assert_eq!(row.source.as_deref(), Some("dream"));
     assert_eq!(row.channel_chat_id.as_deref(), Some("group:42"));
     assert!(row.pinned);
     assert_eq!(row.pinned_at, Some(1700000000000));

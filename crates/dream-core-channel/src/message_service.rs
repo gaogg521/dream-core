@@ -383,7 +383,7 @@ fn platform_to_source(platform: PluginType) -> ConversationSource {
         PluginType::Dingtalk => ConversationSource::Dingtalk,
         PluginType::Weixin => ConversationSource::Weixin,
         // Reserved variants default to Dreamui
-        PluginType::Slack | PluginType::Discord => ConversationSource::Aionui,
+        PluginType::Slack | PluginType::Discord => ConversationSource::DreamUi,
     }
 }
 
@@ -397,7 +397,9 @@ fn parse_agent_type(s: &str) -> Result<AgentType, ChannelError> {
         "openclaw-gateway" => AgentType::OpenclawGateway,
         "nanobot" => AgentType::Nanobot,
         "remote" => AgentType::Remote,
-        "aionrs" => AgentType::DreamEngine,
+        // "aionrs" is the pre-migration wire value, kept as an input alias so
+        // channel preferences persisted before the Dream rebrand still parse.
+        "dream" | "aionrs" => AgentType::DreamEngine,
         // agy is a direct-CLI agent that does NOT speak ACP. Letting it reach
         // the `_` fallback below made a channel bot bound to Antigravity open
         // its conversation as `acp`, which routes it into the ACP manager and
@@ -480,8 +482,8 @@ mod tests {
 
     #[test]
     fn platform_to_source_reserved_defaults_to_aionui() {
-        assert_eq!(platform_to_source(PluginType::Slack), ConversationSource::Aionui);
-        assert_eq!(platform_to_source(PluginType::Discord), ConversationSource::Aionui);
+        assert_eq!(platform_to_source(PluginType::Slack), ConversationSource::DreamUi);
+        assert_eq!(platform_to_source(PluginType::Discord), ConversationSource::DreamUi);
     }
 
     // ── parse_agent_type ───────────────────────────────────────────────

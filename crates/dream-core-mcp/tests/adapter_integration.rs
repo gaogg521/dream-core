@@ -149,7 +149,7 @@ async fn install_replaces_existing_by_name() {
 
 #[tokio::test]
 async fn remove_nonexistent_is_idempotent() {
-    let adapter = InMemoryAdapter::new(McpSource::Aionui, true);
+    let adapter = InMemoryAdapter::new(McpSource::DreamUi, true);
     // Should succeed without error
     adapter.remove_server("does-not-exist").await.unwrap();
 }

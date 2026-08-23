@@ -31,7 +31,7 @@ pub const UPLOAD_MAX_SIZE: usize = 30 * 1024 * 1024;
 // --- Team mode ---
 
 /// Runtime backend that supports Team MCP without ACP capability metadata.
-pub const AIONRS_RUNTIME_BACKEND: &str = "aionrs";
+pub const DREAM_RUNTIME_BACKEND: &str = "dream";
 
 /// Determine if an agent supports team mode through MCP or CLI fallback.
 pub fn is_team_capable(backend: &str, agent_capabilities: Option<&serde_json::Value>) -> bool {
@@ -43,7 +43,7 @@ pub fn is_team_capable(backend: &str, agent_capabilities: Option<&serde_json::Va
 
 /// Determine if an agent supports Team MCP injection.
 pub fn supports_team_mcp(backend: &str, agent_capabilities: Option<&serde_json::Value>) -> bool {
-    if backend == AIONRS_RUNTIME_BACKEND {
+    if backend == DREAM_RUNTIME_BACKEND {
         return true;
     }
     has_enabled_team_mcp_transport(agent_capabilities)
@@ -145,8 +145,8 @@ mod tests {
 
     #[test]
     fn team_mcp_builtin_backend_does_not_require_capability_metadata() {
-        assert!(supports_team_mcp("aionrs", None));
-        assert!(supports_team_mcp("aionrs", Some(&json!({}))));
+        assert!(supports_team_mcp("dream", None));
+        assert!(supports_team_mcp("dream", Some(&json!({}))));
     }
 
     /// LIVE-probed contract (2026-07-30, same stdio-launched Sentry MCP server on

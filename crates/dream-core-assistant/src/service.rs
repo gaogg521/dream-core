@@ -1027,7 +1027,7 @@ impl AssistantService {
             .map_err(|e| AssistantError::Internal(format!("failed to list providers: {e}")))?;
 
         if providers.iter().any(|p| p.enabled) {
-            self.resolve_agent_id_for_agent_ref(user_id, "aionrs").await
+            self.resolve_agent_id_for_agent_ref(user_id, "dream").await
         } else {
             Err(AssistantError::BadRequest(
                 "Cannot create assistant: no providers configured. Add a provider before creating an assistant, \
@@ -5407,14 +5407,14 @@ mod tests {
         // mislabelled every dream assistant as Missing/unavailable.
         let mut aionrs_row = mk_agent_row(
             "agent-aionrs",
-            "aionrs",
+            "dream",
             dream_core_api_types::AgentManagementStatus::Online,
         );
         aionrs_row.backend = None;
         aionrs_row.agent_type = dream_core_common::AgentType::DreamEngine;
 
         let mut builtin = mk_builtin("builtin-aionrs", "Aion Assistant");
-        builtin.agent_ref = "aionrs".into();
+        builtin.agent_ref = "dream".into();
 
         let fx = fixture_with_options(FixtureOpts {
             builtins: vec![builtin],

@@ -1342,7 +1342,7 @@ mod tests {
             _agent_id: Option<&str>,
         ) -> Result<dream_core_common::ResolvedBackendCapabilities, TeamError> {
             let direct = matches!(backend, "claude" | "codex" | "antigravity");
-            let internal = backend == "aionrs";
+            let internal = backend == "dream";
             Ok(dream_core_common::ResolvedBackendCapabilities {
                 mcp: dream_core_common::McpTransportCapabilities {
                     stdio: direct || internal,

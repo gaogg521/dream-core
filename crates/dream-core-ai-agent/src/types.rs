@@ -183,7 +183,7 @@ pub struct AionrsResolvedConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dream_core_api_types::{AcpBuildExtra, AcpModelInfo, AionrsBuildExtra, SlashCommandItem};
+    use dream_core_api_types::{AcpBuildExtra, AcpModelInfo, DreamEngineBuildExtra, SlashCommandItem};
     use serde_json::json;
 
     #[test]
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn aionrs_build_extra_serde_defaults() {
         let json = json!({});
-        let extra: AionrsBuildExtra = serde_json::from_value(json).unwrap();
+        let extra: DreamEngineBuildExtra = serde_json::from_value(json).unwrap();
         assert!(extra.system_prompt.is_none());
         assert!(extra.preset_rules.is_none());
         assert!(extra.max_turns.is_none());
@@ -413,7 +413,7 @@ mod tests {
             "max_tool_call_malformed_turns": 2,
             "max_tool_call_failure_turns": 3
         });
-        let extra: AionrsBuildExtra = serde_json::from_value(json).unwrap();
+        let extra: DreamEngineBuildExtra = serde_json::from_value(json).unwrap();
         assert_eq!(extra.system_prompt.as_deref(), Some("You are a helpful assistant."));
         assert_eq!(extra.max_turns.unwrap(), 10);
         assert_eq!(extra.max_tool_call_malformed_turns.unwrap(), 2);
@@ -426,7 +426,7 @@ mod tests {
         let json = json!({
             "preset_rules": "You are a data analyst."
         });
-        let extra: AionrsBuildExtra = serde_json::from_value(json).unwrap();
+        let extra: DreamEngineBuildExtra = serde_json::from_value(json).unwrap();
         assert!(extra.system_prompt.is_none());
         assert_eq!(extra.preset_rules.unwrap(), "You are a data analyst.");
     }
@@ -437,7 +437,7 @@ mod tests {
             "preset_rules": "Rules",
             "skills": ["pdf", "cron"]
         });
-        let extra: AionrsBuildExtra = serde_json::from_value(json).unwrap();
+        let extra: DreamEngineBuildExtra = serde_json::from_value(json).unwrap();
         assert_eq!(extra.skills, vec!["pdf".to_owned(), "cron".to_owned()]);
     }
 }

@@ -41,7 +41,7 @@ pub use agent_runtime::AgentRuntime;
 #[cfg(any(test, feature = "test-support"))]
 pub use agent_task::IMockAgent;
 pub use agent_task::{AgentInstance, IAgentTask};
-pub use dream_core_api_types::{AcpBuildExtra, AcpModelInfo, AionrsBuildExtra, SlashCommandItem};
+pub use dream_core_api_types::{AcpBuildExtra, AcpModelInfo, DreamEngineBuildExtra, SlashCommandItem};
 // Backend-static capability table (session layer's single source of truth) —
 // re-exported so the conversation layer can read the mid-turn bit for a
 // conversation whose agent task is not currently live.

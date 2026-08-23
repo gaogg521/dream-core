@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentErrorOwnership {
-    Aionui,
+    Dream,
     UserAgent,
     UserLlmProvider,
     UnknownUpstream,
@@ -12,11 +12,11 @@ pub enum AgentErrorOwnership {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AgentErrorCode {
-    AionuiConversationBusy,
-    AionuiStreamBroken,
-    AionuiStateInconsistent,
-    AionuiPermissionError,
-    AionuiInternalError,
+    DreamConversationBusy,
+    DreamStreamBroken,
+    DreamStateInconsistent,
+    DreamPermissionError,
+    DreamInternalError,
     #[serde(alias = "WORKSPACE_PATH_CONTAINS_WHITESPACE_RUNTIME_UNSUPPORTED")]
     WorkspacePathRuntimeUnavailable,
     UserAgentHandshakeFailed,
@@ -198,8 +198,8 @@ mod tests {
     fn classified_error_serializes_resolution() {
         let payload = AgentStreamErrorData::classified(
             "The current response is still running",
-            AgentErrorCode::AionuiConversationBusy,
-            AgentErrorOwnership::Aionui,
+            AgentErrorCode::DreamConversationBusy,
+            AgentErrorOwnership::Dream,
             Some("Conflict: Conversation is already processing a message".into()),
             true,
             false,
@@ -210,7 +210,7 @@ mod tests {
         );
 
         let json = serde_json::to_value(payload).unwrap();
-        assert_eq!(json["code"], "AIONUI_CONVERSATION_BUSY");
+        assert_eq!(json["code"], "DREAM_CONVERSATION_BUSY");
         assert_eq!(json["resolution"]["kind"], "wait_for_current_response");
         assert_eq!(json["resolution"]["target"], "new_conversation");
     }
@@ -257,7 +257,7 @@ mod tests {
         let payload = AgentStreamErrorData {
             message: "workspace path rejected".into(),
             code: Some(AgentErrorCode::WorkspacePathRuntimeUnavailable),
-            ownership: Some(AgentErrorOwnership::Aionui),
+            ownership: Some(AgentErrorOwnership::Dream),
             detail: Some("workspace detail".into()),
             workspace_path: Some("/tmp/Archive ".into()),
             retryable: Some(false),

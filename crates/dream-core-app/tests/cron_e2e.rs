@@ -104,7 +104,7 @@ async fn ensure_conversation(services: &dream_core_app::AppServices, user_id: &s
         extra: "{}".to_owned(),
         model: None,
         status: Some("finished".to_owned()),
-        source: Some("aionui".to_owned()),
+        source: Some("dream".to_owned()),
         channel_chat_id: None,
         pinned: false,
         pinned_at: None,

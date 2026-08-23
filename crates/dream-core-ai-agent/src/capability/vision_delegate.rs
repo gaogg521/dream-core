@@ -13,7 +13,7 @@ use dream_engine_types::message::ImageInputCapability;
 use tracing::{info, warn};
 
 use crate::factory::dream_engine::{
-    map_aionrs_provider, resolve_aionrs_url_and_compat_with_mode, resolve_model_compat_overrides,
+    map_dream_engine_provider, resolve_dream_engine_url_and_compat_with_mode, resolve_model_compat_overrides,
     resolve_provider_config_for_bridge,
 };
 
@@ -90,13 +90,13 @@ pub(crate) async fn resolve_vision_delegate(
             }
             // A malformed protocol/settings entry disqualifies this candidate
             // only; it must never abort the session being built.
-            let Ok(provider) = map_aionrs_provider(&row.platform, &model, row.model_protocols.as_deref()) else {
+            let Ok(provider) = map_dream_engine_provider(&row.platform, &model, row.model_protocols.as_deref()) else {
                 continue;
             };
             let Ok(model_overrides) = resolve_model_compat_overrides(&model, &row.model_settings) else {
                 continue;
             };
-            let (base_url, _) = resolve_aionrs_url_and_compat_with_mode(
+            let (base_url, _) = resolve_dream_engine_url_and_compat_with_mode(
                 &row.platform,
                 &row.base_url,
                 &provider,

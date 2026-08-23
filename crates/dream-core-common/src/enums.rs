@@ -11,6 +11,7 @@ pub enum AgentType {
     OpenclawGateway,
     Nanobot,
     Remote,
+    #[serde(rename = "dream", alias = "aionrs")]
     DreamEngine,
     /// Google Antigravity, driven through the `agy` CLI. A direct-CLI backend
     /// (one process per turn, `-p --output-format stream-json`) — NOT an ACP
@@ -51,7 +52,7 @@ impl AgentType {
             AgentType::OpenclawGateway => "openclaw-gateway",
             AgentType::Nanobot => "nanobot",
             AgentType::Remote => "remote",
-            AgentType::DreamEngine => "aionrs",
+            AgentType::DreamEngine => "dream",
             AgentType::Antigravity => "antigravity",
             AgentType::Gemini => "gemini",
             AgentType::Codex => "codex",
@@ -67,6 +68,15 @@ impl AgentType {
     }
 
     pub fn id(&self) -> String {
+        // DreamEngine's id is frozen at the hash of its pre-migration
+        // "aionrs" serde_name: several migrations (001, 049) and the seeded
+        // agent_metadata row hardcode "632f31d2" as this agent's stable
+        // catalog id. Recomputing from the current serde_name ("dream")
+        // would silently orphan that seed row. Every other variant still
+        // derives its id from serde_name() as before.
+        if matches!(self, AgentType::DreamEngine) {
+            return "632f31d2".to_owned();
+        }
         let hash = fnv1a_hex8(self.serde_name().as_bytes());
         // SAFETY: fnv1a_hex8 only produces ASCII hex digits
         unsafe { std::str::from_utf8_unchecked(&hash) }.into()
@@ -90,7 +100,7 @@ impl AgentType {
     /// Codex conversations use ACP metadata with `backend = "codex"`.
     pub fn native_skills_dirs(&self) -> Option<&'static [&'static str]> {
         match self {
-            AgentType::DreamEngine => Some(&[".aionrs/skills"]),
+            AgentType::DreamEngine => Some(&[".dream/skills"]),
             // Verified 2026-07-31 against agy 1.1.8: a skill at
             // `.agents/skills/<name>/SKILL.md` is discovered and executed in
             // headless (`-p`) runs. agy also accepts `.agent/` / `_agents/` /
@@ -163,7 +173,8 @@ pub enum ConversationStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConversationSource {
-    Aionui,
+    #[serde(rename = "dream", alias = "aionui")]
+    DreamUi,
     Telegram,
     Lark,
     Dingtalk,
@@ -323,9 +334,11 @@ pub enum McpSource {
     CodeBuddy,
     #[serde(rename = "opencode")]
     OpenCode,
+    #[serde(rename = "dream", alias = "aionrs")]
     DreamEngine,
     Nanobot,
-    Aionui,
+    #[serde(rename = "dream-ui", alias = "aionui")]
+    DreamUi,
 }
 
 /// MCP server connection status.
@@ -393,7 +406,7 @@ mod tests {
             (AgentType::OpenclawGateway, "openclaw-gateway"),
             (AgentType::Nanobot, "nanobot"),
             (AgentType::Remote, "remote"),
-            (AgentType::DreamEngine, "aionrs"),
+            (AgentType::DreamEngine, "dream"),
             (AgentType::Codex, "codex"),
         ];
         for (variant, expected) in cases {
@@ -481,9 +494,9 @@ mod tests {
             (McpSource::Codex, r#""codex""#),
             (McpSource::CodeBuddy, r#""codebuddy""#),
             (McpSource::OpenCode, r#""opencode""#),
-            (McpSource::DreamEngine, r#""aionrs""#),
+            (McpSource::DreamEngine, r#""dream""#),
             (McpSource::Nanobot, r#""nanobot""#),
-            (McpSource::Aionui, r#""aionui""#),
+            (McpSource::DreamUi, r#""dream-ui""#),
         ];
         for (variant, expected_json) in cases {
             let json = serde_json::to_string(&variant).unwrap();

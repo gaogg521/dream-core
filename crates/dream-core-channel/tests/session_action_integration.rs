@@ -368,7 +368,7 @@ async fn action_session_new() {
             let text = resp.text.unwrap();
             assert!(text.contains("New session"));
             // With no client_preferences, defaults to "dream"
-            assert!(text.contains("aionrs"));
+            assert!(text.contains("dream"));
         }
         _ => panic!("Expected Action result"),
     }

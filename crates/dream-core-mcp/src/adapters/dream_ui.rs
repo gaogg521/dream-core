@@ -32,7 +32,7 @@ impl DreamUiAdapter {
 #[async_trait::async_trait]
 impl McpAgentAdapter for DreamUiAdapter {
     fn source(&self) -> McpSource {
-        McpSource::Aionui
+        McpSource::DreamUi
     }
 
     async fn is_installed(&self) -> Result<bool, McpError> {
@@ -194,7 +194,7 @@ mod tests {
     fn source_is_aionui() {
         let repo = Arc::new(MockRepo::new(vec![]));
         let adapter = DreamUiAdapter::new(repo);
-        assert_eq!(adapter.source(), McpSource::Aionui);
+        assert_eq!(adapter.source(), McpSource::DreamUi);
     }
 
     #[tokio::test]
@@ -257,7 +257,7 @@ mod tests {
     async fn trait_is_object_safe() {
         let repo = Arc::new(MockRepo::new(vec![]));
         let adapter: Arc<dyn McpAgentAdapter> = Arc::new(DreamUiAdapter::new(repo));
-        assert_eq!(adapter.source(), McpSource::Aionui);
+        assert_eq!(adapter.source(), McpSource::DreamUi);
         assert!(adapter.is_installed().await.unwrap());
     }
 }

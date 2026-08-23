@@ -1493,7 +1493,7 @@ mod tests {
             extra: r#"{"workspace":"/home/user/project"}"#.to_string(),
             model: Some(r#"{"providerId":"prov_1","model":"claude-sonnet-4-20250514"}"#.to_string()),
             status: Some("pending".to_string()),
-            source: Some("aionui".to_string()),
+            source: Some("dream".to_string()),
             channel_chat_id: None,
             pinned: false,
             pinned_at: None,
@@ -1875,7 +1875,7 @@ mod tests {
         let (repo, _db) = setup().await;
 
         let mut c1 = sample_conversation(SYSTEM_USER_ID);
-        c1.source = Some("aionui".to_string());
+        c1.source = Some("dream".to_string());
         repo.create(&c1).await.unwrap();
 
         let mut c2 = sample_conversation(SYSTEM_USER_ID);

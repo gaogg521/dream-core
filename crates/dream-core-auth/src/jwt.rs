@@ -14,10 +14,10 @@ use crate::error::AuthError;
 const TOKEN_EXPIRY: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// JWT issuer claim value.
-const JWT_ISSUER: &str = "aionui";
+const JWT_ISSUER: &str = "dream";
 
 /// JWT audience claim value.
-const JWT_AUDIENCE: &str = "aionui-webui";
+const JWT_AUDIENCE: &str = "dream-webui";
 
 /// JWT payload (claims embedded in the token).
 #[derive(Debug, Clone, Serialize, Deserialize)]

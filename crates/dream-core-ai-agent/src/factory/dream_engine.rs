@@ -7,7 +7,7 @@ use dream_engine_config::compat::OpenAiApiMode;
 use dream_engine_config::config::{McpServerConfig, TransportType};
 use dream_engine_types::message::ImageInputCapability;
 use dream_core_api_types::{
-    AionrsBuildExtra, ForkSpec, ModelImageInputCapability, ModelOpenAiApiMode, ModelSettings, SessionMcpServer,
+    DreamEngineBuildExtra, ForkSpec, ModelImageInputCapability, ModelOpenAiApiMode, ModelSettings, SessionMcpServer,
     SessionMcpTransport, TEAM_MCP_SERVER_NAME, TeamMcpStdioConfig,
 };
 use dream_core_common::ProviderWithModel;
@@ -82,7 +82,7 @@ pub(super) async fn build(
             conversation_id = %ctx.conversation_id,
             mcp_count = extra_mcp_servers.len(),
             mcp_names = ?extra_mcp_servers.keys().collect::<Vec<_>>(),
-            "Injecting MCP servers into aionrs session"
+            "Injecting MCP servers into dream session"
         );
     }
 
@@ -104,10 +104,10 @@ pub(super) async fn build(
         .unwrap_or(&model.model)
         .to_owned();
 
-    let provider = map_aionrs_provider(&row.platform, &model_id, row.model_protocols.as_deref())?;
+    let provider = map_dream_engine_provider(&row.platform, &model_id, row.model_protocols.as_deref())?;
     let model_overrides = resolve_model_compat_overrides(&model_id, &row.model_settings)?;
 
-    let (base_url, mut compat_overrides) = resolve_aionrs_url_and_compat_with_mode(
+    let (base_url, mut compat_overrides) = resolve_dream_engine_url_and_compat_with_mode(
         &row.platform,
         &row.base_url,
         &provider,
@@ -195,7 +195,7 @@ pub(super) async fn build(
         match crate::dev_prompt_dump::dump_prompt(
             &dump_dir,
             crate::dev_prompt_dump::PromptDump {
-                kind: "aionrs-system-prompt",
+                kind: "dream-system-prompt",
                 backend: None,
                 conversation_id: &ctx.conversation_id,
                 session_id: None,
@@ -250,7 +250,7 @@ fn resolve_build_session(
             session_id = %session.id,
             message_count = session.messages.len(),
             sanitized_dropped = dropped,
-            "Loaded existing aionrs session for resume"
+            "Loaded existing dream session for resume"
         );
         return Ok(Some(session));
     }
@@ -265,7 +265,7 @@ fn resolve_build_session(
             session_id = %session.id,
             message_count = session.messages.len(),
             sanitized_dropped = dropped,
-            "Loaded legacy aionrs session from workspace"
+            "Loaded legacy dream session from workspace"
         );
         return Ok(Some(session));
     }
@@ -309,7 +309,7 @@ fn resolve_build_session(
                     parent_session_id = %fork.parent_session_id,
                     last_turn_id = fork.last_turn_id.as_deref().unwrap_or("HEAD"),
                     error = %error,
-                    "Failed to materialize aionrs fork session"
+                    "Failed to materialize dream fork session"
                 );
                 AgentError::bad_request(format!("Cannot fork the parent session: {error}"))
             })?;
@@ -320,20 +320,20 @@ fn resolve_build_session(
             last_turn_id = fork.last_turn_id.as_deref().unwrap_or("HEAD"),
             message_count = session.messages.len(),
             sanitized_dropped = dropped,
-            "Materialized aionrs fork session from parent"
+            "Materialized dream fork session from parent"
         );
         return Ok(Some(session));
     }
 
     debug!(
         conversation_id = %conversation_id,
-        "No existing aionrs session found, starting fresh"
+        "No existing dream session found, starting fresh"
     );
     Ok(None)
 }
 
 /// Map Dream UI DB platform/protocol settings to the dream provider identifier.
-pub(crate) fn map_aionrs_provider(
+pub(crate) fn map_dream_engine_provider(
     platform: &str,
     model_id: &str,
     model_protocols: Option<&str>,
@@ -363,17 +363,17 @@ pub(crate) fn map_aionrs_provider(
 /// OpenAI GPT-5.6 models use Responses. Anthropic-compatible providers append
 /// `/v1/messages`.
 #[cfg(test)]
-fn resolve_aionrs_url_and_compat(
+fn resolve_dream_engine_url_and_compat(
     platform: &str,
     raw_base_url: &str,
     mapped_provider: &str,
     model_id: &str,
     is_full_url: bool,
 ) -> (Option<String>, AionrsCompatOverrides) {
-    resolve_aionrs_url_and_compat_with_mode(platform, raw_base_url, mapped_provider, model_id, is_full_url, None)
+    resolve_dream_engine_url_and_compat_with_mode(platform, raw_base_url, mapped_provider, model_id, is_full_url, None)
 }
 
-pub(crate) fn resolve_aionrs_url_and_compat_with_mode(
+pub(crate) fn resolve_dream_engine_url_and_compat_with_mode(
     platform: &str,
     raw_base_url: &str,
     mapped_provider: &str,
@@ -855,7 +855,7 @@ async fn ensure_stdio_launch(
     Ok((resolved.program.to_string_lossy().into_owned(), final_args, final_env))
 }
 
-fn resolve_mcp_servers(overrides: &AionrsBuildExtra) -> HashMap<String, McpServerConfig> {
+fn resolve_mcp_servers(overrides: &DreamEngineBuildExtra) -> HashMap<String, McpServerConfig> {
     if let Some(cfg) = &overrides.team_mcp_stdio_config {
         return team_mcp_to_config(cfg);
     }
@@ -890,7 +890,7 @@ fn team_mcp_to_config(cfg: &TeamMcpStdioConfig) -> HashMap<String, McpServerConf
 /// [`crate::manager::dream_engine::DreamEngineAgentManager::new`] (full session/
 /// tool-loop) and [`resolve_provider_config_for_bridge`] (one-shot calls for
 /// the Codex compatibility bridge) so the two paths cannot drift apart.
-pub(crate) fn build_aionrs_config(
+pub(crate) fn build_dream_engine_config(
     cli_args: &dream_engine_config::config::CliArgs,
     compat_overrides: AionrsCompatOverrides,
     bedrock: Option<dream_engine_config::config::BedrockConfig>,
@@ -948,9 +948,9 @@ pub async fn resolve_provider_config_for_bridge(
     let api_key = dream_core_common::decrypt_string(&row.api_key_encrypted, encryption_key)
         .map_err(|e| AgentError::internal(e.to_string()))?;
 
-    let provider = map_aionrs_provider(&row.platform, model_id, row.model_protocols.as_deref())?;
+    let provider = map_dream_engine_provider(&row.platform, model_id, row.model_protocols.as_deref())?;
     let model_overrides = resolve_model_compat_overrides(model_id, &row.model_settings)?;
-    let (base_url, mut compat_overrides) = resolve_aionrs_url_and_compat_with_mode(
+    let (base_url, mut compat_overrides) = resolve_dream_engine_url_and_compat_with_mode(
         &row.platform,
         &row.base_url,
         &provider,
@@ -982,11 +982,11 @@ pub async fn resolve_provider_config_for_bridge(
         project_dir: None,
     };
 
-    build_aionrs_config(&cli_args, compat_overrides, bedrock)
+    build_dream_engine_config(&cli_args, compat_overrides, bedrock)
 }
 
 #[cfg(test)]
-#[path = "aionrs_model_settings_test.rs"]
+#[path = "dream_engine_model_settings_test.rs"]
 mod model_settings_test;
 
 #[cfg(test)]
@@ -1197,7 +1197,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn aionrs_loads_mcp_servers_from_frozen_selection_snapshot() {
+    async fn dream_engine_loads_mcp_servers_from_frozen_selection_snapshot() {
         let mut row = make_row(
             "mcp-docs",
             "http",
@@ -1260,7 +1260,7 @@ mod tests {
     }
 
     #[test]
-    fn map_aionrs_provider_table_driven_cases() {
+    fn map_dream_engine_provider_table_driven_cases() {
         let cases = [
             ProviderMappingCase {
                 name: "anthropic platform defaults anthropic",
@@ -1412,7 +1412,7 @@ mod tests {
         ];
 
         for case in cases {
-            let result = map_aionrs_provider(case.platform, case.model_id, case.model_protocols);
+            let result = map_dream_engine_provider(case.platform, case.model_id, case.model_protocols);
             match case.expected_provider {
                 Some(expected) => assert_eq!(result.unwrap(), expected, "{}", case.name),
                 None => assert!(result.is_err(), "{}", case.name),
@@ -1440,7 +1440,7 @@ mod tests {
         ];
 
         for (platform, raw_base_url, model_id) in cases {
-            let (base_url, compat) = resolve_aionrs_url_and_compat(platform, raw_base_url, "openai", model_id, false);
+            let (base_url, compat) = resolve_dream_engine_url_and_compat(platform, raw_base_url, "openai", model_id, false);
 
             assert_eq!(base_url.as_deref(), Some(raw_base_url), "{model_id}");
             assert_eq!(compat.openai_api_mode, Some(OpenAiApiMode::Responses), "{model_id}");
@@ -1457,7 +1457,7 @@ mod tests {
         ];
 
         for (platform, provider, model_id, is_full_url) in cases {
-            let (_, compat) = resolve_aionrs_url_and_compat(
+            let (_, compat) = resolve_dream_engine_url_and_compat(
                 platform,
                 "https://example.test/v1/chat/completions",
                 provider,
@@ -1477,7 +1477,7 @@ mod tests {
             "https://api.openai.com/v1/responses",
         ] {
             let (base_url, compat) =
-                resolve_aionrs_url_and_compat("custom", raw_base_url, "openai", "gpt-5.6-sol", true);
+                resolve_dream_engine_url_and_compat("custom", raw_base_url, "openai", "gpt-5.6-sol", true);
 
             assert!(base_url.as_deref().unwrap().ends_with("/responses"), "{raw_base_url}");
             assert_eq!(compat.openai_api_mode, Some(OpenAiApiMode::Responses), "{raw_base_url}");
@@ -1487,7 +1487,7 @@ mod tests {
 
     #[test]
     fn unrelated_full_url_is_not_rewritten_for_gpt_5_6() {
-        let (base_url, compat) = resolve_aionrs_url_and_compat(
+        let (base_url, compat) = resolve_dream_engine_url_and_compat(
             "custom",
             "https://proxy.example.com/generate",
             "openai",
@@ -1512,7 +1512,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_aionrs_url_and_compat_table_driven_cases() {
+    fn resolve_dream_engine_url_and_compat_table_driven_cases() {
         let cases = [
             UrlCompatCase {
                 name: "official openai root appends chat completions",
@@ -1595,7 +1595,7 @@ mod tests {
                 expected_max_tokens_field: None,
             },
             UrlCompatCase {
-                name: "official anthropic keeps aionrs defaults",
+                name: "official anthropic keeps dream defaults",
                 platform: "anthropic",
                 raw_base_url: "https://api.anthropic.com",
                 mapped_provider: "anthropic",
@@ -1667,7 +1667,7 @@ mod tests {
         ];
 
         for case in cases {
-            let (base_url, compat) = resolve_aionrs_url_and_compat(
+            let (base_url, compat) = resolve_dream_engine_url_and_compat(
                 case.platform,
                 case.raw_base_url,
                 case.mapped_provider,
@@ -1812,10 +1812,10 @@ mod tests {
         ];
 
         for case in cases {
-            let provider = map_aionrs_provider("custom", "m", None).expect(case.name);
+            let provider = map_dream_engine_provider("custom", "m", None).expect(case.name);
             assert_eq!(provider, "openai", "{}", case.name);
 
-            let (base_url, compat) = resolve_aionrs_url_and_compat("custom", case.base_url, &provider, "m", false);
+            let (base_url, compat) = resolve_dream_engine_url_and_compat("custom", case.base_url, &provider, "m", false);
             assert_eq!(base_url.as_deref(), Some(case.base_url), "{}", case.name);
             assert_eq!(compat.api_path.as_deref(), Some("/chat/completions"), "{}", case.name);
             assert_eq!(
@@ -1825,7 +1825,7 @@ mod tests {
                 case.name
             );
             assert_eq!(
-                intended_aionrs_final_url(&provider, case.base_url, compat.api_path.as_deref()),
+                intended_dream_engine_final_url(&provider, case.base_url, compat.api_path.as_deref()),
                 format!("{}/chat/completions", case.base_url),
                 "{}",
                 case.name
@@ -1903,16 +1903,16 @@ mod tests {
         ];
 
         for case in cases {
-            let provider = map_aionrs_provider(case.platform, "m", None).expect(case.name);
+            let provider = map_dream_engine_provider(case.platform, "m", None).expect(case.name);
             assert_eq!(provider, case.expected_provider, "{}", case.name);
 
-            let (base_url, compat) = resolve_aionrs_url_and_compat(case.platform, case.base_url, &provider, "m", false);
+            let (base_url, compat) = resolve_dream_engine_url_and_compat(case.platform, case.base_url, &provider, "m", false);
             assert_eq!(base_url.as_deref(), case.expected_base_url, "{}", case.name);
             assert_eq!(compat.api_path.as_deref(), case.expected_api_path, "{}", case.name);
 
             if let (Some(base_url), Some(expected_final_url)) = (base_url.as_deref(), case.expected_final_url) {
                 assert_eq!(
-                    intended_aionrs_final_url(&provider, base_url, compat.api_path.as_deref()),
+                    intended_dream_engine_final_url(&provider, base_url, compat.api_path.as_deref()),
                     expected_final_url,
                     "{}",
                     case.name
@@ -1929,7 +1929,7 @@ mod tests {
         expected_final_url: &'a str,
     }
 
-    fn intended_aionrs_final_url(provider: &str, base_url: &str, api_path: Option<&str>) -> String {
+    fn intended_dream_engine_final_url(provider: &str, base_url: &str, api_path: Option<&str>) -> String {
         let default_path = match provider {
             "anthropic" => "/v1/messages",
             _ => "/v1/chat/completions",
@@ -1938,7 +1938,7 @@ mod tests {
     }
 
     #[test]
-    fn resolved_aionrs_final_url_semantics_table_driven_cases() {
+    fn resolved_dream_engine_final_url_semantics_table_driven_cases() {
         let cases = [
             FinalUrlCase {
                 name: "deepseek openai-compatible chat completions",
@@ -1986,7 +1986,7 @@ mod tests {
 
         for case in cases {
             assert_eq!(
-                intended_aionrs_final_url(case.provider, case.base_url, case.api_path),
+                intended_dream_engine_final_url(case.provider, case.base_url, case.api_path),
                 case.expected_final_url,
                 "{}",
                 case.name
@@ -1996,7 +1996,7 @@ mod tests {
 
     #[test]
     fn resolve_mcp_servers_team_takes_priority() {
-        let overrides = AionrsBuildExtra {
+        let overrides = DreamEngineBuildExtra {
             team_mcp_stdio_config: Some(TeamMcpStdioConfig {
                 team_id: "team-42".into(),
                 port: 9000,
@@ -2026,7 +2026,7 @@ mod tests {
 
     #[test]
     fn resolve_mcp_servers_without_team_returns_empty_map() {
-        let overrides = AionrsBuildExtra {
+        let overrides = DreamEngineBuildExtra {
             backend: Some("aionrs".into()),
             ..Default::default()
         };
@@ -2064,7 +2064,7 @@ mod tests {
                 },
             },
         ];
-        let mut extra_mcp_servers = resolve_mcp_servers(&AionrsBuildExtra {
+        let mut extra_mcp_servers = resolve_mcp_servers(&DreamEngineBuildExtra {
             team_mcp_stdio_config: Some(TeamMcpStdioConfig {
                 team_id: "team-42".into(),
                 port: 9000,
@@ -2117,7 +2117,7 @@ mod tests {
                 ),
             ],
         };
-        let overrides = AionrsBuildExtra {
+        let overrides = DreamEngineBuildExtra {
             team_mcp_stdio_config: Some(TeamMcpStdioConfig {
                 team_id: "team-42".into(),
                 port: 9000,
@@ -2185,7 +2185,7 @@ mod tests {
 
     #[test]
     fn resolve_mcp_servers_empty_when_no_config() {
-        let overrides = AionrsBuildExtra::default();
+        let overrides = DreamEngineBuildExtra::default();
         let result = resolve_mcp_servers(&overrides);
         assert!(result.is_empty());
     }
@@ -2422,7 +2422,7 @@ mod tests {
         let json = serde_json::json!({
             "preset_rules": "You are a data analyst. Always use Python.",
         });
-        let mut overrides: AionrsBuildExtra = serde_json::from_value(json).unwrap();
+        let mut overrides: DreamEngineBuildExtra = serde_json::from_value(json).unwrap();
 
         if let Some(rules) = overrides.preset_rules.take() {
             overrides.system_prompt = Some(match overrides.system_prompt.take() {
@@ -2444,7 +2444,7 @@ mod tests {
             "system_prompt": "Be concise.",
             "preset_rules": "You are a data analyst.",
         });
-        let mut overrides: AionrsBuildExtra = serde_json::from_value(json).unwrap();
+        let mut overrides: DreamEngineBuildExtra = serde_json::from_value(json).unwrap();
 
         if let Some(rules) = overrides.preset_rules.take() {
             overrides.system_prompt = Some(match overrides.system_prompt.take() {
@@ -2464,7 +2464,7 @@ mod tests {
         let json = serde_json::json!({
             "system_prompt": "Be concise.",
         });
-        let mut overrides: AionrsBuildExtra = serde_json::from_value(json).unwrap();
+        let mut overrides: DreamEngineBuildExtra = serde_json::from_value(json).unwrap();
 
         if let Some(rules) = overrides.preset_rules.take() {
             overrides.system_prompt = Some(match overrides.system_prompt.take() {
