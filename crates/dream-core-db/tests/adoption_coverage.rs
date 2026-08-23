@@ -1,7 +1,7 @@
-//! AionPro adoption coverage gate.
+//! DreamPro adoption coverage gate.
 //!
 //! `adopt_system_default_data` re-owns the local default user's data to the
-//! machine's first external (AionPro) account by convention: any table with a
+//! machine's first external (DreamPro) account by convention: any table with a
 //! `user_id` or `owner_user_id` column is an ownership root and gets adopted.
 //! A table whose ownership column uses any OTHER name would be silently
 //! skipped — no error, no log (this is exactly how `project_explorer` was
@@ -36,7 +36,7 @@ const GLOBAL_TABLES: &[(&str, &str)] = &[
     // (project-bind: folders are reused globally by resource_canonical).
     ("folders", "global canonical path registry"),
     // Read-only expert catalog shipped inside the binary and re-materialized
-    // on every boot (see aionui-assistant/src/marketplace.rs). It is a
+    // on every boot (see dream-assistant/src/marketplace.rs). It is a
     // catalog, not user data: installing an entry copies it into the caller's
     // own `assistant_definitions`, which IS adopted.
     (
@@ -374,7 +374,7 @@ async fn adoption_fires_once_then_new_local_data_stays_local() {
     assert_eq!(adopted_by.as_deref(), Some(user.id.as_str()), "marker must be stamped");
     assert!(repo.is_default_data_adopter(&user.id).await.unwrap());
 
-    // AionUi keeps working locally: NEW data lands on the default user.
+    // Dream UI keeps working locally: NEW data lands on the default user.
     sqlx::query(
         "INSERT INTO conversations (id, user_id, name, type, extra, status, created_at, updated_at)
          VALUES ('conv-new', 'system_default_user', 'New', 'acp', '{}', 'pending', 2, 2)",

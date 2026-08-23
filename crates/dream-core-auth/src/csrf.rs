@@ -45,7 +45,7 @@ pub async fn csrf_middleware(
     // posts here for every tool the agent wants to run; it has no user session
     // and no CSRF token to present. The route is already deliberately outside
     // `auth_middleware` for that reason, and the handler authenticates it with a
-    // per-conversation token instead (`x-aionui-hook-token`) — but the CSRF
+    // per-conversation token instead (`x-dream-hook-token`) — but the CSRF
     // layer is global, so it rejected what auth had been told to let through.
     //
     // Exempting it is safe on CSRF's own terms: this layer stops a browser

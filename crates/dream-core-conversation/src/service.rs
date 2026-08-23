@@ -341,7 +341,7 @@ pub struct ConversationService {
     /// turn completion rather than at accept time. `RwLock`-wrapped like
     /// `mcp_server_repo`/`project_service` above: `ConversationService` is
     /// cloned into every router mount and background scheduler that sends a
-    /// turn (HTTP routes, cron, team), so wiring this once in `aionui-app`
+    /// turn (HTTP routes, cron, team), so wiring this once in `dream-app`
     /// via `with_usage_recorder` must reach every existing clone, not just
     /// whichever local variable the call happens to chain off of.
     pub(crate) usage_recorder: Arc<RwLock<Option<Arc<dyn crate::state::UsageRecorder>>>>,
@@ -648,7 +648,7 @@ impl ConversationService {
     /// Register a hook to be notified when a conversation is deleted.
     ///
     /// Hooks are dispatched sequentially in registration order before
-    /// `delete()` removes the conversation row. Used by `aionui-app` to wire
+    /// `delete()` removes the conversation row. Used by `dream-app` to wire
     /// up `WorkerTaskManagerImpl` (kill the agent process) and `CronService`
     /// (clear deleted workspace references from cron jobs).
     pub fn with_delete_hook(&self, hook: Arc<dyn OnConversationDelete>) {
@@ -681,7 +681,7 @@ impl ConversationService {
     /// TITLE-ONLY watcher: pi/omp emit `session_info_update` at session-open
     /// (no turn running) and ~1ms before the turn's Finish (racing the relay's
     /// exit), so only a persistent consumer sees them; their other frames keep
-    /// the existing ACP delivery paths untouched. aionrs/test instances emit no
+    /// the existing ACP delivery paths untouched. dream/test instances emit no
     /// agent titles and get none.
     ///
     /// ⚠️ On this fork claude/codex route through `AgentInstance::Acp` (see
@@ -1029,7 +1029,7 @@ impl ConversationService {
     /// Create a new conversation.
     ///
     /// Generates a UUID v7, sets status to `pending`, defaults source
-    /// to `aionui`, and broadcasts `conversation.listChanged(created)`.
+    /// to `dream`, and broadcasts `conversation.listChanged(created)`.
     #[tracing::instrument(skip_all, fields(user_id = %user_id, req_type = ?req.r#type))]
     pub async fn create(
         &self,
@@ -1085,7 +1085,7 @@ impl ConversationService {
             });
         }
 
-        // Type-aware rule: top-level `model` is aionrs-only. Other agent types
+        // Type-aware rule: top-level `model` is dream-only. Other agent types
         // carry model/mode via `extra` (see spec 2026-05-12). Reject early so
         // clients that still ship the legacy shape get a loud 400 instead of
         // a silent write to a column nobody reads.
@@ -1098,7 +1098,7 @@ impl ConversationService {
             });
         }
 
-        // aionrs source-of-truth rule: top-level `model` wins. If an older client
+        // dream source-of-truth rule: top-level `model` wins. If an older client
         // still packs `extra.model`, strip it before persist so the stored row
         // has a single canonical model representation.
         if effective_type == AgentType::DreamEngine
@@ -1792,7 +1792,7 @@ impl ConversationService {
         let agent_type = parse_agent_type_from_metadata(&agent_binding.agent_type)?;
 
         // DreamEngine conversations gate tool-call auto-approval on session_mode
-        // == "yolo" (see AionrsAgentManager::new). When an aionrs assistant
+        // == "yolo" (see DreamEngineAgentManager::new). When an dream assistant
         // has never been explicitly configured (default_permission_mode ==
         // "auto") and the user has no prior session_mode preference for it
         // yet, default to fully-automatic instead of leaving it unset
@@ -2215,7 +2215,7 @@ impl ConversationService {
         // Fork + prompt capabilities: detail-path-only post-fill (list stays
         // N+1-free). Best-effort — a lookup failure just hides the fork entry
         // point / media hint. acp_session-backed agents resolve via their
-        // acp_session row; the builtin aionrs agent has no such row, so its
+        // acp_session row; the builtin dream agent has no such row, so its
         // identity comes from the assistant snapshot (same fallback fork()
         // uses).
         let capability_agent_id = match self.acp_session_repo.get_for_user(user_id, id).await {
@@ -2349,7 +2349,7 @@ impl ConversationService {
             });
         }
 
-        // Type-aware rule: top-level `model` is aionrs-only. For non-aionrs
+        // Type-aware rule: top-level `model` is dream-only. For non-dream
         // conversations, model/mode must be updated via `extra` (see spec
         // 2026-05-12).
         if existing_type != AgentType::DreamEngine && req.model.is_some() {
@@ -2363,7 +2363,7 @@ impl ConversationService {
 
         let now = now_ms();
 
-        // Merge extra if provided. For aionrs, strip `extra.model` post-merge
+        // Merge extra if provided. For dream, strip `extra.model` post-merge
         // so the row keeps a single canonical model source (top-level column).
         let merged_extra = if let Some(new_extra) = &req.extra {
             let mut existing_extra: serde_json::Value =
@@ -2377,9 +2377,9 @@ impl ConversationService {
              * update — a rename would silently drop the fork badge.
              *
              * Why it must be stripped at all: `extra.fork.parent_session_id` is fed straight to
-             * `SessionManager::load` when the agent is built, and aionrs sessions live in one
+             * `SessionManager::load` when the agent is built, and dream sessions live in one
              * process-wide directory with no per-user namespacing, so nothing downstream checks
-             * that the caller owns that session. For aionrs the id IS the parent conversation id
+             * that the caller owns that session. For dream the id IS the parent conversation id
              * (see `fork`), so a client that could write this field could attach any other user's
              * agent state to a conversation it owns and read their history back out of the model.
              * `create` already guards this; leaving `update` open made the guard decorative.
@@ -2578,7 +2578,7 @@ impl ConversationService {
     }
 
     /// Whether this owned conversation has the ACP session row required for
-    /// an in-place Fresh-session reset. AionRS conversations intentionally do
+    /// an in-place Fresh-session reset. DreamRS conversations intentionally do
     /// not create `acp_session` state and therefore return `false`.
     pub async fn supports_acp_context_reset(
         &self,
@@ -2748,7 +2748,7 @@ impl ConversationService {
     /// workspace — claude keys on-disk sessions by cwd), copies the visible
     /// history, and returns. The BACKEND session materializes lazily on the
     /// fork's first open (`SessionSpec::Fork` / ACP `session/fork` / for the
-    /// builtin aionrs agent, `SessionManager::fork_from` in the aionrs
+    /// builtin dream agent, `SessionManager::fork_from` in the dream
     /// factory — its session store is keyed by conversation id, so the parent
     /// conversation id is the session anchor and no acp_session row exists);
     /// the frontend calls `POST {new_id}/runtime/ensure` right after to
@@ -2787,8 +2787,8 @@ impl ConversationService {
 
         // Capability gate + parent session anchor. acp_session-backed agents
         // (claude/codex/ACP) carry both on their acp_session row. The builtin
-        // aionrs agent owns no acp_session row: its session store is keyed by
-        // conversation id (the aionrs factory loads
+        // dream agent owns no acp_session row: its session store is keyed by
+        // conversation id (the dream factory loads
         // `SessionManager::load(<conversation_id>)`), so the parent
         // conversation id IS the session anchor, and the agent identity comes
         // from the assistant snapshot.
@@ -2962,7 +2962,7 @@ impl ConversationService {
         // acp_session row: same agent identity, session_id NULL ("fork
         // pending" — the first open materializes it); mode/model seeded from
         // the parent's live runtime state so the fork opens with the same
-        // selections. aionrs conversations own no acp_session row (parity
+        // selections. dream conversations own no acp_session row (parity
         // with create()): their fork materializes from `extra.fork` alone.
         if let Some(acp_row) = &acp_row {
             let params = CreateAcpSessionParams {
@@ -3012,10 +3012,10 @@ impl ConversationService {
         Ok(response)
     }
 
-    /// Agent identity owning capability metadata for an aionrs conversation
+    /// Agent identity owning capability metadata for an dream conversation
     /// (which has no acp_session row): the assistant snapshot's agent binding
-    /// when present, else the builtin Aion CLI row resolved through the
-    /// standard id/backend/agent_type binding ladder (aionrs's backend column
+    /// when present, else the builtin Dream CLI row resolved through the
+    /// standard id/backend/agent_type binding ladder (dream's backend column
     /// is NULL, so it resolves by agent_type).
     async fn aionrs_capability_agent_id(
         &self,
@@ -4747,8 +4747,8 @@ pub(crate) fn agent_error_top_level_code(error: &AgentError) -> &'static str {
 }
 
 impl ConversationService {
-    /// Loads the persisted runtime permission gate inputs for an aionrs
-    /// rebuild. Returns `None` for non-aionrs conversations and for aionrs
+    /// Loads the persisted runtime permission gate inputs for an dream
+    /// rebuild. Returns `None` for non-dream conversations and for dream
     /// conversations without a persisted assistant snapshot (assistant-less
     /// sessions are out of scope — spec §5). This is the only place a
     /// `conversation_repo` handle is needed, so the seed is computed here and
@@ -4843,7 +4843,7 @@ impl ConversationService {
     ) -> Option<String> {
         let service = self.runtime_token_service.as_ref()?;
         // Every conversation gets a helper-scoped token so the in-conversation
-        // CLI (`aioncore config` / `diagnose`) can authenticate in AionPro
+        // CLI (`aioncore config` / `diagnose`) can authenticate in DreamPro
         // mode; team-bound conversations additionally get the team-tools scopes.
         let mut scopes = vec![RuntimeTokenScope::ConversationHelper];
         if build_opts.context.team.is_some() {
@@ -4854,7 +4854,7 @@ impl ConversationService {
     }
 
     /// Ensure native skill links exist in the runtime workspace. Auto
-    /// workspaces are constrained to AionUi's generated path; custom
+    /// workspaces are constrained to Dream UI's generated path; custom
     /// workspaces were validated when the session context was built.
     pub(crate) async fn ensure_workspace_skill_links(&self, row: &ConversationRow, build_opts: &BuildTaskOptions) {
         let context = &build_opts.context;
@@ -5081,7 +5081,7 @@ fn strip_request_owner_user_id(extra: &mut serde_json::Value) {
 }
 
 /// `extra.fork` may only be minted by the server-side fork API, never accepted from a client
-/// payload — it names the aionrs session whose agent state gets loaded, and that lookup is not
+/// payload — it names the dream session whose agent state gets loaded, and that lookup is not
 /// ownership-checked. Called from both `create` and `update`; `route` only labels the log line.
 ///
 /// ⚠️ On `update` this must be applied to the incoming request, not to the merge result: an
@@ -5122,7 +5122,7 @@ fn map_create_workspace_validation_error(error: WorkspacePathValidationError) ->
 ///
 /// For ACP conversations the label is the vendor string from
 /// `extra.backend` (e.g. `"claude"`); otherwise the `AgentType` serde
-/// name (e.g. `"aionrs"`). Falls back to the agent type's serde name
+/// name (e.g. `"dream"`). Falls back to the agent type's serde name
 /// when the backend field is missing or not a string.
 fn conversation_label(agent_type: &AgentType, backend: Option<&serde_json::Value>) -> String {
     if *agent_type == AgentType::Acp

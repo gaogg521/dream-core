@@ -2,7 +2,7 @@
 //! via git2 (no external binary, so headless and cross-platform).
 //!
 //! Written against the git2 public API only; it shares no code with the
-//! checkpoint snapshot service in `aionui-file`, which models a single
+//! checkpoint snapshot service in `dream-file`, which models a single
 //! workspace and a temp-repo mode neither of which fits source control.
 //!
 //! git2 handles are synchronous and not `Send`, so every repository access runs

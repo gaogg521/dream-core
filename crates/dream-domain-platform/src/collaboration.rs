@@ -7,7 +7,7 @@
 //! and reports "not configured"; a real provider can be dropped in at the app
 //! layer via `PlatformService::with_collaboration_provider`.
 //!
-//! Distinct from `aionui-realtime` (the WebSocket *transport*): this layer is
+//! Distinct from `dream-realtime` (the WebSocket *transport*): this layer is
 //! the admin-configured collaboration *backend* (which relay, presence on/off,
 //! auth token) — the transport is a separate concern that a real provider would
 //! build on.

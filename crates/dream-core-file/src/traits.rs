@@ -128,8 +128,8 @@ pub trait IFileService: Send + Sync {
     /// Write `data` to a temporary file and return its absolute path.
     ///
     /// When `conversation_id` is provided, the file is placed under a
-    /// per-conversation sub-directory (`<tmp>/aionui/<conversation_id>/`);
-    /// otherwise the shared `<tmp>/aionui/` directory is used.
+    /// per-conversation sub-directory (`<tmp>/dream/<conversation_id>/`);
+    /// otherwise the shared `<tmp>/dream/` directory is used.
     ///
     /// `file_name` must not contain path separators or traversal patterns.
     async fn create_upload_file(
@@ -244,7 +244,7 @@ pub trait IFileWatchService: Send + Sync {
 /// Supports two modes:
 /// - **git-repo**: directory already has `.git` — uses it directly.
 /// - **snapshot**: no `.git` — creates a temporary repo under
-///   `/tmp/aionui-snapshot-*`.
+///   `/tmp/dream-snapshot-*`.
 #[async_trait::async_trait]
 pub trait ISnapshotService: Send + Sync {
     /// Initialize the snapshot system for a workspace.

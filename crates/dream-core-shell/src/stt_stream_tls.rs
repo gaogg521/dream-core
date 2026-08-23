@@ -5,7 +5,7 @@
 //! `wss://` connect panics with "Could not automatically determine the
 //! process-level CryptoProvider". Mirrors the explicit-connector pattern
 //! established by the lark/dingtalk channel plugins
-//! (`aionui-channel/src/plugins/lark/plugin.rs`).
+//! (`dream-channel/src/plugins/lark/plugin.rs`).
 
 use std::sync::Arc;
 

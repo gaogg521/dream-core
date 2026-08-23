@@ -106,7 +106,7 @@ pub struct SubagentState {
 ///
 /// Per-backend fillability (§10 F7): only `ref_id`/`task_status` are mandatory;
 /// every rich field is `Option` because claude fills all of them (workflow_progress[]),
-/// codex fills only label, and ACP/aionrs have no workflow concept (empty roster).
+/// codex fills only label, and ACP/dream have no workflow concept (empty roster).
 /// The frontend renders by field PRESENCE — it must not assume any rich field.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorkflowAgentState {
@@ -247,11 +247,11 @@ pub fn can_send_message(state: &SessionState) -> bool {
 ///       FIFO; codex since B5 wired mid-turn Steer routing). ⚠️ NOT
 ///       `caps.supported_commands.steer`: a backend could advertise steer without
 ///       the conv layer routing it, surfacing a dead queue affordance
-///       (MX-QUEUE-3). ACP/aionrs lack the path → degrade to false.
+///       (MX-QUEUE-3). ACP/dream lack the path → degrade to false.
 ///
 /// Orthogonal to `can_send` (Idle): `can_send || can_queue` is the input-box gate.
 /// Truth table (× backend `accepts_proactive_input`):
-/// | state                              | claude/codex(true) | acp/aionrs(false) |
+/// | state                              | claude/codex(true) | acp/dream(false) |
 /// |------------------------------------|--------------------|-------------------|
 /// | Idle / Starting / Error            | false              | false             |
 /// | Running { requires_action empty }  | true               | false             |
@@ -320,7 +320,7 @@ pub fn is_requires_action(state: &SessionState) -> bool {
 /// ⚠️ CORRECTION (2026-06-13): an earlier version claimed background_active=false
 /// was "empirically correct" / semantic-② "structurally unreachable", citing a C1
 /// capture of a `run_in_background` bash dying with the turn. That conflated bash
-/// with a Workflow and was WRONG. Re-measured on claude 2.1.176 (AionCore's exact
+/// with a Workflow and was WRONG. Re-measured on claude 2.1.176 (Dream Core's exact
 /// persistent stream-json flags): a Workflow (Task tool) is NON-BLOCKING and
 /// outlives its turn — the process replies to a new message ~2s later while the
 /// workflow's 60s sleep still runs, and `result` is deferred to workflow
@@ -460,7 +460,7 @@ mod tests {
             ),
             "Error cannot queue"
         );
-        // acp/aionrs (accepts_proactive_input=false): degrades to false in
+        // acp/dream (accepts_proactive_input=false): degrades to false in
         // EVERY state — including Running no-RA where claude/codex would queue.
         // This is the MX-QUEUE-3 dead-button guard: the gate is the
         // proactive-input bit, NOT supported_commands.steer.

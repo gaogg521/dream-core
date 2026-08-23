@@ -160,7 +160,7 @@ impl ChannelMessageService {
             )
         });
 
-        // Top-level `model` is only accepted for aionrs; other types pass via `extra`.
+        // Top-level `model` is only accepted for dream; other types pass via `extra`.
         let top_level_model = if agent_type == AgentType::DreamEngine {
             Some(model)
         } else {
@@ -382,7 +382,7 @@ fn platform_to_source(platform: PluginType) -> ConversationSource {
         PluginType::Lark => ConversationSource::Lark,
         PluginType::Dingtalk => ConversationSource::Dingtalk,
         PluginType::Weixin => ConversationSource::Weixin,
-        // Reserved variants default to Aionui
+        // Reserved variants default to Dreamui
         PluginType::Slack | PluginType::Discord => ConversationSource::Aionui,
     }
 }
@@ -658,7 +658,7 @@ mod tests {
         assert_eq!(extra["backend"], "claude");
     }
 
-    // ── model placement by agent_type (regression: non-aionrs must not
+    // ── model placement by agent_type (regression: non-dream must not
     //    use top-level model) ──────────────────────────────────────────
 
     #[test]

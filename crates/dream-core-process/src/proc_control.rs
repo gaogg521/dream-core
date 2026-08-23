@@ -320,7 +320,7 @@ pub fn process_group_alive(process_group_id: Option<u32>) -> bool {
 }
 
 /// Windows Win32 FFI: liveness/identity probe + single-process termination
-/// (cold-reap). Job Object subtree containment lives in aionui-runtime's
+/// (cold-reap). Job Object subtree containment lives in dream-runtime's
 /// spawn.rs (it owns the Command). windows-sys raw FFI (Decision 2).
 #[cfg(windows)]
 mod windows_impl {

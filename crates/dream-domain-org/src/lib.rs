@@ -1,13 +1,13 @@
 #![warn(clippy::disallowed_types)]
 
 //! one-org: enterprise tenant / membership / invites / RBAC for the
-//! 1ONE AionCore fork.
+//! 1ONE Dream Core fork.
 //!
 //! Own-crate policy (see docs/tech/v2-m2-enterprise-crate-design.md in the
 //! 1one-command repo): all enterprise state lives in `one_*` tables managed
 //! by our own migrator; the only upstream touch points are workspace
-//! membership, a route merge in aionui-app, and read-only use of public
-//! aionui-auth / aionui-db APIs.
+//! membership, a route merge in dream-app, and read-only use of public
+//! dream-auth / dream-db APIs.
 
 pub mod backup;
 pub mod bridge;

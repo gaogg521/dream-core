@@ -40,7 +40,7 @@ pub struct FeishuProviderConfig {
     pub external_id_field: String,
     /// Test-only override for the Feishu API host (points at a wiremock
     /// server); never set in production, never surfaced in the admin form.
-    /// Same pattern as `aionui-shell`'s LLM provider configs.
+    /// Same pattern as `dream-shell`'s LLM provider configs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
 }

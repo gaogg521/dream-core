@@ -43,7 +43,7 @@ struct AvailabilitySnapshot {
 #[derive(Clone)]
 pub struct AgentAvailabilityService {
     registry: Arc<AgentRegistry>,
-    // Used to decide aionrs (built-in, no external CLI) availability: it is
+    // Used to decide dream (built-in, no external CLI) availability: it is
     // usable only when at least one model provider is configured & enabled.
     provider_repo: Arc<dyn IProviderRepository>,
 }
@@ -317,7 +317,7 @@ async fn run_probe(
             ),
         }
     } else if meta.agent_type == AgentType::DreamEngine {
-        // aionrs is the built-in Rust agent: there is no external CLI to probe,
+        // dream is the built-in Rust agent: there is no external CLI to probe,
         // so its usability hinges entirely on having a configured model. It is
         // online only when at least one model provider is enabled — otherwise
         // it cannot run a single turn.
@@ -359,10 +359,10 @@ fn explicit_probe_args(meta: &AgentMetadata) -> Result<Vec<String>, String> {
     Ok(meta.args.clone())
 }
 
-/// Readiness check for the built-in aionrs agent.
+/// Readiness check for the built-in dream agent.
 ///
-/// aionrs has no external CLI; it runs models through configured providers.
-/// Mirrors `AssistantService::resolve_default_agent_type`, which treats aionrs
+/// dream has no external CLI; it runs models through configured providers.
+/// Mirrors `AssistantService::resolve_default_agent_type`, which treats dream
 /// as usable exactly when at least one provider is enabled. With no enabled
 /// provider it cannot complete a turn, so we report it offline with a
 /// `no_provider` code the UI maps to "configure a model" guidance.

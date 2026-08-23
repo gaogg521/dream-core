@@ -12,6 +12,6 @@ pub struct AssistantRouterState {
     pub service: Arc<AssistantService>,
     /// Separate from `service` on purpose — the marketplace catalog never
     /// touches `assistant_definitions`, so it doesn't belong inside
-    /// `AssistantService`. See `crates/aionui-assistant/src/marketplace.rs`.
+    /// `AssistantService`. See `crates/dream-assistant/src/marketplace.rs`.
     pub marketplace_repo: Arc<dyn IAssistantMarketplaceRepository>,
 }

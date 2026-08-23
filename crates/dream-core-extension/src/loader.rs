@@ -22,7 +22,7 @@ pub struct ScanPath {
 ///
 /// Priority (highest first):
 /// 1. `$AIONUI_EXTENSIONS_PATH`
-/// 2. `~/.aionui/extensions/` — legacy user data directory
+/// 2. `~/.dream/extensions/` — legacy user data directory
 /// 3. Platform AppData directory
 ///
 /// In E2E test mode (`AIONUI_E2E_TEST=1`), only the environment variable
@@ -95,7 +95,7 @@ fn resolve_scan_paths_inner(
         return paths;
     }
 
-    // 2. User data directory (desktop data dir or historical ~/.aionui fallback).
+    // 2. User data directory (desktop data dir or historical ~/.dream fallback).
     if let Some(data_dir) = explicit_data_dir {
         push(data_dir.join(EXTENSIONS_DIR_NAME), ExtensionSource::Local);
         if let Some(appdata_dir) = derive_legacy_appdata_extensions_dir(data_dir) {
@@ -233,7 +233,7 @@ fn load_single_extension(
 
 /// Filter extensions by engine and API version compatibility.
 ///
-/// Extensions that declare `engine.aionui` with a version range incompatible
+/// Extensions that declare `engine.dream` with a version range incompatible
 /// with `app_version` are excluded. Extensions whose `apiVersion` is
 /// incompatible with the supported [`EXTENSION_API_VERSION`] are also excluded.
 ///
@@ -253,13 +253,13 @@ pub fn filter_by_engine_compatibility(extensions: Vec<LoadedExtension>, app_vers
         .collect()
 }
 
-/// Check whether the extension's `engine.aionui` requirement is satisfied.
+/// Check whether the extension's `engine.dream` requirement is satisfied.
 fn is_engine_compatible(ext: &LoadedExtension, app_version: &semver::Version) -> bool {
     let Some(engine) = &ext.manifest.engine else {
         return true; // no engine constraint
     };
     let Some(required) = &engine.aionui else {
-        return true; // no aionui constraint
+        return true; // no dream constraint
     };
 
     match semver::VersionReq::parse(required) {

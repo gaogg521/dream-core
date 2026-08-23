@@ -19,9 +19,9 @@ fn map_arch() -> &'static str {
     }
 }
 
-/// Resolve the cache directory for AionUI.
+/// Resolve the cache directory for DreamUI.
 ///
-/// Priority: `AIONUI_CACHE_DIR` env → `dirs::cache_dir()/aionui`.
+/// Priority: `AIONUI_CACHE_DIR` env → `dirs::cache_dir()/dream`.
 fn resolve_cache_dir() -> String {
     if let Ok(v) = std::env::var("AIONUI_CACHE_DIR")
         && !v.is_empty()
@@ -33,9 +33,9 @@ fn resolve_cache_dir() -> String {
         .unwrap_or_default()
 }
 
-/// Resolve the work (data) directory for AionUI.
+/// Resolve the work (data) directory for DreamUI.
 ///
-/// Priority: `AIONUI_WORK_DIR` env → `dirs::data_dir()/aionui`.
+/// Priority: `AIONUI_WORK_DIR` env → `dirs::data_dir()/dream`.
 fn resolve_work_dir() -> String {
     if let Ok(v) = std::env::var("AIONUI_WORK_DIR")
         && !v.is_empty()
@@ -47,12 +47,12 @@ fn resolve_work_dir() -> String {
         .unwrap_or_default()
 }
 
-/// Resolve the log directory for AionUI.
+/// Resolve the log directory for DreamUI.
 ///
 /// Priority: `AIONUI_LOG_DIR` env →
-///   macOS: `~/Library/Logs/aionui`
-///   Linux: `dirs::state_dir()/aionui/logs` (XDG_STATE_HOME)
-///   Windows: `dirs::data_dir()/aionui/logs`
+///   macOS: `~/Library/Logs/dream`
+///   Linux: `dirs::state_dir()/dream/logs` (XDG_STATE_HOME)
+///   Windows: `dirs::data_dir()/dream/logs`
 fn resolve_log_dir() -> String {
     if let Ok(v) = std::env::var("AIONUI_LOG_DIR")
         && !v.is_empty()
@@ -69,7 +69,7 @@ fn resolve_log_dir() -> String {
     if let Some(state) = dirs::state_dir() {
         return state.join("aionui/logs").to_string_lossy().into_owned();
     }
-    // Fallback: data_dir/aionui/logs
+    // Fallback: data_dir/dream/logs
     dirs::data_dir()
         .map(|p| p.join("aionui/logs").to_string_lossy().into_owned())
         .unwrap_or_default()
@@ -117,7 +117,7 @@ mod tests {
     fn test_env_override_cache_dir() {
         // This test verifies the resolve logic reads env vars.
         // We cannot reliably set env in parallel tests, so just verify
-        // the default path contains "aionui".
+        // the default path contains "dream".
         let dir = resolve_cache_dir();
         assert!(dir.contains("aionui"), "cache_dir should contain 'aionui': {dir}");
     }

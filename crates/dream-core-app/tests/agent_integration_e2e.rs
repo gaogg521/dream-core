@@ -346,8 +346,8 @@ async fn agent_logos_endpoint_returns_backend_to_logo_catalog() {
         Some("/api/assets/logos/tools/coding/codex.svg")
     );
 
-    // Aion CLI has no vendor `backend` (NULL); it must still be keyed by its
-    // agent_type ("aionrs") so aionrs conversations resolve a logo. Migration
+    // Dream CLI has no vendor `backend` (NULL); it must still be keyed by its
+    // agent_type ("dream") so dream conversations resolve a logo. Migration
     // 021 rebranded the seeded icon from aion.svg to the 1ONE mascot.
     assert_eq!(logo_for("aionrs").as_deref(), Some("/api/assets/logos/brand/1one.png"));
 

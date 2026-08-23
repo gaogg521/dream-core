@@ -21,8 +21,8 @@ pub struct PersonalAgentRow {
     pub tenant_id: String,
     pub name: String,
     pub description: Option<String>,
-    /// The *effective* backend ("claude", "aionrs", …). Still the gate that
-    /// decides whether a top-level conversation model may be sent (aionrs-only).
+    /// The *effective* backend ("claude", "dream", …). Still the gate that
+    /// decides whether a top-level conversation model may be sent (dream-only).
     pub agent_type: String,
     /// Legacy column, kept only as a fallback source for `assistant_id`
     /// (mirrors `CronAgentConfig`'s handling of the same legacy field).
@@ -36,7 +36,7 @@ pub struct PersonalAgentRow {
     pub agent_id_override: Option<String>,
     /// Plain model id, for ACP backends.
     pub model_id: Option<String>,
-    /// `ProviderWithModel` JSON, for aionrs.
+    /// `ProviderWithModel` JSON, for dream.
     pub model: Option<String>,
     pub automation_config: String,
     pub schedule: Option<String>,

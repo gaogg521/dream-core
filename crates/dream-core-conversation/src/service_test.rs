@@ -2112,7 +2112,7 @@ async fn create_stores_model_as_json() {
     let (svc, _broadcaster, _repo, _task_mgr) = make_service();
     let workspace = ensure_test_workspace_path();
 
-    // Top-level model is only valid for aionrs conversations.
+    // Top-level model is only valid for dream conversations.
     let req: CreateConversationRequest = serde_json::from_value(json!({
         "type": "aionrs",
         "model": { "provider_id": "p1", "model": "m1" },
@@ -2542,8 +2542,8 @@ async fn list_with_pinned_filter() {
  * `extra.fork` is a capability token, not data.
  *
  * `extra.fork.parent_session_id` is handed straight to `SessionManager::load` when the agent is
- * built, and aionrs sessions live in one process-wide directory with no per-user namespacing —
- * nothing downstream checks the caller owns that session. For aionrs the id IS the parent
+ * built, and dream sessions live in one process-wide directory with no per-user namespacing —
+ * nothing downstream checks the caller owns that session. For dream the id IS the parent
  * conversation id, so a client able to write this field could attach another user's agent state
  * to a conversation it owns and read their history back out of the model.
  *
@@ -2700,8 +2700,8 @@ async fn update_model() {
     let (svc, _broadcaster, _repo, task_mgr) = make_service();
     let workspace = ensure_test_workspace_path();
 
-    // Top-level model updates are only valid on aionrs conversations
-    // (Task 8 enforces the aionrs-only rule in update).
+    // Top-level model updates are only valid on dream conversations
+    // (Task 8 enforces the dream-only rule in update).
     let create_req: CreateConversationRequest = serde_json::from_value(json!({
         "type": "aionrs",
         "model": { "provider_id": "p1", "model": "m1" },
@@ -9129,9 +9129,9 @@ async fn insert_raw_message_persists_row_and_broadcasts_stream() {
     assert_eq!(data["data"]["teammate_message"], true);
 }
 
-// ── aionrs rebuild permission seed (Sentry 135525584) ──────────────
+// ── dream rebuild permission seed (Sentry 135525584) ──────────────
 
-/// Inserts an aionrs conversation whose `extra.session_mode` is the create-time
+/// Inserts an dream conversation whose `extra.session_mode` is the create-time
 /// value and persists an assistant snapshot carrying the runtime permission
 /// gate inputs (`default_permission_mode` / `resolved_permission_value`).
 async fn seed_aionrs_conversation_with_snapshot(
@@ -9199,7 +9199,7 @@ fn aionrs_session_mode(options: &BuildTaskOptions) -> Option<String> {
 
 #[tokio::test]
 async fn aionrs_rebuild_auto_mode_preserves_runtime_yolo() {
-    // AC#1: an `auto` aionrs session that was switched to yolo at runtime must
+    // AC#1: an `auto` dream session that was switched to yolo at runtime must
     // keep yolo after a rebuild (model switch / agent restart).
     let (svc, _broadcaster, repo, _task_mgr) = make_service();
     let row = seed_aionrs_conversation_with_snapshot(&repo, "default", "auto", Some("yolo")).await;
@@ -9237,7 +9237,7 @@ async fn aionrs_rebuild_fixed_mode_blocks_runtime_escalation() {
 async fn cron_required_runtime_mode_wins_over_resolved_permission_seed() {
     // AC#5 (hard): the per-turn `required_runtime_mode` override runs AFTER
     // rebuild and MUST keep priority over the rebuild permission seed. Even for
-    // an `auto` aionrs session whose snapshot resolved value is yolo, a cron
+    // an `auto` dream session whose snapshot resolved value is yolo, a cron
     // turn pinned to "default" applies "default" to the agent — the seed must
     // not bypass or reorder this override.
     let task_mgr = Arc::new(MockTaskManager::new());

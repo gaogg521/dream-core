@@ -386,7 +386,7 @@ mod tests {
         assert_eq!(def.relative_location.as_deref(), Some("auto-inject/x/SKILL.md"));
     }
 
-    // Frontmatter parsing tests live in aionui-extension (covers
+    // Frontmatter parsing tests live in dream-extension (covers
     // parse_frontmatter_fields there); removed from here when
     // skill_manager stopped owning that helper.
 

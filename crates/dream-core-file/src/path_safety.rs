@@ -109,7 +109,7 @@ pub fn has_traversal(path: &str) -> bool {
 /// `\\?\UNC\server\share`). Returning those to the frontend breaks downstream
 /// consumers — cmd.exe-based CLI shims refuse `\\?\` working directories and
 /// the UI treats `C:\DEV` and `\\?\C:\DEV` as two different projects
-/// (iOfficeAI/AionUi#3191). Every non-`browse` path leaving the file service
+/// (iOfficeAI/Dream UI#3191). Every non-`browse` path leaving the file service
 /// (flat-list / dir-tree `full_path`, ELECTRON-3TG) must pass through this so
 /// consumers never see verbatim paths. Idempotent on non-verbatim input.
 ///
@@ -129,7 +129,7 @@ mod tests {
     use super::*;
     use std::fs;
 
-    // Regression tests for iOfficeAI/AionUi#3191 + ELECTRON-3TG: verbatim
+    // Regression tests for iOfficeAI/Dream UI#3191 + ELECTRON-3TG: verbatim
     // prefixes must be stripped from every path leaving the file service.
 
     #[test]

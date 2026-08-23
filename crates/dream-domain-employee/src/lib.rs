@@ -1,12 +1,12 @@
 #![warn(clippy::disallowed_types)]
 
 //! one-employee: digital employee definitions + run orchestration for the
-//! 1ONE AionCore fork.
+//! 1ONE Dream Core fork.
 //!
 //! Design doc: docs/tech/v2-m3-employee-design.md in the 1one-command repo.
 //! Same own-crate policy as one-org: all state in `one_*` tables via our own
 //! migration ledger; upstream touch points are workspace membership, the
-//! route merge in aionui-app, and public upstream service APIs
+//! route merge in dream-app, and public upstream service APIs
 //! (ConversationService::create / run_agent_turn).
 
 pub mod error;

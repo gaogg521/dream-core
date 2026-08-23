@@ -1,4 +1,4 @@
-//! Which MCP servers a conversation gets, shared by the aionrs and ACP factories.
+//! Which MCP servers a conversation gets, shared by the dream and ACP factories.
 //!
 //! Both factories used to inline the same rule, and both dropped every built-in
 //! server on sight. That was right when built-ins were things a session should

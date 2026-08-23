@@ -270,7 +270,7 @@ impl AppServices {
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to synchronize skill catalog: {e}"))?;
         } else {
-            // AionPro: never ingest the legacy shared skill directory — its
+            // DreamPro: never ingest the legacy shared skill directory — its
             // files carry no account attribution and would only create rows
             // for the never-logged-in local default user.
             dream_core_extension::sync_builtin_skill_catalog_into_repo(skill_paths.as_ref(), skill_repo.as_ref())
@@ -334,7 +334,7 @@ impl AppServices {
             local_base_url: runtime_base_url.clone(),
             claude_bridge_config_repo: Some(claude_bridge_config_repo),
             session_spawner,
-            // agy cannot prompt for tool permission in headless mode, so AionUi
+            // agy cannot prompt for tool permission in headless mode, so Dream UI
             // registers itself as its PreToolUse hook; the hook process calls
             // back here to raise the user's permission card.
             antigravity_hook_base_url: Some(runtime_base_url.clone()),
@@ -564,7 +564,7 @@ mod tests {
         // The resolved path is embedded into agent-facing config files —
         // antigravity's `.agents/hooks.json` command line is executed through
         // cmd.exe on Windows, which cannot launch `\\?\`-prefixed programs
-        // (iOfficeAI/AionUi#4095). `std::fs::canonicalize` returns exactly
+        // (iOfficeAI/Dream UI#4095). `std::fs::canonicalize` returns exactly
         // that form on Windows, so the constructor must keep the plain
         // drive-letter form while still resolving symlinks.
         let db = dream_core_db::init_database_memory().await.unwrap();

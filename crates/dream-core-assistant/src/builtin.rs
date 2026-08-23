@@ -9,7 +9,7 @@
 //!    (`~/.cargo/bin/aioncore` → `target/debug/aioncore`) and
 //!    `std::env::current_exe().parent()` would resolve to the symlink's
 //!    directory, not the real binary's, missing the `assets/` sibling.
-//! 2. Prod: `AionUi/scripts/prepareAionuiBackend.js` only copies the
+//! 2. Prod: `Dream UI/scripts/prepareDreamuiBackend.js` only copies the
 //!    binary from GitHub releases — the `assets/` directory never shipped.
 //!
 //! Embedding avoids both. E2E tests that want to inject a custom fixture
@@ -26,7 +26,7 @@ use tracing::{error, warn};
 
 /// Assets compiled into the binary at build time. Paths are relative to
 /// this embedded root, matching the on-disk layout under
-/// `crates/aionui-app/assets/builtin-assistants/`.
+/// `crates/dream-app/assets/builtin-assistants/`.
 static BUILTIN_ASSETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../dream-core-app/assets/builtin-assistants");
 
 /// Single built-in assistant entry, loaded from `assistants.json`.

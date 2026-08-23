@@ -1,11 +1,11 @@
 //! Command-line construction for one agy turn. Pure: no IO, no spawning.
 
-/// AionUi's sentinel mode id meaning "run without approval prompts".
+/// Dream UI's sentinel mode id meaning "run without approval prompts".
 ///
 /// Not one of agy's modes and never sent to it; answered by removing the approval hook.
 pub(crate) const FULL_AUTO_SENTINEL: &str = "yolo";
 
-/// AionUi's mode id meaning "ask before sensitive things" — its counterpart to
+/// Dream UI's mode id meaning "ask before sensitive things" — its counterpart to
 /// [`FULL_AUTO_SENTINEL`], answered by KEEPING the approval hook installed.
 ///
 /// Also not an agy value: `agy --help` lists exactly two (verified:
@@ -32,7 +32,7 @@ pub(crate) struct ArgvInput {
     /// agy silently ignores anything else and falls back to its default model
     /// without reporting an error.
     pub model: Option<String>,
-    /// An AionUi mode id, not necessarily an agy one. `accept-edits` / `plan` reach agy;
+    /// An Dream UI mode id, not necessarily an agy one. `accept-edits` / `plan` reach agy;
     /// `yolo` and `default` are host-side and filtered out (see the constants above).
     pub mode: Option<String>,
 }
@@ -71,7 +71,7 @@ pub(crate) fn build_argv(input: &ArgvInput) -> Vec<String> {
     a.push("stream-json".into());
     // agy cannot prompt for permission in headless mode; with the gate shut it
     // soft-denies every confirmable tool, and a PreToolUse hook returning
-    // "allow" cannot override that (hooks can tighten, not loosen). AionUi
+    // "allow" cannot override that (hooks can tighten, not loosen). Dream UI
     // opens the gate here and gates each call in its own hook bridge instead.
     a.push("--dangerously-skip-permissions".into());
     a.push("--print-timeout".into());
@@ -94,7 +94,7 @@ pub(crate) fn build_argv(input: &ArgvInput) -> Vec<String> {
     }
     // No `--effort`: effort lives inside the model id, and a stripped id is
     // silently ignored by agy.
-    // agy takes exactly two values here: `accept-edits` and `plan`. AionUi's other two
+    // agy takes exactly two values here: `accept-edits` and `plan`. Dream UI's other two
     // modes are host-side concepts expressed through the approval hook — `yolo` by
     // removing it, `default` by keeping it — and agy rejects both by name, warning and
     // discarding the flag. Sending either would look fine (exit 0) while silently
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn the_full_auto_sentinel_is_never_sent_as_agys_mode() {
-        // `yolo` is AionUi's marker, not one of agy's modes. It is answered by NOT
+        // `yolo` is Dream UI's marker, not one of agy's modes. It is answered by NOT
         // installing the approval hook, never by a `--mode` value.
         let mut i = base();
         i.mode = Some("yolo".to_owned());
@@ -185,7 +185,7 @@ mod tests {
         assert!(!a.iter().any(|x| x == "yolo"), "argv={a:?}");
     }
 
-    /// `default` is AionUi's "ask before sensitive things" mode, NOT an agy value.
+    /// `default` is Dream UI's "ask before sensitive things" mode, NOT an agy value.
     ///
     /// agy takes only `accept-edits` and `plan` (verified:
     /// samples/antigravity-cli/1.1.8/agy_--help.txt:12 — "Set the agent execution mode
@@ -232,7 +232,7 @@ mod tests {
     fn permission_gate_is_opened_for_the_hook_bridge() {
         // agy cannot prompt for permission in headless mode: with the gate shut
         // it soft-denies every confirmable tool, and a PreToolUse hook returning
-        // "allow" cannot override that. AionUi opens the gate here and makes its
+        // "allow" cannot override that. Dream UI opens the gate here and makes its
         // own hook the sole gatekeeper.
         let a = build_argv(&base());
         assert!(a.contains(&"--dangerously-skip-permissions".to_string()));

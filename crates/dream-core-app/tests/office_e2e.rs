@@ -8,7 +8,7 @@
 //!
 //! Items requiring real officecli or mock HTTP backends (WP-1..3, WP-5..6, EP-1..2,
 //! PP-1..3, RP-1/RP-3, RP-5..7, DC-5..8) are tested at the service
-//! integration level in `aionui-office/tests/`.
+//! integration level in `dream-office/tests/`.
 
 mod common;
 

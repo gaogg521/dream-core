@@ -26,7 +26,7 @@ use crate::state::CodexBridgeRouterState;
 ///   is an external process with no browser session).
 /// - `GET`/`PUT /api/codex-bridge/config` — app-facing settings, gated by the
 ///   caller's normal session `auth_middleware` at registration time (see
-///   `aionui-app`'s router wiring), same as every other authenticated route.
+///   `dream-app`'s router wiring), same as every other authenticated route.
 pub fn codex_bridge_public_routes(state: CodexBridgeRouterState) -> Router {
     Router::new()
         .route("/v1/responses", post(handle_responses))

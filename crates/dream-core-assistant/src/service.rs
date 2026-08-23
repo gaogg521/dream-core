@@ -122,7 +122,7 @@ pub struct AssistantService {
     agent_catalog: Option<Arc<dyn AssistantAgentCatalogPort>>,
     event_broadcaster: RwLock<Option<Arc<dyn EventBroadcaster>>>,
     /// Root directory holding user-authored rule/skill md files and avatars.
-    /// Defaults to `~/.aionui/` but can be overridden for tests.
+    /// Defaults to `~/.dream/` but can be overridden for tests.
     user_data_dir: PathBuf,
 }
 
@@ -156,9 +156,9 @@ impl AssistantService {
     /// keep their rule files alongside the matching db. Tests pin a temp
     /// directory.
     ///
-    /// There is no implicit `~/.aionui` fallback on purpose: an earlier
+    /// There is no implicit `~/.dream` fallback on purpose: an earlier
     /// version had one, and dev builds silently wrote rule files to the
-    /// release directory while the db lived under `~/.aionui-dev/`,
+    /// release directory while the db lived under `~/.dream-dev/`,
     /// resulting in `read_rule` returning empty in dev mode. Forcing the
     /// caller to pass a path makes the wiring explicit.
     pub fn new(pool: SqlitePool, deps: AssistantServiceDeps, user_data_dir: PathBuf) -> Self {
@@ -237,7 +237,7 @@ impl AssistantService {
         Ok(())
     }
 
-    /// Bootstrap for AionPro machines: identical to
+    /// Bootstrap for DreamPro machines: identical to
     /// [`Self::bootstrap_assistant_storage`] except the trailing generated
     /// reconcile is skipped — generated definitions are per-user and each
     /// real account materializes its own lazily on first catalog read, so a
@@ -1004,7 +1004,7 @@ impl AssistantService {
     ///
     /// Inference rule (ELECTRON-1J1 / 1KV):
     /// 1. If any enabled provider exists (Anthropic, OpenAI, custom,
-    ///    Bedrock, Vertex, …), return `"aionrs"`. AionRS speaks both
+    ///    Bedrock, Vertex, …), return `"dream"`. DreamRS speaks both
     ///    OpenAI-compatible and Anthropic-protocol APIs over the
     ///    user-configured base URL and does not require any third-party
     ///    CLI to be installed. CLI-based agents (`claude`, `gemini`)
@@ -3128,9 +3128,9 @@ fn assistant_projection_for_definition(
     let fallback_runtime_backend = resolved_runtime_backend.unwrap_or(effective_agent_id);
 
     // An agent row identifies its runtime key by `backend` for vendor ACP
-    // agents, but aionrs (the built-in Rust agent) has a NULL `backend` and is
-    // keyed by its `agent_type` ("aionrs") instead. Match on either so aionrs
-    // assistants resolve to the aionrs row rather than falling back to Missing.
+    // agents, but dream (the built-in Rust agent) has a NULL `backend` and is
+    // keyed by its `agent_type` ("dream") instead. Match on either so dream
+    // assistants resolve to the dream row rather than falling back to Missing.
     let row_matches_backend = |row: &&AgentManagementRow| {
         row.backend.as_deref() == Some(effective_agent_id)
             || row.agent_type.serde_name() == effective_agent_id
@@ -3955,7 +3955,7 @@ mod tests {
     }
 
     /// Default fixture: seeded with a single OpenAI-compatible provider so
-    /// `resolve_default_agent_type` returns `"aionrs"`. Tests that need to
+    /// `resolve_default_agent_type` returns `"dream"`. Tests that need to
     /// exercise the no-provider or anthropic-only branches construct their
     /// own fixture via [`fixture_with_options`].
     async fn fixture() -> Fixture {
@@ -3977,7 +3977,7 @@ mod tests {
         /// asserts the no-provider error path.
         no_default_provider: bool,
         /// When set, the seeded provider's `platform` is overridden.
-        /// Defaults to `"openai"` so existing tests get an `"aionrs"`
+        /// Defaults to `"openai"` so existing tests get an `"dream"`
         /// default agent type.
         seed_platform: Option<&'static str>,
         agent_rows: Vec<dream_core_api_types::AgentManagementRow>,
@@ -5373,7 +5373,7 @@ mod tests {
 
     #[tokio::test]
     async fn bootstrap_falls_back_to_agent_type_when_backend_is_empty() {
-        // Engines like Aion CLI carry their identity in `agent_type` and leave
+        // Engines like Dream CLI carry their identity in `agent_type` and leave
         // `backend` empty (it is an ACP-vendor label). The generated assistant must
         // still expose the concrete agent id so the frontend does not bind it
         // through an overloaded runtime backend label.
@@ -5401,10 +5401,10 @@ mod tests {
 
     #[tokio::test]
     async fn aionrs_assistant_resolves_agent_status_via_agent_type_not_backend() {
-        // Regression: an assistant whose engine is aionrs must match the aionrs
-        // agent row by `agent_type` ("aionrs"), since that row's `backend` is
+        // Regression: an assistant whose engine is dream must match the dream
+        // agent row by `agent_type` ("dream"), since that row's `backend` is
         // NULL. Matching on `backend` alone left the row unresolved and
-        // mislabelled every aionrs assistant as Missing/unavailable.
+        // mislabelled every dream assistant as Missing/unavailable.
         let mut aionrs_row = mk_agent_row(
             "agent-aionrs",
             "aionrs",
@@ -7298,7 +7298,7 @@ mod tests {
     // Default agent inference (ELECTRON-1J1 / 1KV regression coverage)
     // -----------------------------------------------------------------------
 
-    /// Anthropic provider routes to AionRS, not the Claude Code CLI:
+    /// Anthropic provider routes to DreamRS, not the Claude Code CLI:
     /// having an Anthropic API key does not imply the user has
     /// `claude` on `PATH`. CLI-based agents must be opted into
     /// explicitly.
@@ -7313,7 +7313,7 @@ mod tests {
         assert_eq!(resolved, "632f31d2");
     }
 
-    /// OpenAI / custom provider falls back to AionRS, the only AionUI
+    /// OpenAI / custom provider falls back to DreamRS, the only DreamUI
     /// agent that doesn't require a third-party CLI.
     #[tokio::test]
     async fn resolve_default_agent_id_falls_back_to_aionrs_for_openai_provider() {
@@ -7326,7 +7326,7 @@ mod tests {
         assert_eq!(resolved, "632f31d2");
     }
 
-    /// Custom (non-anthropic, non-openai) platform also routes to AionRS,
+    /// Custom (non-anthropic, non-openai) platform also routes to DreamRS,
     /// which handles OpenAI-compatible custom URLs.
     #[tokio::test]
     async fn resolve_default_agent_id_handles_custom_platform_as_aionrs() {
@@ -7406,7 +7406,7 @@ mod tests {
     /// End-to-end regression for ELECTRON-1J1 / 1KV: creating an
     /// assistant with no `agent_id` and no Gemini CLI installed
     /// must NOT default to `"gemini"`. Any enabled provider — Anthropic
-    /// or otherwise — should resolve to `"aionrs"`, the only built-in
+    /// or otherwise — should resolve to `"dream"`, the only built-in
     /// agent that doesn't depend on a third-party CLI being on `PATH`.
     #[tokio::test]
     async fn create_without_agent_id_does_not_default_to_gemini_when_provider_exists() {

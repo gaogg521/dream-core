@@ -1,6 +1,6 @@
 //! Composition adapter: implements the file crate's [`IClipboardWriter`] port
 //! over the shell service's `copy_text_to_clipboard` capability. Lives here (not
-//! in `aionui-file`) so the file domain crate needs no dependency on the shell
+//! in `dream-file`) so the file domain crate needs no dependency on the shell
 //! crate — the two domains are wired together only at the composition layer.
 //!
 //! Sibling of [`super::item_revealer`] / [`super::system_file_opener`]: the

@@ -3,7 +3,7 @@
 //! Covers test-plan items: CJ-1..CJ-12, SK-1..SK-6, SC-3..SC-8, AU-1..AU-2,
 //! RN-1..RN-2.
 //! Items requiring real AI execution (RN-1, EV-*, SR-*, OC-*, CD-*) are tested
-//! at the service integration level in `aionui-cron/tests/service_integration.rs`.
+//! at the service integration level in `dream-cron/tests/service_integration.rs`.
 
 mod common;
 
@@ -311,7 +311,7 @@ async fn cj3_create_missing_required_fields() {
 // `dream_core_common::validate_workspace_path_availability` and its paired
 // `create_accepts_existing_workspace_with_trailing_whitespace_in_name` /
 // `create_rejects_unavailable_workspace_with_trailing_whitespace_in_request`
-// tests in `aionui-conversation`.
+// tests in `dream-conversation`.
 #[cfg(not(windows))]
 #[tokio::test]
 async fn cj3b_create_accepts_workspace_with_whitespace_segment() {

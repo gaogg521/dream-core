@@ -66,7 +66,7 @@ impl EnterpriseService {
     }
 
     /// Attach the caller's membership to the deployment's company at SSO login
-    /// (via the `EnterpriseSync` hook wired in aionui-app). Never touches
+    /// (via the `EnterpriseSync` hook wired in dream-app). Never touches
     /// `one_tenants`. Which company they join:
     ///
     /// 1. If an operator explicitly set up a company ("显式设立"), that is THE
@@ -134,7 +134,7 @@ impl EnterpriseService {
 
     /// Ensure `user_id` has a membership row in `enterprise_id`, for a
     /// project-group join whose tenant belongs to that company (Direction B —
-    /// see the `CompanySeatSync` hook in one-org, wired in aionui-app). Unlike
+    /// see the `CompanySeatSync` hook in one-org, wired in dream-app). Unlike
     /// `sync_member`, `enterprise_id` is given directly rather than resolved
     /// from an SSO provider/external id, since there is no IdP profile on this
     /// path; department / job title are likewise unknown here and left unset.
@@ -225,7 +225,7 @@ impl EnterpriseService {
     }
 
     /// Whether the plan has room for one more ACTIVE seat. Reads the
-    /// one-billing license table via the shared pool; the `aionui-common`
+    /// one-billing license table via the shared pool; the `dream-common`
     /// matrix is the single source for tier caps. Tolerant of a missing
     /// license table (billing not installed → unlimited) so standalone /
     /// pre-billing behavior is unchanged.

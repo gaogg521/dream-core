@@ -6,7 +6,7 @@
 //! primitives instead of HTTP-to-self:
 //!
 //! - personal run → `ConversationService::create` + `run_agent_turn`
-//!   (same path the aionui-cron `JobExecutor` takes for
+//!   (same path the dream-cron `JobExecutor` takes for
 //!   `ExecutionMode::NewConversation`)
 //! - team run → `TeamSessionService::send_message_to_agent` against the
 //!   team's existing slot conversation; completion observed by polling
@@ -63,7 +63,7 @@ pub struct EmployeeService {
     team_session_service: Option<Arc<TeamSessionService>>,
     /// Optional so personal-only deployments and unit tests can build the
     /// service without it. When wired, save-time validation additionally
-    /// checks that an aionrs employee's model is offered by an *enabled*
+    /// checks that an dream employee's model is offered by an *enabled*
     /// provider; when absent only the shape check runs.
     provider_repo: Option<Arc<dyn IProviderRepository>>,
     work_dir: PathBuf,
@@ -222,7 +222,7 @@ fn truncate_summary(reply: &str) -> String {
     }
 }
 
-/// Whether a stored `agent_type` label denotes the aionrs backend — the only
+/// Whether a stored `agent_type` label denotes the dream backend — the only
 /// one that takes a top-level conversation model. Compares against the enum's
 /// own serde name rather than a literal so a rename can't silently drift.
 fn is_aionrs(agent_type: &str) -> bool {
@@ -252,7 +252,7 @@ fn serialize_model(model: Option<&ProviderWithModel>) -> Result<Option<String>, 
         .transpose()
 }
 
-/// Only aionrs conversations carry a meaningful top-level model. Verbatim port
+/// Only dream conversations carry a meaningful top-level model. Verbatim port
 /// of `dream_core_cron::executor::resolve_model` so the employee and cron paths
 /// derive the same `(provider_id, model)` — see the divergence warning in
 /// `dream_core_conversation::task_options`.
@@ -280,7 +280,7 @@ fn build_assistant_request(agent: &PersonalAgentRow) -> Option<AssistantConversa
         .or_else(|| normalize_optional(agent.custom_agent_id.as_deref()))?;
 
     let agent_id = normalize_optional(agent.agent_id_override.as_deref());
-    // ACP backends carry the model through the assistant overrides; aionrs uses
+    // ACP backends carry the model through the assistant overrides; dream uses
     // the top-level `model` instead (see `resolve_model`).
     let model = if is_aionrs(&agent.agent_type) {
         None
@@ -331,7 +331,7 @@ impl EmployeeService {
     }
 
     /// Wire the provider repository so `validate_model_binding` can reject an
-    /// aionrs model that no enabled provider offers at save time, instead of
+    /// dream model that no enabled provider offers at save time, instead of
     /// letting the run fail later. Optional, same rationale as
     /// [`Self::with_team_session`].
     pub fn with_provider_repo(mut self, provider_repo: Arc<dyn IProviderRepository>) -> Self {
@@ -358,15 +358,15 @@ impl EmployeeService {
     /// refuse, at save time rather than at run time.
     ///
     /// Three rules:
-    /// 1. An aionrs employee *needs* a model — without one `provision_run`
+    /// 1. An dream employee *needs* a model — without one `provision_run`
     ///    resolves the empty provider sentinel and the run dies with
     ///    `Provider '' not found`, which is the whole bug this binding exists to
     ///    fix. Only enforced when the caller is actually setting the binding
     ///    (`require_model`), so renaming a legacy backend-only employee still
     ///    works.
-    /// 2. A top-level model is aionrs-only — `ConversationService::create`
+    /// 2. A top-level model is dream-only — `ConversationService::create`
     ///    returns a hard 400 for any other agent type that carries one.
-    /// 3. For aionrs the model must be offered by an *enabled* provider.
+    /// 3. For dream the model must be offered by an *enabled* provider.
     ///    Same check as `dream_core_team::provisioning::resolve_provider_for_model`;
     ///    skipped when no provider repo is wired.
     async fn validate_model_binding(
@@ -415,7 +415,7 @@ impl EmployeeService {
     }
 
     /// Same resolution chain as the cron executor's `parse_agent_type` +
-    /// `inject_agent_identity`: native serde names (acp/aionrs/…) pass
+    /// `inject_agent_identity`: native serde names (acp/dream/…) pass
     /// through; backend labels ("claude", "gemini", …) resolve through the
     /// agent registry to `Acp` plus an `agent_id`/`backend` identity in extra.
     async fn resolve_agent_identity(
@@ -584,7 +584,7 @@ impl EmployeeService {
         // Re-validate against the *resulting* pair, not the incoming one: changing
         // only the backend on an employee that already stores a model must not
         // leave behind a combination the conversation layer would reject.
-        // "aionrs needs a model" is only enforced when this request actually
+        // "dream needs a model" is only enforced when this request actually
         // touches the binding, so renaming a legacy backend-only employee (which
         // predates migration 004 and has no model) is still allowed.
         let effective_model = model
@@ -766,7 +766,7 @@ impl EmployeeService {
             // executor.
             r#type: if assistant.is_some() { None } else { Some(agent_type) },
             name: Some(conversation_name),
-            // Was hardcoded `None`, which made every aionrs employee resolve to
+            // Was hardcoded `None`, which made every dream employee resolve to
             // the empty provider sentinel and fail with `Provider '' not found`.
             model: resolve_model(agent),
             assistant,
@@ -1303,7 +1303,7 @@ mod tests {
 
     // ── persona + model binding (migration 004) ────────────────────────
 
-    /// The reported bug: an aionrs employee used to reach the factory with an
+    /// The reported bug: an dream employee used to reach the factory with an
     /// empty provider id and fail with `Provider '' not found`. A bound model
     /// must now survive the round-trip through the stored column.
     #[test]
@@ -1323,7 +1323,7 @@ mod tests {
         assert_eq!(resolved.model, "glm-5-2");
     }
 
-    /// Top-level model is aionrs-only — `ConversationService::create` returns a
+    /// Top-level model is dream-only — `ConversationService::create` returns a
     /// hard 400 otherwise, so ACP employees must never send one even if the
     /// column somehow holds a value.
     #[test]
@@ -1371,7 +1371,7 @@ mod tests {
             .conversation_overrides
             .expect("override must be forwarded");
         assert_eq!(overrides.agent_id.as_deref(), Some("agent_meta_9"));
-        // aionrs takes its model from the top level, not the assistant override.
+        // dream takes its model from the top level, not the assistant override.
         assert!(overrides.model.is_none());
     }
 

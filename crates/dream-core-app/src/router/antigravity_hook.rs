@@ -1,6 +1,6 @@
 //! Callback endpoint for the Antigravity permission hook.
 //!
-//! agy cannot prompt for tool permission in headless mode, so AionUi registers
+//! agy cannot prompt for tool permission in headless mode, so Dream UI registers
 //! its own binary as agy's `PreToolUse` hook. That hook process posts here and
 //! blocks; we raise the user's permission card and answer once they choose.
 //!

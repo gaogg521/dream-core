@@ -10,7 +10,7 @@
 //! environment, so the tests are `#[ignore]`d. Run explicitly:
 //!
 //! ```sh
-//! cargo test -p aionui-app --test live_ws_http_parity_e2e -- --ignored --nocapture
+//! cargo test -p dream-app --test live_ws_http_parity_e2e -- --ignored --nocapture
 //! ```
 
 mod common;

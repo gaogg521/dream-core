@@ -28,7 +28,7 @@ const CLI_NAME: &str = "codex";
 /// `[mcp_servers.<name>]`.
 ///
 /// Unlike Claude, this isolation is **not** wired into agent spawn — Codex's
-/// LLM-provider bridge (`aionui-codex-bridge`, `CODEX_CONFIG`/
+/// LLM-provider bridge (`dream-codex-bridge`, `CODEX_CONFIG`/
 /// `MODEL_PROVIDER`) is a separate mechanism that doesn't touch
 /// `~/.codex/config.toml`'s `mcp_servers` table at all, and
 /// `install_server`/`remove_server` currently have no production caller (see

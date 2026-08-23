@@ -133,7 +133,7 @@ async fn conversation_active_lease_rejects_missing_auth() {
 
 // Bearer requests carry no ambient credential a cross-site form could ride
 // on, so the CSRF middleware exempts them (remote-desktop clients depend on
-// this — see M4d, crates/aionui-auth/src/csrf.rs). Cookie-authenticated
+// this — see M4d, crates/dream-auth/src/csrf.rs). Cookie-authenticated
 // requests still require the CSRF token pair.
 #[tokio::test]
 async fn conversation_active_lease_allows_bearer_without_csrf() {
@@ -255,7 +255,7 @@ async fn team_active_lease_rejects_missing_auth() {
 
 // Bearer requests carry no ambient credential a cross-site form could ride
 // on, so the CSRF middleware exempts them (remote-desktop clients depend on
-// this — see M4d, crates/aionui-auth/src/csrf.rs). Cookie-authenticated
+// this — see M4d, crates/dream-auth/src/csrf.rs). Cookie-authenticated
 // requests still require the CSRF token pair.
 #[tokio::test]
 async fn team_active_lease_allows_bearer_without_csrf() {

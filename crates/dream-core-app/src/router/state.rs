@@ -93,7 +93,7 @@ impl RouterBuildError {
 ///
 /// A [`AssistantError::ConcurrentBootstrapContention`] is benign and recoverable
 /// (a transient concurrent-startup race), so it gets a distinct boundary stage
-/// (`router.assistant.bootstrap.concurrency_contended`) that AionUi maps to a
+/// (`router.assistant.bootstrap.concurrency_contended`) that Dream UI maps to a
 /// gentle "retry/restart" message instead of the "local data corruption" false
 /// alarm. The boundary code stays `BOOTSTRAP_SERVER_FAILED`; only the stage
 /// differs (Sentry 135525166). All other errors keep the original stage.
@@ -157,7 +157,7 @@ fn default_allowed_roots(work_dir: Option<&std::path::Path>) -> Vec<std::path::P
     ];
     // Auto-provisioned per-conversation workspaces live under
     // `{work_dir}/conversations/{label}-temp-{id}/`. On Windows the
-    // operator may put `work_dir` on a separate drive (e.g. `X:\AionUi`)
+    // operator may put `work_dir` on a separate drive (e.g. `X:\Dream UI`)
     // that's neither under `temp_dir` nor `home_dir`. Including `work_dir`
     // keeps temp workspaces on the default allowlist without widening it
     // to unrelated paths.
@@ -403,8 +403,8 @@ pub fn build_assistant_state(services: &AppServices) -> AssistantRouterState {
     // Pin user_data_dir to the runtime-resolved data directory so dev /
     // packaged / multi-instance launches all keep their assistant rule files
     // alongside the matching SQLite database (avoiding the historical bug
-    // where dev wrote rules to the release `~/.aionui/` while the db lived
-    // under `~/.aionui-dev/`).
+    // where dev wrote rules to the release `~/.dream/` while the db lived
+    // under `~/.dream-dev/`).
     let service = Arc::new(AssistantService::new(
         pool.clone(),
         dream_core_assistant::service::AssistantServiceDeps {
@@ -517,7 +517,7 @@ pub fn build_file_state(services: &AppServices) -> Result<FileRouterState, Route
     let snapshot_service = Arc::new(SnapshotService::new());
     // Shell-backed capabilities for `/api/fs/reveal` (open enclosing folder) and
     // `/api/fs/open-system` (open with the default application): adapters over one
-    // shared shell service, injected as the file crate's ports so aionui-file stays
+    // shared shell service, injected as the file crate's ports so dream-file stays
     // free of a shell dependency.
     let shell = Arc::new(dream_core_shell::ShellService::new(Arc::new(
         dream_core_shell::DefaultSystemOpener,

@@ -4,7 +4,7 @@
 //!
 //! Like codex (`codex_conn`), this talks RAW JSON-RPC over the `AgentIo` byte
 //! duplex — it does NOT use the `agent-client-protocol` SDK (that crate lives in
-//! the upper `aionui-ai-agent` Domain crate; `dream-core-session` must stay
+//! the upper `dream-ai-agent` Domain crate; `dream-core-session` must stay
 //! transport-agnostic and SDK-free, so a backend here parses `serde_json::Value`
 //! and matches on field strings). The reader-task / dispatch / capabilities
 //! contract is identical in shape to codex; the wire dialect differs.
@@ -246,7 +246,7 @@ pub fn acp_capabilities() -> Capabilities {
         mode_switch_effect: crate::capability::ModeSwitchEffect::Immediate,
         emits: SignalSet {
             // ACP has no liveness heartbeat notification; the turn terminal is the
-            // prompt response (no idle-timeout in AionCore anyway, post-007).
+            // prompt response (no idle-timeout in Dream Core anyway, post-007).
             heartbeat: false,
             tool_lifecycle: true,
             terminal_result: true,
@@ -672,7 +672,7 @@ impl AcpSessionBackend {
         // Regression-by-rewrite (audit + codex-500 twin): this was a hardcoded
         // 40×50ms=2s busy-poll returning a bare Transport → opaque 500 — the IDENTICAL
         // bug codex's bound_thread had, and a downgrade from legacy ACP's 30s
-        // (aionui-agent-rest INIT_TIMEOUT_SECS). A cold start / untrusted project slows
+        // (dream-agent-rest INIT_TIMEOUT_SECS). A cold start / untrusted project slows
         // agent init past 2s → 500. Use the shared handshake budget (30s, env-overridable)
         // and the RETRYABLE HandshakeTimeout so the user sees "agent starting, retry".
         self.bound_session_within(super::handshake_budget()).await
@@ -1583,7 +1583,7 @@ async fn handle_reverse_rpc(
                 }
             }
             // Carry the raised toolCall's `title` and `rawInput` so the permission
-            // card can show the approver WHAT they are approving (AionUi issue
+            // card can show the approver WHAT they are approving (Dream UI issue
             // #3779 — a title-less card read as a bare "Permission request" and the
             // user approved blind). Same wire fields `parse_permission_metadata`
             // already reads (`toolCall.title` / `toolCall.rawInput`, ACP
@@ -3530,7 +3530,7 @@ mod tests {
         .await
         .expect("must not hang")
         .expect("Permission surfaced");
-        // AionUi issue #3779: the card must show what is being approved — the
+        // Dream UI issue #3779: the card must show what is being approved — the
         // toolCall's title and rawInput ride on the Permission event.
         assert_eq!(
             perm_tool_name.as_deref(),

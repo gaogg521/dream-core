@@ -663,8 +663,8 @@ async fn t9_6_search_result_includes_conversation_model() {
     let (svc, repo, _b) = setup().await;
     let workspace = ensure_test_workspace_path();
 
-    // Search surfaces conversation.model only for aionrs (the only type that
-    // carries a top-level model under the aionrs-only rule).
+    // Search surfaces conversation.model only for dream (the only type that
+    // carries a top-level model under the dream-only rule).
     let aionrs_req: CreateConversationRequest = serde_json::from_value(json!({
         "type": "aionrs",
         "model": { "provider_id": "p1", "model": "claude-sonnet-4-20250514" },
@@ -1202,7 +1202,7 @@ async fn fork_resolves_stream_msg_id_when_row_id_unknown() {
     );
 }
 
-// ── Conversation fork: builtin aionrs agent (no acp_session row) ────
+// ── Conversation fork: builtin dream agent (no acp_session row) ────
 
 fn aionrs_create_req() -> CreateConversationRequest {
     let workspace = ensure_named_workspace_path("aionui-fork-test-aionrs");
@@ -1217,10 +1217,10 @@ fn aionrs_create_req() -> CreateConversationRequest {
 async fn fork_head_aionrs_uses_conversation_id_anchor_without_acp_row() {
     let (svc, repo, acp_repo) = setup_fork().await;
     let parent = svc.create(USER_ID, aionrs_create_req()).await.unwrap();
-    // aionrs conversations own no acp_session row (create() only makes one
+    // dream conversations own no acp_session row (create() only makes one
     // for ACP/antigravity) — the whole point of this path. The agent
     // identity resolves through the builtin binding ladder (agent_type
-    // "aionrs" -> seed row), no assistant snapshot required.
+    // "dream" -> seed row), no assistant snapshot required.
     assert!(acp_repo.get_for_user(USER_ID, &parent.id).await.unwrap().is_none());
     let m1 = make_message(&parent.id, "hello", 0);
     let m2 = make_message(&parent.id, "world", 10);
@@ -1257,7 +1257,7 @@ async fn fork_head_aionrs_uses_conversation_id_anchor_without_acp_row() {
         .unwrap();
     assert_eq!(page.items.len(), 2);
 
-    // The fork, like every aionrs conversation, owns no acp_session row.
+    // The fork, like every dream conversation, owns no acp_session row.
     assert!(acp_repo.get_for_user(USER_ID, &fork.id).await.unwrap().is_none());
 }
 
@@ -1282,7 +1282,7 @@ async fn fork_mid_history_without_anchor_is_refused_for_aionrs() {
 async fn fork_mid_history_resolves_aionrs_turn_anchor() {
     let (svc, repo, _acp_repo) = setup_fork().await;
     let parent = svc.create(USER_ID, aionrs_create_req()).await.unwrap();
-    // Rows stamped by the aionrs turn wiring (manager emits BackendTurnBound
+    // Rows stamped by the dream turn wiring (manager emits BackendTurnBound
     // with the conversation-layer turn id).
     let mut m1 = make_message(&parent.id, "one", 0);
     m1.backend_turn_id = Some("turn_aion1".into());

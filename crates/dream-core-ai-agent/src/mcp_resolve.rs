@@ -7,7 +7,7 @@
 //! `Vec<agent_client_protocol::McpServer>`, `factory::dream_engine::load_user_mcp_servers`
 //! → `HashMap<String, McpServerConfig>`) emit SDK/engine-specific types. This
 //! module emits the NEUTRAL `dream_core_api_types::SessionMcpServer` so the app
-//! boundary (`aionui-app`) can convert it once into the crate-local
+//! boundary (`dream-app`) can convert it once into the crate-local
 //! `dream_core_session::McpServerSpec`, and each backend serializes that into its own
 //! wire shape. Same row-walking + selection + stdio-launch-resolution logic as
 //! the legacy ACP path, but vendor-neutral.
@@ -57,7 +57,7 @@ pub async fn resolve_session_mcp_servers(
         let selected = selected_ids
             .map(|ids| ids.iter().any(|id| id == &row.id))
             .unwrap_or(row.enabled);
-        // `aionui-team` is a reserved wire-level name: the team coordination MCP
+        // `dream-team` is a reserved wire-level name: the team coordination MCP
         // must win, so a user row that collides with it is skipped (never
         // injected), regardless of selection state.
         if !selected || row.builtin || row.name == TEAM_MCP_SERVER_NAME {
@@ -91,7 +91,7 @@ pub async fn resolve_session_mcp_servers(
 /// launch command. Mirrors `factory::acp::row_to_sdk_mcp_server` but emits the
 /// neutral type. Returns an error string when `transport_config` is malformed.
 ///
-/// This is the SINGLE shared row→neutral conversion: `aionui-conversation` (team
+/// This is the SINGLE shared row→neutral conversion: `dream-conversation` (team
 /// snapshot refresh) and the session stack reuse it so the stdio command is
 /// always normalized exactly once, the same way the direct claude/codex path
 /// consumes it.

@@ -62,7 +62,7 @@ pub enum SessionEvent {
     /// mislabels as a crash. MUST NOT be lowered as `Detached`.
     Cancel,
 
-    // (No clock/timeout lower: AionCore does NOT auto-time-out a turn. A user may
+    // (No clock/timeout lower: Dream Core does NOT auto-time-out a turn. A user may
     // leave a permission unanswered indefinitely; a genuinely wedged agent is
     // ended by user Cancel, and a dead process by `Detached`. The former deadline
     // janitor + `Timeout` event were removed 2026-06-11, user-decided — no
@@ -236,7 +236,7 @@ pub enum SessionEvent {
         /// G3: backend-parsed, NON-authoritative context the conversation layer
         /// uses to DECIDE auto-approval (e.g. team-MCP allowlist) WITHOUT the
         /// backend deciding anything. Shape (when present, ACP only):
-        /// `{ "server_name": "aionui-team"?, "options": [{"option_id","kind"}] }`.
+        /// `{ "server_name": "dream-team"?, "options": [{"option_id","kind"}] }`.
         /// The backend only PARSES the `session/request_permission` params into
         /// this; the conversation facade consults an injected `PermissionAuthorizer`
         /// and, if it auto-approves, dispatches `AnswerPermission` instead of
@@ -257,7 +257,7 @@ pub enum SessionEvent {
         tool_name: Option<String>,
         /// The raised tool's raw `input`, shown on the permission card so the
         /// approver can review WHAT they are approving (a Bash `command`, an
-        /// AskUserQuestion `{questions:[…]}` — AionUi issue #3779: without it the
+        /// AskUserQuestion `{questions:[…]}` — Dream UI issue #3779: without it the
         /// card showed only the tool name and the user approved blind). This is
         /// display-to-the-approver, NOT logging — TIO-13 (never log tool input at
         /// info) still applies to log output. `None` for paths that carry no tool
@@ -415,7 +415,7 @@ pub enum SessionEvent {
     /// FSM never reads detail); the orchestrator folds it into `workflow_roster`.
     /// Keyed by `ref` (= claude `agentId` once running, else `label`); `parent_ref`
     /// = the container `task_id` (the 1:N workflow→agents relation). All rich
-    /// fields Option — only claude fills them; codex/ACP/aionrs never emit this.
+    /// fields Option — only claude fills them; codex/ACP/dream never emit this.
     SubagentDetail {
         r#ref: String,
         parent_ref: Option<String>,
@@ -499,7 +499,7 @@ pub enum SessionEvent {
     /// whose `aggregatedOutput` is the full text; a reconnect re-renders from there).
     /// The pure `step()` reducer NEVER reads it (no FSM meaning — a tool streaming
     /// output is just a Running turn making progress). Only the conversation layer
-    /// projects it to a live tool-output pane. Claude/ACP/aionrs never emit it today.
+    /// projects it to a live tool-output pane. Claude/ACP/dream never emit it today.
     ToolOutputDelta { item_id: String, text: String },
 
     /// Live cumulative turn DIFF (codex `turn/diff/updated`). The FULL git-style
@@ -599,7 +599,7 @@ pub enum SessionEvent {
     /// `turn/started` → `Turn.id`) so the conversation layer can stamp it onto
     /// every message row it persists for that turn. That stamp is what later
     /// resolves `thread/fork`'s `lastTurnId` when the user forks mid-history —
-    /// the runtime `turn_<shortid>` ids are aionui-minted and mean nothing to
+    /// the runtime `turn_<shortid>` ids are dream-minted and mean nothing to
     /// the backend. Same contract as BackendBound: orchestration-lowered
     /// pass-through, reducer no-op, never persisted as an event. Only codex
     /// emits it today; backends without a turn-anchored fork never do.

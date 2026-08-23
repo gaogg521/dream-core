@@ -270,7 +270,7 @@ async fn migration_016_clears_internal_aion_cli_overrides_only() {
 // Fork: upstream's standalone migration 19 (retired client-preference
 // cleanup) was merged into fork migration 022, alongside thought-level
 // defaults, when fork migrations 019-021 claimed those numbers first
-// (rename_aion_cli, fix_cursor_agent_cli_command, rebrand_aionrs_icon).
+// (rename_aion_cli, fix_cursor_agent_cli_command, rebrand_dream_icon).
 // See 022_assistant_thought_level_defaults.sql.
 #[tokio::test]
 async fn migration_022_deletes_retired_runtime_client_preferences_only() {

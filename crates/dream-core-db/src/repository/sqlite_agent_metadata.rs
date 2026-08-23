@@ -977,7 +977,7 @@ mod tests {
             .iter()
             .find(|row| row.agent_type == "aionrs" && row.agent_source == "internal")
             .expect("seeded aion cli row");
-        // Fork: migration 021 rebrands the aionrs row icon to the 1ONE logo.
+        // Fork: migration 021 rebrands the dream row icon to the 1ONE logo.
         assert_eq!(aionrs.icon.as_deref(), Some("/api/assets/logos/brand/1one.png"));
         let aionrs_modes: serde_json::Value =
             serde_json::from_str(aionrs.available_modes.as_deref().expect("aionrs modes catalog")).unwrap();

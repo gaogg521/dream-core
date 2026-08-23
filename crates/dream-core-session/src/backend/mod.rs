@@ -53,7 +53,7 @@ use futures_util::stream::BoxStream;
 /// Shared startup-handshake budget for the bound-thread / bound-session waits
 /// (bug-hunt codex-500 + regression-by-rewrite audit). The clean-slate rewrite of
 /// the codex/acp handshake wait collapsed the legacy ACP `INIT_TIMEOUT_SECS = 30`
-/// (aionui-agent-rest/src/protocol/acp.rs:55, an `oneshot` + `tokio::time::timeout`)
+/// (dream-agent-rest/src/protocol/acp.rs:55, an `oneshot` + `tokio::time::timeout`)
 /// into a hardcoded `for _ in 0..40 { sleep(50ms) }` = 2s busy-poll on BOTH backends
 /// — a magic constant with no reference to the legacy value. 2s passes on a warm dev
 /// box but a cold start / untrusted project slows agent init past it → timeout → 500.
@@ -125,7 +125,7 @@ pub trait SessionBackend: Send + Sync {
     /// wire, and block until the user answers it.
     ///
     /// Only Antigravity needs this. agy cannot prompt for tool permission in
-    /// headless mode, so AionUi registers itself as agy's `PreToolUse` hook;
+    /// headless mode, so Dream UI registers itself as agy's `PreToolUse` hook;
     /// the request therefore arrives over HTTP from a separate hook process
     /// rather than up the backend's stream. Every other backend raises
     /// permissions on its own wire and never calls this.
@@ -160,9 +160,9 @@ pub trait BackendConnection: Send + Sync {
 
 /// A neutral, SDK-free MCP server spec (Wave 0c). Carries one resolved MCP server
 /// into `open_session` so each backend serializes it into ITS OWN wire shape (acp
-/// → `session/new`|`session/load` `mcpServers[]`; codex → `thread/start`; aionrs →
+/// → `session/new`|`session/load` `mcpServers[]`; codex → `thread/start`; dream →
 /// its `McpServerConfig` map). Deliberately crate-local — `dream-core-session` stays
-/// self-contained (no `aionui-api-types`/ACP-SDK dep, §Cargo.toml). The app
+/// self-contained (no `dream-api-types`/ACP-SDK dep, §Cargo.toml). The app
 /// boundary (which owns the catalog + async command resolution) converts its own
 /// `SessionMcpServer` into this AFTER resolving stdio launch commands, so the spec
 /// that arrives here is final (a backend never re-resolves a launch command).
@@ -204,7 +204,7 @@ pub struct SessionInit {
     /// User/team/guide MCP servers, already resolved + flattened by the app
     /// boundary. Empty = no injection (the pre-0c default).
     pub mcp_servers: Vec<McpServerSpec>,
-    /// Skill ids/names to surface to the agent on the first turn (acp/aionrs
+    /// Skill ids/names to surface to the agent on the first turn (acp/dream
     /// deliver these via the first prompt, not a `session/new` param).
     ///
     /// NB: claude/codex direct-CLI backends intentionally do NOT consume this —
@@ -213,17 +213,17 @@ pub struct SessionInit {
     /// `.claude/skills` / `.codex/skills`) and both CLIs discover them natively
     /// (codex LIVE-verified 0.144.1: `skills/list` returns a `<cwd>/.codex/skills`
     /// entry as scope=repo; see samples/codex-cli/0.144.1/_probe_workspace_skills.py).
-    /// The field is carried for the aionrs/acp first-prompt delivery path only.
+    /// The field is carried for the dream/acp first-prompt delivery path only.
     pub skills: Vec<String>,
     /// Composed system prompt / preset context (the `compose_preset_context`
-    /// output + aionrs `preset_rules`-merged prompt). Delivered first-message.
+    /// output + dream `preset_rules`-merged prompt). Delivered first-message.
     pub preset_context: Option<String>,
-    /// Opaque persisted session snapshot for resume (aionrs `SessionManager` JSON
+    /// Opaque persisted session snapshot for resume (dream `SessionManager` JSON
     /// blob). Kept as `serde_json::Value` so `dream-core-session` need not depend on
-    /// the `aion-agent` `Session` type; the aionrs backend deserializes it.
+    /// the `aion-agent` `Session` type; the dream backend deserializes it.
     pub session_snapshot: Option<serde_json::Value>,
     /// Explicit resume flag. acp/codex resume via `SessionSpec::Resume`; this is the
-    /// aionrs equivalent + the single source of truth for "sanitize on resume".
+    /// dream equivalent + the single source of truth for "sanitize on resume".
     pub resume: bool,
 }
 
@@ -261,12 +261,12 @@ pub struct SessionConfig {
     /// only (byte-identical to the pre-#103 spawn). Carried into the F-4 wake
     /// recipe so a resume-respawn re-applies the same env (R16 continuity).
     pub spawn_env: Vec<dream_core_common::EnvVar>,
-    /// Antigravity only: the `.agents/hooks.json` body that registers AionUi as
+    /// Antigravity only: the `.agents/hooks.json` body that registers Dream UI as
     /// agy's approval gate.
     ///
     /// Carried rather than written unconditionally because a session that starts
     /// in full auto installs no hook — and the backend cannot rebuild this body
-    /// itself (it knows the workspace, not where AionUi's binary lives). Holding
+    /// itself (it knows the workspace, not where Dream UI's binary lives). Holding
     /// it lets a later switch OUT of full auto restore the gate; without it that
     /// switch would silently leave the session running unattended.
     pub permission_hook_body: Option<String>,

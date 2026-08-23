@@ -141,7 +141,7 @@ pub struct AionrsResolvedConfig {
     /// System prompt override.
     pub system_prompt: Option<String>,
     /// Internal response cap for specialized flows such as provider health probes.
-    /// Normal AionUi conversations leave this unset.
+    /// Normal Dream UI conversations leave this unset.
     pub max_tokens: Option<u32>,
     /// Max agentic turns.
     pub max_turns: Option<usize>,
@@ -154,7 +154,7 @@ pub struct AionrsResolvedConfig {
     /// A vision-capable model from the user's configured providers that the
     /// `ReadImage` tool delegates to when [`Self::model`] cannot accept images.
     ///
-    /// `None` means either the session model can see images itself (aionrs then
+    /// `None` means either the session model can see images itself (dream then
     /// uses it directly) or the user has no vision-capable model at all, in
     /// which case `ReadImage` reports images as unreadable instead of letting
     /// the agent invent their contents.
@@ -164,7 +164,7 @@ pub struct AionrsResolvedConfig {
     /// generic "add a vision model in Settings" advice, which is wrong (and
     /// unactionable) for a member whose admin banned every candidate.
     pub vision_unavailable_reason: Option<String>,
-    /// Directory for aionrs session persistence files.
+    /// Directory for dream session persistence files.
     pub session_directory: PathBuf,
     /// Session mode (default, auto_edit, yolo).
     pub session_mode: Option<String>,

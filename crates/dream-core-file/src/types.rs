@@ -100,7 +100,7 @@ pub struct OfficeFileAddedEvent {
 pub enum SnapshotMode {
     /// Directory already has a `.git` — use it directly.
     GitRepo,
-    /// No `.git` — a temporary repo is created under `/tmp/aionui-snapshot-*`.
+    /// No `.git` — a temporary repo is created under `/tmp/dream-snapshot-*`.
     Snapshot,
 }
 

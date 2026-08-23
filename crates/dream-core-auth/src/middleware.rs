@@ -84,7 +84,7 @@ fn resolve_caller_ip(request: &Request) -> Option<IpAddr> {
 }
 
 /// Per-project-group IP allowlist check, bridged from `one-platform` (same
-/// layer as `aionui-auth`, so the dependency runs through this trait rather
+/// layer as `dream-auth`, so the dependency runs through this trait rather
 /// than a direct crate dependency — same arrangement as
 /// `dream_domain_org::CredentialRevoker` / `dream_domain_enterprise::CompanyDisbandCascade`).
 ///
@@ -135,7 +135,7 @@ pub const RUNTIME_CONVERSATION_ID_HEADER: &str = "x-aionui-conversation-id";
 /// Port for validating conversation-runtime helper tokens.
 ///
 /// Implemented in the composition layer over the agent runtime's token
-/// service; `aionui-auth` must not depend on `aionui-ai-agent` directly.
+/// service; `dream-auth` must not depend on `dream-ai-agent` directly.
 /// A verifier must confirm the token is a live, conversation-helper-scoped
 /// token bound to exactly this (user_id, conversation_id) pair.
 pub trait IRuntimeTokenVerifier: Send + Sync {
@@ -707,7 +707,7 @@ mod tests {
     /// A caller with nothing to check (`AllowGate` — the realistic default:
     /// personal edition, or a group with no allowlist) must pass even when
     /// the real IP cannot be resolved (no `ConnectInfo`) — this is exactly
-    /// the shape of every unrelated e2e test in `aionui-app` that drives the
+    /// the shape of every unrelated e2e test in `dream-app` that drives the
     /// router via `.oneshot()` without a real `ConnectInfo`, so getting this
     /// wrong 403s the entire existing test suite, not just this feature.
     #[tokio::test]

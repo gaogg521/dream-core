@@ -93,7 +93,7 @@ impl Drop for ManagedProcess {
     ///
     /// WHO REAPS THE DIRECT CHILD'S ZOMBIE (corrected per review):
     /// the authoritative reaper is tokio's `kill_on_drop(true)` (set on the
-    /// Builder Child in aionui-runtime spawn.rs) — when the exit-monitor task
+    /// Builder Child in dream-runtime spawn.rs) — when the exit-monitor task
     /// (which OWNS the `Child`) is dropped, tokio's orphan queue reaps the Child.
     /// So we do NOT rely on the detached `child.wait()` running to completion
     /// (a detached task is cancelled at its next await on runtime shutdown, NOT

@@ -1,6 +1,6 @@
 //! Version-drift detection for direct-CLI backends.
 //!
-//! None of claude / codex / agy ship with AionUi: each is whatever the user
+//! None of claude / codex / agy ship with Dream UI: each is whatever the user
 //! installed. Every wire contract a backend relies on — stream shapes, control
 //! frames, resume flags — was verified against one release, so a drifting
 //! install has to be visible rather than failing in some unexplained way
@@ -8,7 +8,7 @@
 //!
 //! claude and codex used to be exempt because the app bundled a version-pinned
 //! copy of each. That hid a worse problem: the bundled CLI and the user's own
-//! install could differ, so the same prompt behaved differently in AionUi and
+//! install could differ, so the same prompt behaved differently in Dream UI and
 //! in the user's terminal with nothing on screen explaining why. Bundling is
 //! gone; this module gives all three backends the same treatment.
 //!

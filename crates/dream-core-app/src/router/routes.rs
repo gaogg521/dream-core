@@ -502,7 +502,7 @@ impl dream_core_ai_agent::ModelAllowlistGate for BillingModelAllowlistGate {
     }
 }
 
-/// Adapts aionui-system's local content inspector to the conversation crate's
+/// Adapts dream-system's local content inspector to the conversation crate's
 /// `ContentInspector` trait (T4). Personal builds have no rules distributed, so
 /// this costs a read lock and a length check per send.
 struct LocalContentInspector(std::sync::Arc<dream_core_system::ContentInspectionService>);
@@ -963,7 +963,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // route. The bridge's own `/v1/responses` surface is registered
     // separately below, unauthenticated at the session-cookie layer — Codex
     // is an external process with no browser session, and gates itself with
-    // its own bearer token instead (see `aionui-codex-bridge::routes`).
+    // its own bearer token instead (see `dream-codex-bridge::routes`).
     let codex_bridge_config_authenticated = codex_bridge_config_routes(states.codex_bridge.clone())
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -1046,7 +1046,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
             services.work_dir.clone(),
         )
         .with_team_session(team_session_service)
-        // Lets an employee's aionrs model be validated against enabled
+        // Lets an employee's dream model be validated against enabled
         // providers at save time instead of failing the run.
         .with_provider_repo(std::sync::Arc::new(dream_core_db::SqliteProviderRepository::new(
             services.database.pool().clone(),
@@ -1155,7 +1155,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let public_assets = asset_routes(AssetRouterState::default());
     // Not session-authenticated: Codex CLI is an external process with no
     // browser session. Gated by its own per-installation bearer token
-    // instead (checked inside the handler; see `aionui-codex-bridge`).
+    // instead (checked inside the handler; see `dream-codex-bridge`).
     let codex_bridge_public = codex_bridge_public_routes(states.codex_bridge);
 
     // WebSocket upgrade route — exempt from CSRF (no cookie-based
@@ -1287,7 +1287,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     }
 }
 
-/// Adapter running the on-disk side of AionUi → AionPro adoption over the
+/// Adapter running the on-disk side of Dream UI → DreamPro adoption over the
 /// skill filesystem (auth crate cannot depend on the extension/filesystem).
 struct SkillFilesystemAdopter {
     skill_paths: Arc<dream_core_extension::SkillPaths>,
@@ -1307,8 +1307,8 @@ impl SystemDefaultFilesystemAdopter for SkillFilesystemAdopter {
 }
 
 /// Adapter exposing the agent runtime's token service to the auth middleware
-/// as the conversation-helper credential channel (aionui-auth cannot depend on
-/// aionui-ai-agent, so the binding happens here in the composition layer).
+/// as the conversation-helper credential channel (dream-auth cannot depend on
+/// dream-ai-agent, so the binding happens here in the composition layer).
 struct ConversationHelperTokenVerifier {
     runtime_token_service: Arc<RuntimeTokenService>,
 }

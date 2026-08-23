@@ -6,7 +6,7 @@
 //! an in-memory SQLite database. The assistant module state is re-built with
 //! a temp-dir built-in manifest, a temp user-data dir, and a temp extension
 //! registry for the unrelated extension router state without touching
-//! `~/.aionui/`.
+//! `~/.dream/`.
 
 mod common;
 
@@ -232,7 +232,7 @@ async fn fixture() -> Fixture {
 
     // Replace the extension + hub + skill states with freshly-constructed
     // ones rooted at our temp dirs. The defaults built by
-    // `build_module_states` point at `~/.aionui/` for the state store and
+    // `build_module_states` point at `~/.dream/` for the state store and
     // external-paths file, which can hold arbitrary contents on a dev box
     // and poison the test. Building from scratch gives us a pristine
     // registry we can initialize with our fixture extension.
@@ -277,7 +277,7 @@ async fn fixture() -> Fixture {
     // Rebuild AssistantService pointing at our temp built-in manifest + temp
     // user-data dir. `build_module_states` loads the default built-in
     // registry (pointing at $exe_dir/assets or dev fallback) and uses
-    // `~/.aionui/` for user data — neither is appropriate for tests.
+    // `~/.dream/` for user data — neither is appropriate for tests.
     let pool = services.database.pool().clone();
     let definition_repo: Arc<dyn IAssistantDefinitionRepository> =
         Arc::new(SqliteAssistantDefinitionRepository::new(pool.clone()));
@@ -290,7 +290,7 @@ async fn fixture() -> Fixture {
         Arc::new(SqliteAssistantOverrideRepository::new(pool.clone()));
     let provider_repo: Arc<dyn IProviderRepository> = Arc::new(SqliteProviderRepository::new(pool.clone()));
     // Seed an OpenAI-compatible provider so create / import calls without
-    // an explicit `agent_id` resolve to `"aionrs"` instead of
+    // an explicit `agent_id` resolve to `"dream"` instead of
     // erroring out — mirroring a configured production setup.
     provider_repo
         .create(dream_core_db::CreateProviderParams {

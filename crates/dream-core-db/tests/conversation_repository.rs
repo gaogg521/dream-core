@@ -251,7 +251,7 @@ async fn filter_by_source_and_pinned_combined() {
     c3.pinned = false;
     repo.create(&c3).await.unwrap();
 
-    // Filter: source=aionui AND pinned=true
+    // Filter: source=dream AND pinned=true
     let result = repo
         .list_paginated(
             USER_ID,

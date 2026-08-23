@@ -81,7 +81,7 @@ async fn t12_2_get_requests_bypass_csrf() {
 ///
 /// The hook is a local `aioncore antigravity-hook` process: no user session, no
 /// cookie, no token to present. It authenticates with a per-conversation
-/// `x-aionui-hook-token` that the handler checks. When CSRF rejected it, every
+/// `x-dream-hook-token` that the handler checks. When CSRF rejected it, every
 /// call came back 403, the hook read that as "no answer" and denied, and agy
 /// turns produced no tool frames at all — measured 2026-08-14, 6/6 calls
 /// rejected.

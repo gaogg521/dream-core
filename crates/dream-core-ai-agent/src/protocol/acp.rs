@@ -1100,7 +1100,7 @@ fn log_acp_initialize_failed(failure_class: &'static str, elapsed_ms: u64) {
     );
 }
 
-/// Log a JSON-RPC request from AionUi to the ACP agent.
+/// Log a JSON-RPC request from Dream UI to the ACP agent.
 /// `session/prompt` carries large user input and stays at debug.
 fn log_client_request(method: &str, body: &str) {
     let summary = AcpLogSummary::from_payload(body);
@@ -1150,7 +1150,7 @@ fn log_agent_response(method: &str, body: &str) {
     }
 }
 
-/// Log a fire-and-forget notification from AionUi to the agent.
+/// Log a fire-and-forget notification from Dream UI to the agent.
 fn log_client_notify(method: &str, body: &str) {
     let summary = AcpLogSummary::from_payload(body);
     info!(
@@ -1223,7 +1223,7 @@ fn log_agent_request(method: &str, body: &str) {
     );
 }
 
-/// Log a JSON-RPC response from AionUi back to the agent.
+/// Log a JSON-RPC response from Dream UI back to the agent.
 fn log_client_response(method: &str, body: &str) {
     let summary = AcpLogSummary::from_payload(body);
     info!(

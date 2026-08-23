@@ -157,7 +157,7 @@ impl BackendConnection for CodexConnection {
         title_gen.set_model(config.model.clone());
         let mut backend =
             CodexSessionBackend::spawn_with_wake(logical_id, io, wake, config.idle_ttl_ms, title_gen).await;
-        // Report a codex whose version differs from the release AionUi verified.
+        // Report a codex whose version differs from the release Dream UI verified.
         // codex runs from the user's own install (nothing is bundled), the same
         // situation agy has always been in. Placed here rather than at the two
         // return sites so the reconcile path cannot skip it.
@@ -1024,7 +1024,7 @@ fn idle_check_interval_ms(idle_ttl_ms: Option<i64>) -> u64 {
 
 impl CodexSessionBackend {
     /// Tell the user once per conversation when the installed codex is not the
-    /// release AionUi verified.
+    /// release Dream UI verified.
     ///
     /// Fire-and-forget: the probe spawns `codex --version` and a failure only
     /// costs the drift claim, never the session.
@@ -2165,9 +2165,9 @@ fn emit(tx: &broadcast::Sender<SessionEnvelope>, session_id: &str, turn_gen: u64
 
 /// feature 012 — codex permission-profile ↔ fixed-mode-enum mapping (SSOT).
 ///
-/// codex's permission tiers are DISCOVERED, not a fixed AionUi enum — mirroring the
+/// codex's permission tiers are DISCOVERED, not a fixed Dream UI enum — mirroring the
 /// legacy ACP mechanism (`manager/acp/session.rs`: `availableModes[]` advertised by the
-/// agent, `is_mode_valid` validates against that live list, AionCore defines no values).
+/// agent, `is_mode_valid` validates against that live list, Dream Core defines no values).
 /// codex advertises them via `permissionProfile/list`, each identified by a COLON-
 /// PREFIXED id (`:workspace` / `:danger-full-access` / `:read-only`, plus any user
 /// `[permissions.<id>]` custom profile — the bare form is rejected on the wire,
@@ -2384,8 +2384,8 @@ fn fill_discovery(kind: DiscoveryKind, result: &Value, discovered: &Arc<std::syn
             // codex advertises via `permissionProfile/list` is surfaced VERBATIM as a mode
             // — colon-prefixed id and all (`:workspace` / `:danger-full-access` /
             // `:read-only`, plus any user `[permissions.<id>]` custom profile). We no
-            // longer translate to a fixed AionUi enum or drop custom profiles: codex
-            // defines the value set, AionCore only transports it (parity with legacy ACP,
+            // longer translate to a fixed Dream UI enum or drop custom profiles: codex
+            // defines the value set, Dream Core only transports it (parity with legacy ACP,
             // where `availableModes[]` came straight off the wire). `disc.modes` is the
             // SAME cache slot `reconcile_codex_mode` validates against and the capabilities
             // snapshot exposes; `collaborationMode/list` is not sent (plan/default has no
@@ -2614,7 +2614,7 @@ async fn handle_reverse_rpc(
                     metadata: None,
                     // The approval class as the card title, and the request `params`
                     // as an UNPARSED passthrough so the card can show the approver
-                    // what they are approving (AionUi issue #3779 — approving blind).
+                    // what they are approving (Dream UI issue #3779 — approving blind).
                     // No shape is asserted: the frontend reads `command` when present
                     // and falls back to the title otherwise, so an unprobed params
                     // shape degrades to the previous title-only card.
@@ -2787,7 +2787,7 @@ fn map_notification(method: &str, params: &Value) -> Vec<SessionEvent> {
         // was set via the raw sandboxPolicy channel (not our path) — then we carry no mode
         // (leaving the last-known selection). We deliberately do NOT read
         // `collaborationMode.mode` (plan/default): codex has no separately-exposed
-        // collaboration selector in AionUi, and that field would clobber the permission mode.
+        // collaboration selector in Dream UI, and that field would clobber the permission mode.
         "thread/settings/updated" => {
             let settings = params
                 .get("threadSettings")
@@ -5133,7 +5133,7 @@ mod tests {
         // which is what AnswerPermission writes) → user-facing Permission (Tool),
         // carrying the approval class as `tool_name` and the wire `params` verbatim
         // as `input` (unparsed passthrough) so the permission card can show the
-        // approver what they are approving (AionUi issue #3779).
+        // approver what they are approving (Dream UI issue #3779).
         for (m, title) in [
             ("item/commandExecution/requestApproval", "CommandExecution"),
             ("item/fileChange/requestApproval", "FileChange"),
@@ -7433,7 +7433,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_set_mode_normalizes_legacy_persisted_value() {
-        // A legacy persisted BARE value (`yolo`) — from an older AionUi that stored the
+        // A legacy persisted BARE value (`yolo`) — from an older Dream UI that stored the
         // pre-discovery alias — normalizes onto the `:danger-full-access` colon id, so an
         // upgrading user's stored mode applies straight through with zero fallback. This is
         // the codex analogue of legacy ACP `normalize_requested_mode` (alias → native id).
@@ -7455,7 +7455,7 @@ mod tests {
     async fn dispatch_set_mode_passes_custom_profile_id_verbatim() {
         // A user `[permissions.<id>]` custom profile — discovered via permissionProfile/list
         // and NOT one of the built-in tiers — must reach the wire UNCHANGED. This is the
-        // heart of the legacy-ACP parity: codex owns the value set, AionCore only transports
+        // heart of the legacy-ACP parity: codex owns the value set, Dream Core only transports
         // it (no fixed-enum whitelist that would drop a custom profile).
         let fake = fake_with_binding("th-6", None);
         let captured = fake.captured_stdin();
@@ -7525,7 +7525,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_set_mode_obsolete_and_unknown_bare_values_fall_to_workspace() {
-        // Legacy-ACP parity: AionCore never ships a frame codex would reject. Any unknown
+        // Legacy-ACP parity: Dream Core never ships a frame codex would reject. Any unknown
         // or obsolete BARE value normalizes to the safe `:workspace` tier rather than
         // erroring. `plan` (the OLD collaborationMode token) is the key case — it no longer
         // collaboration-maps but lands on the workspace profile, proving the
@@ -7969,7 +7969,7 @@ mod tests {
     /// The assistant preset must NOT replace codex's built-in system prompt.
     ///
     /// `baseInstructions` REPLACES the default prompt wholesale (live
-    /// 2026-08-19, rollout of AionUi conv 5e1a2a40: `base_instructions` became
+    /// 2026-08-19, rollout of Dream UI conv 5e1a2a40: `base_instructions` became
     /// the raw preset text, and the model stopped emitting between-tool
     /// preamble/progress messages because the default prompt's "### Preamble
     /// messages" guidance was gone — turns ran 20+ minutes of tools with zero
@@ -8333,7 +8333,7 @@ mod tests {
     /// UT-1: `permissionProfile/list` response (0.139.0 live shape) surfaces every profile
     /// VERBATIM as a colon-prefixed mode id — built-in tiers AND a user custom profile,
     /// preserving discovery order. Legacy-ACP parity: codex defines the value set (like an
-    /// ACP agent's `availableModes[]`), AionCore does not translate or whitelist.
+    /// ACP agent's `availableModes[]`), Dream Core does not translate or whitelist.
     #[tokio::test]
     async fn fill_discovery_surfaces_permission_profiles_verbatim() {
         let discovered = Arc::new(std::sync::Mutex::new(Discovered::default()));
@@ -8385,7 +8385,7 @@ mod tests {
         assert_eq!(full.name, "Full Access");
     }
 
-    /// UT-1b: `normalize_to_profile_id` — the ONE translation AionCore still owns —
+    /// UT-1b: `normalize_to_profile_id` — the ONE translation Dream Core still owns —
     /// rewrites a legacy persisted BARE value onto its colon-prefixed profile id, passes a
     /// discovered/custom colon id through VERBATIM, and never yields a value codex rejects.
     /// Mirrors legacy ACP `normalize_requested_mode` (alias → native id).
@@ -8408,7 +8408,7 @@ mod tests {
             );
         }
         // A colon-prefixed id (discovered built-in OR user custom profile) passes through
-        // verbatim — codex, not AionCore, owns the value set (legacy-ACP parity).
+        // verbatim — codex, not Dream Core, owns the value set (legacy-ACP parity).
         for id in [
             ":workspace",
             ":danger-full-access",
@@ -9451,7 +9451,7 @@ mod tests {
     }
 
     /// Regression-by-rewrite (codex-500): the bound-thread handshake budget must be the
-    /// legacy 30s (aionui-agent-rest INIT_TIMEOUT_SECS), NOT the magic 2s the rewrite
+    /// legacy 30s (dream-agent-rest INIT_TIMEOUT_SECS), NOT the magic 2s the rewrite
     /// introduced. Pins the value so a future shrink reds here, and that the env override
     /// is honored. (Pure — no timing.)
     #[test]

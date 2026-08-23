@@ -85,7 +85,7 @@ pub async fn run_one_devops_migrations(pool: &SqlitePool) -> Result<(), DevopsEr
 ///
 /// `one_user_org` belongs to one-org, not this crate. In the real app
 /// one-org's migrations always run first (see
-/// `aionui-app/router/routes.rs`), but this crate's own tests exercise
+/// `dream-app/router/routes.rs`), but this crate's own tests exercise
 /// `run_one_devops_migrations` in isolation against a pool that never has
 /// it — checking existence first, rather than letting the query fail, keeps
 /// that isolation test meaningful instead of forcing it to know about

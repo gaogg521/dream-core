@@ -41,7 +41,7 @@ pub(crate) const LEGACY_HANDOFF_COLUMNS: &[LegacyHandoffColumn] = &[
         column: "agents_version",
         definition: "TEXT NOT NULL DEFAULT '1.0.0'",
     },
-    // AIONUI-230 (Sentry): legacy databases that never ran AionUi JS-side v22
+    // AIONUI-230 (Sentry): legacy databases that never ran Dream UI JS-side v22
     // lack `messages.hidden`, and migration 002 Part D.1 reads it from the old
     // table (`COALESCE(hidden, 0)` fails at SQL prepare time when the source
     // column is absent), leaving startup permanently broken. Definition matches

@@ -1,7 +1,7 @@
 //! Hard shutdown watchdog (AIONUI-16).
 //!
 //! The data-dir instance `flock` is only released by the kernel when this
-//! process exits (`aionui-db/src/instance_lock.rs`). Sentry evidence shows the
+//! process exits (`dream-db/src/instance_lock.rs`). Sentry evidence shows the
 //! lock being held for 20–53 minutes across "clean quits", i.e. a shutdown
 //! that began but never finished: the graceful tail contains awaits that are
 //! unbounded by design (axum's connection drain waits for every connection

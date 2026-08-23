@@ -1713,7 +1713,7 @@ impl CronService {
         // Both interactive `send_message` and the cron executor parse
         // `conversation.model` via the same helper. Keeping the cron-side
         // `agent_config.model` derivation in sync with that parser prevents
-        // the cached vendor-label fallback (`"aionrs"`) from sneaking back in
+        // the cached vendor-label fallback (`"dream"`) from sneaking back in
         // (Sentry ELECTRON-1HM).
         let model_resolved = dream_core_conversation::task_options::provider_model_from_conversation_row(row);
         let model = (!model_resolved.provider_id.is_empty()).then_some(&model_resolved);
@@ -2471,7 +2471,7 @@ mod tests {
         assert!(validate_skill_body_content("Run daily report").is_ok());
     }
 
-    // -- validate_aionrs_agent_config ----------------------------------------
+    // -- validate_dream_agent_config ----------------------------------------
 
     fn agent_cfg_dto(provider_id: &str) -> dream_core_api_types::CronAgentConfigWriteDto {
         dream_core_api_types::CronAgentConfigWriteDto {

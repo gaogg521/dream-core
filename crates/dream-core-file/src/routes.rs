@@ -155,7 +155,7 @@ pub struct FileRouterState {
 /// All routes require authentication (applied by the caller).
 pub fn file_routes(state: FileRouterState) -> Router {
     // Upload route carries its own body-size limit (UPLOAD_MAX_SIZE, 30 MB).
-    // We first disable the global `DefaultBodyLimit` that `aionui-app`
+    // We first disable the global `DefaultBodyLimit` that `dream-app`
     // installs (otherwise the `Multipart` extractor would cap the body at
     // `BODY_LIMIT`), then apply `RequestBodyLimitLayer` as the sole hard
     // cap. The layers are added in outer->inner order via `.layer()`.
@@ -395,7 +395,7 @@ async fn reveal_item(
 /// Reveal the resolved absolute path via the revealer port. Split from the
 /// handler so the resolve → reveal wiring (and its no-local-path / reveal-failed
 /// error mapping) is unit-testable with a mock revealer, independent of the
-/// project service (`resolve_reference` is covered in `aionui-project`).
+/// project service (`resolve_reference` is covered in `dream-project`).
 async fn reveal_resolved(
     revealer: &dyn crate::traits::IItemRevealer,
     absolute_path: Option<String>,
@@ -439,7 +439,7 @@ async fn copy_absolute_path(
 /// fail with a path-free `BadRequest` when the reference is not a local path.
 /// Split from the handler so the resolve → clipboard wiring (no-local-path /
 /// clipboard-failure mapping) is unit-testable with a mock writer, independent of
-/// the project service (`resolve_reference` is covered in `aionui-project`).
+/// the project service (`resolve_reference` is covered in `dream-project`).
 /// Symmetric with [`reveal_resolved`].
 async fn copy_absolute_path_resolved(
     clipboard: &dyn crate::traits::IClipboardWriter,
@@ -571,7 +571,7 @@ async fn create_temp_file(
 // Content endpoint (ChatFileRef identity) — handlers
 // ---------------------------------------------------------------------------
 
-/// Managed upload directory (`<tmp>/aionui`) used to validate `Upload`
+/// Managed upload directory (`<tmp>/dream`) used to validate `Upload`
 /// ChatFileRef variants — mirrors the chat send-boundary convention.
 fn content_upload_root() -> PathBuf {
     std::env::temp_dir().join("aionui")

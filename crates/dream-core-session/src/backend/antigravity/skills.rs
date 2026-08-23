@@ -2,7 +2,7 @@
 //!
 //! agy exposes no way to LIST its commands: `agy commands` / `agy skills` drop
 //! into the TUI, and headless mode has no equivalent. But `-p "/<skill-name>"`
-//! does invoke a skill (verified), and AionUi provisions those skills itself
+//! does invoke a skill (verified), and Dream UI provisions those skills itself
 //! under `.agents/skills/`. So the command list is read off the skill files
 //! rather than asked for.
 
@@ -10,7 +10,7 @@ use std::path::Path;
 
 use crate::capability::SlashCommandInfo;
 
-/// Where agy looks for workspace skills, and where AionUi provisions them.
+/// Where agy looks for workspace skills, and where Dream UI provisions them.
 const SKILLS_DIR: &str = ".agents/skills";
 
 /// Pull `name` / `description` out of a `SKILL.md` YAML frontmatter block.

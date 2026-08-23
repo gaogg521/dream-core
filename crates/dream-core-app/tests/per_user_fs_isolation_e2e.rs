@@ -1,7 +1,7 @@
 //! End-to-end: user data on disk is physically isolated per Core User, and
-//! AionUi → AionPro adoption moves the default user's files to the adopter.
+//! Dream UI → DreamPro adoption moves the default user's files to the adopter.
 //!
-//! Boots the real AppServices (AionPro mode) so the assertions run against the
+//! Boots the real AppServices (DreamPro mode) so the assertions run against the
 //! production filesystem layout, not hand-built paths.
 
 use std::path::Path;
@@ -124,7 +124,7 @@ async fn provisioning_first_aionpro_user_adopts_default_user_files_on_disk() {
         .join("legacy");
     assert!(default_root.exists());
 
-    // Provision the first external (AionPro) user via the bootstrap-secret API
+    // Provision the first external (DreamPro) user via the bootstrap-secret API
     // — this triggers DB adoption + the filesystem move.
     let resp = app
         .oneshot(

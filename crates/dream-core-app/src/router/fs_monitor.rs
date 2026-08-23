@@ -1,6 +1,6 @@
 //! Composition wiring for the Project Explorer filesystem monitor.
 //!
-//! Adapts the transport-agnostic [`FsMonitorActor`] (in `aionui-project`) to the
+//! Adapts the transport-agnostic [`FsMonitorActor`] (in `dream-project`) to the
 //! realtime WebSocket layer: an [`FsMessageRouter`] forwards inbound `fs` frames
 //! (and disconnects) into the actor's channel, and [`WsManagerPush`] implements
 //! the actor's outbound port over the WS manager's unicast, wrapping each inner

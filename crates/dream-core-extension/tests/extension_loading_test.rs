@@ -91,7 +91,7 @@ fn el1_scan_priority_env_wins_over_local() {
 fn el2_engine_incompatible_extension_filtered_out() {
     let tmp = TempDir::new().unwrap();
 
-    // Extension requires aionui ^2.0.0 but app is 1.5.0.
+    // Extension requires dream ^2.0.0 but app is 1.5.0.
     let ext = create_ext_dir(tmp.path(), "future-ext");
     write_manifest_full(&ext, "future-ext", "1.0.0", Some("^2.0.0"), None);
 

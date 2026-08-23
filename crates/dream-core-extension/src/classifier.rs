@@ -2,10 +2,10 @@
 //! `skill_routes` to route rule-md / skill-md reads/writes to the correct
 //! source (built-in file, extension resolution, or user-writable directory).
 //!
-//! These traits live in `aionui-extension` (not `aionui-assistant`) so
-//! `skill_routes` can depend on them without pulling `aionui-assistant` into
+//! These traits live in `dream-extension` (not `dream-assistant`) so
+//! `skill_routes` can depend on them without pulling `dream-assistant` into
 //! the dependency graph; the concrete implementation ships from
-//! `aionui-assistant::AssistantService`.
+//! `dream-assistant::AssistantService`.
 
 use dream_core_api_types::AssistantSource;
 

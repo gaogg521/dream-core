@@ -144,7 +144,7 @@ impl MediaAssetRow {
 }
 
 /// Ordering for "is this an upgrade?". Kept local rather than deriving `Ord` on
-/// `Tier` in aionui-common, because tier ordering is a *billing* policy, not an
+/// `Tier` in dream-common, because tier ordering is a *billing* policy, not an
 /// intrinsic property of the enum.
 fn tier_rank(tier: Tier) -> u8 {
     match tier {
@@ -947,7 +947,7 @@ impl BillingService {
     /// budgets, the media ledger and its retention setting, and license
     /// activation history. Called by one-enterprise's `disband_company`
     /// through the `CompanyDisbandCascade` trait it wires up in
-    /// `aionui-app` (same layer, no direct dependency). Authorization is
+    /// `dream-app` (same layer, no direct dependency). Authorization is
     /// enforced by that caller; this trusts the `enterprise_id` it is given.
     pub async fn delete_enterprise_billing_data(&self, enterprise_id: &str) -> Result<(), BillingError> {
         let mut tx = self.pool.begin().await?;
@@ -1378,7 +1378,7 @@ mod tests {
         assert_eq!(summary.by_model[0].key, "claude-opus-4-8");
     }
 
-    /// aionrs conversations have no other way to surface a session cost (the
+    /// dream conversations have no other way to surface a session cost (the
     /// ACP-only `/usage` snapshot structurally never fires for them — see
     /// `AgentInstance::get_usage`), so the frontend sums this directly.
     /// Personal/no-enterprise users must work too: `conversation_cost` is

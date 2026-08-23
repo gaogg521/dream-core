@@ -44,7 +44,7 @@ pub trait ChannelGeneratedAssistantMaterializer: Send + Sync {
 ///
 /// `backend` is only meaningful for agent types that identify their runtime by
 /// vendor slug — ACP (claude, gemini, codex, …) and Antigravity. The rest
-/// (aionrs, nanobot, remote, …) have `backend = None`.
+/// (dream, nanobot, remote, …) have `backend = None`.
 #[derive(Debug, Clone)]
 pub struct ResolvedAgentConfig {
     pub agent_type: String,
@@ -99,7 +99,7 @@ impl ChannelSettingsService {
     /// - **New:** `{"agent_type":"acp","backend":"claude","name":"Claude"}`
     /// - **Legacy:** `{"backend":"claude","name":"Claude"}` (no agent_type field)
     ///
-    /// Falls back to `agent_type=aionrs, backend=None` when no config exists.
+    /// Falls back to `agent_type=dream, backend=None` when no config exists.
     pub async fn get_agent_config(
         &self,
         user_id: &str,

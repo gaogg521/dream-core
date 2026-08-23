@@ -1,11 +1,11 @@
-//! AionPro-mode gate: machine startup must not mint local-default-user rows.
+//! DreamPro-mode gate: machine startup must not mint local-default-user rows.
 //!
 //! Historical failure mode: machine-level startup routines (agent probing,
 //! generated-assistant reconcile, legacy skill-directory ingestion) ran
 //! through "no acting user" convenience paths that mapped to
 //! `system_default_user`, silently accumulating business rows under an
-//! account that never logs in on an AionPro machine. This e2e boots the full
-//! router in AionPro mode and then sweeps EVERY ownership column in the live
+//! account that never logs in on an DreamPro machine. This e2e boots the full
+//! router in DreamPro mode and then sweeps EVERY ownership column in the live
 //! schema: outside the `users` table, zero `system_default_user` rows may
 //! exist.
 

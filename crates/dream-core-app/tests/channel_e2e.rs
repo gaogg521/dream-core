@@ -331,7 +331,7 @@ async fn get_channel_settings_defaults_to_generated_aionrs_assistant() {
     assert!(json["success"].as_bool().unwrap());
     assert_eq!(json["data"]["platform"], "telegram");
     // With no explicit binding the platform now falls back to the generated
-    // aionrs bare assistant (see channel "default to bare assistant bindings");
+    // dream bare assistant (see channel "default to bare assistant bindings");
     // only the assistant_id is canonical, legacy fields are omitted.
     let assistant_id = json["data"]["assistant"]["assistant_id"]
         .as_str()

@@ -7,7 +7,7 @@
 //!
 //! Session-scoped operations (mode/model/config/usage/capabilities/
 //! slash-commands/side-question/workspace/openclaw-runtime) now live in
-//! `aionui-conversation::ConversationService`, which dispatches through
+//! `dream-conversation::ConversationService`, which dispatches through
 //! `AgentInstance`. This service retains only agent-catalog and
 //! ACP health-check responsibilities, plus support for the custom-agent
 //! CRUD endpoints (see `services::custom`).
@@ -86,7 +86,7 @@ impl AgentService {
             };
             // Frontend rows resolve a logo from the conversation's runtime key,
             // which is the vendor `backend` for ACP agents but the `agent_type`
-            // for backends without a vendor label (e.g. aionrs, where `backend`
+            // for backends without a vendor label (e.g. dream, where `backend`
             // is NULL). Key on `backend` when present, otherwise the agent_type.
             let key = agent
                 .backend

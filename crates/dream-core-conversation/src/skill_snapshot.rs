@@ -1,7 +1,7 @@
 //! Pure helpers that compute `conversation.extra.skills` values. No I/O here
 //! — callers (e.g. `ConversationService::create`) fetch the auto-inject name
 //! set up-front and pass it in. This keeps unit tests deterministic and keeps
-//! `aionui-conversation` from taking a hard dep on `aionui-extension` beyond
+//! `dream-conversation` from taking a hard dep on `dream-extension` beyond
 //! the `SkillResolver` trait.
 
 use serde_json::Value;

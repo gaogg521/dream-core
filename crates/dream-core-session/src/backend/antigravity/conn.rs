@@ -43,9 +43,9 @@ use crate::capability::{
 };
 use crate::event::{PermissionKind, SessionEvent, TurnOutcome};
 
-/// The literal placeholder AionUi's team-creation flow persisted as a member's
-/// model when an assistant had no concrete model (AionUi
-/// `teamCreateModelResolver.ts`, fixed in the paired AionUi change). agy never
+/// The literal placeholder Dream UI's team-creation flow persisted as a member's
+/// model when an assistant had no concrete model (Dream UI
+/// `teamCreateModelResolver.ts`, fixed in the paired Dream UI change). agy never
 /// reports a model with this id, so it must not pass through the empty-list
 /// "unknown" window below; already-persisted member sessions heal at runtime.
 const UI_PLACEHOLDER_MODEL: &str = "default";
@@ -185,7 +185,7 @@ pub fn antigravity_capabilities() -> Capabilities {
 /// agy's fixed mode axis (`--mode`). Unlike models this never depends on the
 /// account, so it needs no probe.
 pub fn antigravity_modes() -> Vec<ModeInfo> {
-    // `yolo` is NOT one of agy's modes — it is AionUi's sentinel for "run
+    // `yolo` is NOT one of agy's modes — it is Dream UI's sentinel for "run
     // without asking", offered here so a user can pick full auto deliberately
     // and so a teammate / scheduled run carries the same value. The backend
     // answers it by not installing its approval hook and never forwards it as
@@ -624,7 +624,7 @@ impl AntigravitySessionBackend {
     /// means "unknown", not "nothing is valid", so the request passes through.
     /// The one exception is [`UI_PLACEHOLDER_MODEL`]: it is a known UI
     /// artifact, never a real agy id, so it is dropped even while the list is
-    /// empty — this heals member sessions persisted before the AionUi fix.
+    /// empty — this heals member sessions persisted before the Dream UI fix.
     fn effective_model(&self) -> Option<String> {
         let requested = self.config.model.clone()?;
         let known = self.models.read().ok()?;
@@ -1778,7 +1778,7 @@ mod tests {
 
     #[test]
     fn modes_are_agys_three_plus_the_full_auto_sentinel() {
-        // agy's own axis is default / accept-edits / plan. `yolo` is AionUi's
+        // agy's own axis is default / accept-edits / plan. `yolo` is Dream UI's
         // sentinel for "no approval prompts" — offered as a choice so a user can
         // pick full auto deliberately, and carried by teams / scheduled runs.
         let modes = antigravity_modes();
@@ -1935,7 +1935,7 @@ mod tests {
 
     #[test]
     fn an_empty_model_list_still_drops_the_ui_placeholder() {
-        // AionUi's team-creation flow used to persist the literal placeholder
+        // Dream UI's team-creation flow used to persist the literal placeholder
         // "default" as a member's model. agy never reports a model with that
         // id, so passing it through while discovery is empty fails every turn
         // with a non-retryable model-not-found; agy's own default is strictly

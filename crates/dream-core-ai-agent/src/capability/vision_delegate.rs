@@ -1,8 +1,8 @@
-//! Vision-delegate resolution shared by aionrs's `ReadImage` and the ACP
+//! Vision-delegate resolution shared by dream's `ReadImage` and the ACP
 //! (Claude/Codex bridge) vision fallback.
 //!
-//! Moved out of `factory/aionrs.rs`, where it originated, because it is
-//! fully backend-agnostic: nothing in it depends on aionrs specifically, and
+//! Moved out of `factory/dream.rs`, where it originated, because it is
+//! fully backend-agnostic: nothing in it depends on dream specifically, and
 //! `factory/acp.rs` needs the exact same "pick a vision-capable model from
 //! the user's providers, gated by company policy" logic for bridged Claude/
 //! Codex sessions whose actual model cannot see images either.
@@ -51,7 +51,7 @@ pub enum AcpVisionPolicy {
 /// a trait rather than a direct `one-billing` call.
 ///
 /// Returns an empty [`VisionDelegate`] when nothing qualifies, which the
-/// caller (`ReadImage` for aionrs, the image-attachment hook for ACP)
+/// caller (`ReadImage` for dream, the image-attachment hook for ACP)
 /// reports to the user as an actionable error.
 pub(crate) async fn resolve_vision_delegate(
     provider_repo: &dyn dream_core_db::IProviderRepository,

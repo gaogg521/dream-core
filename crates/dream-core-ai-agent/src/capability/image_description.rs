@@ -1,13 +1,13 @@
 //! Turn a local image into text via a vision-capable delegate model.
 //!
-//! Mirrors aionrs's `ReadImageTool::describe` / `ViewImageTool::load_image`
+//! Mirrors dream's `ReadImageTool::describe` / `ViewImageTool::load_image`
 //! (`aion-tools/src/{read_image,view_image}.rs`) rather than sharing code
 //! with them: 1oneCore already depends on `aion-providers`/`aion-types`
 //! directly (`aion-agent` is embedded as a library, not a subprocess), so
 //! this stays a same-repo, single-PR change instead of requiring an
-//! aionrs-local push + `Cargo.lock` bump before it can build. The two
+//! dream-local push + `Cargo.lock` bump before it can build. The two
 //! implementations are intentionally not the same crate — they live in
-//! separate Cargo workspaces (this repo vs. aionrs), so this is not a
+//! separate Cargo workspaces (this repo vs. dream), so this is not a
 //! violation of the "no duplicate code across crates" rule, which is scoped
 //! to crates within one workspace.
 
@@ -31,7 +31,7 @@ use base64::engine::general_purpose::STANDARD;
 /// Output cap for one description. Vision answers are prose, not file dumps.
 const VISION_MAX_TOKENS: u32 = 4_000;
 
-/// Same contract aionrs's `ReadImageTool` uses: describe only what is
+/// Same contract dream's `ReadImageTool` uses: describe only what is
 /// actually visible, and say so explicitly when part of the image can't be
 /// read. A model that hedges less than this tends to fill gaps with guesses.
 const VISION_SYSTEM_PROMPT: &str = "You are an image analysis service. You receive one image and a request, and you \
@@ -104,7 +104,7 @@ async fn load_image_content_block(image_path: &str) -> Result<ContentBlock, Stri
 /// delegate, populating only what `dream_engine_providers::create_provider` reads
 /// (`provider`, `api_key`, `base_url`, `compat`, and — for Bedrock/Vertex —
 /// `bedrock`/`vertex`, which `VisionModelConfig` does not carry and so are
-/// left `None`, matching the fallback aionrs's own `Config::vision_model_config`
+/// left `None`, matching the fallback dream's own `Config::vision_model_config`
 /// takes). Every other field is session/CLI machinery this one-shot call
 /// never touches.
 fn provider_config_from_delegate(vision: &VisionModelConfig) -> Config {

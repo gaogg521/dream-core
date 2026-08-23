@@ -17,7 +17,7 @@ pub use dream_core_api_types::{TEAM_MCP_SERVER_NAME, TeamMcpStdioConfig};
 /// Stdio MCP server description ready to be handed to `session/new`.
 ///
 /// Field shapes:
-/// - `name` = `"aionui-team"` (fixed; team routing is done via `port` + `token`,
+/// - `name` = `"dream-team"` (fixed; team routing is done via `port` + `token`,
 ///   not via the server name — see `TeamMcpServer` per-team TCP listener)
 /// - `command` = absolute path to the backend binary (resolved via
 ///   `std::env::current_exe()` at app startup)

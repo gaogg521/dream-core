@@ -12,7 +12,7 @@ use crate::state::ClaudeBridgeRouterState;
 
 /// `GET`/`PUT /api/claude-bridge/config` — app-facing settings for the
 /// Claude Code custom-provider bridge, gated by the caller's normal session
-/// `auth_middleware` at registration time (see `aionui-app`'s router
+/// `auth_middleware` at registration time (see `dream-app`'s router
 /// wiring), same as every other authenticated route.
 pub fn claude_bridge_config_routes(state: ClaudeBridgeRouterState) -> Router {
     Router::new()

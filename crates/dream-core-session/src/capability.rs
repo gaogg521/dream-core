@@ -16,7 +16,7 @@
 pub enum ModeSwitchEffect {
     /// In force for the very next approval decision, even mid-turn.
     ///
-    /// The default: a backend that reconfigures synchronously (aionrs mutates the shared
+    /// The default: a backend that reconfigures synchronously (dream mutates the shared
     /// approval mode in-process) or writes straight to a live agent needs no ceremony,
     /// and this keeps existing backends reporting what they already reported.
     #[default]
@@ -261,7 +261,7 @@ pub struct SignalSet {
 ///
 /// The bit is a property of the backend TYPE, not of any live session: claude
 /// and codex are the direct-CLI backends whose mid-turn write genuinely reaches
-/// the agent; antigravity, aionrs, and every ACP agent are one-prompt-at-a-time.
+/// the agent; antigravity, dream, and every ACP agent are one-prompt-at-a-time.
 /// Consumers use this when no live `SessionBackend` exists (fresh or dormant
 /// conversations) so the reported capability cannot flap with agent liveness.
 /// Unknown/empty identifiers are conservatively `false` (ACP-like until proven,

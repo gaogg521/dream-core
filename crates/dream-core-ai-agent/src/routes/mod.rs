@@ -6,7 +6,7 @@
 //!
 //! Session-scoped endpoints (mode / model / config / usage /
 //! agent-capabilities / slash-commands / side-question / workspace /
-//! openclaw-runtime) now live in the `aionui-conversation` crate, where
+//! openclaw-runtime) now live in the `dream-conversation` crate, where
 //! they dispatch through `AgentInstance` via `ConversationService`.
 
 pub mod agent;

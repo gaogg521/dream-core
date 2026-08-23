@@ -1244,7 +1244,7 @@ struct ConfigEnv {
     user_id: String,
     /// Conversation-helper credential minted by the backend. Optional so the
     /// CLI stays usable against runtimes that predate token injection; the
-    /// backend rejects tokenless requests in AionPro mode.
+    /// backend rejects tokenless requests in DreamPro mode.
     runtime_token: Option<String>,
 }
 

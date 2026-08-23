@@ -19,7 +19,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentSource {
-    /// Ships with the backend binary (no CLI install required — e.g. `aionrs`).
+    /// Ships with the backend binary (no CLI install required — e.g. `dream`).
     Internal,
     /// Seeded from the migration (ACP vendors, nanobot, openclaw).
     Builtin,
@@ -88,7 +88,7 @@ pub struct BehaviorPolicy {
 /// Handshake-derived fields captured from the ACP init/session-response.
 ///
 /// All fields are opaque JSON at this layer: they are passed through to
-/// the frontend verbatim, and typed-decoded inside `aionui-ai-agent`
+/// the frontend verbatim, and typed-decoded inside `dream-ai-agent`
 /// when the adapter needs them.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentHandshake {
@@ -195,7 +195,7 @@ pub struct AgentMetadata {
     #[serde(default)]
     pub behavior_policy: BehaviorPolicy,
 
-    /// Native mode id that AionUi's legacy `yolo` / `yoloNoSandbox`
+    /// Native mode id that Dream UI's legacy `yolo` / `yoloNoSandbox`
     /// aliases resolve to before calling `session/set_mode`. `None`
     /// means the backend has no "yolo" equivalent and the alias should
     /// pass through unchanged.

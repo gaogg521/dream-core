@@ -372,7 +372,7 @@ async fn tc6_missing_name_returns_error() {
 // `dream_core_common::validate_workspace_path_availability` and its paired
 // `create_accepts_existing_workspace_with_trailing_whitespace_in_name` /
 // `create_rejects_unavailable_workspace_with_trailing_whitespace_in_request`
-// tests in `aionui-conversation`.
+// tests in `dream-conversation`.
 #[cfg(not(windows))]
 #[tokio::test]
 async fn tc6b_workspace_with_whitespace_segment_is_accepted() {
@@ -1951,7 +1951,7 @@ async fn sm1c_team_owned_conversation_regular_send_is_forbidden() {
 
 // Bearer requests carry no ambient credential a cross-site form could ride
 // on, so the CSRF middleware exempts them (remote-desktop clients depend on
-// this — see M4d, crates/aionui-auth/src/csrf.rs). Cookie-authenticated
+// this — see M4d, crates/dream-auth/src/csrf.rs). Cookie-authenticated
 // requests still require the CSRF token pair.
 #[tokio::test]
 async fn sm1d_team_send_allows_bearer_without_csrf() {

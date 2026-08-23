@@ -367,7 +367,7 @@ async fn action_session_new() {
         MessageResult::Action(resp) => {
             let text = resp.text.unwrap();
             assert!(text.contains("New session"));
-            // With no client_preferences, defaults to "aionrs"
+            // With no client_preferences, defaults to "dream"
             assert!(text.contains("aionrs"));
         }
         _ => panic!("Expected Action result"),
@@ -461,5 +461,5 @@ async fn action_session_isolation() {
 }
 
 // Note: bind_conversation FK-constrained persistence is tested in
-// aionui-db sqlite_channel.rs::update_session_conversation_persists.
+// dream-db sqlite_channel.rs::update_session_conversation_persists.
 // Unit tests for the SessionManager layer are in session.rs.

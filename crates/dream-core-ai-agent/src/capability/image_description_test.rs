@@ -15,7 +15,7 @@ use dream_engine_types::message::{StopReason, TokenUsage};
 use super::{describe_with_provider, describe_with_provider_with_timeout};
 
 /// A stand-in vision model: records the request it was given and replays a
-/// scripted event sequence. Mirrors aionrs's own `ReadImage` test double
+/// scripted event sequence. Mirrors dream's own `ReadImage` test double
 /// (`aion-tools/src/read_image_test.rs::ScriptedVisionProvider`) since this
 /// module intentionally reimplements (not shares) that crate's logic.
 struct ScriptedVisionProvider {

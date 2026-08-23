@@ -786,7 +786,7 @@ impl DevopsService {
 
     /// Whether the author's company plan includes `feature`. Resolves the
     /// author's SSO company (`one_enterprise_members`) → tier
-    /// (`one_enterprise_license`) → the `aionui-common` matrix. No enterprise,
+    /// (`one_enterprise_license`) → the `dream-common` matrix. No enterprise,
     /// or billing not installed → allowed (the personal-edition red line).
     async fn enterprise_feature_allowed(
         &self,

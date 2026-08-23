@@ -529,8 +529,8 @@ impl BackendConnection for ScriptedConnection {
 
 /// Cross-backend capability/dispatch invariant ASSERTIONS — the single logic
 /// source shared by the in-session invariant tests (claude/codex/acp) AND the
-/// `aionui-aionrs` crate's own invariant test (aionrs depends on session, so it
-/// cannot live in session's `tests/` and be reached from aionrs — it lives here,
+/// `dream-dream` crate's own invariant test (dream depends on session, so it
+/// cannot live in session's `tests/` and be reached from dream — it lives here,
 /// callable by both). Plan B (no logic duplication across crates): change an
 /// assertion once here and all 4 backends follow.
 ///

@@ -126,7 +126,7 @@ async fn aionrs_agent_confirm_succeeds() {
     let agent = AionrsAgentManager::new("conv-1".into(), "/proj".into(), make_aionrs_config(), None)
         .await
         .unwrap();
-    // `confirm` is an inherent method on `AionrsAgentManager` (reached via
+    // `confirm` is an inherent method on `DreamEngineAgentManager` (reached via
     // `AgentInstance::DreamEngine(..)` in production); the test calls it
     // directly on the concrete manager.
     let result = agent.confirm("msg", "call", json!({}), false);

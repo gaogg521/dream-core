@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Column values follow existing crate convention (TEXT + service-layer
 /// validation); this enum is the typed boundary used by `IProjectStore`
-/// signatures and the `aionui-project` service. It lives in `aionui-db`
+/// signatures and the `dream-project` service. It lives in `dream-db`
 /// (the lower layer) so the store trait does not depend upward.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProjectKind {

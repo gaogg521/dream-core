@@ -12,9 +12,9 @@
 //!
 //! This is the shared home for stderr redaction across the clean-slate session
 //! backends. It lives in `dream-core-common` (below every consumer: `dream-core-session`,
-//! `aionui-conversation`, the agent-* crates all depend on common) so the
+//! `dream-conversation`, the agent-* crates all depend on common) so the
 //! consuming backends gain no upward crate dependency. Ported verbatim from the
-//! deleted `aionui-ai-agent::manager::acp::stderr_error_extractor` (git
+//! deleted `dream-ai-agent::manager::acp::stderr_error_extractor` (git
 //! `ec27676d^`); the allowlist below is security-load-bearing — see the
 //! per-entry notes before editing.
 

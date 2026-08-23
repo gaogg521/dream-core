@@ -32,7 +32,7 @@ async fn provider_health_check_unauthenticated_is_rejected() {
 
 // Bearer requests carry no ambient credential a cross-site form could ride
 // on, so the CSRF middleware exempts them (remote-desktop clients depend on
-// this — see M4d, crates/aionui-auth/src/csrf.rs). Cookie-authenticated
+// this — see M4d, crates/dream-auth/src/csrf.rs). Cookie-authenticated
 // requests still require the CSRF token pair.
 #[tokio::test]
 async fn provider_health_check_allows_bearer_without_csrf() {

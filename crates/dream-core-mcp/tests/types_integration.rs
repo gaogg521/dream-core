@@ -1,4 +1,4 @@
-//! Integration tests for aionui-mcp core types.
+//! Integration tests for dream-mcp core types.
 //!
 //! Tests the public API surface: McpServer construction from DB rows,
 //! transport parsing/serialization, and response conversion.

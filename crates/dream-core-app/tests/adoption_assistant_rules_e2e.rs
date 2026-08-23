@@ -1,4 +1,4 @@
-//! End-to-end reproduction of the AionUi → AionPro adoption path for
+//! End-to-end reproduction of the Dream UI → DreamPro adoption path for
 //! assistant rules, run against the REAL adoption code (no mocks):
 //! real migrations, real `ensure_external_user`, real
 //! `adopt_system_default_data` (one-shot stamp), real
@@ -60,7 +60,7 @@ fn assistant_service(db: &Database, data_dir: &Path) -> AssistantService {
 }
 
 /// Runs the REAL adoption sequence exactly as `ensure_external_user` in
-/// aionui-auth does: provision external user → DB adoption (stamps the
+/// dream-auth does: provision external user → DB adoption (stamps the
 /// one-shot marker) → filesystem adoption. Returns the adopter's user id.
 async fn run_real_adoption(db: &Database, paths: &SkillPaths) -> String {
     let user_repo = SqliteUserRepository::new(db.pool().clone());

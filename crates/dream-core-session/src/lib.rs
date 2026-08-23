@@ -2,7 +2,7 @@
 //! 002). Domain layer.
 //!
 //! ## What this crate is
-//! It spawns the claude CLI directly (via 001 `aionui-process`, no ACP/SDK),
+//! It spawns the claude CLI directly (via 001 `dream-process`, no ACP/SDK),
 //! frames + parses its stream-json output into a backend-agnostic
 //! [`SessionEvent`] vocabulary, and folds that — through a single monomorphic
 //! pure reducer ([`step`]) — into a 5-name / 4-variant [`SessionState`] FSM.
@@ -14,18 +14,18 @@
 //! This crate does NOT, by itself, fix the user-visible "workflow freezes the
 //! conversation" bug. The load-bearing coupling (UI-unlock ← turn.completed ←
 //! StreamRelay finalize ← blocking prompt() return) lives in
-//! `aionui-conversation` + WebSocket — all Non-Goal here, untouched. This crate
+//! `dream-conversation` + WebSocket — all Non-Goal here, untouched. This crate
 //! PROVES the necessary mechanism: a transition-driven unlock signal decoupled
 //! from blocking returns. Wiring it to UI-unlock is feature 003+.
 //!
 //! ## Layering
-//! Domain layer, parallel to `aionui-ai-agent`. Depends ONLY on
-//! `aionui-process` (001) + `aionui-common`. NO production caller this
+//! Domain layer, parallel to `dream-ai-agent`. Depends ONLY on
+//! `dream-process` (001) + `dream-common`. NO production caller this
 //! iteration — built and verified in isolation (same discipline as 001).
 //!
 //! ## Two-stage seam
 //! - a-side: the [`SessionBackend`] / [`BackendConnection`] traits (claude/codex/
-//!   acp/aionrs impls in `backend/`) — the ONLY backend-aware code: startup+prompt
+//!   acp/dream impls in `backend/`) — the ONLY backend-aware code: startup+prompt
 //!   / framing+parse / capability declaration. (The original claude lane wrapped a
 //!   legacy `BackendAdapter`; `ClaudeConnection` still wraps it internally.)
 //! - b-side: the monomorphic [`step`] reducer + oracles — shared by all

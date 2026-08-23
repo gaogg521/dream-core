@@ -1,6 +1,6 @@
 #![warn(clippy::disallowed_types)]
 
-//! one-billing: the commercialization "billing plane" for the 1ONE AionCore
+//! one-billing: the commercialization "billing plane" for the 1ONE Dream Core
 //! fork — subscription tier, seat cap enforcement, and per-turn usage metering,
 //! plus a stubbed payment-provider seam (`BillingProvider`) so real payment can
 //! drop in later without touching callers.
@@ -11,7 +11,7 @@
 //! recorded with a NULL enterprise. Own-crate policy mirrors the other `one-*`
 //! crates: all state in `one_*` tables via our own migration ledger (prefix
 //! `billing_`); the only upstream touch points are the route merge + trait
-//! adapters wired in aionui-app.
+//! adapters wired in dream-app.
 
 pub mod error;
 pub mod license_key;

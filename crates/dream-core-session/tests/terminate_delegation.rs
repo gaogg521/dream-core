@@ -62,7 +62,7 @@ async fn acp_terminate_is_default_noop_isolation() {
 /// `AgentIo`) inherits the trait's default `terminate` no-op — it completes
 /// without panicking and does nothing. Only `ManagedProcessIo` overrides it to
 /// group-kill via the already-tested `ManagedProcess::kill` (that primitive is
-/// covered in `aionui-process`; it cannot be unit-constructed here without a
+/// covered in `dream-process`; it cannot be unit-constructed here without a
 /// real OS process).
 #[tokio::test]
 async fn fake_agent_io_terminate_is_default_noop() {

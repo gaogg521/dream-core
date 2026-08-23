@@ -102,7 +102,7 @@ pub fn generate_password(len: usize) -> String {
 /// Fill a buffer with cryptographically random bytes.
 ///
 /// Panics if the OS entropy source is unavailable. This mirrors the behavior
-/// of `uuid::Uuid::now_v7()` used in `aionui-common`.
+/// of `uuid::Uuid::now_v7()` used in `dream-common`.
 fn fill_random(buf: &mut [u8]) {
     getrandom::getrandom(buf).expect("OS entropy source unavailable");
 }

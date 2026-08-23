@@ -1,4 +1,4 @@
-//! Shared test helpers for aionui-app E2E tests.
+//! Shared test helpers for dream-app E2E tests.
 #![allow(dead_code)]
 
 use axum::body::Body;

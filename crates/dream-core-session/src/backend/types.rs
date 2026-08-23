@@ -49,7 +49,7 @@ pub enum Command {
     /// is a single pick-one prompt: the ACP `optionId`, or a single-question claude
     /// `AskUserQuestion` label. `None` = a plain allow/deny (the claude adapter then
     /// falls back to the first option for an AskUserQuestion allow). Backends with a
-    /// pure accept/decline approval (codex/aionrs) ignore it.
+    /// pure accept/decline approval (codex/dream) ignore it.
     ///
     /// `answers` carries the FULL claude `AskUserQuestion` answer set — one entry
     /// per question, multi-label for a `multiSelect:true` question (claude can ask
@@ -339,7 +339,7 @@ pub enum TransitionReason {
 // session identity (two-id model, §4.1 / Addendum 4)
 // ==========================================================================
 
-/// How a session is (re)opened. `session_id` is the STABLE AionCore-minted
+/// How a session is (re)opened. `session_id` is the STABLE Dream Core-minted
 /// logical id (immutable across fork/resume/crash-respawn; the demux key).
 /// `backend_session_id` is the MUTABLE transport binding (adapter-private,
 /// lives only on the checkpoint; None = backend session lost → adapter mints a

@@ -12,7 +12,7 @@
 //! transport's gateway-compat fixes (thinking-replay escalation, tool-call
 //! history textualization, truncation recovery) applied for free.
 //!
-//! See `crates/aionui-ai-agent/src/factory/acp_launch_policy.rs` for how
+//! See `crates/dream-ai-agent/src/factory/acp_launch_policy.rs` for how
 //! Codex is pointed at this bridge at launch time, mirroring the existing
 //! `cc_switch` pattern used for Claude Code.
 

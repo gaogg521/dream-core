@@ -47,7 +47,7 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub local: bool,
 
-    /// Identity source mode. AionPro mode requires AIONCORE_BOOTSTRAP_SECRET.
+    /// Identity source mode. DreamPro mode requires AIONCORE_BOOTSTRAP_SECRET.
     #[arg(long, value_enum, default_value_t = IdentityModeArg::Webui)]
     pub identity_mode: IdentityModeArg,
 
@@ -124,7 +124,7 @@ pub(crate) enum Command {
     /// Agent-facing Team collaboration CLI fallback.
     Team(TeamArgs),
     /// PreToolUse permission gate for the Antigravity CLI (spawned by agy).
-    /// Reads the tool request on stdin, asks the running AionUi backend, and
+    /// Reads the tool request on stdin, asks the running Dream UI backend, and
     /// writes agy's decision to stdout.
     AntigravityHook,
     /// Stdio ↔ TCP bridge for the team MCP server (spawned by the ACP agent CLI).
@@ -655,7 +655,7 @@ pub(crate) enum ConfigConversationCommand {
 
 #[derive(Args, Debug, Clone)]
 pub(crate) struct PrepareManagedResourcesArgs {
-    /// Bundle output root. Aioncore writes the managed resources under
+    /// Bundle output root. Dreamcore writes the managed resources under
     /// `<bundle-out>/{node,acp}/...` for packaging.
     #[arg(long)]
     pub bundle_out: PathBuf,

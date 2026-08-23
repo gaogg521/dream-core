@@ -1,6 +1,6 @@
 //! Single-instance advisory lock + per-run epoch (IC-1 defense / IC-3 naming).
 //!
-//! The lock file is a dedicated sidecar `{data_dir}/runtime/aionui-process/
+//! The lock file is a dedicated sidecar `{data_dir}/runtime/dream-process/
 //! instance.lock` — provably disjoint from bun's `runtime.lock`, the node
 //! install lock, the db migrate lock, and the builtin-skills lock (IC-3). It
 //! is acquired NON-BLOCKING (try-lock) and fails fast on contention, so a

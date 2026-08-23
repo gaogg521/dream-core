@@ -44,7 +44,7 @@ fn resolve_aionui_config(cli_args: &CliArgs) -> Result<Config, AgentError> {
     let mut config =
         Config::resolve(cli_args).map_err(|e| AgentError::internal(format!("Config resolve failed: {e}")))?;
 
-    // AionUi owns the embedded runtime policy. Standalone aionrs max-token
+    // Dream UI owns the embedded runtime policy. Standalone dream max-token
     // settings must not leak in from global or workspace config files.
     config.max_tokens = None;
     let default_transport = match config.provider {
@@ -204,7 +204,7 @@ impl AionrsAgentManager {
         config.session.enabled = true;
         config.session.directory = config_extra.session_directory.to_string_lossy().into_owned();
         config.compat.image_input = Some(image_input_capability);
-        // Lets aionrs's `ReadImage` tool turn images into text for a model that
+        // Lets dream's `ReadImage` tool turn images into text for a model that
         // cannot see them. Resolved by the factory from the user's configured
         // providers; `None` here means the tool will report images as
         // unreadable rather than let the agent guess.
@@ -411,7 +411,7 @@ impl IAgentTask for AionrsAgentManager {
         self.dump_aionrs_final_input(&data);
 
         // Keep attachment paths in the provider-independent history. Images
-        // are loaded on demand by aionrs's ViewImage tool.
+        // are loaded on demand by dream's ViewImage tool.
         debug!(
             attachment_count = data.files.len(),
             "Building structured DreamEngine content blocks"

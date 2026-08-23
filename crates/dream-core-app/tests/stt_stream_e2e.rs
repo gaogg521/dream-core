@@ -4,7 +4,7 @@
 //! preference-backed config loading, the streaming session protocol, and the
 //! Deepgram upstream against a local mock WebSocket server (wiremock cannot
 //! speak WebSocket, so the mock is a small tokio-tungstenite server,
-//! mirroring `aionui-shell/tests/stt_stream_deepgram_integration.rs`).
+//! mirroring `dream-shell/tests/stt_stream_deepgram_integration.rs`).
 //!
 //! Hang-safety: every potentially blocking await is wrapped in a 5s timeout.
 
@@ -118,7 +118,7 @@ fn start_frame() -> Message {
 }
 
 // ---------------------------------------------------------------------------
-// Mock Deepgram live server (minimal copy of the aionui-shell integration
+// Mock Deepgram live server (minimal copy of the dream-shell integration
 // test pattern; duplicated here to avoid a cross-crate test dependency)
 // ---------------------------------------------------------------------------
 

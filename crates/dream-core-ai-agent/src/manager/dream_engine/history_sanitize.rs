@@ -1,7 +1,7 @@
-//! Sanitize a resumed aionrs session's message history before it is replayed
+//! Sanitize a resumed dream session's message history before it is replayed
 //! to a provider.
 //!
-//! Background: when the user clicks "Stop" on a tool-call mid-stream, aionrs
+//! Background: when the user clicks "Stop" on a tool-call mid-stream, dream
 //! may persist an assistant message that contains `ToolUse` content blocks
 //! but whose tool calls were never followed up by the matching `ToolResult`
 //! blocks. On the next turn, the engine replays history verbatim and strict
@@ -26,7 +26,7 @@
 //! that shape is valid and required by every provider.
 //!
 //! This logic is intentionally a free function (not a method on
-//! `AionrsAgentManager`) so it can be unit-tested in isolation and so we do
+//! `DreamEngineAgentManager`) so it can be unit-tested in isolation and so we do
 //! not add yet another field to a manager (per `AGENTS.md`).
 
 use std::collections::HashSet;

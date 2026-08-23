@@ -1,6 +1,6 @@
 //! Composition adapter: implements the file crate's [`ISystemFileOpener`] port
 //! over the shell service's `open_file` capability. Lives here (not in
-//! `aionui-file`) so the file domain crate needs no dependency on the shell
+//! `dream-file`) so the file domain crate needs no dependency on the shell
 //! crate — the two domains are wired together only at the composition layer.
 //!
 //! Sibling of [`super::item_revealer`], which reveals the enclosing folder; this

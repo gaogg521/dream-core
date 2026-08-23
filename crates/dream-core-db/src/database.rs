@@ -34,7 +34,7 @@ const RECOVERABLE_DATABASE_CORRUPTION_STAGE: &str = "database.recoverable_corrup
 /// this binary: `_sqlx_migrations` contains a version the embedded migrator
 /// does not know (sqlx `MigrateError::VersionMissing`). This is a downgrade
 /// scenario, not a broken migration — the fix is upgrading the app, so hosts
-/// (AionUi) surface a dedicated "upgrade required" dialog instead of the
+/// (Dream UI) surface a dedicated "upgrade required" dialog instead of the
 /// generic migration-failure one (Sentry ELECTRON-31Z).
 pub const DATABASE_NEWER_THAN_APP_STAGE: &str = "database.newer_than_app";
 
@@ -194,7 +194,7 @@ pub async fn init_database_memory() -> Result<Database, DbError> {
     Ok(Database { pool })
 }
 
-/// Copy the legacy `aionui.db` to the new target path if the target does not exist.
+/// Copy the legacy `dream.db` to the new target path if the target does not exist.
 ///
 /// This enables safe upgrades: the old database remains untouched and the backend
 /// operates exclusively on the copy. The copy is atomic (write to `.tmp`, then rename)

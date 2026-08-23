@@ -6,7 +6,7 @@ use crate::models::{FolderRow, ProjectExplorerRow, ProjectKind, ProjectRow};
 /// Access boundary for the three project-bind tables (`projects`, `folders`,
 /// `project_explorer`).
 ///
-/// The store owns SQL and transactions; the `aionui-project` service holds an
+/// The store owns SQL and transactions; the `dream-project` service holds an
 /// `Arc<dyn IProjectStore>` and never opens transactions itself. Business
 /// identities (`folder_id` / `project_id` / `pe_id`) and timestamps are
 /// generated inside the store — callers pass only domain values.

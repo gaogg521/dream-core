@@ -57,7 +57,7 @@ pub(super) struct WorkspaceState {
     pub mode: SnapshotMode,
     /// Path to the git directory.
     /// - git-repo mode: the workspace path itself (contains `.git/`).
-    /// - snapshot mode: `/tmp/aionui-snapshot-{hash}` (bare-style git dir).
+    /// - snapshot mode: `/tmp/dream-snapshot-{hash}` (bare-style git dir).
     pub repo_path: PathBuf,
     /// Canonical path to the actual workspace directory.
     pub workspace_path: PathBuf,

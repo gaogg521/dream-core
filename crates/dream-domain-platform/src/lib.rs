@@ -1,5 +1,5 @@
 //! one-platform: deployment/platform infrastructure config for the 1ONE
-//! AionCore fork — reserved adapters for containerized execution (P1-3) and
+//! Dream Core fork — reserved adapters for containerized execution (P1-3) and
 //! realtime collaboration (P2-2).
 //!
 //! Both are "reserved framework" layers: an admin-managed, per-project-group

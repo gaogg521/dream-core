@@ -16,7 +16,7 @@ use crate::error::ExtensionError;
 
 /// Built-in skill corpus embedded into the binary at compile time.
 ///
-/// Mirrors the strategy used by `aionui-assistant::builtin`: the corpus is
+/// Mirrors the strategy used by `dream-assistant::builtin`: the corpus is
 /// authoritative at build time; an optional on-disk override
 /// (`AIONUI_BUILTIN_SKILLS_PATH`) is consulted at runtime for rapid
 /// iteration and E2E fixtures.
@@ -107,11 +107,11 @@ fn collect_corpus_files(dir: &Dir<'static>, root: &Path, files: &mut Vec<(String
 /// In dev/test it can be redirected via [`BUILTIN_SKILLS_ENV_VAR`].
 #[derive(Debug, Clone)]
 pub struct SkillPaths {
-    /// Root data directory (~/.aionui/).
+    /// Root data directory (~/.dream/).
     pub data_dir: PathBuf,
-    /// User-created skills directory (~/.aionui/skills/).
+    /// User-created skills directory (~/.dream/skills/).
     pub user_skills_dir: PathBuf,
-    /// Per-job cron skills directory (~/.aionui/cron/skills/).
+    /// Per-job cron skills directory (~/.dream/cron/skills/).
     pub cron_skills_dir: PathBuf,
     /// Built-in skills directory on disk. Always set.
     /// Points to `{data_dir}/builtin-skills/` in production (populated at
@@ -120,9 +120,9 @@ pub struct SkillPaths {
     pub builtin_skills_dir: PathBuf,
     /// Built-in rules directory (app bundle resource).
     pub builtin_rules_dir: PathBuf,
-    /// Assistant-level rules directory (~/.aionui/assistant-rules/).
+    /// Assistant-level rules directory (~/.dream/assistant-rules/).
     pub assistant_rules_dir: PathBuf,
-    /// Assistant-level skills directory (~/.aionui/assistant-skills/).
+    /// Assistant-level skills directory (~/.dream/assistant-skills/).
     pub assistant_skills_dir: PathBuf,
 }
 
@@ -143,7 +143,7 @@ impl SkillPaths {
 /// under `data_dir` (materialized at startup from the embedded corpus)
 /// unless redirected via [`BUILTIN_SKILLS_ENV_VAR`].
 ///
-/// `data_dir` is the user-level data root (e.g. `~/.aionui/`) and
+/// `data_dir` is the user-level data root (e.g. `~/.dream/`) and
 /// determines where user skills, assistant resources, and the built-in
 /// skills tree (`{data_dir}/builtin-skills/`) live. Per-conversation
 /// agent skills are no longer materialized on disk — see
@@ -1732,7 +1732,7 @@ pub async fn sync_skill_catalog_into_repo(
     sync_skill_catalog_into_repo_for_user(paths, repo, DEFAULT_USER_ID).await
 }
 
-/// Startup sync for AionPro machines: built-in skills only.
+/// Startup sync for DreamPro machines: built-in skills only.
 ///
 /// The legacy shared-directory backfill cannot attribute on-disk files to a
 /// real account (that information never existed on disk), so ingesting them
@@ -1778,7 +1778,7 @@ async fn sync_builtin_skills_into_repo(paths: &SkillPaths, repo: &dyn ISkillRepo
     }
 
     // Per-job cron skills are user content (job prompts); their rows are
-    // owned by the job owner and maintained by aionui-cron, never synced
+    // owned by the job owner and maintained by dream-cron, never synced
     // here as global rows.
 
     Ok(())

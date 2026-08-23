@@ -169,7 +169,7 @@ impl TeamSessionService {
     }
 
     /// Collect all enabled provider model IDs grouped by provider name.
-    /// Returns a flat list of model IDs for use by internal agents (aionrs).
+    /// Returns a flat list of model IDs for use by internal agents (dream).
     async fn collect_provider_models(&self, user_id: &str) -> Vec<String> {
         let Ok(providers) = self.provider_repo.list(user_id).await else {
             return vec![];

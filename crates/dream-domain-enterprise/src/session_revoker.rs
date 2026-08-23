@@ -30,7 +30,7 @@ pub trait SessionRevoker: Send + Sync {
 /// Default when nothing is wired. Personal and standalone installs have no
 /// company, so no company removal ever happens there and there is nothing to
 /// revoke. The service that actually serves the removal route is built with a
-/// real revoker in `aionui-app`; this default exists for the directory-sink
+/// real revoker in `dream-app`; this default exists for the directory-sink
 /// instance and for unit tests, neither of which remove members.
 pub struct NoopSessionRevoker;
 

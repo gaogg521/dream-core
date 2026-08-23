@@ -1,8 +1,8 @@
 //! Cross-crate lifecycle hook traits.
 //!
-//! Hooks defined here let lower-layer crates (e.g. `aionui-ai-agent`,
-//! `aionui-cron`) react to events owned by higher-layer crates (e.g.
-//! `aionui-conversation`) without forming a dependency cycle.
+//! Hooks defined here let lower-layer crates (e.g. `dream-ai-agent`,
+//! `dream-cron`) react to events owned by higher-layer crates (e.g.
+//! `dream-conversation`) without forming a dependency cycle.
 
 use async_trait::async_trait;
 

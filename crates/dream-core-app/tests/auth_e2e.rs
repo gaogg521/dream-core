@@ -169,7 +169,7 @@ async fn t12_1_security_headers_on_error_responses() {
 
 // Bearer requests carry no ambient credential a cross-site form could ride
 // on, so the CSRF middleware exempts them (remote-desktop clients depend on
-// this — see M4d, crates/aionui-auth/src/csrf.rs). Cookie-authenticated
+// this — see M4d, crates/dream-auth/src/csrf.rs). Cookie-authenticated
 // requests still require the CSRF token pair.
 #[tokio::test]
 async fn t12_2_csrf_allows_bearer_post_without_token() {

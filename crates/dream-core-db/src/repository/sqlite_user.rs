@@ -214,7 +214,7 @@ impl IUserRepository for SqliteUserRepository {
         // external account's first login. Eligibility alone used to be
         // re-evaluated on every provision call, which kept re-sweeping data
         // the local default user accumulated AFTER the first adoption (new
-        // AionUi conversations were repeatedly re-owned). A stamped marker
+        // Dream UI conversations were repeatedly re-owned). A stamped marker
         // closes the window permanently regardless of later data.
         let already_adopted: Option<Option<String>> =
             sqlx::query_scalar("SELECT adopted_by FROM users WHERE id = 'system_default_user'")
@@ -231,7 +231,7 @@ impl IUserRepository for SqliteUserRepository {
         // tables that also carry an external platform user id (channel
         // bindings) or reference another root's `user_id` (project explorer).
         // The exhaustiveness of this convention is enforced by the
-        // adoption-coverage classification test in aionui-db/tests.
+        // adoption-coverage classification test in dream-db/tests.
         let mut moved: u64 = 0;
         for owner_column in ["user_id", "owner_user_id"] {
             let tables: Vec<(String,)> = sqlx::query_as(

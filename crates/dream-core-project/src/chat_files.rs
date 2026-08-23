@@ -3,7 +3,7 @@
 //! The single shared point where a message's [`ChatFileRef`] list becomes
 //! concrete paths, called at the send boundary by conversation + team. It
 //! reproduces the legacy `[[AION_FILES]]` inlined-attachment content form so
-//! every downstream consumer — aionrs `build_content_blocks`, the ACP prompt
+//! every downstream consumer — dream `build_content_blocks`, the ACP prompt
 //! (content-only), message persistence, and the user-message file chips in the
 //! UI — is unchanged: only the *origin* of the paths moves from the client to
 //! this backend edge.
@@ -25,8 +25,8 @@ pub struct ResolvedChatMessage {
     /// per line). Used verbatim for persistence, broadcast, and agent input.
     pub content: String,
     /// The resolved absolute paths, in order. Kept alongside `content` so
-    /// aionrs's `build_content_blocks` strips the marker (files match) and
-    /// re-adds its own; clearing this would leak the raw marker to aionrs.
+    /// dream's `build_content_blocks` strips the marker (files match) and
+    /// re-adds its own; clearing this would leak the raw marker to dream.
     pub files: Vec<String>,
 }
 
@@ -35,7 +35,7 @@ impl ProjectService {
     /// content. Atomic: any bad reference (unknown pe, escape, missing file,
     /// out-of-root upload, unreadable local path) fails the whole message.
     ///
-    /// `upload_root` is the managed upload directory (`temp_dir()/aionui`);
+    /// `upload_root` is the managed upload directory (`temp_dir()/dream`);
     /// `Upload` paths must live under it.
     pub async fn resolve_chat_message(
         &self,
@@ -63,7 +63,7 @@ impl ProjectService {
     /// Resolve a single [`ChatFileRef`] to an absolute device path.
     ///
     /// The per-ref identity→path core shared by [`resolve_chat_message`](Self::resolve_chat_message)
-    /// (send boundary) and the preview content endpoint (`aionui-file`, cross-crate — hence `pub`).
+    /// (send boundary) and the preview content endpoint (`dream-file`, cross-crate — hence `pub`).
     /// Guards differ by variant:
     /// - `Project` → [`resolve_reference`](Self::resolve_reference) with the caller's `op` (lexical +
     ///   realpath containment; read paths pass `Read`, the write endpoint passes `Write`); must exist

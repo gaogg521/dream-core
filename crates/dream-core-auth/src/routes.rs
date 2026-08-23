@@ -69,7 +69,7 @@ fn db_error_to_api_error(err: DbError) -> ApiError {
 pub struct AuthRouterState {
     pub jwt_service: Arc<JwtService>,
     pub user_repo: Arc<dyn IUserRepository>,
-    /// Optional on-disk adoption side-effect (AionUi → AionPro upgrade).
+    /// Optional on-disk adoption side-effect (Dream UI → DreamPro upgrade).
     pub fs_adopter: Option<Arc<dyn crate::service::SystemDefaultFilesystemAdopter>>,
     pub cookie_config: Arc<CookieConfig>,
     pub qr_token_store: Arc<QrTokenStore>,

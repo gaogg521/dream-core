@@ -148,7 +148,7 @@ pub fn resolve_browse_path(raw: &str, allowed_roots: &[PathBuf]) -> Result<PathB
 /// (`\\?\C:\DEV`, `\\?\UNC\server\share`). Returning those verbatim breaks
 /// downstream consumers — cmd.exe-based CLI shims refuse `\\?\` working
 /// directories and the UI treats `C:\DEV` and `\\?\C:\DEV` as two different
-/// projects (iOfficeAI/AionUi#3191) — so strip the prefix before serializing.
+/// projects (iOfficeAI/Dream UI#3191) — so strip the prefix before serializing.
 /// Internal sandbox comparisons keep using the canonical (verbatim) form.
 fn to_response_path(path: &Path) -> String {
     strip_verbatim_prefix(&path.to_string_lossy())

@@ -11,7 +11,7 @@ use crate::protocol::events::{AcpPermissionEventData, AgentStreamEvent, ToolCall
 
 /// Implements `ProtocolEmitter` for the aioncore context.
 ///
-/// Bridges aionrs `ProtocolEvent` emissions to `AgentStreamEvent` on a
+/// Bridges dream `ProtocolEvent` emissions to `AgentStreamEvent` on a
 /// broadcast channel. Only handles events relevant to the approval flow;
 /// other events (text, thinking, tool results) are already handled by
 /// `BackendOutputSink` via the `OutputSink` trait.

@@ -365,8 +365,8 @@ impl IWorkerTaskManager for WorkerTaskManagerImpl {
     }
 }
 
-/// Wired up by `aionui-app` so deleting a conversation tears down its
-/// agent process. Without this hook, ACP/aionrs subprocesses keep
+/// Wired up by `dream-app` so deleting a conversation tears down its
+/// agent process. Without this hook, ACP/dream subprocesses keep
 /// streaming events for a `conversation_id` whose DB row is already gone
 /// (Sentry ELECTRON-1BD).
 #[async_trait]

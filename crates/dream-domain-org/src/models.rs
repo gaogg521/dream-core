@@ -6,7 +6,7 @@ use serde::Serialize;
 /// implicitly in this tenant.
 pub const DEFAULT_TENANT_ID: &str = "default";
 
-/// Upstream's built-in operator user (`ensure_system_user` in aionui-db).
+/// Upstream's built-in operator user (`ensure_system_user` in dream-db).
 /// Mirrors the 1ONE desktop-operator semantics: this user is the instance
 /// administrator until explicit roles are assigned.
 pub const SYSTEM_DEFAULT_USER_ID: &str = "system_default_user";

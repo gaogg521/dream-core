@@ -8,7 +8,7 @@ use dream_core_runtime::resolve_command_path;
 // The mirror serves the same install scripts and release assets as GitHub
 // (install.sh itself already downloads assets mirror-first). Fetching the
 // script must follow the same order: raw.githubusercontent.com is unreachable
-// from many server deployments (aionui#3212 follow-up).
+// from many server deployments (dream#3212 follow-up).
 pub(crate) const OFFICECLI_INSTALL_SH_MIRROR_URL: &str = "https://d.officecli.ai/install.sh";
 pub(crate) const OFFICECLI_INSTALL_PS1_MIRROR_URL: &str = "https://d.officecli.ai/install.ps1";
 pub(crate) const OFFICECLI_INSTALL_SH_URL: &str =
@@ -180,7 +180,7 @@ mod tests {
     }
 
     // Servers that cannot reach raw.githubusercontent.com (the common case on
-    // mainland-China clouds, see aionui#3212 follow-up) must still be able to
+    // mainland-China clouds, see dream#3212 follow-up) must still be able to
     // fetch the installer: the official mirror comes first, GitHub is the
     // fallback.
     #[test]

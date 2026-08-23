@@ -3,7 +3,7 @@
 //!
 //! The two execution entry points — interactive `send_message` and the
 //! cron executor — must derive the same `(provider_id, model)` for a
-//! given conversation; otherwise an aionrs job that runs fine
+//! given conversation; otherwise an dream job that runs fine
 //! interactively can fail under cron with `Provider '<vendor>' not
 //! found` (Sentry ELECTRON-1HM). Centralising the lookup here forces
 //! both paths through one parser.
@@ -11,8 +11,8 @@
 //! The parser intentionally accepts both the canonical `ProviderWithModel`
 //! shape and a few legacy variants (camelCase keys, `id` instead of
 //! `provider_id`). When the row holds an unparseable or missing model,
-//! we return an empty `ProviderWithModel`; non-aionrs factory branches
-//! ignore the field, and the aionrs branch surfaces a clear "provider
+//! we return an empty `ProviderWithModel`; non-dream factory branches
+//! ignore the field, and the dream branch surfaces a clear "provider
 //! not found" error against an empty id rather than a stale vendor
 //! label.
 
@@ -35,8 +35,8 @@ pub fn provider_model_from_conversation_row(row: &ConversationRow) -> ProviderWi
 /// Canonical sentinel `ProviderWithModel` used when a conversation row has
 /// no parseable model. Shared by both the interactive `send_message` path
 /// and the cron executor so they agree on the "no model selected" shape:
-/// `provider_id: ""`, `model: ""`, `use_model: None`. Non-aionrs factories
-/// ignore the field, while the aionrs factory surfaces a clear "Provider
+/// `provider_id: ""`, `model: ""`, `use_model: None`. Non-dream factories
+/// ignore the field, while the dream factory surfaces a clear "Provider
 /// '' not found" error against the empty id rather than silently using a
 /// stale vendor label.
 pub fn empty_provider_model() -> ProviderWithModel {
@@ -180,9 +180,9 @@ mod tests {
     /// executor must derive the same `(provider_id, model)` for a given
     /// conversation. Before this helper existed, cron read
     /// `agent_config.backend` (which fell back to the literal vendor
-    /// label `"aionrs"` when the conversation's model JSON was an older
+    /// label `"dream"` when the conversation's model JSON was an older
     /// shape) and `send_message` parsed the row directly, so the cron
-    /// path would emit `Provider 'aionrs' not found` while the
+    /// path would emit `Provider 'dream' not found` while the
     /// interactive path used the real provider hash. Now both paths
     /// route through `provider_model_from_conversation_row` and must
     /// agree on every row shape we accept.

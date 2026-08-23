@@ -95,7 +95,7 @@ impl AgentRuntime {
     }
 
     /// Force-reset the status so a new turn can emit Finish again.
-    /// Only intended for multi-turn agents (e.g. aionrs) where the same
+    /// Only intended for multi-turn agents (e.g. dream) where the same
     /// runtime instance handles successive user messages.
     pub fn reset_for_new_turn(&self, status: ConversationStatus) {
         let mut guard = self.status.write().unwrap_or_else(|e| e.into_inner());

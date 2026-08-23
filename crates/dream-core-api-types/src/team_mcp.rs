@@ -1,8 +1,8 @@
 //! Team session MCP stdio connection types.
 //!
-//! These are promoted from `aionui-team::mcp::bridge` so that downstream
-//! crates (`aionui-ai-agent` deserializing `AcpBuildExtra`, etc.) can reference
-//! the same shape without depending on `aionui-team`.
+//! These are promoted from `dream-team::mcp::bridge` so that downstream
+//! crates (`dream-ai-agent` deserializing `AcpBuildExtra`, etc.) can reference
+//! the same shape without depending on `dream-team`.
 
 use serde::{Deserialize, Serialize};
 

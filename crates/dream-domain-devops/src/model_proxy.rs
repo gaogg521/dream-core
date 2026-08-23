@@ -2,12 +2,12 @@
 //!
 //! A member's desktop gets a normal-looking provider whose `base_url` points
 //! here and whose `api_key` is their revocable channel token. Everything
-//! downstream — aionrs chat, the ACP bridges, all three media adapter forms —
+//! downstream — dream chat, the ACP bridges, all three media adapter forms —
 //! then works unchanged, because they only ever read a base URL and a key.
 //!
 //! # Why path-preserving rather than protocol-aware
 //!
-//! `aionui-codex-bridge` decodes requests into `LlmEvent`s and re-encodes them.
+//! `dream-codex-bridge` decodes requests into `LlmEvent`s and re-encodes them.
 //! That is right for translating between two protocols, and wrong here: media
 //! alone speaks three mutually incompatible shapes (`/v1/images/generations`,
 //! chat completions, and the DashScope/Ark async task APIs), so a

@@ -82,7 +82,7 @@ pub enum ApiError {
     WorkspacePathRuntimeUnavailable(String),
 }
 
-/// Internal error response body matching the `ErrorResponse` format from `aionui-api-types`.
+/// Internal error response body matching the `ErrorResponse` format from `dream-api-types`.
 #[derive(Serialize)]
 struct ErrorBody {
     success: bool,

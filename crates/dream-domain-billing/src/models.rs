@@ -94,7 +94,7 @@ pub struct UsageSummaryDto {
 }
 
 /// Cumulative estimated spend for one conversation, across every backend
-/// (ACP and aionrs both write `one_usage_events` rows via `record_turn`).
+/// (ACP and dream both write `one_usage_events` rows via `record_turn`).
 /// Self-scoped: any authenticated member can query their own conversation's
 /// cost, not just billing admins.
 #[derive(Debug, Clone, Serialize)]

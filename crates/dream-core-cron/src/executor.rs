@@ -1046,7 +1046,7 @@ async fn parse_agent_type(
     Ok(AgentType::Acp)
 }
 
-/// Only aionrs conversations carry meaningful model info in `conversations.model`;
+/// Only dream conversations carry meaningful model info in `conversations.model`;
 /// ACP and other agent types ignore this field and resolve the model via their own
 /// mechanisms (catalog defaults, CLI flags, etc.). Returning `None` lets the
 /// `CreateConversationRequest.model` stay `None` for those types, which is the
@@ -1674,7 +1674,7 @@ mod tests {
 
     #[test]
     fn resolve_model_returns_none_for_acp() {
-        // Model info only applies to aionrs; ACP ignores it.
+        // Model info only applies to dream; ACP ignores it.
         let job = sample_job();
         assert!(resolve_model(&job).is_none());
     }

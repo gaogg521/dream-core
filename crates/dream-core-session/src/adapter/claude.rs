@@ -187,7 +187,7 @@ pub(crate) fn claude_permission_modes() -> Vec<ModeInfo> {
 /// Mint the per-kind streaming item_id from a claude `message.id`. claude shares
 /// ONE `message.id` across a turn's thinking AND text blocks; suffixing by kind
 /// routes each to its own finalizer buffer (→ separate blocks, no thinking↔text
-/// leak), mirroring the ACP/aionrs per-kind id convention. `Other` has no
+/// leak), mirroring the ACP/dream per-kind id convention. `Other` has no
 /// streaming path, so it maps to the bare id (never used as a delta item_id).
 fn stream_item_key(item_id: &str, kind: StreamBlockKind) -> String {
     match kind {
@@ -434,7 +434,7 @@ impl ClaudeAdapter {
                 "tool_use" => {
                     let raw_name = b.get("name").and_then(Value::as_str).unwrap_or("");
                     let name = raw_name.to_string();
-                    // #486 (parity with aionrs output_sink): DROP a malformed empty-name
+                    // #486 (parity with dream output_sink): DROP a malformed empty-name
                     // tool_use before it reaches persistence. claude occasionally emits a
                     // tool_use block with a missing/blank `name`; emitting it produces a
                     // nameless `tool_step{name:""}` row that renders as a ghost tool line
@@ -921,7 +921,7 @@ impl ClaudeAdapter {
                 // Carry the raw `input` for EVERY tool. The permission card must show
                 // the user WHAT they are approving (a Bash `command`, a Write target)
                 // — with only `tool_name` the card reads "命令: Bash" and the user
-                // approves blind (AionUi issue #3779). This is display-to-the-approver,
+                // approves blind (Dream UI issue #3779). This is display-to-the-approver,
                 // not logging: TIO-13 ("never log tool input at info") still holds, and
                 // the SAME `input` already reaches the frontend via the assistant
                 // tool_use block (ToolBegin carries it), so the card adds no new
@@ -1038,10 +1038,10 @@ impl BackendAdapter for ClaudeAdapter {
             // current models default the display to `omitted` and then stream
             // signature-only thinking blocks) is NOT built here. It is version-gated
             // and therefore supplied by the manager through `extra_args`
-            // (aionui-ai-agent `claude_flags`): the CLI rejects an unknown option at
+            // (dream-ai-agent `claude_flags`): the CLI rejects an unknown option at
             // parse time, so passing it to an older PATH-resolved claude would kill
-            // the spawn outright. This crate is self-contained (aionui-process +
-            // aionui-common only) and cannot probe `--version` itself.
+            // the spawn outright. This crate is self-contained (dream-process +
+            // dream-common only) and cannot probe `--version` itself.
             // Feature 004 F3: enable the bidirectional control channel. With
             // `--permission-prompt-tool stdio`, claude emits a `control_request`
             // (subtype `can_use_tool`) on stdout and BLOCKS until the host writes
@@ -1658,7 +1658,7 @@ mod tests {
 
     /// #486 (P4, LIVE-found 2026-06-22): a claude `tool_use` block with a
     /// missing/blank `name` is DROPPED — no `ToolCall` emitted — so it never
-    /// persists as a ghost `tool_step{name:""}` row. Mirrors aionrs's empty-name
+    /// persists as a ghost `tool_step{name:""}` row. Mirrors dream's empty-name
     /// guard. Other blocks in the same frame are unaffected.
     #[test]
     fn parse_assistant_drops_empty_name_tool_use_keeps_other_blocks() {
@@ -2903,7 +2903,7 @@ mod tests {
 
     /// An ORDINARY tool permission (Bash) carries `tool_name` AND `input` — the
     /// permission card must show the approver what command they are approving
-    /// (AionUi issue #3779: with input dropped the card read "命令: Bash" and the
+    /// (Dream UI issue #3779: with input dropped the card read "命令: Bash" and the
     /// user approved blind). Display-to-the-approver is not logging, so TIO-13
     /// (never log tool input at info) is unaffected.
     #[test]

@@ -12,7 +12,7 @@ pub struct BackendOutputSink {
     /// The model this turn is running against, carried on the `Finish` event
     /// so a listener several layers up (billing) can meter the turn without
     /// this sink knowing anything about users or conversations — it only
-    /// knows what aionrs told it at construction time.
+    /// knows what dream told it at construction time.
     model: String,
 }
 
@@ -315,7 +315,7 @@ mod tests {
         }
     }
 
-    /// This is the only place the model + real token counts aionrs reports
+    /// This is the only place the model + real token counts dream reports
     /// ever reach the `Finish` event — a listener several layers up (billing)
     /// depends on this to meter what a turn actually cost. Before this test
     /// existed, the sink discarded these values entirely (`_input_tokens`,

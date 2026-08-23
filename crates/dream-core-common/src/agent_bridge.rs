@@ -5,9 +5,9 @@
 //! Two independent subsystems need to agree, byte for byte, on where a
 //! bridged agent CLI reads its configuration from:
 //!
-//! - `aionui-ai-agent` spawns the agent and points the CLI at the isolated
+//! - `dream-ai-agent` spawns the agent and points the CLI at the isolated
 //!   home via an env var (`CLAUDE_CONFIG_DIR`).
-//! - `aionui-mcp` shells out to the same CLI (`claude mcp add/list/remove`)
+//! - `dream-mcp` shells out to the same CLI (`claude mcp add/list/remove`)
 //!   to manage MCP server registrations.
 //!
 //! When those two disagree, the app splits into two invisible config
@@ -18,7 +18,7 @@
 //! an MCP server inside this app silently mutates the user's own Claude
 //! Code installation.
 //!
-//! Both crates sit above `aionui-common`, so this is the lowest common
+//! Both crates sit above `dream-common`, so this is the lowest common
 //! place that can hold the single source of truth.
 
 use std::path::{Path, PathBuf};
@@ -58,10 +58,10 @@ pub fn ensure_claude_bridge_home(data_dir: &Path) -> (PathBuf, Result<(), std::i
 /// registry writes.
 ///
 /// **Not the same thing as "the Codex bridge"** elsewhere in this codebase
-/// (`aionui-codex-bridge`, `CODEX_CONFIG`/`MODEL_PROVIDER`) — that bridge
+/// (`dream-codex-bridge`, `CODEX_CONFIG`/`MODEL_PROVIDER`) — that bridge
 /// injects a custom LLM provider into the spawned `codex-acp` process and is
 /// unrelated to MCP server management. This constant exists purely so
-/// `aionui-mcp`'s `CodexAdapter` never runs `codex mcp add/remove` against
+/// `dream-mcp`'s `CodexAdapter` never runs `codex mcp add/remove` against
 /// the operator's real `~/.codex` (confirmed empirically: `codex mcp
 /// add/list/remove` honor `CODEX_HOME` and write `<CODEX_HOME>/config.toml`
 /// under `[mcp_servers.<name>]`). Deliberately **not** wired into agent

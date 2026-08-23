@@ -1,6 +1,6 @@
 //! Composition wiring for the source-control monitor.
 //!
-//! Adapts the transport-agnostic [`ScmActor`] (in `aionui-project`) to the
+//! Adapts the transport-agnostic [`ScmActor`] (in `dream-project`) to the
 //! realtime WebSocket layer, mirroring the explorer's `fs_monitor` wiring: an
 //! inbound router forwards `scm` frames and disconnects into the actor's channel,
 //! and an outbound adapter implements the actor's push port over the manager's

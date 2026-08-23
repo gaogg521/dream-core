@@ -3,7 +3,7 @@
 //! The billing plane owns the model allowlist, but `one-billing` and this crate
 //! sit at the same layer, so the factory cannot call it directly. Same shape as
 //! [`dream_core_auth::IpAllowlistGate`] / `dream_core_conversation::SendGate`: the trait
-//! lives here, `aionui-app` implements it over `BillingService`.
+//! lives here, `dream-app` implements it over `BillingService`.
 //!
 //! Why the factory needs it at all: the allowlist used to be enforced only on
 //! the *session* model — at send (`SendGate::check_send`) and at model switch

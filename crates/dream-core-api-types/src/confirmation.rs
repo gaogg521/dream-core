@@ -31,7 +31,7 @@ pub struct ApprovalCheckResponse {
 }
 
 /// Alias: confirmations list returns `Vec<Confirmation>` directly
-/// (the `Confirmation` type from `aionui-common` already has camelCase serde).
+/// (the `Confirmation` type from `dream-common` already has camelCase serde).
 pub type ConfirmationListResponse = Vec<Confirmation>;
 
 #[cfg(test)]

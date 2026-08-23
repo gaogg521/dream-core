@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 /// Override for [`runtime_root`], set by [`init`] from the backend startup
 /// path so managed runtime artifacts land under `AppConfig.data_dir`.
 ///
-/// Lifecycle: written once by `aionui-app`'s `main()` before
+/// Lifecycle: written once by `dream-app`'s `main()` before
 /// managed runtimes are resolved, and read every time [`runtime_root`] is
 /// queried thereafter. Callers that miss the init window transparently
 /// fall back to `dirs::cache_dir()`.
@@ -29,15 +29,15 @@ pub fn init(data_dir: impl AsRef<Path>) {
     }
 }
 
-/// Returns the root cache directory used for all aionui runtime artifacts.
+/// Returns the root cache directory used for all dream runtime artifacts.
 ///
 /// Priority:
 /// 1. Path supplied via [`init`] (`{data_dir}/runtime`) when the backend
 ///    started with `--data-dir`.
 /// 2. Platform cache dir (via `dirs::cache_dir()`):
-///    - macOS:   `~/Library/Caches/aionui/runtime`
-///    - Linux:   `$XDG_CACHE_HOME/aionui/runtime` (fallback `~/.cache/aionui/runtime`)
-///    - Windows: `%LOCALAPPDATA%\aionui\runtime`
+///    - macOS:   `~/Library/Caches/dream/runtime`
+///    - Linux:   `$XDG_CACHE_HOME/dream/runtime` (fallback `~/.cache/dream/runtime`)
+///    - Windows: `%LOCALAPPDATA%\dream\runtime`
 ///
 /// Returns `None` only when neither [`init`] has run nor a platform cache
 /// dir is determinable (exotic envs).

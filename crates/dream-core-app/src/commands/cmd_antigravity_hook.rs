@@ -2,7 +2,7 @@
 //!
 //! agy runs this once per tool call, writing the request to our stdin and
 //! reading the decision from our stdout. We forward the request to the running
-//! AionUi backend, which raises a permission card and blocks until the user
+//! Dream UI backend, which raises a permission card and blocks until the user
 //! answers.
 //!
 //! FAIL-CLOSED: every failure path (missing env, unreachable backend, malformed
@@ -76,7 +76,7 @@ async fn decide() -> AntigravityHookOutput {
             let body = resp.text().await.unwrap_or_default();
             decision_from_response(status, &body)
         }
-        // The user closed AionUi, the turn was cancelled, or nobody answered in
+        // The user closed Dream UI, the turn was cancelled, or nobody answered in
         // time. Denying is the only safe reading of "no answer".
         Err(e) => AntigravityHookOutput::deny(format!("aionui did not answer: {e}")),
     }
@@ -88,7 +88,7 @@ async fn decide() -> AntigravityHookOutput {
 /// not an `AntigravityHookOutput`, so handing it to the decision parser reports
 /// a rejection as a parse failure. That is what users saw when CSRF was blocking
 /// this endpoint (fixed in #860): the reply carried
-/// `aionui returned an unreadable decision: error decoding response body`,
+/// `dream returned an unreadable decision: error decoding response body`,
 /// which names the wrong thing to go looking at — the body was perfectly
 /// readable, the request had been refused.
 ///
@@ -122,7 +122,7 @@ mod tests {
 
     #[tokio::test]
     async fn unconfigured_bridge_denies_instead_of_allowing() {
-        // Safety property: a hook that cannot reach AionUi must never let the
+        // Safety property: a hook that cannot reach Dream UI must never let the
         // tool through.
         unsafe {
             std::env::remove_var(AntigravityHookConfig::ENV_BASE_URL);
@@ -133,7 +133,7 @@ mod tests {
 
     /// The bug this split exists for: a refusal used to be reported as a parse
     /// failure. Live 2026-08-17, while CSRF was blocking this endpoint, the user
-    /// saw `aionui returned an unreadable decision: error decoding response
+    /// saw `dream returned an unreadable decision: error decoding response
     /// body` — which points at the body when the problem was the status.
     #[test]
     fn a_refusal_is_named_as_one_not_as_an_unreadable_body() {

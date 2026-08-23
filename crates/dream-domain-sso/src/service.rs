@@ -43,8 +43,8 @@ pub struct OAuthStateEntry {
     pub provider: SsoProviderKind,
     pub redirect_target: Option<String>,
     pub desktop: bool,
-    /// Scheme for the post-login desktop deep link (e.g. `"aionui"` or
-    /// `"aionui-dev"`). Only meaningful when `desktop` is true. Restricted to
+    /// Scheme for the post-login desktop deep link (e.g. `"dream"` or
+    /// `"dream-dev"`). Only meaningful when `desktop` is true. Restricted to
     /// a closed allowlist by `routes::sanitize_deep_link_scheme` before it
     /// reaches here — see that function's doc comment for why.
     pub deep_link_scheme: &'static str,
@@ -216,7 +216,7 @@ impl SsoService {
 
     /// Whether the admin's company plan includes `feature`. Resolves company
     /// (`one_enterprise_members`) → tier (`one_enterprise_license`) → the
-    /// `aionui-common` matrix. No enterprise / billing not installed → allowed
+    /// `dream-common` matrix. No enterprise / billing not installed → allowed
     /// (personal-edition red line). Tolerant of absent tables.
     async fn enterprise_feature_allowed(&self, user_id: &str, feature: Feature) -> Result<bool, SsoError> {
         let enterprise_id: Option<String> =

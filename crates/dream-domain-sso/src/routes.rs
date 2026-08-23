@@ -561,7 +561,7 @@ async fn upsert_provider(
 }
 
 /// Landing page shown in the system browser after a successful desktop SSO
-/// login, right before handing off to the `aionui://` (or `aionui-dev://`,
+/// login, right before handing off to the `dream://` (or `dream-dev://`,
 /// see `sanitize_deep_link_scheme`) deep link. `deep_link` is built entirely
 /// from `urlencode`'d segments plus an allowlisted scheme (see `callback`),
 /// so it only ever contains `[A-Za-z0-9\-._~:/?=&]` — safe to interpolate

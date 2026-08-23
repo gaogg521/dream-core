@@ -235,8 +235,8 @@ struct ConversationCostQuery {
 }
 
 /// Self-scoped: any authenticated member may query the cumulative cost of
-/// one of their own conversations (aionrs conversations have no other way
-/// to surface this — see `ContextUsageIndicator`'s aionrs wiring). No admin
+/// one of their own conversations (dream conversations have no other way
+/// to surface this — see `ContextUsageIndicator`'s dream wiring). No admin
 /// gate, unlike `billing_usage` above: `conversation_cost` filters by the
 /// caller's own `user_id`, so there is nothing to leak.
 async fn billing_conversation_cost(

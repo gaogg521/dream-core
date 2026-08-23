@@ -58,7 +58,7 @@ struct CreateAgentBody {
     agent_id_override: Option<String>,
     /// Plain model id — ACP backends.
     model_id: Option<String>,
-    /// aionrs only. `ProviderWithModel` has no `rename_all`, so its own keys
+    /// dream only. `ProviderWithModel` has no `rename_all`, so its own keys
     /// stay snake_case (`provider_id` / `use_model`) despite this body being
     /// camelCase — same shape the frontend already sends for cron jobs.
     model: Option<ProviderWithModel>,

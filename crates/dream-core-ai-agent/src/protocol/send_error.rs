@@ -2080,7 +2080,7 @@ mod tests {
     /// the user as a translated message with an action, not as the raw English
     /// string the factory used to return.
     ///
-    /// If this ever regresses to `AionuiInternalError` or to no code at all, the
+    /// If this ever regresses to `DreamuiInternalError` or to no code at all, the
     /// factory has gone back to `AgentError::bad_request(...)`: a plain string
     /// carries no code, so the frontend has nothing to translate against.
     #[test]

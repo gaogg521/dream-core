@@ -294,7 +294,7 @@ impl OrgService {
     ///
     /// Public because the company tier removes members too (企业 ⊃ 项目组) and
     /// must cut off the same credentials; one-enterprise reaches this through
-    /// its own `SessionRevoker` trait, wired in aionui-app.
+    /// its own `SessionRevoker` trait, wired in dream-app.
     pub async fn invalidate_user_tokens(&self, user_id: &str) -> Result<(), OrgError> {
         let secret = generate_random_secret_string();
         self.user_repo.update_jwt_secret(user_id, &secret).await?;
@@ -1121,7 +1121,7 @@ impl OrgService {
     /// `reset_local_enterprise` uses just above, since this is irreversible.
     ///
     /// Called by one-enterprise's `disband_company` through the
-    /// `CompanyDisbandCascade` trait it wires up in `aionui-app` (same
+    /// `CompanyDisbandCascade` trait it wires up in `dream-app` (same
     /// layer, no direct dependency — the same arrangement as
     /// `CredentialRevoker`). Authorization is enforced by that caller; this
     /// trusts the `enterprise_id` it is given.
@@ -1726,7 +1726,7 @@ impl OrgService {
 
     /// Whether the caller's company plan includes `feature`. company
     /// (`one_enterprise_members`) → tier (`one_enterprise_license`) → the
-    /// `aionui-common` matrix. No enterprise / billing not installed → allowed
+    /// `dream-common` matrix. No enterprise / billing not installed → allowed
     /// (personal-edition red line). Tolerant of absent tables.
     pub async fn enterprise_feature_allowed(&self, user_id: &str, feature: Feature) -> Result<bool, OrgError> {
         let enterprise_id: Option<String> =
@@ -1775,7 +1775,7 @@ impl OrgService {
         limit: i64,
     ) -> Result<Vec<AgentAuditEntry>, OrgError> {
         let limit = limit.clamp(1, 2000);
-        // Tool name / target vary by backend (aionrs vs ACP) — extract
+        // Tool name / target vary by backend (dream vs ACP) — extract
         // best-effort from a few well-known JSON shapes.
         let name_expr = "COALESCE(json_extract(m.content,'$.name'), json_extract(m.content,'$.toolName'), \
                          json_extract(m.content,'$.tool'), '')";
@@ -2088,7 +2088,7 @@ impl OrgService {
     /// directory mirror (the route handler reads it from
     /// `OneOrgRouterState.directory_source` — a router-state-level bridge,
     /// like `company_resolver`, rather than a field on this service, because
-    /// one-enterprise is constructed AFTER one-org in `aionui-app` and baking
+    /// one-enterprise is constructed AFTER one-org in `dream-app` and baking
     /// the dependency into this service's constructor would create a
     /// construction-order cycle between the two). `root_external_id` is the
     /// directory department to use as the mapping's root — it becomes a
@@ -2106,7 +2106,7 @@ impl OrgService {
     /// left in place and reported, not force-deleted.
     ///
     /// **Never touches a `source IS NULL` (manual) row.** The three
-    /// invariants here mirror `aionui-system::managed_provider`: only ever
+    /// invariants here mirror `dream-system::managed_provider`: only ever
     /// create/update/delete rows this mapping owns, match by a stable
     /// externally-derived key so re-sync updates instead of duplicating, and
     /// scope deletion to exactly the set this run determined it owns.
@@ -3207,7 +3207,7 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
-        // A Read (aionrs shape), a Bash (acp shape), and a non-tool message.
+        // A Read (dream shape), a Bash (acp shape), and a non-tool message.
         sqlx::query(r#"INSERT INTO messages (id, conversation_id, type, content, created_at) VALUES ('m1', 'c1', 'tool_call', '{"name":"Read","args":{"path":"/tmp/a.txt"}}', 10)"#)
             .execute(pool)
             .await
@@ -3415,7 +3415,7 @@ mod tests {
 
     /// A project group created *for* a company (`create_tenant_for_enterprise`,
     /// the "企业管理后台 → 项目组 → 新建项目组" admin flow) must report that
-    /// company's id on join, so the `CompanySeatSync` hook in aionui-app knows
+    /// company's id on join, so the `CompanySeatSync` hook in dream-app knows
     /// to register the joiner as a company member too. Without this, someone
     /// invited into a company-owned project group would never show up in the
     /// company's "成员" list or count against its seat limit — see

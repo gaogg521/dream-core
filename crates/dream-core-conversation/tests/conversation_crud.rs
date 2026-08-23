@@ -148,7 +148,7 @@ async fn t1_1_create_with_defaults() {
     assert!(resp.created_at > 0);
     assert_eq!(resp.created_at, resp.modified_at);
 
-    // Non-aionrs: top-level model is None.
+    // Non-dream: top-level model is None.
     assert!(resp.model.is_none(), "ACP response should not carry top-level model");
 
     // WebSocket event
@@ -325,7 +325,7 @@ async fn t2_3_cursor_pagination() {
 async fn t2_4_source_filter() {
     let (svc, _, _task_mgr) = setup().await;
 
-    // 2 aionui + 1 telegram
+    // 2 dream + 1 telegram
     svc.create(USER_ID, make_create_req()).await.unwrap();
     svc.create(USER_ID, make_create_req()).await.unwrap();
 
@@ -483,8 +483,8 @@ async fn update_ignores_extra_user_id() {
 async fn t4_5_update_model() {
     let (svc, _, task_mgr) = setup().await;
 
-    // Top-level model updates are only valid on aionrs conversations
-    // (Task 8 enforces the aionrs-only rule in update).
+    // Top-level model updates are only valid on dream conversations
+    // (Task 8 enforces the dream-only rule in update).
     let create_req: CreateConversationRequest = serde_json::from_value(json!({
         "type": "aionrs",
         "model": { "provider_id": "p1", "model": "m1" },
@@ -866,7 +866,7 @@ async fn update_aionrs_strips_extra_model_from_patch() {
     .unwrap();
     let conv = svc.create(USER_ID, create_req).await.unwrap();
 
-    // Client mistakenly sends extra.model on an aionrs PATCH. It should be
+    // Client mistakenly sends extra.model on an dream PATCH. It should be
     // silently stripped from the merged extra, not persisted.
     let req: UpdateConversationRequest = serde_json::from_value(json!({
         "extra": { "model": "legacy-value", "last_token_usage": { "total_tokens": 42 } }

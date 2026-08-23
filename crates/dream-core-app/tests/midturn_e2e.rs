@@ -205,7 +205,7 @@ async fn midturn_send_returns_200_with_the_active_turn_id() {
     // starts "pending" at insert, but `deliver_midturn_message`'s reliable
     // fallback synchronously closes it to "finish" before this HTTP response
     // was even returned (see `midturn_send_delivers_into_the_active_turn` in
-    // `aionui-conversation`, which locks that immediate-close contract) — so
+    // `dream-conversation`, which locks that immediate-close contract) — so
     // by the time this GET runs, "finish" is the only status ever observable
     // here, for any backend.
     let resp = app

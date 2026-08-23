@@ -693,7 +693,7 @@ impl SessionAgentTask {
     /// block until the user answers.
     ///
     /// Only Antigravity uses this: agy cannot prompt in headless mode, so its
-    /// `PreToolUse` hook calls AionUi over HTTP instead, and that request lands
+    /// `PreToolUse` hook calls Dream UI over HTTP instead, and that request lands
     /// here. Backends that raise permissions on their own wire return `Denied`
     /// from the trait default and never reach this path.
     pub async fn request_external_permission(
@@ -1031,7 +1031,7 @@ impl SessionAgentTask {
             });
         }
         // Reasoning-effort ("thought level") axis — the direct-CLI analogue of the ACP
-        // path's `thought_level` config option (category-keyed so AionUi's
+        // path's `thought_level` config option (category-keyed so Dream UI's
         // `deriveSelectOption(..., 'thought_level', ['reasoning_effort'])` lights the
         // picker's effort group). Only claude advertises per-model `supportedEffortLevels`;
         // the option is emitted only when the resolved current model actually offers
@@ -1644,7 +1644,7 @@ fn spec_mode_model(
         },
     };
     // Normalize the resolved mode alias into the backend-native id — the SAME
-    // transform the ACP path applies in `initial_mode_from_params`. AionUi persists
+    // transform the ACP path applies in `initial_mode_from_params`. Dream UI persists
     // generic aliases (`yolo`/`yoloNoSandbox`; codex `default`/`autoEdit`); handing
     // those raw to the backend on resume rejects (claude unknown permission-mode) or
     // mis-policies (codex non-native mode). `normalize_requested_mode` maps them via
@@ -1663,7 +1663,7 @@ fn spec_mode_model(
 /// from a resolved ACP build request, or `Ok(None)` for a non-session backend.
 ///
 /// This is the faithful port of clean-slate `build_runtime`'s per-conversation
-/// assembly (`crates/aionui-app/src/session_runtime/mod.rs`): it resolves the
+/// assembly (`crates/dream-app/src/session_runtime/mod.rs`): it resolves the
 /// resume spec, the mode/model precedence, the MCP + preset + skills init surface,
 /// the claude cc-switch provider env, and the codex sandbox/approval policy — so a
 /// Build an Antigravity (`agy` CLI) `SessionAgentTask`.
@@ -1819,7 +1819,7 @@ pub async fn build_session_instance(
     // GAP #3 — MCP init surface: resolve user-configured servers to the neutral
     // spec (clean-slate resolve_session_init), fold in the inline snapshot, then
     // prepend the team coordination MCP. Same order as the app boundary. The
-    // reserved name `aionui-team` is filtered from BOTH sources so the team
+    // reserved name `dream-team` is filtered from BOTH sources so the team
     // coordination MCP (prepended last, below) always wins.
     let mut neutral = match mcp_server_repo {
         Some(repo) => {
@@ -2088,7 +2088,7 @@ fn resolve_session_cli_program(
 
     // PATH only. claude/codex used to prefer a bundled, version-pinned copy,
     // which silently diverged from whatever the user had installed: the same
-    // prompt behaved differently in AionUi and in the user's terminal, with
+    // prompt behaved differently in Dream UI and in the user's terminal, with
     // nothing on screen explaining why. They are now treated exactly like agy —
     // the user's own install is the one that runs, and a drift from the version
     // this integration was verified against is reported rather than hidden.
@@ -4267,7 +4267,7 @@ fn translate_event(event: SessionEvent, conversation_id: &str, terminal_result_s
         // keyed on the same id (the frontend echoes the `call_id` it received here).
         // `input` (the raised tool's raw input — a Bash `command`, AskUserQuestion
         // `{questions:[…]}`) rides as `raw_input` so the card can show the approver
-        // what they are approving (AionUi issue #3779); the generic
+        // what they are approving (Dream UI issue #3779); the generic
         // `Approved`/`Denied` options let the reducer + card render.
         SessionEvent::Permission {
             request_id,
@@ -4363,7 +4363,7 @@ fn translate_event(event: SessionEvent, conversation_id: &str, terminal_result_s
                 usage["size"] = serde_json::json!(size);
             }
             // Per-turn detail line ("input · output · cache read · thinking").
-            // The renderer reads these five keys out of `_meta` (AionUi
+            // The renderer reads these five keys out of `_meta` (Dream UI
             // useAcpMessage.ts `BREAKDOWN_KEYS`) and drops the line when none are
             // present — so a backend that reports nothing simply has no line,
             // rather than a row of zeros.
@@ -5312,7 +5312,7 @@ mod translate_tests {
     }
 
     /// The detail line rides `_meta` under the five key names the renderer reads
-    /// (AionUi `BREAKDOWN_KEYS`). A backend that reports nothing must emit NO
+    /// (Dream UI `BREAKDOWN_KEYS`). A backend that reports nothing must emit NO
     /// `_meta` at all, so the renderer omits the line instead of drawing zeros.
     #[test]
     fn breakdown_rides_meta_under_the_renderer_key_names() {

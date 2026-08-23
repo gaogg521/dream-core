@@ -24,7 +24,7 @@ pub trait IProviderRepository: Send + Sync {
     /// `sqlite_provider.rs` locks this.
     ///
     /// Members still cannot read the operator's API key out: redaction lives at
-    /// the HTTP boundary (`aionui-system`'s `may_see_provider_secrets`).
+    /// the HTTP boundary (`dream-system`'s `may_see_provider_secrets`).
     /// Genuinely per-member credentials go through enterprise model channels
     /// (`managed_by='enterprise'`, migration 041), not through this column.
     async fn list(&self, user_id: &str) -> Result<Vec<Provider>, DbError>;

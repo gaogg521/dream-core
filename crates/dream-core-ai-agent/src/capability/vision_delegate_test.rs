@@ -1,4 +1,4 @@
-//! Selection of the vision delegate that `ReadImage` (aionrs) and the ACP
+//! Selection of the vision delegate that `ReadImage` (dream) and the ACP
 //! image-attachment hook (Claude/Codex bridge) both use for models that
 //! cannot see images.
 

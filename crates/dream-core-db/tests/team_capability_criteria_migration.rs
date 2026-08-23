@@ -32,7 +32,7 @@ async fn retired_team_policy_keys_are_stripped_from_every_seeded_policy() {
 
 /// The known-good whitelist (migration 014) survives 044. These rows are
 /// load-bearing: on a fresh install claude/codex/gemini have NULL capabilities
-/// until their first handshake, and aionrs has a NULL backend the capability
+/// until their first handshake, and dream has a NULL backend the capability
 /// inference cannot judge at all — without the flag they would not be selectable.
 #[tokio::test]
 async fn known_good_team_whitelist_survives() {

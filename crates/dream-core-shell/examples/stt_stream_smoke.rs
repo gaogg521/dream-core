@@ -1,7 +1,7 @@
 //! Manual smoke test for the STT streaming upstream adapters against REAL APIs.
 //! Not committed / not part of CI. Run:
 //!   STT_SMOKE_API_KEY=sk-... STT_SMOKE_MODEL=gpt-4o-mini-transcribe \
-//!   cargo run -p aionui-shell --example stt_stream_smoke -- /path/to/pcm16-24k-mono.wav
+//!   cargo run -p dream-shell --example stt_stream_smoke -- /path/to/pcm16-24k-mono.wav
 
 use dream_core_api_types::{
     DeepgramSpeechToTextConfig, OpenAISpeechToTextConfig, SpeechToTextConfig, SpeechToTextProvider,

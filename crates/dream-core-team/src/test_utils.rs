@@ -1649,11 +1649,11 @@ pub(crate) mod workspace_harness {
     #[async_trait]
     impl IProviderRepository for EmptyProviderRepo {
         async fn list(&self, _user_id: &str) -> Result<Vec<dream_core_db::models::Provider>, DbError> {
-            // Not actually "empty" for aionrs model resolution: this repo backs
-            // `team_with_aionrs_worker_request`'s "claude-sonnet" teammate, and
+            // Not actually "empty" for dream model resolution: this repo backs
+            // `team_with_dream_worker_request`'s "claude-sonnet" teammate, and
             // `resolve_provider_for_model` must find a matching enabled provider
             // or team creation now fails fast (see provisioning.rs). No other
-            // test in this harness creates an aionrs-backend teammate, so this
+            // test in this harness creates an dream-backend teammate, so this
             // single fake provider is safe to add here.
             Ok(vec![dream_core_db::models::Provider {
                 id: "test-provider".into(),

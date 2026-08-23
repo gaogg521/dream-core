@@ -37,7 +37,7 @@ impl AgentType {
             AgentType::OpenclawGateway => "OpenClaw Gateway",
             AgentType::Nanobot => "Nanobot",
             AgentType::Remote => "Remote",
-            // Fork brand: upstream says "Aion CLI" here.
+            // Fork brand: upstream says "Dream CLI" here.
             AgentType::DreamEngine => "1ONE CLI",
             AgentType::Antigravity => "Antigravity",
             AgentType::Gemini => "Gemini (legacy)",

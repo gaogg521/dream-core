@@ -1,15 +1,15 @@
-//! `aionui-process` — self-contained subprocess mechanism (feature 001).
+//! `dream-process` — self-contained subprocess mechanism (feature 001).
 //!
 //! A Foundation-layer crate that spawns, supervises, and reaps the agent
 //! subprocesses **it itself starts** — fully parallel to and unaware of the
-//! existing `CliAgentProcess` / process registry in `aionui-ai-agent`.
+//! existing `CliAgentProcess` / process registry in `dream-ai-agent`.
 //!
 //! "Bytes not semantics": it never parses agent output, holds no session
-//! state, and never mutates `std::env`. It depends only on `aionui-common`
-//! and `aionui-runtime`.
+//! state, and never mutates `std::env`. It depends only on `dream-common`
+//! and `dream-runtime`.
 //!
 //! ## Isolation contract (why two mechanisms coexist without conflict)
-//! All shared resources are namespaced under `{data_dir}/runtime/aionui-process/`
+//! All shared resources are namespaced under `{data_dir}/runtime/dream-process/`
 //! and every kill is identity-gated against a recorded process start-time so a
 //! recycled PID/PGID is never mistaken for one of ours. See the feature
 //! design doc §Isolation-Contract (IC-1..6).

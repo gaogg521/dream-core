@@ -93,7 +93,7 @@ async fn get_agent_configs() {
 
     let json = body_json(resp).await;
     assert!(json["success"].as_bool().unwrap());
-    // In test env, data is an array (may be empty or contain aionui adapter)
+    // In test env, data is an array (may be empty or contain dream adapter)
     assert!(json["data"].is_array());
 }
 

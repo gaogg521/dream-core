@@ -28,7 +28,7 @@ fn to_prompt_agent(agent: &TeamAgent) -> dream_core_team_prompts::TeamPromptAgen
 
 /// Build the leader system prompt.
 ///
-/// Delegates to `aionui-team-prompts`, the canonical Team role prompt crate.
+/// Delegates to `dream-team-prompts`, the canonical Team role prompt crate.
 /// A one-line `Team: "<name>"` header is prepended so the leader knows which
 /// team it belongs to.
 ///

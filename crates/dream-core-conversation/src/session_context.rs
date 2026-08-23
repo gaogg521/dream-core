@@ -426,9 +426,9 @@ impl<'a> SessionContextBuilder<'a> {
     }
 }
 
-/// Runtime permission gate inputs for an aionrs rebuild, loaded from the
+/// Runtime permission gate inputs for an dream rebuild, loaded from the
 /// conversation's persisted assistant snapshot in the service layer
-/// (`ConversationService::load_aionrs_permission_seed`) and threaded down so
+/// (`ConversationService::load_dream_permission_seed`) and threaded down so
 /// `SessionContextBuilder` needs no `conversation_repo` handle.
 ///
 /// - `default_permission_mode`: the assistant's permission mode (`auto` /

@@ -421,7 +421,7 @@ impl ConversationTurnOrchestrator {
             // turn — a "send" that continues (system-response auto-replies)
             // makes several real LLM calls, each with its own cost, so this
             // fires inside the loop rather than once after it. Cost is
-            // recorded even when the terminal was an error: aionrs reports
+            // recorded even when the terminal was an error: dream reports
             // real token counts whenever it reports any, regardless of
             // whether the turn went on to fail — those tokens were still
             // billed by the provider.
@@ -798,12 +798,12 @@ async fn apply_required_runtime_mode(
 ) -> Result<RequiredFullAutoApplication, AgentError> {
     // a-pure (ELECTRON-3RQ): for metadata-bearing ACP agents (Kimi et al.),
     // resolve cron's full-auto request to the backend-native YOLO id and apply
-    // it look-before-leap. This logic is sunk into aionui-ai-agent because the
+    // it look-before-leap. This logic is sunk into dream-ai-agent because the
     // `yolo_id` it needs is only visible on the ACP manager's metadata.
     if let Some(app) = agent.apply_required_full_auto_mode().await? {
         return Ok(app);
     }
-    // Retained legacy path for non-ACP variants (claude/codex Session, aionrs):
+    // Retained legacy path for non-ACP variants (claude/codex Session, dream):
     // codex ELECTRON-3Q0 catalog alignment + native pass-through.
     let effective = resolve_required_runtime_mode(agent, backend, mode).await;
     agent.set_config_option("mode", &effective).await?;

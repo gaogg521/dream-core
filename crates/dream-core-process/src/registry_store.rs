@@ -1,6 +1,6 @@
 //! Persisted registry of processes THIS crate spawned (IC-4).
 //!
-//! Lives in its own subdir `{data_dir}/runtime/aionui-process/registry.json`,
+//! Lives in its own subdir `{data_dir}/runtime/dream-process/registry.json`,
 //! never touching the existing `agent-process-registry.json`. Written via a
 //! durable atomic write whose temp file is namespaced to this crate + pid, so
 //! it can never clobber another mechanism's temp. Accessed by exact path only
@@ -104,7 +104,7 @@ pub trait RegistryStore: Send + Sync {
     fn read_all(&self) -> Result<Vec<RegisteredProcess>, ProcessError>;
 }
 
-/// File-backed registry under `{data_dir}/runtime/aionui-process/registry.json`.
+/// File-backed registry under `{data_dir}/runtime/dream-process/registry.json`.
 pub struct FileRegistryStore {
     path: PathBuf,
     /// Sidecar path for the cross-process RMW lock (F49). See

@@ -350,7 +350,7 @@ impl BackendConnection for ClaudeConnection {
         // first `capabilities()` read; a late response is merged on the next read
         // (same late-discovery contract as codex `model/list`).
         backend.request_initialize().await;
-        // Report a claude whose version differs from the release AionUi
+        // Report a claude whose version differs from the release Dream UI
         // verified. claude runs from the user's own install (nothing is
         // bundled), so this is the same situation agy has always been in.
         backend.spawn_version_check();
@@ -1130,7 +1130,7 @@ impl ClaudeSessionBackend {
     }
 
     /// Tell the user once per conversation when the installed claude is not the
-    /// release AionUi verified.
+    /// release Dream UI verified.
     ///
     /// Fire-and-forget: the probe spawns `claude --version` and a failure only
     /// costs the drift claim, never the session.

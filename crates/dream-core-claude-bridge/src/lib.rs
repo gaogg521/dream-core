@@ -6,8 +6,8 @@
 //! surface, so no local proxy is needed. This crate only owns the
 //! settings CRUD (`GET`/`PUT /api/claude-bridge/config`); the actual
 //! `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_MODEL` resolution
-//! happens directly in `aionui-ai-agent`'s launch policy (see
-//! `crates/aionui-ai-agent/src/factory/acp.rs::resolve_claude_bridge_env`),
+//! happens directly in `dream-ai-agent`'s launch policy (see
+//! `crates/dream-ai-agent/src/factory/acp.rs::resolve_claude_bridge_env`),
 //! which needs the decryption key and provider repository this crate
 //! deliberately does not depend on.
 

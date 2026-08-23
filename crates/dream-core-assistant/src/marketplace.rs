@@ -6,7 +6,7 @@
 //! the marketplace never touches `assistant_definitions` or a user's own
 //! assistant list. "Installing" an entry is just calling
 //! `AssistantService::import_personas` with this catalog's own name/
-//! description/rule_content — see `crates/aionui-assistant/src/routes.rs`.
+//! description/rule_content — see `crates/dream-assistant/src/routes.rs`.
 
 use std::collections::HashMap;
 
@@ -20,7 +20,7 @@ use crate::error::AssistantError;
 
 /// Assets compiled into the binary at build time. Paths are relative to
 /// this embedded root, matching the on-disk layout under
-/// `crates/aionui-app/assets/marketplace-personas/`.
+/// `crates/dream-app/assets/marketplace-personas/`.
 static MARKETPLACE_ASSETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../dream-core-app/assets/marketplace-personas");
 
 #[derive(Debug, Deserialize)]

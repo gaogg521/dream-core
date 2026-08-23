@@ -1,6 +1,6 @@
 //! 007 §3 / C7: the `ConversationSession` — the conversation-side façade over
 //! the seam. This is the SKELETON 007 ships (R14); the actual WIRING into
-//! `aionui-conversation` (replacing `RuntimeCompletionPublisher` + the hardcoded
+//! `dream-conversation` (replacing `RuntimeCompletionPublisher` + the hardcoded
 //! `turn.completed{canSendMessage}`) is the parallel conversation agent's P2
 //! work. 007 freezes the contract here and proves the skeleton compiles + folds.
 //!
@@ -565,7 +565,7 @@ impl ConversationSession {
     }
     /// Whether the backend accepts file attachments (`ResourceLink`): claude (Read
     /// tool path-ref) + ACP (native resource_link) + codex (`UserInput::Mention`
-    /// @file by path) = true; aionrs = false. The UI gates the file-picker on this
+    /// @file by path) = true; dream = false. The UI gates the file-picker on this
     /// (additive parity with accepts_images).
     pub fn accepts_files(&self) -> bool {
         self.backend.capabilities().prompt_blocks.resource

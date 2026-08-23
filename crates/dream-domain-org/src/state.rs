@@ -19,7 +19,7 @@ pub struct OneOrgRouterState {
     /// tree. `None` in personal edition / tests — the picker and mapping
     /// routes then report "nothing to map" rather than failing. Router-state
     /// level, not a field on `OrgService`, because one-enterprise is
-    /// constructed AFTER one-org in `aionui-app` — baking this into the
+    /// constructed AFTER one-org in `dream-app` — baking this into the
     /// service's own constructor would create a construction-order cycle
     /// with `EnterpriseService::with_session_revoker`, which needs an
     /// already-built `OrgService` the other way around.

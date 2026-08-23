@@ -1,10 +1,10 @@
 //! one-sso: SSO providers (Feishu / DingTalk / WeCom / LDAP) + OAuth
-//! callbacks + JIT user provisioning for the 1ONE AionCore fork.
+//! callbacks + JIT user provisioning for the 1ONE Dream Core fork.
 //!
 //! Design doc: docs/tech/v2-m2-enterprise-crate-design.md in the 1one-command
 //! repo. Same own-crate policy as one-org/one-employee: all state in `one_*`
 //! tables via our own migration ledger; upstream touch points are the route
-//! merge in aionui-app and public upstream service APIs (IUserRepository,
+//! merge in dream-app and public upstream service APIs (IUserRepository,
 //! JwtSecret, hash_password).
 
 pub mod directory;

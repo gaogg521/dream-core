@@ -70,7 +70,7 @@ impl OutputBuffer {
 
 /// Terminal ids are minted from a PROCESS-global counter, not a per-registry
 /// one: an agent restart builds a fresh registry, and a per-registry counter
-/// would hand out `aionui-term-1` again — colliding with the card the
+/// would hand out `dream-term-1` again — colliding with the card the
 /// frontend still has on screen for the same conversation (cards are keyed by
 /// terminal id).
 static NEXT_TERMINAL_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -488,7 +488,7 @@ mod tests {
     #[tokio::test]
     async fn default_cwd_applies_when_agent_sends_none() {
         // A private temp dir per run: the old fixed, shared path
-        // (`temp_dir()/aionui-term-cwd-test`) was raced by every parallel test
+        // (`temp_dir()/dream-term-cwd-test`) was raced by every parallel test
         // process on the machine, which made this test flaky.
         //
         // Verify via a directory listing rather than comparing `pwd`'s printed

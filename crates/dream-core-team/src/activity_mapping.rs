@@ -1,6 +1,6 @@
 //! Row/domain → response mapping for the read-only team activity view.
 //!
-//! Keeps the projection out of `aionui-api-types` (which must not depend on
+//! Keeps the projection out of `dream-api-types` (which must not depend on
 //! domain types) and out of the repository layer.
 
 use dream_core_api_types::{TeamActivityItemResponse, TeamActivityKind, TeamMailboxMessageResponse, TeamTaskResponse};

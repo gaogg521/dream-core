@@ -29,7 +29,7 @@ pub(super) struct AcpLaunchPolicyInput<'a> {
     pub session_snapshot: Option<&'a PersistedSessionState>,
     pub runtime_env: &'a [(String, String)],
     /// Resolved Codex compatibility bridge config (see
-    /// `aionui-codex-bridge`), if the caller has one configured and enabled.
+    /// `dream-codex-bridge`), if the caller has one configured and enabled.
     /// `None` means "use Codex's own default provider" — this app never
     /// forces a provider on Codex unless the user explicitly set one up.
     pub codex_bridge_config: Option<&'a CodexBridgeConfig>,
@@ -122,7 +122,7 @@ fn append_claude_provider_env(
 }
 
 /// Point Codex's `model_providers` config at the local Codex-compatibility
-/// bridge (`aionui-codex-bridge`) instead of Codex's own default provider,
+/// bridge (`dream-codex-bridge`) instead of Codex's own default provider,
 /// mirroring `append_claude_provider_env`'s cc_switch injection for Claude
 /// Code. Only applies when the user has explicitly enabled the bridge with a
 /// saved provider + model — otherwise Codex keeps behaving exactly as it

@@ -313,7 +313,7 @@ async fn resolve_bridged_target_vision_policy(
 /// Where a conversation that arrived on the ACP factory actually has to run.
 ///
 /// Conversations reach this factory by their *family*, not by how their agent
-/// talks: the frontend renders every non-aionrs agent through the ACP chat
+/// talks: the frontend renders every non-dream agent through the ACP chat
 /// surface, so the backend label is the only thing that says which runtime a
 /// row really needs.
 #[derive(Debug, PartialEq, Eq)]
@@ -559,7 +559,7 @@ pub(super) async fn build(
 
     // Open the ACP session eagerly so runtime preparation returns only after
     // session/new (or claude-meta-resume / session/load) and the first
-    // reconcile pass have completed. Matches aionrs factory behaviour:
+    // reconcile pass have completed. Matches dream factory behaviour:
     // the caller sees "warmed up" == "ready for PUT /mode | /model".
     arc.warmup_session().await?;
 
@@ -735,7 +735,7 @@ async fn resolve_builtin_managed_acp_command_spec(
 /// for `NewSessionRequest::mcp_servers`.
 ///
 /// Which rows apply is `session_mcp::load_session_mcp_rows`'s call — one rule
-/// shared with the aionrs factory, including which built-ins ride along.
+/// shared with the dream factory, including which built-ins ride along.
 async fn load_user_mcp_servers(
     repo: &dyn IMcpServerRepository,
     selected_ids: Option<&[String]>,
@@ -748,7 +748,7 @@ async fn load_user_mcp_servers(
 
     let mut servers = Vec::with_capacity(rows.len());
     for row in rows {
-        // `aionui-team` is the reserved team coordination MCP name; a user row
+        // `dream-team` is the reserved team coordination MCP name; a user row
         // that collides with it is never injected here (the team bridge is
         // folded in separately and must win).
         if row.name == TEAM_MCP_SERVER_NAME {
@@ -1416,7 +1416,7 @@ mod tests {
         )
         .await
         .expect("resolved release-pinned builtin command spec");
-        // Tracks `aionui-runtime/resources/acp-registry-npx-lock.json`. This one is behind
+        // Tracks `dream-runtime/resources/acp-registry-npx-lock.json`. This one is behind
         // `cfg(unix)`, so a stale pin here is invisible on Windows and only surfaces on the
         // macOS gate — which is precisely how it got left at 0.0.32.
         assert_eq!(spec.args, vec!["-y", "pi-acp@0.0.33"]);
@@ -1801,10 +1801,10 @@ mod tests {
     }
 
     /// Antigravity arrives on the ACP factory because the renderer puts every
-    /// non-aionrs agent on the ACP chat surface — but agy does not speak ACP.
+    /// non-dream agent on the ACP chat surface — but agy does not speak ACP.
     /// Routing it to the manager makes the initialize handshake time out and the
     /// user sees "The selected Agent failed to start", with a fully working agy
-    /// installed. Verified end-to-end from the AionUi UI.
+    /// installed. Verified end-to-end from the Dream UI UI.
     #[test]
     fn antigravity_never_routes_to_the_acp_manager() {
         assert_eq!(route_for_backend(Some("antigravity")), BackendRoute::Antigravity);

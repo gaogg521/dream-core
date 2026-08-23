@@ -1,10 +1,10 @@
-//! Integration tests for file-based MCP Agent adapters (Opencode, DreamEngine, Aionui).
+//! Integration tests for file-based MCP Agent adapters (Opencode, DreamEngine, Dreamui).
 //!
 //! These tests exercise the real filesystem read/write logic using temp
 //! directories. CLI detection (`is_installed`, `which`) is NOT tested here
 //! because it depends on the host environment.
 //!
-//! For Aionui, we use a mock repository since it reads from the DB.
+//! For Dreamui, we use a mock repository since it reads from the DB.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,7 +15,7 @@ use dream_core_common::McpSource;
 use dream_core_mcp::{DreamUiAdapter, McpAgentAdapter, McpServerTransport};
 
 // ===========================================================================
-// Aionui adapter (DB-backed)
+// Dreamui adapter (DB-backed)
 // ===========================================================================
 
 mod dream_ui {
@@ -240,8 +240,8 @@ mod opencode {
 // DreamEngine adapter (CLI + TOML-backed)
 // ===========================================================================
 
-// Note: Full lifecycle tests for DreamEngine require the `aionrs` CLI to be
-// installed (for `--config-path`). The unit tests in aionrs.rs thoroughly
+// Note: Full lifecycle tests for DreamEngine require the `dream` CLI to be
+// installed (for `--config-path`). The unit tests in dream.rs thoroughly
 // cover TOML parsing, serialization, and roundtrip behavior. Here we
 // verify the public API surface.
 

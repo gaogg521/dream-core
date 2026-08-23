@@ -88,10 +88,10 @@ pub const SKILL_MANIFEST_FILE: &str = "SKILL.md";
 /// Persistence file for custom external skill paths.
 pub const CUSTOM_SKILL_PATHS_FILE: &str = "custom-skill-paths.json";
 
-/// Well-known skill source name for the aionui skills market.
+/// Well-known skill source name for the dream skills market.
 pub const SKILLS_MARKET_NAME: &str = "aionui-skills";
 
-/// Well-known skill source path for the aionui skills market.
+/// Well-known skill source path for the dream skills market.
 ///
 /// NOTE: This is a URL placeholder, not a filesystem path. When used in
 /// `ExternalPathsManager`, it serves as an identifier for the skills market

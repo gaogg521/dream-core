@@ -194,7 +194,7 @@ pub fn resolve_jwt_secret(env_secret: Option<&str>, db_secret: Option<&str>) -> 
 /// Generate a cryptographically random 64-byte secret, base64-encoded.
 pub fn generate_random_secret_string() -> String {
     let mut buf = [0u8; 64];
-    // getrandom failure is fatal — mirrors aionui-common's UUID generation.
+    // getrandom failure is fatal — mirrors dream-common's UUID generation.
     getrandom::getrandom(&mut buf).expect("OS entropy source unavailable");
     base64::engine::general_purpose::STANDARD.encode(buf)
 }

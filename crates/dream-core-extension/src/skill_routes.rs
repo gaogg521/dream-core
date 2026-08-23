@@ -675,13 +675,13 @@ async fn remove_external_path(
 // Skills market
 // ---------------------------------------------------------------------------
 
-/// `POST /api/skills/market/enable` — enable the aionui skills market.
+/// `POST /api/skills/market/enable` — enable the dream skills market.
 async fn enable_skills_market(State(state): State<SkillRouterState>) -> Result<Json<ApiResponse<()>>, ApiError> {
     state.external_paths_manager.enable_skills_market().await?;
     Ok(Json(ApiResponse::success()))
 }
 
-/// `POST /api/skills/market/disable` — disable the aionui skills market.
+/// `POST /api/skills/market/disable` — disable the dream skills market.
 async fn disable_skills_market(State(state): State<SkillRouterState>) -> Result<Json<ApiResponse<()>>, ApiError> {
     state.external_paths_manager.disable_skills_market().await?;
     Ok(Json(ApiResponse::success()))

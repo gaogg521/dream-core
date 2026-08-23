@@ -328,7 +328,7 @@ impl Orchestrator {
     pub async fn run(&self, backend: &dyn SessionBackend) {
         // 009 R2: the backend's proactive-input capability is fixed for the
         // session; snapshot it once so every fold can derive `can_queue` without
-        // re-querying. (claude=true via stdin FIFO; codex/acp/aionrs=false.)
+        // re-querying. (claude=true via stdin FIFO; codex/acp/dream=false.)
         let accepts_proactive_input = backend.capabilities().accepts_proactive_input;
         let mut events = backend.events();
         // Take the lowered-event receiver (single consumer = this run loop).

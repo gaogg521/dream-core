@@ -520,7 +520,7 @@ fn split_ext(name: &str) -> (&str, &str) {
 /// The conflict-free candidate name for the `attempt`-th try (0 = the original).
 /// Files keep their extension (`report.txt` → `report copy.txt`); directories and
 /// dotfiles take the suffix wholesale. Mirrors the monitor WS transfer path
-/// (`aionui-project::monitor::dispatch`) so OS-external drops and in-app copies
+/// (`dream-project::monitor::dispatch`) so OS-external drops and in-app copies
 /// produce identical collision-avoidance names.
 fn candidate_name(base: &str, attempt: usize, is_dir: bool) -> String {
     if attempt == 0 {

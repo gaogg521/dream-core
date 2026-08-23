@@ -4,8 +4,8 @@
 //! Applied at agent dispatch time — the only layer that knows the target
 //! agent's prompt capabilities. The persisted/broadcast message keeps the
 //! full `[[AION_FILES]]` form (UI chips and history are untouched); only
-//! the agent-bound copy is rewritten. Mirrors the aionrs precedent in
-//! `manager/aionrs/content.rs`: strip the trailing marker block when it
+//! the agent-bound copy is rewritten. Mirrors the dream precedent in
+//! `manager/dream/content.rs`: strip the trailing marker block when it
 //! matches `files` exactly, then rebuild.
 
 use std::path::Path;
@@ -119,7 +119,7 @@ fn classify(path: &str, caps: PromptMediaCaps) -> Option<MediaAttachment> {
 }
 
 /// Strip the trailing `[[AION_FILES]]` block iff its path list matches
-/// `files` exactly (same validation as aionrs `strip_attachment_metadata`);
+/// `files` exactly (same validation as dream `strip_attachment_metadata`);
 /// otherwise return `content` unchanged.
 fn strip_files_marker<'a>(content: &'a str, files: &[String]) -> &'a str {
     let Some((user_text, metadata)) = content.rsplit_once(AIONUI_FILES_MARKER) else {

@@ -5,7 +5,7 @@ use dream_core_ai_agent::{ActiveLeaseRegistry, IWorkerTaskManager};
 
 /// Records one metered turn for the billing/usage plane (P0-3). Fire-and-forget:
 /// implementations MUST NOT block or fail the send path — they spawn their own
-/// async work. Wired to one-billing in aionui-app; `None` in personal builds.
+/// async work. Wired to one-billing in dream-app; `None` in personal builds.
 ///
 /// Called once per completed agent attempt, from `ConversationTurnOrchestrator`
 /// — not at accept time. A turn is a real LLM call with a real cost only once
@@ -61,7 +61,7 @@ impl PolicyDenial {
 /// Pre-send policy gate (P1-2 model control). Returns `Err(denial)` to BLOCK the
 /// send — the team is over its spend budget, or the model is off its allowlist.
 /// `None` gate, or an `Ok` result, lets the send proceed. Personal / no-company
-/// users always pass. Wired to one-billing in aionui-app.
+/// users always pass. Wired to one-billing in dream-app.
 #[async_trait::async_trait]
 pub trait SendGate: Send + Sync {
     async fn check_send(&self, user_id: &str, model: Option<&str>) -> Result<(), PolicyDenial>;
@@ -74,8 +74,8 @@ pub trait SendGate: Send + Sync {
 /// Returns `Some(reason)` to BLOCK the send. Findings are recorded by the
 /// implementation regardless of the return value — a rule set to record-only
 /// returns `None` and still leaves a trail. `None` inspector, or a personal
-/// build with no rules distributed, always passes. Wired to aionui-system in
-/// aionui-app.
+/// build with no rules distributed, always passes. Wired to dream-system in
+/// dream-app.
 ///
 /// Synchronous on purpose: the check is an in-memory scan on the hottest path
 /// in the product, and making it awaitable would invite an implementation that
@@ -104,7 +104,7 @@ impl ConversationRouterState {
         self
     }
 
-    /// Attach a content inspector (aionui-system). Chainable at wire-up time.
+    /// Attach a content inspector (dream-system). Chainable at wire-up time.
     pub fn with_content_inspector(mut self, inspector: Arc<dyn ContentInspector>) -> Self {
         self.content_inspector = Some(inspector);
         self

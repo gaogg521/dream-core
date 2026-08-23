@@ -1,8 +1,8 @@
 use dream_core_db::{IAgentMetadataRepository, SqliteAgentMetadataRepository, init_database_memory};
 
-/// Migration 038: the builtin aionrs agent (Aion CLI, seed id `632f31d2`)
+/// Migration 038: the builtin dream agent (Dream CLI, seed id `632f31d2`)
 /// carries a constructed at-turn fork capability — the same shape 036 wrote
-/// for codex (turn anchors are stamped by the aionrs manager + engine).
+/// for codex (turn anchors are stamped by the dream manager + engine).
 #[tokio::test]
 async fn aionrs_builtin_agent_declares_at_turn_fork_capability() {
     let db = init_database_memory().await.unwrap();

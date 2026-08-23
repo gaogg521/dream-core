@@ -20,7 +20,7 @@
 
 /// Name of the bundled media-generation MCP server.
 ///
-/// Still carries the upstream `aionui-` prefix: existing installations
+/// Still carries the upstream `dream-` prefix: existing installations
 /// recognise the server by this name, so renaming it is a product decision with
 /// a migration attached, not a branding sweep.
 pub const BUILTIN_MEDIA_MCP_NAME: &str = "aionui-image-generation";

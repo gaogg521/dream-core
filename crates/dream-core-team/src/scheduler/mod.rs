@@ -59,7 +59,7 @@ pub fn normalize_name(name: &str) -> String {
 /// Status set that counts as "settled" for the purpose of
 /// "all teammates settled -> wake leader" transitions.
 ///
-/// Expanded beyond `Idle` to match the AionUi reference implementation
+/// Expanded beyond `Idle` to match the Dream UI reference implementation
 /// (TeammateManager.ts:440-452): `Completed` and `Error` teammates are
 /// terminal and should not block the leader from being woken up.
 /// `Pending` is not in the set because the backend currently serde-aliases
@@ -121,7 +121,7 @@ pub struct TeammateManager {
     pub(crate) active_wakes: DashSet<String>,
     // Reason: Finish / Error events may fire back-to-back for the same
     // conversation; without this dedup window, finalize_turn would run twice
-    // and double-write the IdleNotification (aionui-audit 4.3, 8 #3).
+    // and double-write the IdleNotification (dream-audit 4.3, 8 #3).
     pub(crate) finalized_turns: Arc<DashMap<String, Instant>>,
     pub(crate) wake_timeouts: Arc<DashMap<String, tokio::task::JoinHandle<()>>>,
 }

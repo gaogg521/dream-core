@@ -43,7 +43,7 @@ impl SnapshotService {
         }
     }
 
-    /// Remove leftover `aionui-snapshot-*` directories from the system temp
+    /// Remove leftover `dream-snapshot-*` directories from the system temp
     /// dir. Call once at application startup.
     pub fn cleanup_stale_snapshots() {
         let temp_dir = std::env::temp_dir();

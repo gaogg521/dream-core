@@ -39,9 +39,9 @@ pub(super) async fn build(
     let resolved_skills = overrides.skills.clone();
 
     // Merge preset assistant rules into system_prompt (used as custom_prompt
-    // in aionrs's build_system_prompt). Mirrors the old architecture's
+    // in dream's build_system_prompt). Mirrors the old architecture's
     // `init_history` injection of `[Assistant System Rules]`.
-    // AionrsBuildExtra parses `skills` so Team preset snapshots preserve the
+    // DreamEngineBuildExtra parses `skills` so Team preset snapshots preserve the
     // target contract. Native skill materialization for DreamEngine is tracked as a
     // separate follow-up because this factory currently has no stable DreamEngine
     // skill-loading path.
@@ -225,7 +225,7 @@ pub(super) async fn build(
     Ok(AgentInstance::DreamEngine(Arc::new(agent)))
 }
 
-/// Resolve the session an aionrs build starts from.
+/// Resolve the session an dream build starts from.
 ///
 /// Order: an existing session for this conversation (primary layout, then the
 /// legacy in-workspace layout) → a fork materialized from `extra.fork` (first
@@ -332,7 +332,7 @@ fn resolve_build_session(
     Ok(None)
 }
 
-/// Map AionUi DB platform/protocol settings to the aionrs provider identifier.
+/// Map Dream UI DB platform/protocol settings to the dream provider identifier.
 pub(crate) fn map_aionrs_provider(
     platform: &str,
     model_id: &str,
@@ -356,7 +356,7 @@ pub(crate) fn map_aionrs_provider(
     }
 }
 
-/// Resolve base_url and compat overrides for the aionrs provider.
+/// Resolve base_url and compat overrides for the dream provider.
 ///
 /// The stored base_url is treated as the user-controlled endpoint prefix.
 /// OpenAI-compatible providers use Chat Completions by default; official
@@ -558,7 +558,7 @@ async fn load_user_mcp_servers(
 
     let mut servers = HashMap::new();
     for row in rows {
-        // `aionui-team` is the reserved team coordination MCP name; a user row
+        // `dream-team` is the reserved team coordination MCP name; a user row
         // that collides with it is never injected here (the team bridge is
         // folded in separately and must win).
         if row.name == TEAM_MCP_SERVER_NAME {
@@ -781,7 +781,7 @@ async fn merge_session_snapshot_mcp_servers(
     for server in session_mcp_servers {
         // Reserved name defense: the team coordination MCP must win. The inline
         // merge below OVERWRITES on name collision, so a snapshot entry named
-        // `aionui-team` would otherwise replace the coordination bridge.
+        // `dream-team` would otherwise replace the coordination bridge.
         if server.name == TEAM_MCP_SERVER_NAME {
             warn!(
                 conversation_id = %conversation_id,
@@ -884,10 +884,10 @@ fn team_mcp_to_config(cfg: &TeamMcpStdioConfig) -> HashMap<String, McpServerConf
 
 /// Shared `dream_engine_config::config::Config` construction: builds a `Config` via
 /// `CliArgs -> Config::resolve()` (the resolver merges in profile defaults
-/// and env auth fallbacks), then re-applies AionUi's own invariants — no
+/// and env auth fallbacks), then re-applies Dream UI's own invariants — no
 /// leaked `max_tokens`, per-provider default transport limits, and the
-/// caller-supplied [`AionrsCompatOverrides`]/bedrock config. Used by both
-/// [`crate::manager::dream_engine::AionrsAgentManager::new`] (full session/
+/// caller-supplied [`DreamEngineCompatOverrides`]/bedrock config. Used by both
+/// [`crate::manager::dream_engine::DreamEngineAgentManager::new`] (full session/
 /// tool-loop) and [`resolve_provider_config_for_bridge`] (one-shot calls for
 /// the Codex compatibility bridge) so the two paths cannot drift apart.
 pub(crate) fn build_aionrs_config(
@@ -898,7 +898,7 @@ pub(crate) fn build_aionrs_config(
     let mut config = dream_engine_config::config::Config::resolve(cli_args)
         .map_err(|e| AgentError::internal(format!("Config resolve failed: {e}")))?;
 
-    // AionUi owns the embedded runtime policy. Standalone aionrs max-token
+    // Dream UI owns the embedded runtime policy. Standalone dream max-token
     // settings must not leak in from global or workspace config files.
     config.max_tokens = None;
     let default_transport = match config.provider {
@@ -929,7 +929,7 @@ pub(crate) fn build_aionrs_config(
 /// an aion-providers `Config`, for one-shot LLM calls outside the full
 /// agent/session/tool-loop — used by the Codex compatibility bridge so an
 /// external CLI that only speaks the OpenAI Responses wire format can still
-/// reach the user's configured provider through AionUi's own hardened
+/// reach the user's configured provider through Dream UI's own hardened
 /// transport/compat layer. Mirrors [`build`]'s provider/compat resolution
 /// without the session/MCP/skills wiring that path also needs.
 pub async fn resolve_provider_config_for_bridge(

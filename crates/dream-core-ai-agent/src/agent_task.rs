@@ -374,7 +374,7 @@ impl AgentInstance {
     ) -> Result<(), AgentError> {
         match self {
             // Only the direct-CLI session path has a question channel today
-            // (claude AskUserQuestion); ACP/aionrs have none to answer on.
+            // (claude AskUserQuestion); ACP/dream have none to answer on.
             Self::Acp(_) | Self::DreamEngine(_) => Err(AgentError::BadRequest(
                 "answer_ask is not supported by this agent".into(),
             )),
@@ -389,7 +389,7 @@ impl AgentInstance {
         match self {
             Self::Acp(_) => false,
             Self::DreamEngine(m) => m.check_approval(action, command_type),
-            // Session (claude/codex) has no aionrs-style auto-approve list.
+            // Session (claude/codex) has no dream-style auto-approve list.
             Self::Session(_) => false,
             #[cfg(any(test, feature = "test-support"))]
             Self::Mock(m) => m.check_approval(action, command_type),
@@ -482,7 +482,7 @@ impl AgentInstance {
     /// structure mirrors the ACP SDK `UsageUpdate` schema
     /// (`used` / `size` / `cost` / `_meta`), normalised via
     /// [`dream_core_common::normalize_keys_to_snake_case`] so keys land as
-    /// `used` / `size` / `cost` to match the AionUI wire convention —
+    /// `used` / `size` / `cost` to match the DreamUI wire convention —
     /// `_meta` passes through verbatim.
     ///
     /// Non-ACP agents return `None`.

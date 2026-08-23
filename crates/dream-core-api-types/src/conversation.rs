@@ -31,8 +31,8 @@ pub struct ConversationMcpStatus {
 /// `conversation.extra` as the four fields `mcp_server_ids` /
 /// `session_mcp_servers` / `mcp_servers` / `mcp_statuses`.
 ///
-/// Shared by `aionui-conversation` (which builds it), `aionui-team` (which
-/// refreshes it on attach) and `aionui-app` (which wires the two), so the team
+/// Shared by `dream-conversation` (which builds it), `dream-team` (which
+/// refreshes it on attach) and `dream-app` (which wires the two), so the team
 /// refresh path never has to reason about raw JSON or raw DB rows.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct McpRuntimeSnapshot {

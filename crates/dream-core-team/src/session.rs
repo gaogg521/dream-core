@@ -54,7 +54,7 @@ pub struct WakeInput {
     pub first_message: String,
     /// Unread mailbox rows used to build `first_message`. Returned so the
     /// caller can mirror non-user senders into the target agent's conversation
-    /// as left bubbles (matches AionUi `TeammateManager.wake()`). These are
+    /// as left bubbles (matches Dream UI `TeammateManager.wake()`). These are
     /// **not** yet marked as read — the caller must call
     /// `mailbox.mark_read_batch` after successful delivery.
     pub unread: Vec<crate::types::MailboxMessage>,
@@ -121,7 +121,7 @@ pub struct TeamSession {
     /// `None` in unit tests that don't exercise the DB path.
     service: Weak<TeamSessionService>,
     /// Used by the wake path to mirror non-user mailbox rows into the target
-    /// agent's conversation as left bubbles (AionUi parity: see
+    /// agent's conversation as left bubbles (Dream UI parity: see
     /// `TeammateManager.wake()`'s `teammate_message` emission).
     broadcaster: Arc<dyn EventBroadcaster>,
     /// Per-agent event loop registry. Each agent has a dedicated tokio task
@@ -542,7 +542,7 @@ impl TeamSession {
         };
 
         // The event loop's `finalize_turn` handles most cases, but
-        // `on_agent_finish` remains callable for aionrs resume and test scenarios.
+        // `on_agent_finish` remains callable for dream resume and test scenarios.
         // `begin_finalize` dedup prevents double finalization.
 
         if is_error {

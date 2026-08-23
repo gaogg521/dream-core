@@ -240,7 +240,7 @@ const PROVIDER_CREDENTIAL_OWNER: &str = "system_default_user";
 /// credential — which is billable and reusable anywhere.
 ///
 /// `user` is optional because these routes are mounted with the auth middleware
-/// by `aionui-app` but exercised without it in this crate's own tests. A
+/// by `dream-app` but exercised without it in this crate's own tests. A
 /// proxied request that somehow arrives with no resolved identity is treated as
 /// "not the operator" rather than trusted — the only way to reach the plaintext
 /// branch without an identity is to not be coming through the proxy at all,

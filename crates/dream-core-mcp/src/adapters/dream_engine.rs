@@ -13,7 +13,7 @@ const CLI_NAME: &str = "aionrs";
 /// MCP Agent adapter for DreamEngine.
 ///
 /// DreamEngine stores MCP configuration in a TOML config file. The config path
-/// is obtained via `aionrs --config-path`.
+/// is obtained via `dream --config-path`.
 ///
 /// # Config Format (TOML)
 ///
@@ -171,9 +171,9 @@ impl McpAgentAdapter for DreamEngineAdapter {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Resolve the TOML config file path from the `aionrs` CLI.
+/// Resolve the TOML config file path from the `dream` CLI.
 ///
-/// Newer `aionrs` exposes this via the `config path` subcommand; older
+/// Newer `dream` exposes this via the `config path` subcommand; older
 /// versions used the `--config-path` flag. We try the subcommand first and
 /// fall back to the legacy flag so both CLI versions keep working. The
 /// subcommand attempt uses `run_cli` (tolerating a non-zero exit) so an old
@@ -186,7 +186,7 @@ async fn get_config_path() -> Result<String, McpError> {
         }
     }
 
-    // Legacy fallback for `aionrs` versions predating the `config` subcommand.
+    // Legacy fallback for `dream` versions predating the `config` subcommand.
     let stdout = run_cli_strict(CLI_NAME, &["--config-path"], DETECT_TIMEOUT).await?;
     let path = stdout.trim().to_owned();
     if path.is_empty() {

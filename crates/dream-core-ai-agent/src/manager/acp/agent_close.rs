@@ -53,7 +53,7 @@ impl AcpAgentManager {
     /// signature is narrow and stable enough that matching on the inner string
     /// is cheaper than threading typed errors through the manager API. Keep
     /// this in sync with `AcpError::Display` in
-    /// `crates/aionui-ai-agent/src/protocol/error.rs` if its fallback wording
+    /// `crates/dream-ai-agent/src/protocol/error.rs` if its fallback wording
     /// changes.
     pub(super) async fn augment_with_stderr(&self, err: &AgentError) -> Option<String> {
         const SDK_DEFAULT_BAD_GATEWAY_PREFIX: &str = "Bad gateway: Agent internal error (code ";

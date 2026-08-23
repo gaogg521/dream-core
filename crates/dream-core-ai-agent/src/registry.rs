@@ -618,7 +618,7 @@ impl AgentRegistry {
     /// probe rules.
     ///
     /// Reasons are only attached to rows whose `available` flag is
-    /// `false`. Internal rows (e.g. the aionrs row) intentionally
+    /// `false`. Internal rows (e.g. the dream row) intentionally
     /// have an empty `command`, so the underlying probe always
     /// reports `NoCommand` for them — surfacing that as a "reason"
     /// when `available = true` would just confuse the caller, so we
@@ -1368,7 +1368,7 @@ fn guidance_for_unavailable_reason(reason: &UnavailableReason) -> String {
 }
 
 /// Keys a user-supplied env override must never set — they would corrupt the
-/// agent's runtime environment or AionUi-internal wiring. Case-insensitive.
+/// agent's runtime environment or Dream UI-internal wiring. Case-insensitive.
 pub(crate) fn is_blocked_override_env_key(key: &str) -> bool {
     let upper = key.to_ascii_uppercase();
     if upper.starts_with("AIONUI_") {
@@ -1625,7 +1625,7 @@ mod tests {
     async fn codex_yolo_id_maps_to_agent_full_access() {
         let reg = registry().await;
         let codex = reg.find_builtin_by_backend("codex").await.unwrap();
-        // Legacy AionUi yolo aliases resolve to Codex's native
+        // Legacy Dream UI yolo aliases resolve to Codex's native
         // `agent-full-access` mode via the catalog row.
         assert_eq!(codex.yolo_id.as_deref(), Some("agent-full-access"));
     }
@@ -1737,7 +1737,7 @@ mod tests {
 
     /// On a host that has *none* of the seeded CLIs installed, the
     /// public listing collapses to the rows that don't need one
-    /// (Aion CLI is `agent_source = internal` with no `command`).
+    /// (Dream CLI is `agent_source = internal` with no `command`).
     /// This guards the pill-bar contract: never show an unusable
     /// vendor.
     #[tokio::test]
@@ -1752,7 +1752,7 @@ mod tests {
                 .map(|m| (&m.id, m.enabled, m.available))
                 .collect::<Vec<_>>()
         );
-        // Aion CLI (internal, no spawn command) is always available.
+        // Dream CLI (internal, no spawn command) is always available.
         assert!(
             visible.iter().any(|m| m.agent_type == AgentType::DreamEngine),
             "internal aionrs row should survive the filter"
@@ -2004,7 +2004,7 @@ mod tests {
             }
         }
 
-        // The internal aionrs row is always available — its reason
+        // The internal dream row is always available — its reason
         // slot must be None (sanity check that "available" doesn't
         // accidentally co-occur with a reason).
         let aionrs = snapshot

@@ -61,7 +61,7 @@ async fn fixture_embedded() -> Fixture {
     let (mut states, _): (ModuleStates, _) = build_module_states(&services).await.expect("build module states");
 
     // Replace the skill state with a deterministic one rooted at tmp.
-    // `build_module_states` builds a state pointing at `~/.aionui/`,
+    // `build_module_states` builds a state pointing at `~/.dream/`,
     // which is fine for production but unsuitable here.
     let skill_paths = SkillPaths {
         data_dir: data_dir.clone(),

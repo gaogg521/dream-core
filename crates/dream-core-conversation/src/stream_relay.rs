@@ -122,7 +122,7 @@ pub struct RelayOutcome {
     pub terminal: RelayTerminal,
     pub attempt: TurnAttemptSummary,
     /// The model this attempt ran against, when the backend reported one on
-    /// its terminal event (currently: aionrs only — see
+    /// its terminal event (currently: dream only — see
     /// `FinishEventData`/`BackendOutputSink::emit_stream_end`). `None` means
     /// no usage is known for this attempt, not that it was free — a caller
     /// billing off this field must treat `None` as "can't meter", not "$0".
@@ -429,7 +429,7 @@ impl StreamRelay {
                             // Backends manufacture empty thoughts from several INDEPENDENT
                             // places — claude's consolidated `thinking` block, the ACP
                             // `agent_thought_chunk` translate path, codex's `unwrap_or("")`
-                            // delta, aionrs `emit_thinking` — so guarding them one by one is
+                            // delta, dream `emit_thinking` — so guarding them one by one is
                             // whack-a-mole. They all converge here.
                             //
                             // This also delivers the live/reload parity that
@@ -1278,7 +1278,7 @@ mod tests {
     }
 
     /// ⚠️ The point of the whole billing fix: the model + real token counts
-    /// aionrs puts on a `Finish` event must survive all the way into
+    /// dream puts on a `Finish` event must survive all the way into
     /// `RelayOutcome`, unmodified — this is the only path `ConversationTurnOrchestrator`
     /// has to learn what a turn actually cost. Before this test existed, the
     /// relay dropped this data on the floor: `finalize()`'s `RelayOutcome`
@@ -1345,7 +1345,7 @@ mod tests {
     /// A tool that borrows a second model mid-turn (today `ReadImage`'s vision
     /// delegate) produces a `DelegateUsage` event. It must reach the outcome so
     /// the orchestrator can meter it — before this, the delegate's tokens were
-    /// dropped inside aionrs and the call was invisible to every spend cap.
+    /// dropped inside dream and the call was invisible to every spend cap.
     ///
     /// It must NOT reach the WebSocket: it is accounting, not output, and the
     /// frontend has no renderer for it.

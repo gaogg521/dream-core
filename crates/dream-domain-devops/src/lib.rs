@@ -1,14 +1,14 @@
 #![warn(clippy::disallowed_types)]
 
 //! one-devops: requirements board (issues) + enterprise collaboration
-//! registries (skills / MCP / RAG document metadata) for the 1ONE AionCore
+//! registries (skills / MCP / RAG document metadata) for the 1ONE Dream Core
 //! fork.
 //!
 //! Rebuild of the 1ONE ClaudeCode DevOps slice that backs the
 //! superAssistant `IssuesWorkbench` and `EnterpriseCollaborationContext`
 //! panels. Same own-crate policy as one-org: all state lives in `one_*`
 //! tables managed by our own migrator; the only upstream touch point is a
-//! route merge in aionui-app.
+//! route merge in dream-app.
 //!
 //! RAG: `one_rag_documents` + `one_rag_chunks` + `one_rag_config` back a
 //! chunk → embed → store → retrieve pipeline over an OpenAI-compatible

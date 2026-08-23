@@ -17,8 +17,8 @@ use crate::types::{ConnectionId, PER_CONNECTION_BUFFER, RealtimeError, WebSocket
 
 /// Extracts a JWT token from WebSocket upgrade request headers.
 ///
-/// Injected by `aionui-app` — wraps `dream_core_auth::extract_token_from_ws_headers`
-/// so that `aionui-realtime` does not depend on `aionui-auth` directly.
+/// Injected by `dream-app` — wraps `dream_core_auth::extract_token_from_ws_headers`
+/// so that `dream-realtime` does not depend on `dream-auth` directly.
 pub type TokenExtractor = Arc<dyn Fn(&HeaderMap) -> Option<String> + Send + Sync>;
 
 /// Resolves a verified JWT token to the active internal user ID it represents.

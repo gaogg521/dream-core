@@ -1,6 +1,6 @@
 //! Composition adapter: implements the file crate's [`IItemRevealer`] port over
 //! the shell service's `show_item_in_folder` capability. Lives here (not in
-//! `aionui-file`) so the file domain crate needs no dependency on the shell
+//! `dream-file`) so the file domain crate needs no dependency on the shell
 //! crate — the two domains are wired together only at the composition layer.
 
 use std::sync::Arc;

@@ -13,7 +13,7 @@ use crate::error::McpError;
 
 /// Domain-layer MCP server transport configuration.
 ///
-/// Mirrors `McpTransport` from `aionui-api-types` but lives in the business
+/// Mirrors `McpTransport` from `dream-api-types` but lives in the business
 /// layer. Conversions are provided in both directions.
 #[derive(Debug, Clone, PartialEq)]
 pub enum McpServerTransport {

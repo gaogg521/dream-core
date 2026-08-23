@@ -186,7 +186,7 @@ pub enum TipType {
 /// Data for the `Finish` event.
 ///
 /// `model`/`input_tokens`/`output_tokens` are `None` for backends that don't
-/// report usage at turn end (currently: ACP-bridged CLIs). aionrs turns
+/// report usage at turn end (currently: ACP-bridged CLIs). dream turns
 /// always carry them — see `BackendOutputSink::emit_stream_end`, which is
 /// the only producer that populates these fields today. This is what makes
 /// per-turn cost metering possible: it is the first point in the whole

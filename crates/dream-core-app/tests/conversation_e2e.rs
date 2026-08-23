@@ -669,7 +669,7 @@ async fn t2_4_list_source_filter() {
     let (mut app, services) = build_app().await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
 
-    // Create 2 aionui + 1 telegram
+    // Create 2 dream + 1 telegram
     for _ in 0..2 {
         let req = json_with_token("POST", "/api/conversations", create_body("Aionui Conv"), &token, &csrf);
         app.clone().oneshot(req).await.unwrap();
@@ -886,7 +886,7 @@ async fn t4_4_update_model() {
     let (mut app, services) = build_app().await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
 
-    // aionrs — only type that allows top-level model updates
+    // dream — only type that allows top-level model updates
     let create = json!({
         "type": "aionrs",
         "name": "Model Test",
