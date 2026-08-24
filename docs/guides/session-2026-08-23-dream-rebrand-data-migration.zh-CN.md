@@ -98,3 +98,29 @@ fail-fast，所以不加 `--no-fail-fast` 报出来的失败数会偏小、误�
 修复后已提交推送；随后又跑了一轮 `cargo nextest run --workspace --no-fail-fast` 做
 最终确认，结果见本次提交历史里紧随其后的验证记录（如仍有失败，按本文档第四节的方法论
 ——先查是测试断言过时还是 strict-match 查找函数踩坑——继续修复，不要假设"应该没问题了"）。
+
+## 六、2026-08-24 收尾确认
+
+下一个会话按上一节的建议，完整跑了一次 `cargo nextest run --workspace --no-fail-fast`，
+第一次跑出 11 个失败（此前从未有过完整结果，这是第一次拿到全量列表）：
+
+- **7 个**是测试固件里残留的旧值字面量（`"aionrs"`/`"aionui"`），分布在
+  `dream-core-team::provisioning`（5 处，`agent.backend = "aionrs"` 之类）、
+  `dream-core-team::service`（`team_with_aionrs_worker_request` 里的 Butler 测试 agent）、
+  `dream-core-team::service::spawn_support`（`team_assistant_entry(...)` 第三参 + 对应断言）、
+  `dream-domain-employee::service`（`agent_row("aionrs")`）、
+  `dream-core-db::tests::conversation_schema`（`conversation_row_from_row` 的 SQL INSERT
+  语句里手写了 `'aionui'`，但断言早已改成检查 `"dream"`，插入值和断言值对不上）。
+  **全部确认是生产逻辑本来就对**（比如 `provisioning.rs` 里真正做判断的
+  `TestCapabilityPort::resolve` 已经是 `backend == "dream"`），单纯是测试固件没跟上。
+- **4 个**（`dream-core-channel` 的 dingtalk/lark `token_cache_expired`/
+  `token_cache_near_expiry`）**与本轮改名无关**：测试直接写
+  `Instant::now() - Duration::from_secs(7200)`，在宿主机开机时长不足 2 小时（本次遇到的
+  沙盒环境就是这样）时会因为 `Instant` 下溢直接 panic。改用 `checked_sub` 并在极端情况下
+  优雅跳过（`eprintln!` 提示 + `return`），顺手一并修掉，不影响真实场景（生产代码只调用
+  `elapsed()`，方向永远正确，不会下溢）。
+
+修复后提交推送（dream-core `799344b`），重新完整跑一次 `cargo nextest run --workspace
+--no-fail-fast`：**9543 通过 / 0 失败 / 50 跳过**，耗时约 2973 秒。**P5 持久化数据迁移
+至此完全收尾，无遗留项**——`MIGRATION-STATUS.md` 已同步更新，不再需要"下一个会话第一件事"
+这类交接提醒。
