@@ -282,9 +282,18 @@ mod tests {
 
     #[test]
     fn token_cache_expired() {
+        // `Instant` has no fixed epoch and can't represent a point before
+        // process/monotonic-clock start; on a host with under 2h of uptime
+        // (fresh CI runner, sandbox) the naive subtraction panics with
+        // "overflow when subtracting duration from instant". Skip rather
+        // than false-fail in that narrow case.
+        let Some(acquired_at) = Instant::now().checked_sub(Duration::from_secs(7200)) else {
+            eprintln!("skipping token_cache_expired: insufficient monotonic clock headroom on this host");
+            return;
+        };
         let cache = TokenCache {
             token: "test".into(),
-            acquired_at: Instant::now() - Duration::from_secs(7200),
+            acquired_at,
             expires_in: Duration::from_secs(7200),
         };
         assert!(cache.is_expired());
@@ -292,10 +301,15 @@ mod tests {
 
     #[test]
     fn token_cache_near_expiry() {
-        // Token acquired 6900s ago with 7200s TTL — within 5min margin
+        // Token acquired 6900s ago with 7200s TTL — within 5min margin.
+        // See token_cache_expired for why this uses checked_sub.
+        let Some(acquired_at) = Instant::now().checked_sub(Duration::from_secs(6900)) else {
+            eprintln!("skipping token_cache_near_expiry: insufficient monotonic clock headroom on this host");
+            return;
+        };
         let cache = TokenCache {
             token: "test".into(),
-            acquired_at: Instant::now() - Duration::from_secs(6900),
+            acquired_at,
             expires_in: Duration::from_secs(7200),
         };
         assert!(cache.is_expired());

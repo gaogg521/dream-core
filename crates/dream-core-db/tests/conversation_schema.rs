@@ -476,7 +476,7 @@ async fn conversation_row_from_row() {
           pinned, pinned_at, created_at, updated_at) \
          VALUES ('conv_fr', $1, 'FromRow Test', 'gemini', '{\"workspace\":\"/home\"}', \
                  '{\"providerId\":\"p1\",\"model\":\"m1\"}', \
-                 'finished', 'aionui', 'group:42', 1, 1700000000000, 1000, 2000)",
+                 'finished', 'dream', 'group:42', 1, 1700000000000, 1000, 2000)",
     )
     .bind(&user_id)
     .execute(db.pool())

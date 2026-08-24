@@ -3451,7 +3451,7 @@ mod tests {
         request.agents.push(dream_core_api_types::TeamAgentInput {
             name: "Butler".into(),
             role: "teammate".into(),
-            backend: Some("aionrs".into()),
+            backend: Some("dream".into()),
             model: "claude-sonnet".into(),
             assistant_id: None,
             conversation_id: None,

@@ -1308,7 +1308,7 @@ mod tests {
     /// must now survive the round-trip through the stored column.
     #[test]
     fn aionrs_agent_resolves_stored_model() {
-        let mut agent = agent_row("aionrs");
+        let mut agent = agent_row("dream");
         agent.model = Some(
             serde_json::to_string(&ProviderWithModel {
                 provider_id: "prov_1".into(),

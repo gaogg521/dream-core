@@ -1128,7 +1128,7 @@ mod tests {
             svc.repo.clone(),
             svc.agent_metadata_repo.clone(),
             Arc::new(RowsTeamAssistantCatalog {
-                rows: vec![team_assistant_entry("word-creator", "Word Creator", "aionrs")],
+                rows: vec![team_assistant_entry("word-creator", "Word Creator", "dream")],
             }),
             Arc::new(SingleAssistantDefinitionRepo {
                 row: AssistantDefinitionRow {
@@ -1193,7 +1193,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(backend, "aionrs");
+        assert_eq!(backend, "dream");
         assert_eq!(model, "gpt-5-mini");
     }
 }

@@ -1479,7 +1479,7 @@ mod tests {
     async fn team_tool_transport_prefers_mcp_for_builtin_aionrs_backend() {
         let provisioner = test_provisioner(Arc::new(Mutex::new(Vec::new())));
         let mut agent = test_agent();
-        agent.backend = "aionrs".into();
+        agent.backend = "dream".into();
 
         let transport = provisioner.team_tool_transport("user-test", &agent).await.unwrap();
 
@@ -1547,7 +1547,7 @@ mod tests {
             release_kill: release_kill_rx,
         });
         let mut agent = test_agent();
-        agent.backend = "aionrs".into();
+        agent.backend = "dream".into();
 
         let attach = tokio::spawn(async move {
             provisioner
@@ -1587,7 +1587,7 @@ mod tests {
         let patches = Arc::new(Mutex::new(Vec::new()));
         let task_manager: Arc<dyn IWorkerTaskManager> = Arc::new(NoopKillTaskManager);
         let mut agent = test_agent();
-        agent.backend = "aionrs".into();
+        agent.backend = "dream".into();
 
         let snapshot = test_mcp_snapshot();
         let provisioner =
@@ -1682,7 +1682,7 @@ mod tests {
         let inputs = vec![TeamAgentInput {
             name: "Lead".into(),
             role: "lead".into(),
-            backend: Some("aionrs".into()),
+            backend: Some("dream".into()),
             model: "test-model".into(),
             assistant_id: Some("assistant-1".into()),
             conversation_id: None,
@@ -1733,7 +1733,7 @@ mod tests {
             release_kill: release_kill_rx,
         });
         let mut agent = test_agent();
-        agent.backend = "aionrs".into();
+        agent.backend = "dream".into();
 
         let error = provisioner
             .attach_agent_process("user-1", &agent, test_mcp_config(), &task_manager, true)
