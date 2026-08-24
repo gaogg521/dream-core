@@ -1,7 +1,7 @@
 # Architecture
 
-AionCore is the backend server for AionUi, built with Rust (Axum + Tokio + SQLite).
-It provides HTTP REST APIs and WebSocket real-time events for the AionUi desktop client.
+dream-core is the local backend server for the One Work platform, built with Rust (Axum + Tokio + SQLite).
+It provides HTTP REST APIs and WebSocket real-time events for the dream-ui desktop client, compiling to a single `dreamcore` executable.
 
 ## Tech Stack
 
@@ -39,7 +39,12 @@ and dream-core-common has zero internal dependencies.
 
 ## Crate Hierarchy
 
-The project is organized as a Cargo workspace with 24 crates across four layers:
+The project is organized as a Cargo workspace with 33 crates. They belong to two independent naming lineages:
+
+- **`dream-core-*`** (26 crates, formerly `aionui-*`) — the product core: conversations, channels, team collaboration, files, Office, MCP, etc. This is the whole surface of the personal/open-source edition.
+- **`dream-domain-*`** (7 crates, formerly `one-*`) — the enterprise/commercialization layer: org tenants, digital employees, billing, SSO, the enterprise-org dimension, deployment reservations, the requirements/DevOps board. **Not part of the original AionCore lineage** — it's a separate family added later, layered on top of `dream-core-*` in the dependency graph (see "Enterprise" below).
+
+The four foundational layers below are the pre-existing `dream-core-*` layering; Enterprise is a new fifth layer inserted between Domain and Composition.
 
 ### Foundation
 
@@ -84,17 +89,36 @@ Each crate owns an independent business domain. They remain loosely coupled from
 | `dream-core-extension` | Extension registry, hub management, skill discovery and installation |
 | `dream-core-shell` | Shell command execution, speech-to-text |
 | `dream-core-assistant` | Assistant configuration and management |
+| `dream-core-claude-bridge` | Settings-only storage for the Claude Code custom-provider bridge (no protocol translation needed; reuses the litellm-internal gateway) |
+| `dream-core-codex-bridge` | Local OpenAI Responses API compatibility bridge for Codex CLI (`wire_api="responses"` translation layer) |
+
+### Enterprise
+
+The former `one-*` family, 7 crates, forming the enterprise/commercialization surface. Follows the same conventions as the `dream-core-*` domain crates: all state lives in its own migration-ledger-managed `one_*` tables, and the only touch points with upstream (`dream-core-*`) are a single route merge in `dream-core-app`, plus read-only use of `dream-core-auth`/`dream-core-db` public APIs.
+
+| Crate | Responsibility |
+|-------|----------------|
+| `dream-domain-org` | Enterprise tenants (project groups) / membership / invite codes / RBAC |
+| `dream-domain-employee` | Digital employee definitions and run orchestration (depends on `dream-core-ai-agent`/`dream-core-conversation`/`dream-core-cron`/`dream-core-team`) |
+| `dream-domain-billing` | Billing plane: subscription tier, seat cap enforcement, per-turn usage metering, plus a stubbed payment-provider seam (`BillingProvider`) |
+| `dream-domain-sso` | SSO providers (Feishu/DingTalk/WeCom/LDAP), OAuth callbacks, JIT user provisioning |
+| `dream-domain-platform` | Deployment/platform infrastructure config reservations: containerized execution, realtime collaboration (both "reserved adapter" patterns, defaulting to a Noop implementation) |
+| `dream-domain-devops` | Requirements board (issues) + enterprise collaboration registries (skills/MCP/RAG document metadata); depends on `dream-domain-employee` |
+| `dream-domain-enterprise` | The real enterprise-org dimension (department/title/membership) — orthogonal to `dream-domain-org`'s project-group tenants, its own independent set of tables |
+
+There is one internal dependency within the Enterprise layer: `dream-domain-devops` → `dream-domain-employee`. Otherwise every Enterprise crate only depends on Foundation (`dream-core-common`/`dream-core-db`/`dream-core-api-types`/`dream-core-auth`); `dream-domain-employee` additionally depends on several `dream-core-*` Domain crates. **No `dream-core-*` crate depends back on `dream-domain-*`** — the Enterprise layer is purely additive, and the personal/open-source edition never needs to compile it in.
 
 ### Composition
 
 | Crate | Responsibility |
 |-------|----------------|
-| `dream-core-app` | Top-level binary entry point, assembles all crates into the Axum server |
+| `dream-core-app` | Top-level binary entry point (`dreamcore`), assembles all crates into the Axum server |
 
 ### Dependency Direction Rules
 
 ```
-Composition → Domain → Capability → Foundation
+Composition → Enterprise → Domain → Capability → Foundation
+              Enterprise → Foundation (cross-layer allowed)
               Domain → Foundation (cross-layer allowed)
 ```
 
@@ -466,7 +490,7 @@ CORS (local mode only, allows any origin)
 
 - Algorithm: HMAC-SHA256
 - Validity: 24 hours
-- Payload: `user_id`, `username`, `iat`, `exp`, `iss` ("aionui"), `aud` ("aionui-webui")
+- Payload: `user_id`, `username`, `iat`, `exp`, `iss` ("dream"), `aud` ("dream-webui")
 - Secret source priority: environment variable → database → random generation (64 bytes, getrandom)
 - Token extraction priority: `Authorization: Bearer` header → `dream-session` cookie
 - Supports token blacklist (SHA-256 hash, DashMap storage)
@@ -474,7 +498,7 @@ CORS (local mode only, allows any origin)
 ### CSRF Protection
 
 Uses the Double Submit Cookie pattern:
-- Cookie name: `aionui-csrf-token` (not HttpOnly — JavaScript must read it)
+- Cookie name: `dream-csrf-token` (not HttpOnly — JavaScript must read it)
 - Request header: `x-csrf-token`
 - Validation: cookie value must exactly match header value
 - Safe methods (GET, HEAD, OPTIONS) bypass validation
@@ -607,28 +631,28 @@ Prohibited:
 
 ### Complete Steps for Creating a New Domain Crate
 
-Using `aionui-my-feature` as an example:
+Using `dream-core-my-feature` as an example (for an enterprise/commercialization feature, follow the same steps with a `dream-domain-my-feature` prefix instead, placed in the Enterprise layer rather than Domain):
 
 **Step 1: Create the crate and register it in the workspace**
 
-1. Create the directory `crates/aionui-my-feature/`
+1. Create the directory `crates/dream-core-my-feature/`
 2. Add the workspace member in root `Cargo.toml`:
    ```toml
    members = [
        # ... existing members
-       "crates/aionui-my-feature",
+       "crates/dream-core-my-feature",
    ]
    ```
 3. Register in `[workspace.dependencies]` of root `Cargo.toml`:
    ```toml
-   aionui-my-feature = { path = "crates/aionui-my-feature" }
+   dream-core-my-feature = { path = "crates/dream-core-my-feature" }
    ```
 4. Use `.workspace = true` for shared dependency versions within the crate
 
 **Step 2: Write the crate following the standard structure**
 
 ```
-crates/aionui-my-feature/
+crates/dream-core-my-feature/
 ├── Cargo.toml
 ├── src/
 │   ├── lib.rs        # Export my_feature_routes, MyFeatureService, MyFeatureRouterState
@@ -653,7 +677,7 @@ Define request/response types in `dream-core-api-types` to keep API contracts ce
 
 1. Add dependency in `dream-core-app/Cargo.toml`:
    ```toml
-   aionui-my-feature.workspace = true
+   dream-core-my-feature.workspace = true
    ```
 
 2. Add field to `ModuleStates`:

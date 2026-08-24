@@ -1,7 +1,7 @@
 # 架构文档
 
-AionCore 是 AionUi 的后端服务，使用 Rust 构建（Axum + Tokio + SQLite）。
-它通过 HTTP REST API 和 WebSocket 实时事件为 AionUi 桌面客户端提供服务。
+dream-core 是 One Work 平台的本地后端服务，使用 Rust 构建（Axum + Tokio + SQLite）。
+它通过 HTTP REST API 和 WebSocket 实时事件为 dream-ui 桌面客户端提供服务，编译产物是单个可执行文件 `dreamcore`。
 
 ## 技术栈
 
@@ -39,7 +39,12 @@ dream-core-common 没有任何内部依赖。
 
 ## Crate 层级
 
-项目采用 Cargo workspace 组织，共 24 个 crate，分为四层：
+项目采用 Cargo workspace 组织，共 33 个 crate，分为五层。这 33 个 crate 实际是两条独立的命名血统：
+
+- **`dream-core-*`**（26 个，原 `aionui-*`）——产品核心：会话、渠道、团队协作、文件、Office、MCP 等，个人版/开源版就是这一层。
+- **`dream-domain-*`**（7 个，原 `one-*`）——企业版/商业化层：组织租户、数字员工、计费、SSO、企业组织维度、部署预留、需求协作看板。**不属于原 AionCore 血统**，是后来独立新增的一整族，依赖方向上叠在 `dream-core-*` 之上（见下方"企业层"）。
+
+四个基础层沿用 `dream-core-*` 的既有分层；企业层是新增的第五层，插在领域层和组装层之间。
 
 ### 基础层（Foundation）
 
@@ -84,17 +89,36 @@ dream-core-common 没有任何内部依赖。
 | `dream-core-extension` | 扩展注册中心、Hub 管理、技能发现与安装 |
 | `dream-core-shell` | Shell 命令执行、语音转文字 |
 | `dream-core-assistant` | Assistant 配置与管理 |
+| `dream-core-claude-bridge` | Claude Code 自定义 provider 桥接的设置存取（协议本身无需转译，复用 litellm-internal 网关） |
+| `dream-core-codex-bridge` | Codex CLI 本地 OpenAI Responses API 兼容桥接（`wire_api="responses"` 转译层） |
+
+### 企业层（Enterprise）
+
+原 `one-*` 家族，7 个 crate，构成企业版/商业化能力面。约定与 `dream-core-*` 领域 crate 一致：状态全部落在自己独立管理迁移账本的 `one_*` 表里，与上游（`dream-core-*`）的接触点只有 `dream-core-app` 里的一次路由合并，以及对 `dream-core-auth`/`dream-core-db` 公开 API 的只读使用。
+
+| Crate | 职责 |
+|-------|------|
+| `dream-domain-org` | 企业租户（项目组）/ 成员 / 邀请码 / RBAC |
+| `dream-domain-employee` | 数字员工定义与运行编排（依赖 `dream-core-ai-agent`/`dream-core-conversation`/`dream-core-cron`/`dream-core-team`） |
+| `dream-domain-billing` | 计费面：订阅层级、席位上限、按次用量计量，含支付适配预留（`BillingProvider`） |
+| `dream-domain-sso` | SSO 提供方（飞书/钉钉/企业微信/LDAP）、OAuth 回调、JIT 用户开通 |
+| `dream-domain-platform` | 部署/平台基础设施配置预留：容器化执行、实时协作（均为"预留适配器"模式，默认 Noop） |
+| `dream-domain-devops` | 需求协作看板（issues）+ 企业协作注册表（skills/MCP/RAG 文档元数据），依赖 `dream-domain-employee` |
+| `dream-domain-enterprise` | 真实企业组织维度（部门/职位/成员），与 `dream-domain-org` 的项目组租户是正交独立的两套表 |
+
+企业层内部也有依赖：`dream-domain-devops` → `dream-domain-employee`。除此之外都只依赖基础层（`dream-core-common`/`dream-core-db`/`dream-core-api-types`/`dream-core-auth`），`dream-domain-employee` 额外依赖若干 `dream-core-*` 领域 crate。**没有任何 `dream-core-*` crate 反向依赖 `dream-domain-*`**——企业层完全是叠加的，个人版/开源版编译时不需要它。
 
 ### 组装层（Composition）
 
 | Crate | 职责 |
 |-------|------|
-| `dream-core-app` | 顶层二进制入口，组装所有 crate 为完整的 Axum 服务 |
+| `dream-core-app` | 顶层二进制入口（`dreamcore`），组装所有 crate 为完整的 Axum 服务 |
 
 ### 依赖方向规则
 
 ```
-组装层 → 领域层 → 能力层 → 基础层
+组装层 → 企业层 → 领域层 → 能力层 → 基础层
+         企业层 → 基础层（可跨层依赖）
          领域层 → 基础层（可跨层依赖）
 ```
 
@@ -465,7 +489,7 @@ CORS（仅 local 模式，允许任意来源）
 
 - 算法：HMAC-SHA256
 - 有效期：24 小时
-- Payload：`user_id`、`username`、`iat`、`exp`、`iss`（"aionui"）、`aud`（"aionui-webui"）
+- Payload：`user_id`、`username`、`iat`、`exp`、`iss`（"dream"）、`aud`（"dream-webui"）
 - Secret 来源优先级：环境变量 → 数据库 → 随机生成（64 字节，getrandom）
 - Token 提取优先级：`Authorization: Bearer` 头 → `dream-session` Cookie
 - 支持 Token 黑名单（SHA-256 哈希，DashMap 存储）
@@ -473,7 +497,7 @@ CORS（仅 local 模式，允许任意来源）
 ### CSRF 保护
 
 采用 Double Submit Cookie 模式：
-- Cookie 名：`aionui-csrf-token`（非 HttpOnly，JavaScript 需读取）
+- Cookie 名：`dream-csrf-token`（非 HttpOnly，JavaScript 需读取）
 - 请求头：`x-csrf-token`
 - 校验逻辑：Cookie 值必须与请求头值完全匹配
 - 安全方法（GET、HEAD、OPTIONS）免校验
@@ -606,28 +630,28 @@ let response = app.oneshot(
 
 ### 新建领域 Crate 的完整步骤
 
-以添加 `aionui-my-feature` 为例：
+以添加 `dream-core-my-feature` 为例（若是企业版/商业化功能，同样步骤改用 `dream-domain-my-feature` 前缀，放进企业层而非领域层）：
 
 **第一步：创建 crate 并注册到 workspace**
 
-1. 创建目录 `crates/aionui-my-feature/`
+1. 创建目录 `crates/dream-core-my-feature/`
 2. 在根 `Cargo.toml` 中添加 workspace 成员：
    ```toml
    members = [
        # ... 现有成员
-       "crates/aionui-my-feature",
+       "crates/dream-core-my-feature",
    ]
    ```
 3. 在根 `Cargo.toml` 的 `[workspace.dependencies]` 中注册：
    ```toml
-   aionui-my-feature = { path = "crates/aionui-my-feature" }
+   dream-core-my-feature = { path = "crates/dream-core-my-feature" }
    ```
 4. crate 内的依赖使用 `.workspace = true` 引用共享版本
 
 **第二步：按标准结构编写 crate**
 
 ```
-crates/aionui-my-feature/
+crates/dream-core-my-feature/
 ├── Cargo.toml
 ├── src/
 │   ├── lib.rs        # 导出 my_feature_routes、MyFeatureService、MyFeatureRouterState
@@ -652,7 +676,7 @@ crates/aionui-my-feature/
 
 1. 在 `dream-core-app/Cargo.toml` 添加依赖：
    ```toml
-   aionui-my-feature.workspace = true
+   dream-core-my-feature.workspace = true
    ```
 
 2. 在 `ModuleStates` 中添加字段：
