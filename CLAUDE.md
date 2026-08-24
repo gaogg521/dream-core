@@ -4,6 +4,13 @@
 
 **dream-core** 是 **One Work** 平台的本地后端服务（Rust），编译产物为单个可执行文件 `dreamcore`。本项目最初基于开源项目 [AionCore](https://github.com/iOfficeAI/AionCore) 二次开发，**现已完全独立成自有平台，不再跟随或合并上游**，技术与协议层统一使用小写前缀 `dream`。
 
+> **代码溯源**：本仓库 2026-08-23 从旧仓库 `D:\aionui-m0\1oneCore`（原始最上游是开源项目
+> [AionCore](https://github.com/iOfficeAI/AionCore)）**原样复制的一次性快照**，不含 `.git`
+> 历史。如果在本仓库里发现某个功能/文件"应该存在但找不到"，先去 `D:\aionui-m0\1oneCore`
+> 翻一下——很可能是快照时点之后才在旧仓库落地的，或者是旧仓库里还没合并进 `one-main`
+> 主干的分支。`D:\aionui-m0` 三仓（`1oneUI`/`1oneCore`/`aionrs-local`）定位是只读归档，
+> 不再往里提交新代码。
+
 > **新会话/新 AI 首读**：本仓库持久化数据迁移的详细过程（改了哪些文件、发现的真实 bug、
 > 迁移文件生命周期踩坑）记录在
 > [session-2026-08-23-dream-rebrand-data-migration.zh-CN.md](./docs/guides/session-2026-08-23-dream-rebrand-data-migration.zh-CN.md)；
