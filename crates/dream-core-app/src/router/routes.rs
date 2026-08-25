@@ -374,31 +374,67 @@ impl dream_domain_sso::CompanyAdminCheck for CompanyAdminCheckAdapter {
 /// (and every personal-edition install) that never wired a real
 /// `ConnectInfo`.
 #[cfg(feature = "enterprise")]
-struct PlatformIpAllowlistGate(std::sync::Arc<dream_domain_platform::PlatformService>);
+struct PlatformIpAllowlistGate {
+    platform: std::sync::Arc<dream_domain_platform::PlatformService>,
+    grace: std::sync::Arc<PolicyGrace>,
+}
 
 #[async_trait::async_trait]
 #[cfg(feature = "enterprise")]
 impl dream_core_auth::IpAllowlistGate for PlatformIpAllowlistGate {
+    /// Returning `Err` here is the most expensive failure in the system: the
+    /// auth middleware turns it into a 500, so *every* authenticated request
+    /// fails — conversations, agents, files, the whole personal workbench, none
+    /// of which the IP allowlist has any business governing. A platform-table
+    /// read that times out must therefore allow, not 500. An actual `false`
+    /// from the allowlist still blocks, because that is the policy answering.
     async fn is_allowed(&self, user_id: &str, ip: Option<std::net::IpAddr>) -> Result<bool, String> {
-        let actor = self.0.resolve_actor(user_id).await.map_err(|e| e.to_string())?;
-        let Some(actor) = actor else {
-            return Ok(true);
-        };
-        match ip {
-            Some(ip) => self
-                .0
-                .is_ip_allowed(&actor.tenant_id, &ip.to_string())
-                .await
-                .map_err(|e| e.to_string()),
-            None => {
-                let cfg = self
-                    .0
-                    .get_ip_allowlist(&actor.tenant_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                Ok(!cfg.enabled)
+        let actor = match self.platform.resolve_actor(user_id).await {
+            // No actor: nothing governs this caller. A standalone install lands
+            // here on every request.
+            Ok(None) => return Ok(true),
+            Ok(Some(actor)) => {
+                self.grace.answered();
+                actor
             }
+            Err(e) => return self.unanswerable(user_id, &e.to_string()),
+        };
+        let outcome = match ip {
+            Some(ip) => self.platform.is_ip_allowed(&actor.tenant_id, &ip.to_string()).await,
+            // No caller IP to check. The allowlist can then only pass everyone
+            // or nobody, and blocking everyone because a header was missing is
+            // not a decision an administrator made.
+            None => self
+                .platform
+                .get_ip_allowlist(&actor.tenant_id)
+                .await
+                .map(|cfg| !cfg.enabled),
+        };
+        match outcome {
+            Ok(allowed) => {
+                self.grace.answered();
+                Ok(allowed)
+            }
+            Err(e) => self.unanswerable(user_id, &e.to_string()),
         }
+    }
+}
+
+#[cfg(feature = "enterprise")]
+impl PlatformIpAllowlistGate {
+    /// Returning `Err` here is the most expensive failure in the system: the
+    /// auth middleware turns it into a 500, so *every* authenticated request
+    /// fails — conversations, agents, files, the whole personal workbench, none
+    /// of which the IP allowlist has any business governing. So a platform read
+    /// that cannot answer allows, until it has been failing long enough to be
+    /// an outage rather than a hiccup.
+    fn unanswerable(&self, user_id: &str, error: &str) -> Result<bool, String> {
+        if self.grace.within_window() {
+            tracing::warn!(user_id, error, "ip allowlist unanswerable; inside grace window");
+            return Ok(true);
+        }
+        tracing::error!(user_id, error, "ip allowlist unreachable beyond grace window");
+        Err(error.to_owned())
     }
 }
 
@@ -445,7 +481,10 @@ impl dream_core_conversation::UsageRecorder for BillingUsageRecorder {
 /// `SendGate` trait (P1-2 model control). Blocks a send when the team is over
 /// its spend budget / off-allowlist; personal users always pass.
 #[cfg(feature = "enterprise")]
-struct BillingSendGate(std::sync::Arc<dream_domain_billing::BillingService>);
+struct BillingSendGate {
+    billing: std::sync::Arc<dream_domain_billing::BillingService>,
+    grace: std::sync::Arc<PolicyGrace>,
+}
 
 /// Map a billing refusal to something the member can act on.
 ///
@@ -455,9 +494,78 @@ struct BillingSendGate(std::sync::Arc<dream_domain_billing::BillingService>);
 /// for them anyway. This mattered the moment these messages stopped being
 /// redacted: before, `ApiError::Forbidden` hid every one of them equally.
 #[cfg(feature = "enterprise")]
-fn billing_denial(error: dream_domain_billing::BillingError) -> dream_core_conversation::PolicyDenial {
+/// How long the conversation path keeps working while the enterprise policy
+/// plane cannot be reached.
+///
+/// Two failure modes need opposite answers and they arrive as the same `Err`.
+/// A member whose admin tightened a policy must feel it immediately; a member
+/// whose company database is briefly unreachable must not be stopped from
+/// working. Refusing on every error made a transient enterprise-side fault take
+/// the personal workbench down with it; allowing on every error let an outage
+/// suspend policy indefinitely.
+///
+/// A window resolves it: keep working while the plane is only *briefly* silent,
+/// and stop extending enterprise scope once the silence is long enough to be a
+/// real outage rather than a hiccup. Thirty minutes is long enough to cover a
+/// restart, a lock storm or a failover, short enough that a genuinely dead
+/// plane does not govern nobody all day.
+#[cfg(feature = "enterprise")]
+const ENTERPRISE_POLICY_GRACE_MS: i64 = 30 * 60 * 1000;
+
+/// Tracks when the enterprise policy plane last managed to answer, so an
+/// unanswerable check can tell "briefly unreachable" from "gone".
+///
+/// Starts at process start: a deployment that never once reaches its policy
+/// plane gets one grace window and then stops extending enterprise scope,
+/// rather than running ungoverned forever.
+#[cfg(feature = "enterprise")]
+#[derive(Debug)]
+pub(crate) struct PolicyGrace {
+    last_answered_ms: std::sync::atomic::AtomicI64,
+}
+
+#[cfg(feature = "enterprise")]
+impl PolicyGrace {
+    pub(crate) fn new() -> Self {
+        Self {
+            last_answered_ms: std::sync::atomic::AtomicI64::new(dream_core_common::now_ms()),
+        }
+    }
+
+    /// The plane answered — whether it allowed or refused is irrelevant here,
+    /// what matters is that it was reachable.
+    fn answered(&self) {
+        self.last_answered_ms
+            .store(dream_core_common::now_ms(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn within_window(&self) -> bool {
+        let last = self.last_answered_ms.load(std::sync::atomic::Ordering::Relaxed);
+        dream_core_common::now_ms().saturating_sub(last) < ENTERPRISE_POLICY_GRACE_MS
+    }
+}
+
+/// What a billing error means for this send.
+///
+/// Three outcomes, because there are three situations and only one of them is
+/// the policy refusing:
+///
+/// * `Governs(denial)` — the policy answered no. Always enforced.
+/// * `NotGoverned` — no company exists on this server, so nothing governs this
+///   member. A standalone install must never be affected by an enterprise plane
+///   it does not participate in.
+/// * `Unanswerable` — the check itself failed. Deferred to the grace window.
+#[cfg(feature = "enterprise")]
+enum PolicyVerdict {
+    Governs(dream_core_conversation::PolicyDenial),
+    NotGoverned,
+    Unanswerable,
+}
+
+#[cfg(feature = "enterprise")]
+fn billing_denial(error: dream_domain_billing::BillingError) -> PolicyVerdict {
     use dream_domain_billing::BillingError;
-    match error {
+    PolicyVerdict::Governs(match error {
         BillingError::ModelNotAllowed(model) => dream_core_conversation::PolicyDenial::new(
             "MODEL_NOT_ALLOWED",
             format!("Model '{model}' is not allowed by the team's policy"),
@@ -482,9 +590,48 @@ fn billing_denial(error: dream_domain_billing::BillingError) -> dream_core_conve
             "DEPARTMENT_BUDGET_EXCEEDED",
             "This department's usage budget for this period has been reached",
         ),
+        // Not a refusal: this server has no company, so no enterprise policy
+        // applies to anyone on it.
+        BillingError::EnterpriseNotFound => return PolicyVerdict::NotGoverned,
+        // The check failed rather than the policy refusing. Whether that stops
+        // the member depends on how long the plane has been silent.
         other => {
-            tracing::error!(error = %other, "billing gate failed; blocking the send");
-            dream_core_conversation::PolicyDenial::new("POLICY_CHECK_FAILED", "Company policy could not be checked.")
+            tracing::warn!(error = %other, "billing policy check could not answer");
+            return PolicyVerdict::Unanswerable;
+        }
+    })
+}
+
+#[cfg(feature = "enterprise")]
+impl BillingSendGate {
+    /// Turn a policy-plane result into an allow/deny for this send.
+    fn settle(
+        &self,
+        result: Result<(), dream_domain_billing::BillingError>,
+    ) -> Result<(), dream_core_conversation::PolicyDenial> {
+        let error = match result {
+            Ok(()) => {
+                self.grace.answered();
+                return Ok(());
+            }
+            Err(e) => e,
+        };
+        match billing_denial(error) {
+            PolicyVerdict::Governs(denial) => {
+                self.grace.answered();
+                Err(denial)
+            }
+            PolicyVerdict::NotGoverned => Ok(()),
+            PolicyVerdict::Unanswerable if self.grace.within_window() => Ok(()),
+            PolicyVerdict::Unanswerable => {
+                tracing::error!(
+                    "enterprise policy plane unreachable beyond the grace window; refusing enterprise-scoped sends"
+                );
+                Err(dream_core_conversation::PolicyDenial::new(
+                    "ENTERPRISE_POLICY_UNAVAILABLE",
+                    "Company policy has been unreachable for too long; switch to a personal workspace or contact your administrator",
+                ))
+            }
         }
     }
 }
@@ -497,11 +644,11 @@ impl dream_core_conversation::SendGate for BillingSendGate {
         user_id: &str,
         model: Option<&str>,
     ) -> Result<(), dream_core_conversation::PolicyDenial> {
-        self.0.check_send_allowed(user_id, model).await.map_err(billing_denial)
+        self.settle(self.billing.check_send_allowed(user_id, model).await)
     }
 
     async fn check_model(&self, user_id: &str, model: &str) -> Result<(), dream_core_conversation::PolicyDenial> {
-        self.0.check_model_allowed(user_id, model).await.map_err(billing_denial)
+        self.settle(self.billing.check_model_allowed(user_id, model).await)
     }
 }
 
@@ -517,24 +664,43 @@ impl dream_core_conversation::SendGate for BillingSendGate {
 /// `pub(crate)` because `services.rs` builds the factory long before any router
 /// exists; this is the same adapter, wired earlier.
 #[cfg(feature = "enterprise")]
-pub(crate) struct BillingModelAllowlistGate(pub(crate) std::sync::Arc<dream_domain_billing::BillingService>);
+pub(crate) struct BillingModelAllowlistGate {
+    pub(crate) billing: std::sync::Arc<dream_domain_billing::BillingService>,
+    pub(crate) grace: std::sync::Arc<PolicyGrace>,
+}
 
 #[async_trait::async_trait]
 #[cfg(feature = "enterprise")]
 impl dream_core_ai_agent::ModelAllowlistGate for BillingModelAllowlistGate {
     async fn is_model_allowed(&self, user_id: &str, model: &str) -> Result<bool, String> {
-        match self.0.check_model_allowed(user_id, model).await {
-            Ok(()) => Ok(true),
+        match self.billing.check_model_allowed(user_id, model).await {
+            Ok(()) => {
+                self.grace.answered();
+                Ok(true)
+            }
             // The two policy refusals: the admin's allowlist, and a member who
             // arrived after the seat cap filled (T6-4 — governed by nothing, so
             // denied outright rather than falling through an empty allowlist).
             Err(
                 dream_domain_billing::BillingError::ModelNotAllowed(_)
                 | dream_domain_billing::BillingError::SeatLimitExceeded,
-            ) => Ok(false),
-            // Anything else is the check failing, not the policy passing. The
-            // caller fails closed on `Err`; same posture as `BillingSendGate`.
-            Err(other) => Err(other.to_string()),
+            ) => {
+                self.grace.answered();
+                Ok(false)
+            }
+            // No company on this server governs nobody's model choice.
+            Err(dream_domain_billing::BillingError::EnterpriseNotFound) => Ok(true),
+            // The check failed rather than the policy refusing. Same posture
+            // as `BillingSendGate`: tolerated while the plane is only briefly
+            // silent, enforced once the silence outlasts the grace window.
+            Err(other) if self.grace.within_window() => {
+                tracing::warn!(error = %other, user_id, model, "model allowlist unanswerable; inside grace window");
+                Ok(true)
+            }
+            Err(other) => {
+                tracing::error!(error = %other, user_id, model, "model allowlist unreachable beyond grace window");
+                Err(other.to_string())
+            }
         }
     }
 }
@@ -910,6 +1076,158 @@ pub fn create_router_with_states(services: &AppServices, states: ModuleStates) -
 ///
 /// Full-control variant used by tests that need to override
 /// module services and WebSocket behaviour.
+/// Every route group that exists only when `enterprise` is compiled in.
+///
+/// Extracted so the full server and the standalone admin binary mount exactly
+/// the same governance surface. Assembling it twice would let the two drift —
+/// and a governance route that exists in one process but not the other is the
+/// kind of difference nothing fails on until an operator hits it.
+#[cfg(feature = "enterprise")]
+pub(crate) struct GovernancePlane {
+    pub org: Router,
+    pub enterprise: Router,
+    pub billing: Router,
+    pub platform: Router,
+    pub sso_public: Router,
+    pub sso_admin: Router,
+    /// Handed back rather than kept: one-employee and one-devops both need it,
+    /// and it can only be built from the org service constructed in here.
+    pub tenant_resolver: std::sync::Arc<dyn dream_domain_employee::TenantResolver>,
+}
+
+/// The three services are built by the caller because they are needed earlier:
+/// platform wires the IP allowlist into the auth middleware, billing is owned
+/// by `AppServices` (the agent factory takes its model allowlist), and devops
+/// is shared with the personal plane.
+#[cfg(feature = "enterprise")]
+pub(crate) fn build_governance_plane(
+    services: &AppServices,
+    auth_mw_state: &AuthState,
+    one_devops_service: std::sync::Arc<dream_domain_devops::DevopsService>,
+    one_platform_service: std::sync::Arc<dream_domain_platform::PlatformService>,
+    one_billing_service: std::sync::Arc<dream_domain_billing::BillingService>,
+) -> GovernancePlane {
+    // one-org enterprise routes (/api/one/*) — RBAC extractors depend on the
+    // upstream auth middleware injecting CurrentUser.
+    let one_org_service = std::sync::Arc::new(
+        dream_domain_org::OrgService::new(
+            services.database.pool().clone(),
+            services.user_repo.clone(),
+            services.data_dir.clone(),
+            crate::config::derive_encryption_key(&services.data_secret_raw),
+        )
+        .with_credential_revoker(std::sync::Arc::new(ModelChannelRevoker(one_devops_service.clone()))),
+    );
+    // one-enterprise service (真实企业 / company tier) — constructed here so its
+    // company-admin bridges can be wired into one-org and one-sso below, and so
+    // it can borrow one-org's credential revocation (built just above).
+    let one_enterprise_service = std::sync::Arc::new(
+        dream_domain_enterprise::EnterpriseService::new(services.database.pool().clone())
+            .with_session_revoker(std::sync::Arc::new(OrgSessionRevoker(one_org_service.clone())))
+            .with_disband_cascade(std::sync::Arc::new(CompanyDisbandCascadeImpl {
+                org: one_org_service.clone(),
+                billing: one_billing_service.clone(),
+            })),
+    );
+    // Tenant resolver shared by one-employee + one-devops for team-shared
+    // employees (A1 L3).
+    // Personal edition has no tenants, so no resolver: `tenant_of` then returns
+    // `DEFAULT_TENANT` for everyone, which is exactly the personal semantics
+    // (see `dream_domain_employee::state`).
+    let tenant_resolver: std::sync::Arc<dyn dream_domain_employee::TenantResolver> =
+        std::sync::Arc::new(OrgTenantResolver(one_org_service.clone()));
+    // Direction B: let a company admin create/list the project groups their
+    // company owns (system_admin still governs everything as before). T6
+    // stage 3: also let a project-group admin map a company directory
+    // subtree into their own department tree.
+    let one_org_state = dream_domain_org::OneOrgRouterState::new(one_org_service.clone())
+        .with_company_admin_resolver(std::sync::Arc::new(CompanyAdminResolverAdapter(
+            one_enterprise_service.clone(),
+        )))
+        .with_directory_source(std::sync::Arc::new(DirectoryTreeSourceAdapter(
+            one_enterprise_service.clone(),
+        )))
+        // Direction B: a project-group join whose tenant belongs to a company
+        // also registers the joiner as a company member (see
+        // `CompanySeatSyncAdapter` / `dream_domain_org::enterprise_hooks` docs).
+        .with_company_seat_sync(std::sync::Arc::new(CompanySeatSyncAdapter(
+            one_enterprise_service.clone(),
+        )));
+    let one_org_authenticated = dream_domain_org::one_org_routes(one_org_state)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
+    // one-enterprise routes (/api/one/enterprise/*) — the SSO-company
+    // "enterprise org" dimension + the company tier (Direction B). The service
+    // was constructed above so the company-admin bridges could be wired.
+    let one_enterprise_state = dream_domain_enterprise::OneEnterpriseRouterState::new(one_enterprise_service.clone());
+    let one_enterprise_authenticated = dream_domain_enterprise::one_enterprise_routes(one_enterprise_state)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
+    // one-billing routes (/api/one/billing/*) — subscription tier, seats, and
+    // usage dashboard. No payment provider wired: manual provisioning via
+    // `PUT /tier`. The service was built above (before the conversation routes)
+    // so its usage recorder could be injected there.
+    let one_billing_state = dream_domain_billing::OneBillingRouterState::new(one_billing_service.clone());
+    let one_billing_authenticated = dream_domain_billing::one_billing_routes(one_billing_state)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
+    // one-platform routes (/api/one/admin/platform/*) — deployment infra config
+    // (P1-3 container runtime + P2-2 realtime collaboration). Reserved adapters:
+    // the Noop defaults report "not configured" until a real runtime/provider
+    // is wired here via `with_container_runtime` / `with_collaboration_provider`.
+    // Service itself was built above, alongside `auth_mw_state`, so its IP
+    // allowlist could be wired into the auth middleware.
+    let one_platform_state = dream_domain_platform::OnePlatformRouterState::new(one_platform_service.clone());
+    let one_platform_authenticated = dream_domain_platform::one_platform_routes(one_platform_state)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
+    // one-sso routes. Public half (providers/authorize/callback) is
+    // unauthenticated so OAuth can run before the user has a session;
+    // admin half (upsert provider) sits behind the auth middleware.
+    let one_sso_state =
+        dream_domain_sso::OneSsoRouterState::new(std::sync::Arc::new(dream_domain_sso::SsoService::new(
+            services.database.pool().clone(),
+            services.user_repo.clone(),
+            services.jwt_service.clone(),
+            services.cookie_config.clone(),
+        )))
+        // Enterprise-org sync: a successful SSO login upserts the caller's company
+        // + membership into one-enterprise. No-op (aside from the upsert) for
+        // personal edition / WebUI-only builds since it never touches
+        // `one_tenants` / project-group membership.
+        .with_enterprise_sync(std::sync::Arc::new(EnterpriseSyncAdapter(
+            one_enterprise_service.clone(),
+        )))
+        // Direction B: SSO config (企业认证) is a company-level policy, so a company
+        // admin may manage it. Falls back to the project-group admin when unset.
+        .with_company_admin_check(std::sync::Arc::new(CompanyAdminCheckAdapter(
+            one_enterprise_service.clone(),
+        )))
+        // P2-4 onboarding: auto-join a project group by email-domain policy. No-op
+        // for logins whose IdP profile isn't email-shaped, or when no tenant has
+        // `allowed_email_domains` set (the default).
+        .with_org_auto_join(std::sync::Arc::new(OrgAutoJoinAdapter(one_org_service.clone())))
+        // T6 directory sync: where a completed Feishu directory pull is stored.
+        // Wiring it does not start anything — a pull only happens when an admin
+        // asks or the scheduler fires, and both find nothing to do unless this
+        // machine actually holds the company's SSO config.
+        .with_directory_sink(std::sync::Arc::new(DirectorySinkAdapter(
+            one_enterprise_service.clone(),
+        )));
+    let one_sso_public = dream_domain_sso::one_sso_public_routes(one_sso_state.clone());
+    let one_sso_admin = dream_domain_sso::one_sso_admin_routes(one_sso_state)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+    GovernancePlane {
+        org: one_org_authenticated,
+        enterprise: one_enterprise_authenticated,
+        billing: one_billing_authenticated,
+        platform: one_platform_authenticated,
+        sso_public: one_sso_public,
+        sso_admin: one_sso_admin,
+        tenant_resolver,
+    }
+}
+
 pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates, ws_state: WsHandlerState) -> Router {
     let boot = Instant::now();
     tracing::info!("startup: route tree build with states started");
@@ -998,12 +1316,20 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         crate::config::derive_encryption_key(&services.data_secret_raw),
     ));
 
+    // One tracker per process, shared by every enterprise gate: they all read
+    // the same plane, so one of them reaching it proves the plane is alive for
+    // the others too.
+    #[cfg(feature = "enterprise")]
+    let policy_grace = services.policy_grace.clone();
+
     // Personal edition has no deployment-infra config to enforce, so no
     // allowlist: `None` is the pre-platform behaviour (every source allowed).
     #[cfg(feature = "enterprise")]
-    let ip_allowlist: Option<std::sync::Arc<dyn dream_core_auth::IpAllowlistGate>> = Some(std::sync::Arc::new(
-        PlatformIpAllowlistGate(one_platform_service.clone()),
-    ));
+    let ip_allowlist: Option<std::sync::Arc<dyn dream_core_auth::IpAllowlistGate>> =
+        Some(std::sync::Arc::new(PlatformIpAllowlistGate {
+            platform: one_platform_service.clone(),
+            grace: policy_grace.clone(),
+        }));
     #[cfg(not(feature = "enterprise"))]
     let ip_allowlist: Option<std::sync::Arc<dyn dream_core_auth::IpAllowlistGate>> = None;
 
@@ -1055,7 +1381,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // (see `dream_core_conversation::routes`), which is the pre-billing path.
     #[cfg(feature = "enterprise")]
     let conversation_state =
-        conversation_state.with_send_gate(std::sync::Arc::new(BillingSendGate(one_billing_service.clone())));
+        conversation_state.with_send_gate(std::sync::Arc::new(BillingSendGate { billing: one_billing_service.clone(), grace: policy_grace.clone() }));
     let conversation_authenticated =
         conversation_routes(conversation_state).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -1064,7 +1390,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let conversation_ops_state = states.conversation;
     #[cfg(feature = "enterprise")]
     let conversation_ops_state =
-        conversation_ops_state.with_send_gate(std::sync::Arc::new(BillingSendGate(one_billing_service.clone())));
+        conversation_ops_state.with_send_gate(std::sync::Arc::new(BillingSendGate { billing: one_billing_service.clone(), grace: policy_grace.clone() }));
     let conversation_ops_authenticated = conversation_ops_routes(conversation_ops_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -1163,59 +1489,17 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
             .with_encryption_key(crate::config::derive_encryption_key(&services.data_secret_raw)),
     );
 
-    // one-org enterprise routes (/api/one/*) — RBAC extractors depend on the
-    // upstream auth middleware injecting CurrentUser.
     #[cfg(feature = "enterprise")]
-    let one_org_service = std::sync::Arc::new(
-        dream_domain_org::OrgService::new(
-            services.database.pool().clone(),
-            services.user_repo.clone(),
-            services.data_dir.clone(),
-            crate::config::derive_encryption_key(&services.data_secret_raw),
-        )
-        .with_credential_revoker(std::sync::Arc::new(ModelChannelRevoker(one_devops_service.clone()))),
+    let governance = build_governance_plane(
+        services,
+        &auth_mw_state,
+        one_devops_service.clone(),
+        one_platform_service.clone(),
+        one_billing_service.clone(),
     );
-    // one-enterprise service (真实企业 / company tier) — constructed here so its
-    // company-admin bridges can be wired into one-org and one-sso below, and so
-    // it can borrow one-org's credential revocation (built just above).
     #[cfg(feature = "enterprise")]
-    let one_enterprise_service = std::sync::Arc::new(
-        dream_domain_enterprise::EnterpriseService::new(services.database.pool().clone())
-            .with_session_revoker(std::sync::Arc::new(OrgSessionRevoker(one_org_service.clone())))
-            .with_disband_cascade(std::sync::Arc::new(CompanyDisbandCascadeImpl {
-                org: one_org_service.clone(),
-                billing: one_billing_service.clone(),
-            })),
-    );
-    // Tenant resolver shared by one-employee + one-devops for team-shared
-    // employees (A1 L3).
-    // Personal edition has no tenants, so no resolver: `tenant_of` then returns
-    // `DEFAULT_TENANT` for everyone, which is exactly the personal semantics
-    // (see `dream_domain_employee::state`).
-    #[cfg(feature = "enterprise")]
-    let tenant_resolver: std::sync::Arc<dyn dream_domain_employee::TenantResolver> =
-        std::sync::Arc::new(OrgTenantResolver(one_org_service.clone()));
-    // Direction B: let a company admin create/list the project groups their
-    // company owns (system_admin still governs everything as before). T6
-    // stage 3: also let a project-group admin map a company directory
-    // subtree into their own department tree.
-    #[cfg(feature = "enterprise")]
-    let one_org_state = dream_domain_org::OneOrgRouterState::new(one_org_service.clone())
-        .with_company_admin_resolver(std::sync::Arc::new(CompanyAdminResolverAdapter(
-            one_enterprise_service.clone(),
-        )))
-        .with_directory_source(std::sync::Arc::new(DirectoryTreeSourceAdapter(
-            one_enterprise_service.clone(),
-        )))
-        // Direction B: a project-group join whose tenant belongs to a company
-        // also registers the joiner as a company member (see
-        // `CompanySeatSyncAdapter` / `dream_domain_org::enterprise_hooks` docs).
-        .with_company_seat_sync(std::sync::Arc::new(CompanySeatSyncAdapter(
-            one_enterprise_service.clone(),
-        )));
-    #[cfg(feature = "enterprise")]
-    let one_org_authenticated = dream_domain_org::one_org_routes(one_org_state)
-        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+    let tenant_resolver = governance.tenant_resolver.clone();
+
 
     // one-employee digital employee routes (/api/one/employee/*).
     // Wire the team session service so /run-team can drive existing team
@@ -1242,77 +1526,6 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     #[cfg(feature = "enterprise")]
     let one_employee_state = one_employee_state.with_tenant_resolver(tenant_resolver.clone());
     let one_employee_authenticated = dream_domain_employee::one_employee_routes(one_employee_state)
-        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
-
-    // one-enterprise routes (/api/one/enterprise/*) — the SSO-company
-    // "enterprise org" dimension + the company tier (Direction B). The service
-    // was constructed above so the company-admin bridges could be wired.
-    #[cfg(feature = "enterprise")]
-    let one_enterprise_state = dream_domain_enterprise::OneEnterpriseRouterState::new(one_enterprise_service.clone());
-    #[cfg(feature = "enterprise")]
-    let one_enterprise_authenticated = dream_domain_enterprise::one_enterprise_routes(one_enterprise_state)
-        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
-
-    // one-billing routes (/api/one/billing/*) — subscription tier, seats, and
-    // usage dashboard. No payment provider wired: manual provisioning via
-    // `PUT /tier`. The service was built above (before the conversation routes)
-    // so its usage recorder could be injected there.
-    #[cfg(feature = "enterprise")]
-    let one_billing_state = dream_domain_billing::OneBillingRouterState::new(one_billing_service.clone());
-    #[cfg(feature = "enterprise")]
-    let one_billing_authenticated = dream_domain_billing::one_billing_routes(one_billing_state)
-        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
-
-    // one-platform routes (/api/one/admin/platform/*) — deployment infra config
-    // (P1-3 container runtime + P2-2 realtime collaboration). Reserved adapters:
-    // the Noop defaults report "not configured" until a real runtime/provider
-    // is wired here via `with_container_runtime` / `with_collaboration_provider`.
-    // Service itself was built above, alongside `auth_mw_state`, so its IP
-    // allowlist could be wired into the auth middleware.
-    #[cfg(feature = "enterprise")]
-    let one_platform_state = dream_domain_platform::OnePlatformRouterState::new(one_platform_service.clone());
-    #[cfg(feature = "enterprise")]
-    let one_platform_authenticated = dream_domain_platform::one_platform_routes(one_platform_state)
-        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
-
-    // one-sso routes. Public half (providers/authorize/callback) is
-    // unauthenticated so OAuth can run before the user has a session;
-    // admin half (upsert provider) sits behind the auth middleware.
-    #[cfg(feature = "enterprise")]
-    let one_sso_state =
-        dream_domain_sso::OneSsoRouterState::new(std::sync::Arc::new(dream_domain_sso::SsoService::new(
-            services.database.pool().clone(),
-            services.user_repo.clone(),
-            services.jwt_service.clone(),
-            services.cookie_config.clone(),
-        )))
-        // Enterprise-org sync: a successful SSO login upserts the caller's company
-        // + membership into one-enterprise. No-op (aside from the upsert) for
-        // personal edition / WebUI-only builds since it never touches
-        // `one_tenants` / project-group membership.
-        .with_enterprise_sync(std::sync::Arc::new(EnterpriseSyncAdapter(
-            one_enterprise_service.clone(),
-        )))
-        // Direction B: SSO config (企业认证) is a company-level policy, so a company
-        // admin may manage it. Falls back to the project-group admin when unset.
-        .with_company_admin_check(std::sync::Arc::new(CompanyAdminCheckAdapter(
-            one_enterprise_service.clone(),
-        )))
-        // P2-4 onboarding: auto-join a project group by email-domain policy. No-op
-        // for logins whose IdP profile isn't email-shaped, or when no tenant has
-        // `allowed_email_domains` set (the default).
-        .with_org_auto_join(std::sync::Arc::new(OrgAutoJoinAdapter(one_org_service.clone())))
-        // T6 directory sync: where a completed Feishu directory pull is stored.
-        // Wiring it does not start anything — a pull only happens when an admin
-        // asks or the scheduler fires, and both find nothing to do unless this
-        // machine actually holds the company's SSO config.
-        .with_directory_sink(std::sync::Arc::new(DirectorySinkAdapter(
-            one_enterprise_service.clone(),
-        )));
-    #[cfg(feature = "enterprise")]
-    let one_sso_public = dream_domain_sso::one_sso_public_routes(one_sso_state.clone());
-    #[cfg(feature = "enterprise")]
-    let one_sso_admin = dream_domain_sso::one_sso_admin_routes(one_sso_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // one-devops routes (/api/one/devops/*) — requirements board +
@@ -1406,12 +1619,12 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // admin console before the split.
     #[cfg(feature = "enterprise")]
     let router = router
-        .merge(one_org_authenticated)
-        .merge(one_enterprise_authenticated)
-        .merge(one_billing_authenticated)
-        .merge(one_platform_authenticated)
-        .merge(one_sso_public)
-        .merge(one_sso_admin);
+        .merge(governance.org)
+        .merge(governance.enterprise)
+        .merge(governance.billing)
+        .merge(governance.platform)
+        .merge(governance.sso_public)
+        .merge(governance.sso_admin);
 
     // Personal edition: the desktop shell still asks "am I in an org?" on every
     // launch, and a 404 there is not the same answer as "no" — without these the
@@ -1622,7 +1835,7 @@ mod tests {
         boundary_error_for_status, create_router_with_runtime, forward_event_bus_to_websocket, is_global_websocket_event,
     };
     #[cfg(feature = "enterprise")]
-    use super::billing_denial;
+    use super::{ENTERPRISE_POLICY_GRACE_MS, PolicyGrace, PolicyVerdict, billing_denial};
     use crate::config::AppConfig;
     use crate::services::AppServices;
 
@@ -1631,7 +1844,11 @@ mod tests {
     #[cfg(feature = "enterprise")]
     #[test]
     fn billing_policy_denials_keep_their_message_and_parameters() {
-        let model = billing_denial(dream_domain_billing::BillingError::ModelNotAllowed("gpt-9".into()));
+        let PolicyVerdict::Governs(model) =
+            billing_denial(dream_domain_billing::BillingError::ModelNotAllowed("gpt-9".into()))
+        else {
+            panic!("an allowlist refusal is the policy answering");
+        };
         assert_eq!(model.code, "MODEL_NOT_ALLOWED");
         assert!(model.message.contains("gpt-9"));
         assert_eq!(
@@ -1639,27 +1856,54 @@ mod tests {
             "gpt-9"
         );
 
-        let budget = billing_denial(dream_domain_billing::BillingError::BudgetExceeded);
+        let PolicyVerdict::Governs(budget) = billing_denial(dream_domain_billing::BillingError::BudgetExceeded) else {
+            panic!("a spent budget is the policy answering");
+        };
         assert_eq!(budget.code, "BUDGET_EXCEEDED");
         assert!(budget.message.contains("budget"));
     }
 
-    /// ⚠️ An internal failure must NOT become user-visible text.
-    ///
-    /// While these messages were redacted to "Forbidden." this could not bite;
-    /// the moment they started reaching the user, `e.to_string()` on any error
-    /// would have shipped internals (SQL, paths) straight to the UI. The gate
-    /// still fails closed — it just refuses without narrating why.
+    /// A server with no company governs nobody. A standalone install must not
+    /// be touched by an enterprise plane it does not participate in — this is
+    /// the case that must never depend on the grace window.
     #[cfg(feature = "enterprise")]
     #[test]
-    fn billing_internal_failure_does_not_leak_its_message() {
-        let leaky = "no such table: one_licenses; DB at C:\\Users\\someone\\secret.db";
-        let denial = billing_denial(dream_domain_billing::BillingError::Internal(leaky.into()));
+    fn no_company_means_no_governance() {
+        assert!(matches!(
+            billing_denial(dream_domain_billing::BillingError::EnterpriseNotFound),
+            PolicyVerdict::NotGoverned
+        ));
+    }
 
-        assert_eq!(denial.code, "POLICY_CHECK_FAILED");
-        assert!(!denial.message.contains("no such table"));
-        assert!(!denial.message.contains("secret.db"));
-        assert!(denial.details.is_none());
+    /// An unanswerable check is neither a refusal nor a pass — the caller
+    /// decides using the grace window.
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn unreachable_policy_plane_is_not_a_refusal() {
+        let leaky = "no such table: one_licenses; DB at C:/Users/someone/secret.db";
+        assert!(matches!(
+            billing_denial(dream_domain_billing::BillingError::Internal(leaky.into())),
+            PolicyVerdict::Unanswerable
+        ));
+    }
+
+    /// The window is what separates "briefly silent" from "gone". A tracker
+    /// that just answered is inside it; one that last answered before the
+    /// window opened is not.
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn grace_window_expires() {
+        let grace = PolicyGrace::new();
+        assert!(grace.within_window(), "a plane that just answered is inside the window");
+
+        grace.last_answered_ms.store(
+            dream_core_common::now_ms() - ENTERPRISE_POLICY_GRACE_MS - 1,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        assert!(!grace.within_window(), "silence beyond the window is an outage");
+
+        grace.answered();
+        assert!(grace.within_window(), "an answer reopens the window");
     }
 
     #[test]

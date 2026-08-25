@@ -78,6 +78,11 @@ pub struct AppServices {
     /// router reuses this instance instead of making a second one.
     #[cfg(feature = "enterprise")]
     pub billing: Arc<dream_domain_billing::BillingService>,
+    /// Shared by every enterprise policy gate. Lives here because the agent
+    /// factory takes one of those gates before any router exists, and all of
+    /// them must observe the same "when did the plane last answer".
+    #[cfg(feature = "enterprise")]
+    pub policy_grace: Arc<crate::router::PolicyGrace>,
     backend_binary_path: Arc<PathBuf>,
     runtime_helper_bin: String,
     runtime_base_url: String,
@@ -310,6 +315,8 @@ impl AppServices {
         // the *session* model), so without this an admin could remove a model
         // from the allowlist and still have it invoked as a delegate.
         #[cfg(feature = "enterprise")]
+        let policy_grace = Arc::new(crate::router::PolicyGrace::new());
+        #[cfg(feature = "enterprise")]
         let billing = Arc::new(dream_domain_billing::BillingService::new(
             database.pool().clone(),
             Arc::new(dream_domain_billing::ManualBillingProvider),
@@ -345,7 +352,10 @@ impl AppServices {
             // vision delegate picks whatever model the session resolved to,
             // which is the pre-billing behaviour.
             #[cfg(feature = "enterprise")]
-            model_allowlist: Some(Arc::new(crate::router::BillingModelAllowlistGate(billing.clone()))),
+            model_allowlist: Some(Arc::new(crate::router::BillingModelAllowlistGate {
+                billing: billing.clone(),
+                grace: policy_grace.clone(),
+            })),
             #[cfg(not(feature = "enterprise"))]
             model_allowlist: None,
         });
@@ -382,6 +392,8 @@ impl AppServices {
             database,
             #[cfg(feature = "enterprise")]
             billing,
+            #[cfg(feature = "enterprise")]
+            policy_grace,
             jwt_service: Arc::new(JwtService::new(secret.clone())),
             antigravity_hook_tokens,
             user_repo,
