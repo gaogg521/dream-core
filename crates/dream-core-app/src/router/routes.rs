@@ -47,9 +47,11 @@ use crate::services::AppServices;
 /// trait, so one-employee / one-devops can resolve a caller's tenant (for
 /// team-shared employees, A1 L3) without depending on one-org. Resolution
 /// errors fall back to the personal `default` tenant.
+#[cfg(feature = "enterprise")]
 struct OrgTenantResolver(std::sync::Arc<dream_domain_org::OrgService>);
 
 #[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
 impl dream_domain_employee::TenantResolver for OrgTenantResolver {
     async fn tenant_of(&self, user_id: &str) -> String {
         self.0
@@ -62,9 +64,11 @@ impl dream_domain_employee::TenantResolver for OrgTenantResolver {
 /// Adapts one-org's `OrgService::auto_join_by_email` to the
 /// `dream_domain_sso::OrgAutoJoin` trait (P2-4 onboarding: domain-based project-group
 /// auto-join). Errors are logged and swallowed — never blocks a valid login.
+#[cfg(feature = "enterprise")]
 struct OrgAutoJoinAdapter(std::sync::Arc<dream_domain_org::OrgService>);
 
 #[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
 impl dream_domain_sso::OrgAutoJoin for OrgAutoJoinAdapter {
     async fn auto_join_by_email(&self, user_id: &str, email: &str) {
         match self.0.auto_join_by_email(user_id, email).await {
@@ -94,9 +98,11 @@ impl dream_domain_sso::OrgAutoJoin for OrgAutoJoinAdapter {
 /// outlive JWT rotation, so removing a member has to close them explicitly —
 /// otherwise the leaver keeps a working key to the company's models, which is
 /// the whole thing channel provisioning exists to prevent.
+#[cfg(feature = "enterprise")]
 struct ModelChannelRevoker(std::sync::Arc<dream_domain_devops::DevopsService>);
 
 #[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
 impl dream_domain_org::CredentialRevoker for ModelChannelRevoker {
     async fn revoke_for_user(&self, user_id: &str) {
         match self.0.revoke_channel_tokens_for_user(user_id).await {
@@ -114,9 +120,11 @@ impl dream_domain_org::CredentialRevoker for ModelChannelRevoker {
 /// depending on one-org (same layer). one-org owns the per-user JWT secret and,
 /// via its own `CredentialRevoker`, the company model channel tokens — so both
 /// tiers of removal end up rotating exactly the same set of credentials.
+#[cfg(feature = "enterprise")]
 struct OrgSessionRevoker(std::sync::Arc<dream_domain_org::OrgService>);
 
 #[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
 impl dream_domain_enterprise::SessionRevoker for OrgSessionRevoker {
     async fn revoke_sessions(&self, user_id: &str) {
         // Never block the removal: a member who could not be fully
@@ -133,12 +141,14 @@ impl dream_domain_enterprise::SessionRevoker for OrgSessionRevoker {
 /// one-enterprise depending on either (same layer). Best-effort per side, by
 /// the trait's own contract — a company the operator asked to disband must
 /// actually go away even if one side's cleanup hits an error.
+#[cfg(feature = "enterprise")]
 struct CompanyDisbandCascadeImpl {
     org: std::sync::Arc<dream_domain_org::OrgService>,
     billing: std::sync::Arc<dream_domain_billing::BillingService>,
 }
 
 #[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
 impl dream_domain_enterprise::CompanyDisbandCascade for CompanyDisbandCascadeImpl {
     async fn disband(&self, enterprise_id: &str) -> Vec<String> {
         if let Err(error) = self.billing.delete_enterprise_billing_data(enterprise_id).await {
@@ -158,9 +168,11 @@ impl dream_domain_enterprise::CompanyDisbandCascade for CompanyDisbandCascadeImp
 /// project group's department tree (T6 stage 3), without depending on
 /// one-enterprise (same layer). No company, or no directory sync ever run →
 /// empty, which the caller treats as "nothing to map" rather than an error.
+#[cfg(feature = "enterprise")]
 struct DirectoryTreeSourceAdapter(std::sync::Arc<dream_domain_enterprise::EnterpriseService>);
 
 #[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
 impl dream_domain_org::DirectoryTreeSource for DirectoryTreeSourceAdapter {
     async fn directory_departments(&self) -> Vec<dream_domain_org::DirectoryDepartmentRef> {
         let Some(enterprise_id) = self.0.deployment_company_id().await.ok().flatten() else {
@@ -183,9 +195,11 @@ impl dream_domain_org::DirectoryTreeSource for DirectoryTreeSourceAdapter {
 /// Stores a completed directory pull (T6). one-sso knows how to talk to Feishu,
 /// one-enterprise owns the company's tables, and they are the same layer — so
 /// they meet here.
+#[cfg(feature = "enterprise")]
 struct DirectorySinkAdapter(std::sync::Arc<dream_domain_enterprise::EnterpriseService>);
 
 #[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
 impl dream_domain_sso::DirectorySink for DirectorySinkAdapter {
     async fn enterprise_id(&self) -> Option<String> {
         // No company set up → nothing to attribute a directory to, and the
@@ -242,9 +256,11 @@ impl dream_domain_sso::DirectorySink for DirectorySinkAdapter {
     }
 }
 
+#[cfg(feature = "enterprise")]
 struct EnterpriseSyncAdapter(std::sync::Arc<dream_domain_enterprise::EnterpriseService>);
 
 #[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
 impl dream_domain_sso::EnterpriseSync for EnterpriseSyncAdapter {
     async fn sync_member(
         &self,
@@ -278,9 +294,11 @@ impl dream_domain_sso::EnterpriseSync for EnterpriseSyncAdapter {
 /// `dream_domain_org::CompanyAdminResolver` trait (Direction B), so a company admin can
 /// create/list the project groups their company owns without one-org depending
 /// on one-enterprise. Resolution errors deny (fail closed).
+#[cfg(feature = "enterprise")]
 struct CompanyAdminResolverAdapter(std::sync::Arc<dream_domain_enterprise::EnterpriseService>);
 
 #[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
 impl dream_domain_org::CompanyAdminResolver for CompanyAdminResolverAdapter {
     async fn is_company_admin(&self, user_id: &str, enterprise_id: &str) -> bool {
         self.0
@@ -295,9 +313,11 @@ impl dream_domain_org::CompanyAdminResolver for CompanyAdminResolverAdapter {
 /// to a company also registers the joiner as a company member (seat-capped,
 /// same rule as SSO auto-provisioning) — see `dream_domain_org::enterprise_hooks`
 /// module docs for why this exists.
+#[cfg(feature = "enterprise")]
 struct CompanySeatSyncAdapter(std::sync::Arc<dream_domain_enterprise::EnterpriseService>);
 
 #[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
 impl dream_domain_org::CompanySeatSync for CompanySeatSyncAdapter {
     async fn ensure_company_member(&self, user_id: &str, enterprise_id: &str, display_name: Option<&str>) {
         if let Err(error) = self.0.ensure_member(user_id, enterprise_id, display_name).await {
@@ -314,7 +334,8 @@ impl dream_domain_org::CompanySeatSync for CompanySeatSyncAdapter {
             // occupied rather than leaving the company with no admin.
             if !matches!(
                 error,
-                dream_domain_enterprise::EnterpriseError::MemberNotFound | dream_domain_enterprise::EnterpriseError::LastCompanyAdmin
+                dream_domain_enterprise::EnterpriseError::MemberNotFound
+                    | dream_domain_enterprise::EnterpriseError::LastCompanyAdmin
             ) {
                 tracing::warn!(%error, user_id, enterprise_id, "company seat release failed; project-group leave continues");
             }
@@ -325,9 +346,11 @@ impl dream_domain_org::CompanySeatSync for CompanySeatSyncAdapter {
 /// Adapts one-enterprise's `EnterpriseService::is_company_admin` to the
 /// `dream_domain_sso::CompanyAdminCheck` trait, so a company admin may manage the
 /// company-level SSO config (企业认证). Errors deny (fail closed).
+#[cfg(feature = "enterprise")]
 struct CompanyAdminCheckAdapter(std::sync::Arc<dream_domain_enterprise::EnterpriseService>);
 
 #[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
 impl dream_domain_sso::CompanyAdminCheck for CompanyAdminCheckAdapter {
     async fn is_company_admin(&self, user_id: &str) -> bool {
         self.0.is_company_admin(user_id).await.unwrap_or(false)
@@ -350,9 +373,11 @@ impl dream_domain_sso::CompanyAdminCheck for CompanyAdminCheckAdapter {
 /// doc comment for why getting this ordering backwards would 403 every test
 /// (and every personal-edition install) that never wired a real
 /// `ConnectInfo`.
+#[cfg(feature = "enterprise")]
 struct PlatformIpAllowlistGate(std::sync::Arc<dream_domain_platform::PlatformService>);
 
 #[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
 impl dream_core_auth::IpAllowlistGate for PlatformIpAllowlistGate {
     async fn is_allowed(&self, user_id: &str, ip: Option<std::net::IpAddr>) -> Result<bool, String> {
         let actor = self.0.resolve_actor(user_id).await.map_err(|e| e.to_string())?;
@@ -385,8 +410,10 @@ impl dream_core_auth::IpAllowlistGate for PlatformIpAllowlistGate {
 /// only calls this once a turn has actually completed — real cost is known
 /// only then, never at accept time (see the trait's own doc comment for why
 /// that used to make every chat turn cost $0 regardless of the real bill).
+#[cfg(feature = "enterprise")]
 struct BillingUsageRecorder(std::sync::Arc<dream_domain_billing::BillingService>);
 
+#[cfg(feature = "enterprise")]
 impl dream_core_conversation::UsageRecorder for BillingUsageRecorder {
     fn record_turn(
         &self,
@@ -417,6 +444,7 @@ impl dream_core_conversation::UsageRecorder for BillingUsageRecorder {
 /// Adapts one-billing's `check_send_allowed` to the conversation crate's
 /// `SendGate` trait (P1-2 model control). Blocks a send when the team is over
 /// its spend budget / off-allowlist; personal users always pass.
+#[cfg(feature = "enterprise")]
 struct BillingSendGate(std::sync::Arc<dream_domain_billing::BillingService>);
 
 /// Map a billing refusal to something the member can act on.
@@ -426,6 +454,7 @@ struct BillingSendGate(std::sync::Arc<dream_domain_billing::BillingService>);
 /// `to_string()` must not reach the user, and there is nothing actionable in it
 /// for them anyway. This mattered the moment these messages stopped being
 /// redacted: before, `ApiError::Forbidden` hid every one of them equally.
+#[cfg(feature = "enterprise")]
 fn billing_denial(error: dream_domain_billing::BillingError) -> dream_core_conversation::PolicyDenial {
     use dream_domain_billing::BillingError;
     match error {
@@ -461,8 +490,13 @@ fn billing_denial(error: dream_domain_billing::BillingError) -> dream_core_conve
 }
 
 #[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
 impl dream_core_conversation::SendGate for BillingSendGate {
-    async fn check_send(&self, user_id: &str, model: Option<&str>) -> Result<(), dream_core_conversation::PolicyDenial> {
+    async fn check_send(
+        &self,
+        user_id: &str,
+        model: Option<&str>,
+    ) -> Result<(), dream_core_conversation::PolicyDenial> {
         self.0.check_send_allowed(user_id, model).await.map_err(billing_denial)
     }
 
@@ -482,9 +516,11 @@ impl dream_core_conversation::SendGate for BillingSendGate {
 ///
 /// `pub(crate)` because `services.rs` builds the factory long before any router
 /// exists; this is the same adapter, wired earlier.
+#[cfg(feature = "enterprise")]
 pub(crate) struct BillingModelAllowlistGate(pub(crate) std::sync::Arc<dream_domain_billing::BillingService>);
 
 #[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
 impl dream_core_ai_agent::ModelAllowlistGate for BillingModelAllowlistGate {
     async fn is_model_allowed(&self, user_id: &str, model: &str) -> Result<bool, String> {
         match self.0.check_model_allowed(user_id, model).await {
@@ -492,9 +528,10 @@ impl dream_core_ai_agent::ModelAllowlistGate for BillingModelAllowlistGate {
             // The two policy refusals: the admin's allowlist, and a member who
             // arrived after the seat cap filled (T6-4 — governed by nothing, so
             // denied outright rather than falling through an empty allowlist).
-            Err(dream_domain_billing::BillingError::ModelNotAllowed(_) | dream_domain_billing::BillingError::SeatLimitExceeded) => {
-                Ok(false)
-            }
+            Err(
+                dream_domain_billing::BillingError::ModelNotAllowed(_)
+                | dream_domain_billing::BillingError::SeatLimitExceeded,
+            ) => Ok(false),
             // Anything else is the check failing, not the policy passing. The
             // caller fails closed on `Err`; same posture as `BillingSendGate`.
             Err(other) => Err(other.to_string()),
@@ -528,6 +565,92 @@ use super::scm_monitor::{CompositeMessageRouter, spawn_scm_monitor};
 use super::state::{ModuleStates, RouterBuildError, build_module_states, build_ws_state};
 use super::trace::with_access_log;
 
+/// Personal-edition answers for the handful of governance endpoints the
+/// desktop shell calls unconditionally.
+///
+/// The shell asks "which org am I in?" on every launch (`useOrgContext`,
+/// `useMyTenants`, `useEnterpriseIdentity`), reports the machine into the
+/// runtime-node roster from its layout effect, and superAssistant's resource
+/// ACL picker asks for the tenant list. With `dream-domain-org` compiled out
+/// those become 404s — and a 404 is not the same answer as "you are not in an
+/// org": the identity entry renders an error state instead of the personal one.
+///
+/// So the personal build answers them itself, with the same shapes the real
+/// handlers return for a user who has no org. The mutating half
+/// (join/create/exit/switch/reset-local) returns an explicit refusal rather
+/// than a 404, because "this build cannot do that" is the accurate answer:
+/// in client mode these requests are routed to the remote enterprise server by
+/// `GOVERNANCE_PATH_PREFIXES` and never reach a local personal backend, and a
+/// standalone user has no server to join in the first place.
+#[cfg(not(feature = "enterprise"))]
+fn personal_identity_routes() -> Router {
+    use axum::routing::post;
+
+    /// Duplicated from `dream_domain_org::models` — that crate is compiled out
+    /// here. Both are the id the bootstrap assigns to a desktop install's
+    /// single local user; they must not drift.
+    const SYSTEM_DEFAULT_USER_ID: &str = "system_default_user";
+    /// Duplicated from `dream_domain_org::models::DEFAULT_TENANT_ID`, same reason.
+    const DEFAULT_TENANT_ID: &str = "default";
+
+    async fn org_context(
+        axum::Extension(user): axum::Extension<dream_core_auth::CurrentUser>,
+    ) -> Json<serde_json::Value> {
+        // Mirrors `OrgService::effective_role`: with no membership table to
+        // read, the local owner is system_admin and everyone else is a member.
+        let role = if user.id == SYSTEM_DEFAULT_USER_ID {
+            "system_admin"
+        } else {
+            "member"
+        };
+        Json(serde_json::json!({
+            "success": true,
+            "data": {
+                "tenantId": DEFAULT_TENANT_ID,
+                "tenantName": null,
+                "role": role,
+                "isEnterprise": false,
+                "memberCount": 0,
+            }
+        }))
+    }
+
+    async fn empty_list() -> Json<serde_json::Value> {
+        Json(serde_json::json!({ "success": true, "data": [] }))
+    }
+
+    async fn null_identity() -> Json<serde_json::Value> {
+        Json(serde_json::json!({ "success": true, "data": null }))
+    }
+
+    async fn heartbeat_accepted() -> StatusCode {
+        StatusCode::NO_CONTENT
+    }
+
+    async fn not_in_this_edition() -> (StatusCode, Json<ErrorResponse>) {
+        (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(ErrorResponse::new(
+                "ENTERPRISE_NOT_AVAILABLE",
+                "this build has no enterprise plane; connect to an enterprise server instead",
+            )),
+        )
+    }
+
+    Router::new()
+        .route("/api/one/org/context", get(org_context))
+        .route("/api/one/org/my-tenants", get(empty_list))
+        .route("/api/one/org/tenants", get(empty_list))
+        .route("/api/one/enterprise/me", get(null_identity))
+        .route("/api/one/enterprise/company", get(null_identity))
+        .route("/api/one/admin/runtime/heartbeat", post(heartbeat_accepted))
+        .route("/api/one/org/switch", post(not_in_this_edition))
+        .route("/api/one/org/create", post(not_in_this_edition))
+        .route("/api/one/org/join", post(not_in_this_edition))
+        .route("/api/one/org/exit", post(not_in_this_edition))
+        .route("/api/one/org/reset-local", post(not_in_this_edition))
+}
+
 pub struct RouterRuntime {
     pub client_pref_service: ClientPrefService,
     pub team_service: Arc<TeamSessionService>,
@@ -535,7 +658,9 @@ pub struct RouterRuntime {
     /// drive them on a timer. Built here because this is where every service is
     /// already assembled; whether they ever do anything is decided at run time
     /// by whether this machine holds the company's SSO config.
+    #[cfg(feature = "enterprise")]
     pub sso_service: Arc<dream_domain_sso::SsoService>,
+    #[cfg(feature = "enterprise")]
     pub directory_sink: Arc<dyn dream_domain_sso::DirectorySink>,
 }
 
@@ -604,48 +729,81 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
 
     // one-org keeps its own migration ledger (`_one_migrations`), fully
     // decoupled from the upstream sqlx migrator — see crates/one-org.
-    dream_domain_org::run_one_migrations(services.database.pool())
-        .await
-        .map_err(|e| {
-            RouterBuildError::new("router.dream_domain_org.migrate", "failed to run one-org migrations").with_source(e)
-        })?;
+    #[cfg(feature = "enterprise")]
+    {
+        dream_domain_org::run_one_migrations(services.database.pool())
+            .await
+            .map_err(|e| {
+                RouterBuildError::new("router.dream_domain_org.migrate", "failed to run one-org migrations")
+                    .with_source(e)
+            })?;
+    }
     dream_domain_employee::run_one_employee_migrations(services.database.pool())
         .await
         .map_err(|e| {
-            RouterBuildError::new("router.dream_domain_employee.migrate", "failed to run one-employee migrations").with_source(e)
-        })?;
-    dream_domain_sso::run_one_sso_migrations(services.database.pool())
-        .await
-        .map_err(|e| {
-            RouterBuildError::new("router.dream_domain_sso.migrate", "failed to run one-sso migrations").with_source(e)
-        })?;
-    dream_domain_devops::run_one_devops_migrations(services.database.pool())
-        .await
-        .map_err(|e| {
-            RouterBuildError::new("router.dream_domain_devops.migrate", "failed to run one-devops migrations").with_source(e)
-        })?;
-    dream_domain_enterprise::run_one_enterprise_migrations(services.database.pool())
-        .await
-        .map_err(|e| {
             RouterBuildError::new(
-                "router.dream_domain_enterprise.migrate",
-                "failed to run one-enterprise migrations",
+                "router.dream_domain_employee.migrate",
+                "failed to run one-employee migrations",
             )
             .with_source(e)
         })?;
+    #[cfg(feature = "enterprise")]
+    {
+        dream_domain_sso::run_one_sso_migrations(services.database.pool())
+            .await
+            .map_err(|e| {
+                RouterBuildError::new("router.dream_domain_sso.migrate", "failed to run one-sso migrations")
+                    .with_source(e)
+            })?;
+    }
+    dream_domain_devops::run_one_devops_migrations(services.database.pool())
+        .await
+        .map_err(|e| {
+            RouterBuildError::new(
+                "router.dream_domain_devops.migrate",
+                "failed to run one-devops migrations",
+            )
+            .with_source(e)
+        })?;
+    #[cfg(feature = "enterprise")]
+    {
+        dream_domain_enterprise::run_one_enterprise_migrations(services.database.pool())
+            .await
+            .map_err(|e| {
+                RouterBuildError::new(
+                    "router.dream_domain_enterprise.migrate",
+                    "failed to run one-enterprise migrations",
+                )
+                .with_source(e)
+            })?;
+    }
     // MUST run after one-enterprise: billing_001_init grandfathers existing
     // one_enterprises rows to the top tier.
-    dream_domain_billing::run_one_billing_migrations(services.database.pool())
-        .await
-        .map_err(|e| {
-            RouterBuildError::new("router.dream_domain_billing.migrate", "failed to run one-billing migrations").with_source(e)
-        })?;
+    #[cfg(feature = "enterprise")]
+    {
+        dream_domain_billing::run_one_billing_migrations(services.database.pool())
+            .await
+            .map_err(|e| {
+                RouterBuildError::new(
+                    "router.dream_domain_billing.migrate",
+                    "failed to run one-billing migrations",
+                )
+                .with_source(e)
+            })?;
+    }
     // one-platform: deployment infra config (P1-3 container + P2-2 collab).
-    dream_domain_platform::run_one_platform_migrations(services.database.pool())
-        .await
-        .map_err(|e| {
-            RouterBuildError::new("router.dream_domain_platform.migrate", "failed to run one-platform migrations").with_source(e)
-        })?;
+    #[cfg(feature = "enterprise")]
+    {
+        dream_domain_platform::run_one_platform_migrations(services.database.pool())
+            .await
+            .map_err(|e| {
+                RouterBuildError::new(
+                    "router.dream_domain_platform.migrate",
+                    "failed to run one-platform migrations",
+                )
+                .with_source(e)
+            })?;
+    }
 
     // Start channel orchestrator (message loop)
     tokio::spawn(
@@ -713,12 +871,14 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
     // `SsoService` over the same pool is harmless: the sync path touches only
     // the provider config table, never the in-memory OAuth state this instance
     // also carries.
+    #[cfg(feature = "enterprise")]
     let directory_sso_service = Arc::new(dream_domain_sso::SsoService::new(
         services.database.pool().clone(),
         services.user_repo.clone(),
         services.jwt_service.clone(),
         services.cookie_config.clone(),
     ));
+    #[cfg(feature = "enterprise")]
     let directory_sink: Arc<dyn dream_domain_sso::DirectorySink> = Arc::new(DirectorySinkAdapter(Arc::new(
         dream_domain_enterprise::EnterpriseService::new(services.database.pool().clone()),
     )));
@@ -727,7 +887,9 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
         RouterRuntime {
             client_pref_service,
             team_service,
+            #[cfg(feature = "enterprise")]
             sso_service: directory_sso_service,
+            #[cfg(feature = "enterprise")]
             directory_sink,
         },
     ))
@@ -830,10 +992,20 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // auth middleware can wire the allowlist check into every route group
     // through a single shared `AuthState`. Cheap to construct this early:
     // only needs the pool + encryption key, both already on `services`.
+    #[cfg(feature = "enterprise")]
     let one_platform_service = std::sync::Arc::new(dream_domain_platform::PlatformService::new(
         services.database.pool().clone(),
         crate::config::derive_encryption_key(&services.data_secret_raw),
     ));
+
+    // Personal edition has no deployment-infra config to enforce, so no
+    // allowlist: `None` is the pre-platform behaviour (every source allowed).
+    #[cfg(feature = "enterprise")]
+    let ip_allowlist: Option<std::sync::Arc<dyn dream_core_auth::IpAllowlistGate>> = Some(std::sync::Arc::new(
+        PlatformIpAllowlistGate(one_platform_service.clone()),
+    ));
+    #[cfg(not(feature = "enterprise"))]
+    let ip_allowlist: Option<std::sync::Arc<dyn dream_core_auth::IpAllowlistGate>> = None;
 
     let auth_mw_state = AuthState {
         jwt_service: services.jwt_service.clone(),
@@ -842,9 +1014,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         runtime_token_verifier: Some(Arc::new(ConversationHelperTokenVerifier {
             runtime_token_service: services.runtime_token_service.clone(),
         })),
-        ip_allowlist: Some(std::sync::Arc::new(PlatformIpAllowlistGate(
-            one_platform_service.clone(),
-        ))),
+        ip_allowlist,
     };
 
     // System routes protected by auth middleware
@@ -856,6 +1026,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // router exists and needs the same instance for the vision-delegate model
     // allowlist (`BillingModelAllowlistGate`). It stays dependency-free (pool +
     // manual provider), so nothing about the construction order changes.
+    #[cfg(feature = "enterprise")]
     let one_billing_service = services.billing.clone();
 
     // P0-3 usage metering: wired onto the shared `ConversationService`
@@ -865,31 +1036,37 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // itself once a turn actually completes, so every clone of the service
     // (HTTP routes, cron, team) needs to see the same wiring, not just
     // whichever local variable this chain happens to run through.
+    #[cfg(feature = "enterprise")]
     states
         .conversation
         .service
         .with_usage_recorder(std::sync::Arc::new(BillingUsageRecorder(one_billing_service.clone())));
 
     // Conversation routes protected by auth middleware.
-    let conversation_authenticated = conversation_routes(
+    let conversation_state =
         states
             .conversation
             .clone()
-            .with_send_gate(std::sync::Arc::new(BillingSendGate(one_billing_service.clone())))
             .with_content_inspector(std::sync::Arc::new(LocalContentInspector(
                 services.content_inspection.clone(),
-            ))),
-    )
-    .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+            )));
+    // No send gate in the personal edition: seat caps, spend caps and the model
+    // allowlist are all billing-plane policy. `None` skips the check entirely
+    // (see `dream_core_conversation::routes`), which is the pre-billing path.
+    #[cfg(feature = "enterprise")]
+    let conversation_state =
+        conversation_state.with_send_gate(std::sync::Arc::new(BillingSendGate(one_billing_service.clone())));
+    let conversation_authenticated =
+        conversation_routes(conversation_state).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // The ops router hosts set-config-option (model switch) — gate it too so
     // the P1-2 model allowlist is enforced at model selection.
-    let conversation_ops_authenticated = conversation_ops_routes(
-        states
-            .conversation
-            .with_send_gate(std::sync::Arc::new(BillingSendGate(one_billing_service.clone()))),
-    )
-    .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+    let conversation_ops_state = states.conversation;
+    #[cfg(feature = "enterprise")]
+    let conversation_ops_state =
+        conversation_ops_state.with_send_gate(std::sync::Arc::new(BillingSendGate(one_billing_service.clone())));
+    let conversation_ops_authenticated = conversation_ops_routes(conversation_ops_state)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // Remote agent routes protected by auth middleware
     let remote_agent_authenticated = remote_agent_routes(states.remote_agent)
@@ -988,6 +1165,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
 
     // one-org enterprise routes (/api/one/*) — RBAC extractors depend on the
     // upstream auth middleware injecting CurrentUser.
+    #[cfg(feature = "enterprise")]
     let one_org_service = std::sync::Arc::new(
         dream_domain_org::OrgService::new(
             services.database.pool().clone(),
@@ -1000,6 +1178,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // one-enterprise service (真实企业 / company tier) — constructed here so its
     // company-admin bridges can be wired into one-org and one-sso below, and so
     // it can borrow one-org's credential revocation (built just above).
+    #[cfg(feature = "enterprise")]
     let one_enterprise_service = std::sync::Arc::new(
         dream_domain_enterprise::EnterpriseService::new(services.database.pool().clone())
             .with_session_revoker(std::sync::Arc::new(OrgSessionRevoker(one_org_service.clone())))
@@ -1010,12 +1189,17 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     );
     // Tenant resolver shared by one-employee + one-devops for team-shared
     // employees (A1 L3).
+    // Personal edition has no tenants, so no resolver: `tenant_of` then returns
+    // `DEFAULT_TENANT` for everyone, which is exactly the personal semantics
+    // (see `dream_domain_employee::state`).
+    #[cfg(feature = "enterprise")]
     let tenant_resolver: std::sync::Arc<dyn dream_domain_employee::TenantResolver> =
         std::sync::Arc::new(OrgTenantResolver(one_org_service.clone()));
     // Direction B: let a company admin create/list the project groups their
     // company owns (system_admin still governs everything as before). T6
     // stage 3: also let a project-group admin map a company directory
     // subtree into their own department tree.
+    #[cfg(feature = "enterprise")]
     let one_org_state = dream_domain_org::OneOrgRouterState::new(one_org_service.clone())
         .with_company_admin_resolver(std::sync::Arc::new(CompanyAdminResolverAdapter(
             one_enterprise_service.clone(),
@@ -1029,8 +1213,9 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .with_company_seat_sync(std::sync::Arc::new(CompanySeatSyncAdapter(
             one_enterprise_service.clone(),
         )));
-    let one_org_authenticated =
-        dream_domain_org::one_org_routes(one_org_state).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+    #[cfg(feature = "enterprise")]
+    let one_org_authenticated = dream_domain_org::one_org_routes(one_org_state)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // one-employee digital employee routes (/api/one/employee/*).
     // Wire the team session service so /run-team can drive existing team
@@ -1053,15 +1238,18 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         ))),
     );
     one_employee_service.spawn_scheduler();
-    let one_employee_state = dream_domain_employee::OneEmployeeRouterState::new(one_employee_service.clone())
-        .with_tenant_resolver(tenant_resolver.clone());
+    let one_employee_state = dream_domain_employee::OneEmployeeRouterState::new(one_employee_service.clone());
+    #[cfg(feature = "enterprise")]
+    let one_employee_state = one_employee_state.with_tenant_resolver(tenant_resolver.clone());
     let one_employee_authenticated = dream_domain_employee::one_employee_routes(one_employee_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // one-enterprise routes (/api/one/enterprise/*) — the SSO-company
     // "enterprise org" dimension + the company tier (Direction B). The service
     // was constructed above so the company-admin bridges could be wired.
+    #[cfg(feature = "enterprise")]
     let one_enterprise_state = dream_domain_enterprise::OneEnterpriseRouterState::new(one_enterprise_service.clone());
+    #[cfg(feature = "enterprise")]
     let one_enterprise_authenticated = dream_domain_enterprise::one_enterprise_routes(one_enterprise_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -1069,7 +1257,9 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // usage dashboard. No payment provider wired: manual provisioning via
     // `PUT /tier`. The service was built above (before the conversation routes)
     // so its usage recorder could be injected there.
+    #[cfg(feature = "enterprise")]
     let one_billing_state = dream_domain_billing::OneBillingRouterState::new(one_billing_service.clone());
+    #[cfg(feature = "enterprise")]
     let one_billing_authenticated = dream_domain_billing::one_billing_routes(one_billing_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -1079,43 +1269,49 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // is wired here via `with_container_runtime` / `with_collaboration_provider`.
     // Service itself was built above, alongside `auth_mw_state`, so its IP
     // allowlist could be wired into the auth middleware.
+    #[cfg(feature = "enterprise")]
     let one_platform_state = dream_domain_platform::OnePlatformRouterState::new(one_platform_service.clone());
+    #[cfg(feature = "enterprise")]
     let one_platform_authenticated = dream_domain_platform::one_platform_routes(one_platform_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // one-sso routes. Public half (providers/authorize/callback) is
     // unauthenticated so OAuth can run before the user has a session;
     // admin half (upsert provider) sits behind the auth middleware.
-    let one_sso_state = dream_domain_sso::OneSsoRouterState::new(std::sync::Arc::new(dream_domain_sso::SsoService::new(
-        services.database.pool().clone(),
-        services.user_repo.clone(),
-        services.jwt_service.clone(),
-        services.cookie_config.clone(),
-    )))
-    // Enterprise-org sync: a successful SSO login upserts the caller's company
-    // + membership into one-enterprise. No-op (aside from the upsert) for
-    // personal edition / WebUI-only builds since it never touches
-    // `one_tenants` / project-group membership.
-    .with_enterprise_sync(std::sync::Arc::new(EnterpriseSyncAdapter(
-        one_enterprise_service.clone(),
-    )))
-    // Direction B: SSO config (企业认证) is a company-level policy, so a company
-    // admin may manage it. Falls back to the project-group admin when unset.
-    .with_company_admin_check(std::sync::Arc::new(CompanyAdminCheckAdapter(
-        one_enterprise_service.clone(),
-    )))
-    // P2-4 onboarding: auto-join a project group by email-domain policy. No-op
-    // for logins whose IdP profile isn't email-shaped, or when no tenant has
-    // `allowed_email_domains` set (the default).
-    .with_org_auto_join(std::sync::Arc::new(OrgAutoJoinAdapter(one_org_service.clone())))
-    // T6 directory sync: where a completed Feishu directory pull is stored.
-    // Wiring it does not start anything — a pull only happens when an admin
-    // asks or the scheduler fires, and both find nothing to do unless this
-    // machine actually holds the company's SSO config.
-    .with_directory_sink(std::sync::Arc::new(DirectorySinkAdapter(
-        one_enterprise_service.clone(),
-    )));
+    #[cfg(feature = "enterprise")]
+    let one_sso_state =
+        dream_domain_sso::OneSsoRouterState::new(std::sync::Arc::new(dream_domain_sso::SsoService::new(
+            services.database.pool().clone(),
+            services.user_repo.clone(),
+            services.jwt_service.clone(),
+            services.cookie_config.clone(),
+        )))
+        // Enterprise-org sync: a successful SSO login upserts the caller's company
+        // + membership into one-enterprise. No-op (aside from the upsert) for
+        // personal edition / WebUI-only builds since it never touches
+        // `one_tenants` / project-group membership.
+        .with_enterprise_sync(std::sync::Arc::new(EnterpriseSyncAdapter(
+            one_enterprise_service.clone(),
+        )))
+        // Direction B: SSO config (企业认证) is a company-level policy, so a company
+        // admin may manage it. Falls back to the project-group admin when unset.
+        .with_company_admin_check(std::sync::Arc::new(CompanyAdminCheckAdapter(
+            one_enterprise_service.clone(),
+        )))
+        // P2-4 onboarding: auto-join a project group by email-domain policy. No-op
+        // for logins whose IdP profile isn't email-shaped, or when no tenant has
+        // `allowed_email_domains` set (the default).
+        .with_org_auto_join(std::sync::Arc::new(OrgAutoJoinAdapter(one_org_service.clone())))
+        // T6 directory sync: where a completed Feishu directory pull is stored.
+        // Wiring it does not start anything — a pull only happens when an admin
+        // asks or the scheduler fires, and both find nothing to do unless this
+        // machine actually holds the company's SSO config.
+        .with_directory_sink(std::sync::Arc::new(DirectorySinkAdapter(
+            one_enterprise_service.clone(),
+        )));
+    #[cfg(feature = "enterprise")]
     let one_sso_public = dream_domain_sso::one_sso_public_routes(one_sso_state.clone());
+    #[cfg(feature = "enterprise")]
     let one_sso_admin = dream_domain_sso::one_sso_admin_routes(one_sso_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -1139,9 +1335,10 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
             }
         });
     }
-    let one_devops_state = dream_domain_devops::OneDevopsRouterState::new(one_devops_service)
-        .with_employee(one_employee_service.clone())
-        .with_tenant_resolver(tenant_resolver.clone());
+    let one_devops_state =
+        dream_domain_devops::OneDevopsRouterState::new(one_devops_service).with_employee(one_employee_service.clone());
+    #[cfg(feature = "enterprise")]
+    let one_devops_state = one_devops_state.with_tenant_resolver(tenant_resolver.clone());
     let one_devops_authenticated = dream_domain_devops::one_devops_routes(one_devops_state.clone())
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
     // Not session-authenticated, for the same reason the Codex bridge is not:
@@ -1201,14 +1398,31 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(assistant_authenticated)
         .merge(codex_bridge_config_authenticated)
         .merge(claude_bridge_config_authenticated)
-        .merge(one_org_authenticated)
         .merge(one_employee_authenticated)
-        .merge(one_devops_authenticated)
+        .merge(one_devops_authenticated);
+
+    // Enterprise governance plane. Absent from the personal edition entirely —
+    // not merely hidden behind a role check, which is all that guarded the
+    // admin console before the split.
+    #[cfg(feature = "enterprise")]
+    let router = router
+        .merge(one_org_authenticated)
         .merge(one_enterprise_authenticated)
         .merge(one_billing_authenticated)
         .merge(one_platform_authenticated)
         .merge(one_sso_public)
         .merge(one_sso_admin);
+
+    // Personal edition: the desktop shell still asks "am I in an org?" on every
+    // launch, and a 404 there is not the same answer as "no" — without these the
+    // identity entry renders an error state instead of the personal one. Behind
+    // the same auth layer the real routes use, so `CurrentUser` is injected:
+    // the context handler reads it to answer with the caller's role, exactly as
+    // `OrgService::effective_role` would. See `personal_identity_routes`.
+    #[cfg(not(feature = "enterprise"))]
+    let router = router.merge(
+        personal_identity_routes().route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware)),
+    );
 
     // Conditionally merge WeChat login SSE route (feature-gated)
     #[cfg(feature = "weixin")]
@@ -1399,20 +1613,22 @@ fn boundary_error_for_status(status: StatusCode) -> Option<(&'static str, &'stat
 mod tests {
     use std::sync::Arc;
 
+    use axum::http::StatusCode;
     use dream_core_api_types::WebSocketMessage;
     use dream_core_realtime::{BroadcastEventBus, EventBroadcaster, WebSocketManager, WsOutbound};
-    use axum::http::StatusCode;
     use serde_json::json;
 
     use super::{
-        billing_denial, boundary_error_for_status, create_router_with_runtime, forward_event_bus_to_websocket,
-        is_global_websocket_event,
+        boundary_error_for_status, create_router_with_runtime, forward_event_bus_to_websocket, is_global_websocket_event,
     };
+    #[cfg(feature = "enterprise")]
+    use super::billing_denial;
     use crate::config::AppConfig;
     use crate::services::AppServices;
 
     /// The two policy refusals are written for the member and must survive with
     /// their parameters, so a client can say them in the reader's language.
+    #[cfg(feature = "enterprise")]
     #[test]
     fn billing_policy_denials_keep_their_message_and_parameters() {
         let model = billing_denial(dream_domain_billing::BillingError::ModelNotAllowed("gpt-9".into()));
@@ -1434,6 +1650,7 @@ mod tests {
     /// the moment they started reaching the user, `e.to_string()` on any error
     /// would have shipped internals (SQL, paths) straight to the UI. The gate
     /// still fails closed — it just refuses without narrating why.
+    #[cfg(feature = "enterprise")]
     #[test]
     fn billing_internal_failure_does_not_leak_its_message() {
         let leaky = "no such table: one_licenses; DB at C:\\Users\\someone\\secret.db";

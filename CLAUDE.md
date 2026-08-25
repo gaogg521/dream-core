@@ -54,6 +54,36 @@ dream/
 - 纯测试内部约定（fixture 里用来分支选择的字符串标签、非持久化的局部变量名）可以直接改，不需要兼容层。
 - **改完不能只信编译通过**：本仓库有大量集成测试是运行时字符串比较，`cargo check --workspace` 甚至 `cargo test`（默认 fail-fast）都可能漏掉。批量改名后必须完整跑一遍 `cargo test --workspace`（或更快的 `cargo nextest run --workspace`），并且要跑到底、不能提前判定"看起来都过了"——workspace 有几十个 crate，某个未被前几轮触及的 crate 里可能还藏着引用旧值的测试断言。
 
+## 个人版 / 企业版双构建（`enterprise` feature）
+
+本仓库编译出两个版本，靠 `dream-core-app` 的 `enterprise` feature 区分（**默认关闭**）：
+
+```powershell
+just build                # 个人版
+just build-enterprise     # 企业版
+just check-editions       # 两个版本都编译一遍
+```
+
+同一个 crate、同一个二进制名 `dreamcore`——cargo feature 是构建期选择而不是第二个 target，所以两个版本不能同时存在于 `target/release`，打包时靠改名区分。
+
+**被门控的 5 个 crate**（约 20,436 行）：`dream-domain-org` / `sso` / `enterprise` / `billing` / `platform`。个人版的依赖树里根本没有它们：
+
+```powershell
+cargo tree -p dream-core-app --edges normal | Select-String dream-domain
+```
+
+**刻意不门控的 2 个**：`dream-domain-devops` 与 `dream-domain-employee`。它们有真实的个人版消费者（超级助理的注册表与数字员工），而且 devops 的注册表写入在**单机模式下是合法的**——`require_registry_admin` 在没有 org 时返回 `Ok`。逐路由的归属盘点见 dream-en 仓库的 `docs/roadmap.zh-CN.md`。
+
+### 改这块时的三条规则
+
+1. **新增任何 `dream_domain_{org,sso,enterprise,billing,platform}` 引用，必须放进 `#[cfg(feature = "enterprise")]`。** 漏了会挂个人版构建——好在默认 feature 就是个人版，CI 的 `--workspace` 任务会拦住。**真正没人看的是反方向**：只在 `--features enterprise` 下才坏的改动，默认构建一路绿灯。CI 的 `enterprise-edition` 任务专门盯这个，本地收尾跑 `just check-editions`。
+2. **验证必须包含 `cargo test --no-run`，不能只看 `cargo check`。** check 不编译 `#[cfg(test)]` 代码——本次改造里两个版本的 check 都是 0 错误之后，测试构建才暴露出 `routes.rs` 内联单测里还有三处 `dream_domain_billing` 引用。
+3. **跨界 trait 一律用 `Option` + `None` 语义，不要写 no-op 实现。** 个人版 crate 定义、企业服务实现的那几个（`IpAllowlistGate`、`UsageRecorder`、`SendGate`、`ModelAllowlistGate`、`TenantResolver`）本来就都是 `Option`，`None` 分支的行为正好是个人版该有的（全部放行 / 不记录 / 回落 `DEFAULT_TENANT`）。
+
+### 个人版身份 stub
+
+`router/routes.rs::personal_identity_routes` 为个人版补了 11 个端点。桌面端每次启动都会问"我属于哪个组织"，而 **404 不等于"你不在任何组织"**——少了它身份入口会渲染成错误态而不是个人态。其中 `join`/`create`/`exit`/`switch`/`reset-local` 返回明确的"本版本不支持"：客户端模式下这些请求本来就被路由到远端企业服务器，不会落到本机。
+
 ## 测试
 
 ```powershell

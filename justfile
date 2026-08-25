@@ -32,6 +32,29 @@ build *FLAGS: lint-fix fmt
 build-debug *FLAGS:
     @{{build_script}} debug {{FLAGS}}
 
+# Build the enterprise edition (adds the governance plane: org / sso /
+# enterprise / billing / platform).
+#
+# Same crate, same binary name — a cargo feature is a build-time choice, not a
+# second target — so the two editions cannot coexist in `target/release`.
+# Packaging renames the artifact; build one, ship it, then build the other.
+#
+#   just build                    -> dreamcore, personal edition
+#   just build-enterprise         -> dreamcore, enterprise edition
+#
+# Verify which one you have: `cargo tree -p dream-core-app --edges normal`
+# lists dream-domain-{org,sso,enterprise,billing,platform} only for the latter.
+build-enterprise *FLAGS: lint-fix fmt
+    @{{build_script}} release --features enterprise {{FLAGS}}
+
+# Check that BOTH editions still compile. The personal edition is the one that
+# regresses silently: a new `dream_domain_*` reference outside a
+# `#[cfg(feature = "enterprise")]` block compiles fine for whoever added it and
+# breaks only the build nobody runs locally.
+check-editions:
+    @just _cargo check -p dream-core-app
+    @just _cargo check -p dream-core-app --features enterprise
+
 # Build (if needed) then install the release binary to cargo bin
 install: build
     @{{install_script}} release

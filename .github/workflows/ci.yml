@@ -60,6 +60,30 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --workspace
 
+  enterprise-edition:
+    name: Enterprise edition
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95.0"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+      - uses: taiki-e/install-action@nextest
+      # Every other job builds the DEFAULT feature set, which is the personal
+      # edition — so a change that only breaks `--features enterprise` compiles
+      # clean everywhere CI looks. This job is the only thing that sees it.
+      #
+      # `--no-run` is deliberate on top of the nextest run: `cargo check` does
+      # not compile `#[cfg(test)]` code, so a gated crate referenced from an
+      # inline unit test passes check and fails the test build.
+      - run: cargo clippy -p dream-core-app --features enterprise -- -D warnings
+      - run: cargo test -p dream-core-app --features enterprise --no-run
+      - run: cargo nextest run -p dream-core-app --features enterprise
+
   changes:
     name: Detect dependency changes
     runs-on: ubuntu-latest

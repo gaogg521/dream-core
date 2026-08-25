@@ -329,7 +329,8 @@ pub(crate) async fn run_server(
             router_runtime.team_service.clone(),
             services.active_lease_registry.clone(),
         ));
-    let (solo_timeout_secs, team_timeout_secs, scan_interval_secs) = dream_core_ai_agent::resolve_idle_config_from_env();
+    let (solo_timeout_secs, team_timeout_secs, scan_interval_secs) =
+        dream_core_ai_agent::resolve_idle_config_from_env();
     let idle_scanner_handle = dream_core_ai_agent::start_idle_scanner_with_coordinator(
         services.worker_task_manager.clone(),
         shutdown_rx,
@@ -344,6 +345,7 @@ pub(crate) async fn run_server(
     // Feishu provider and a company". In client mode that config lives on the
     // company server, so a member's local database has neither and every tick
     // is two cheap queries that find nothing. Personal installs likewise.
+    #[cfg(feature = "enterprise")]
     let directory_sync_handle = dream_domain_sso::directory::start_directory_sync_scheduler(
         router_runtime.sso_service.clone(),
         router_runtime.directory_sink.clone(),
@@ -494,6 +496,7 @@ pub(crate) async fn run_server(
     // Same contract as the scanner above: it wakes on the shutdown watch. Both
     // must be joined before the pool closes, or a sync mid-write would find the
     // database gone.
+    #[cfg(feature = "enterprise")]
     if let Err(e) = directory_sync_handle.await {
         warn!(
             code = "BOOTSTRAP_DEGRADED_DIRECTORY_SYNC",

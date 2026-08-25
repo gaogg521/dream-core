@@ -76,6 +76,7 @@ pub struct AppServices {
     /// allowlist to gate the `ReadImage` vision delegate. It is dependency-free
     /// (pool + manual provider), so building it early costs nothing, and the
     /// router reuses this instance instead of making a second one.
+    #[cfg(feature = "enterprise")]
     pub billing: Arc<dream_domain_billing::BillingService>,
     backend_binary_path: Arc<PathBuf>,
     runtime_helper_bin: String,
@@ -308,6 +309,7 @@ impl AppServices {
         // model choice the send-path gates never see (they only ever look at
         // the *session* model), so without this an admin could remove a model
         // from the allowlist and still have it invoked as a delegate.
+        #[cfg(feature = "enterprise")]
         let billing = Arc::new(dream_domain_billing::BillingService::new(
             database.pool().clone(),
             Arc::new(dream_domain_billing::ManualBillingProvider),
@@ -339,7 +341,13 @@ impl AppServices {
             // back here to raise the user's permission card.
             antigravity_hook_base_url: Some(runtime_base_url.clone()),
             antigravity_hook_tokens: antigravity_hook_tokens.clone(),
+            // Personal edition has no allowlist to enforce: `None` means the
+            // vision delegate picks whatever model the session resolved to,
+            // which is the pre-billing behaviour.
+            #[cfg(feature = "enterprise")]
             model_allowlist: Some(Arc::new(crate::router::BillingModelAllowlistGate(billing.clone()))),
+            #[cfg(not(feature = "enterprise"))]
+            model_allowlist: None,
         });
 
         // Agent factory is now wired. Future extension/custom agents
@@ -372,6 +380,7 @@ impl AppServices {
 
         Ok(Self {
             database,
+            #[cfg(feature = "enterprise")]
             billing,
             jwt_service: Arc::new(JwtService::new(secret.clone())),
             antigravity_hook_tokens,

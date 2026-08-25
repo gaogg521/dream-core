@@ -10,6 +10,24 @@ path = "src/main.rs"
 
 [features]
 default = ["telegram", "lark", "dingtalk", "weixin", "slack", "discord"]
+
+# Enterprise governance plane. OFF by default: the personal edition must not
+# ship the admin backend, and until this existed the only thing standing
+# between a member and it was a client-side role check in the UI.
+#
+# Deliberately NOT gated here: `dream-domain-devops` and `dream-domain-employee`.
+# Both are consumed by the personal edition (superAssistant's registries and
+# digital employees), and devops' registry writes are legitimate in standalone
+# mode — `require_registry_admin` returns Ok when there is no org at all. See
+# dream-en's docs/roadmap.zh-CN.md for the per-route survey behind this split.
+enterprise = [
+    "dep:dream-domain-org",
+    "dep:dream-domain-sso",
+    "dep:dream-domain-enterprise",
+    "dep:dream-domain-billing",
+    "dep:dream-domain-platform",
+]
+
 telegram = ["dream-core-channel/telegram"]
 lark = ["dream-core-channel/lark"]
 dingtalk = ["dream-core-channel/dingtalk"]
@@ -43,13 +61,13 @@ dream-core-cron.workspace = true
 dream-core-project.workspace = true
 dream-core-assistant.workspace = true
 dream-core-runtime.workspace = true
-dream-domain-org.workspace = true
+dream-domain-org = { workspace = true, optional = true }
 dream-domain-employee.workspace = true
-dream-domain-sso.workspace = true
+dream-domain-sso = { workspace = true, optional = true }
 dream-domain-devops.workspace = true
-dream-domain-enterprise.workspace = true
-dream-domain-billing.workspace = true
-dream-domain-platform.workspace = true
+dream-domain-enterprise = { workspace = true, optional = true }
+dream-domain-billing = { workspace = true, optional = true }
+dream-domain-platform = { workspace = true, optional = true }
 dream-engine-config.workspace = true
 axum.workspace = true
 chrono.workspace = true
