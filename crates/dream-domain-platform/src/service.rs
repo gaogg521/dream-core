@@ -22,7 +22,7 @@ use crate::error::PlatformError;
 use crate::ip_allowlist::ip_allowed;
 use crate::models::{
     CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, IpAllowlistConfigDto, ResourceGrantDto, SceneDto,
-    SiemConfigDto,
+    SecurityPolicyDto, SiemConfigDto,
 };
 use crate::siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
 
@@ -1075,7 +1075,187 @@ impl PlatformService {
                 .await?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
+
+    // --- Security policy baseline (E5) ---
+
+    pub async fn get_security_policy(&self, tenant_id: &str) -> Result<SecurityPolicyDto, PlatformError> {
+        let row: Option<SecurityPolicyRow> = sqlx::query_as(
+            "SELECT tier, terminal_tools_require_approval, destructive_commands_blocked, blocked_command_patterns, \
+                    external_network_denied_by_default, message_scan_enabled, message_redact_enabled, \
+                    send_rate_limit_per_minute, updated_at \
+             FROM one_security_policy WHERE tenant_id = ?",
+        )
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(match row {
+            Some(row) => Self::security_policy_row_to_dto(row),
+            // No row yet = the 'relaxed' tier's values, same convention as
+            // `get_container_config`/`get_siem_config` reporting "off" when
+            // nothing was ever saved.
+            None => Self::security_policy_preset("relaxed").expect("relaxed is a known tier"),
+        })
+    }
+
+    fn security_policy_row_to_dto(row: SecurityPolicyRow) -> SecurityPolicyDto {
+        SecurityPolicyDto {
+            tier: row.0,
+            terminal_tools_require_approval: row.1,
+            destructive_commands_blocked: row.2,
+            blocked_command_patterns: serde_json::from_str(&row.3).unwrap_or_default(),
+            external_network_denied_by_default: row.4,
+            message_scan_enabled: row.5,
+            message_redact_enabled: row.6,
+            send_rate_limit_per_minute: row.7,
+            updated_at: Some(row.8),
+        }
+    }
+
+    /// The 3 reference-product tiers' field values. `None` for an unknown
+    /// tier name (validated by callers before use).
+    ///
+    /// 宽松/relaxed: every check off, matches "quick verification" in the
+    /// reference product. 标准/standard: terminal tools need approval,
+    /// destructive commands blocked, a moderate send rate limit. 严格/strict:
+    /// standard's checks plus external network denied by default and DLP
+    /// message scan/redact on, tighter rate limit. The specific rate-limit
+    /// numbers (30/min, 20/min) are this crate's own reasonable defaults —
+    /// the reference product's own copy names the *categories* it limits,
+    /// not specific numbers — and are editable per tenant via
+    /// `set_security_policy` same as every other field.
+    fn security_policy_preset(tier: &str) -> Option<SecurityPolicyDto> {
+        let dto = match tier {
+            "relaxed" => SecurityPolicyDto {
+                tier: "relaxed".to_owned(),
+                terminal_tools_require_approval: false,
+                destructive_commands_blocked: false,
+                blocked_command_patterns: Vec::new(),
+                external_network_denied_by_default: false,
+                message_scan_enabled: false,
+                message_redact_enabled: false,
+                send_rate_limit_per_minute: None,
+                updated_at: None,
+            },
+            "standard" => SecurityPolicyDto {
+                tier: "standard".to_owned(),
+                terminal_tools_require_approval: true,
+                destructive_commands_blocked: true,
+                blocked_command_patterns: Self::default_blocked_command_patterns(),
+                external_network_denied_by_default: false,
+                message_scan_enabled: false,
+                message_redact_enabled: false,
+                send_rate_limit_per_minute: Some(30),
+                updated_at: None,
+            },
+            "strict" => SecurityPolicyDto {
+                tier: "strict".to_owned(),
+                terminal_tools_require_approval: true,
+                destructive_commands_blocked: true,
+                blocked_command_patterns: Self::default_blocked_command_patterns(),
+                external_network_denied_by_default: true,
+                message_scan_enabled: true,
+                message_redact_enabled: true,
+                send_rate_limit_per_minute: Some(20),
+                updated_at: None,
+            },
+            _ => return None,
+        };
+        Some(dto)
+    }
+
+    fn default_blocked_command_patterns() -> Vec<String> {
+        ["rm -rf", "shutdown", "mkfs", "sudo", "kubectl delete"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Apply one of the 3 built-in tiers wholesale, overwriting every field
+    /// with that tier's preset. For a field-by-field override, use
+    /// `set_security_policy` instead — that one sets `tier = "custom"`.
+    pub async fn apply_security_policy_tier(
+        &self,
+        tenant_id: &str,
+        tier: &str,
+    ) -> Result<SecurityPolicyDto, PlatformError> {
+        let preset = Self::security_policy_preset(tier)
+            .ok_or_else(|| PlatformError::BadRequest(format!("unknown tier '{tier}'")))?;
+        self.upsert_security_policy(tenant_id, &preset).await
+    }
+
+    /// Field-by-field override. Always stores `tier = "custom"` — even when
+    /// the resulting fields happen to match a preset exactly, because the
+    /// point of `tier` is "how did this baseline get here", and a hand-edit
+    /// is not the same provenance as `apply_security_policy_tier` even if it
+    /// lands on the same values. An admin who wants the tier label back picks
+    /// the tier explicitly.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn set_security_policy(
+        &self,
+        tenant_id: &str,
+        terminal_tools_require_approval: bool,
+        destructive_commands_blocked: bool,
+        blocked_command_patterns: &[String],
+        external_network_denied_by_default: bool,
+        message_scan_enabled: bool,
+        message_redact_enabled: bool,
+        send_rate_limit_per_minute: Option<i64>,
+    ) -> Result<SecurityPolicyDto, PlatformError> {
+        let dto = SecurityPolicyDto {
+            tier: "custom".to_owned(),
+            terminal_tools_require_approval,
+            destructive_commands_blocked,
+            blocked_command_patterns: blocked_command_patterns.to_vec(),
+            external_network_denied_by_default,
+            message_scan_enabled,
+            message_redact_enabled,
+            send_rate_limit_per_minute,
+            updated_at: None,
+        };
+        self.upsert_security_policy(tenant_id, &dto).await
+    }
+
+    async fn upsert_security_policy(
+        &self,
+        tenant_id: &str,
+        dto: &SecurityPolicyDto,
+    ) -> Result<SecurityPolicyDto, PlatformError> {
+        let patterns_json =
+            serde_json::to_string(&dto.blocked_command_patterns).map_err(|e| PlatformError::Internal(e.to_string()))?;
+        sqlx::query(
+            "INSERT INTO one_security_policy \
+                 (tenant_id, tier, terminal_tools_require_approval, destructive_commands_blocked, \
+                  blocked_command_patterns, external_network_denied_by_default, message_scan_enabled, \
+                  message_redact_enabled, send_rate_limit_per_minute, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(tenant_id) DO UPDATE SET \
+                 tier = excluded.tier, \
+                 terminal_tools_require_approval = excluded.terminal_tools_require_approval, \
+                 destructive_commands_blocked = excluded.destructive_commands_blocked, \
+                 blocked_command_patterns = excluded.blocked_command_patterns, \
+                 external_network_denied_by_default = excluded.external_network_denied_by_default, \
+                 message_scan_enabled = excluded.message_scan_enabled, \
+                 message_redact_enabled = excluded.message_redact_enabled, \
+                 send_rate_limit_per_minute = excluded.send_rate_limit_per_minute, \
+                 updated_at = excluded.updated_at",
+        )
+        .bind(tenant_id)
+        .bind(&dto.tier)
+        .bind(dto.terminal_tools_require_approval)
+        .bind(dto.destructive_commands_blocked)
+        .bind(&patterns_json)
+        .bind(dto.external_network_denied_by_default)
+        .bind(dto.message_scan_enabled)
+        .bind(dto.message_redact_enabled)
+        .bind(dto.send_rate_limit_per_minute)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?;
+        self.get_security_policy(tenant_id).await
+    }
 }
+
+type SecurityPolicyRow = (String, bool, bool, String, bool, bool, bool, Option<i64>, i64);
 
 type SceneRow = (String, String, String, Option<String>, String, bool, i64, i64);
 
@@ -1610,6 +1790,103 @@ mod tests {
         assert!(
             remaining_grants.is_empty(),
             "grants on the deleted scene must be cleaned up too"
+        );
+    }
+
+    // --- E5 security policy baseline ---
+
+    #[tokio::test]
+    async fn get_security_policy_defaults_to_relaxed_when_unset() {
+        let (_db, service) = setup().await;
+        let policy = service.get_security_policy("t1").await.unwrap();
+        assert_eq!(policy.tier, "relaxed");
+        assert!(!policy.terminal_tools_require_approval);
+        assert!(!policy.destructive_commands_blocked);
+        assert!(policy.blocked_command_patterns.is_empty());
+        assert!(!policy.external_network_denied_by_default);
+        assert!(!policy.message_scan_enabled);
+        assert_eq!(policy.send_rate_limit_per_minute, None);
+        assert_eq!(policy.updated_at, None, "no row was ever written for this tenant");
+    }
+
+    #[tokio::test]
+    async fn apply_security_policy_tier_sets_the_standard_and_strict_presets() {
+        let (_db, service) = setup().await;
+
+        let standard = service.apply_security_policy_tier("t1", "standard").await.unwrap();
+        assert_eq!(standard.tier, "standard");
+        assert!(standard.terminal_tools_require_approval);
+        assert!(standard.destructive_commands_blocked);
+        assert!(!standard.blocked_command_patterns.is_empty());
+        assert!(!standard.external_network_denied_by_default, "strict-only check");
+        assert!(!standard.message_scan_enabled, "strict-only check");
+        assert!(standard.updated_at.is_some());
+
+        let strict = service.apply_security_policy_tier("t1", "strict").await.unwrap();
+        assert_eq!(strict.tier, "strict");
+        assert!(strict.external_network_denied_by_default);
+        assert!(strict.message_scan_enabled);
+        assert!(strict.message_redact_enabled);
+        assert!(
+            strict.send_rate_limit_per_minute < standard.send_rate_limit_per_minute,
+            "strict must rate-limit at least as tightly as standard"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_security_policy_tier_rejects_an_unknown_tier() {
+        let (_db, service) = setup().await;
+        assert_eq!(
+            service
+                .apply_security_policy_tier("t1", "paranoid")
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_security_policy_is_a_custom_override_independent_of_any_tier() {
+        let (_db, service) = setup().await;
+        service.apply_security_policy_tier("t1", "strict").await.unwrap();
+
+        // A hand-edit after applying a tier must relabel it 'custom', even
+        // though only one field actually changed from the strict preset —
+        // the label is about provenance, not incidentally matching a preset.
+        let custom = service
+            .set_security_policy(
+                "t1",
+                true,
+                false,
+                &["custom-pattern".to_owned()],
+                true,
+                true,
+                true,
+                Some(99),
+            )
+            .await
+            .unwrap();
+        assert_eq!(custom.tier, "custom");
+        assert!(!custom.destructive_commands_blocked);
+        assert_eq!(custom.blocked_command_patterns, vec!["custom-pattern".to_owned()]);
+        assert_eq!(custom.send_rate_limit_per_minute, Some(99));
+
+        // Reading it back gets the same values, not the tier preset's.
+        let reread = service.get_security_policy("t1").await.unwrap();
+        assert_eq!(reread.tier, "custom");
+        assert_eq!(reread.blocked_command_patterns, vec!["custom-pattern".to_owned()]);
+    }
+
+    /// Two tenants' baselines must not bleed into each other.
+    #[tokio::test]
+    async fn security_policy_is_scoped_per_tenant() {
+        let (_db, service) = setup().await;
+        service.apply_security_policy_tier("t1", "strict").await.unwrap();
+        let t2 = service.get_security_policy("t2").await.unwrap();
+        assert_eq!(
+            t2.tier, "relaxed",
+            "an untouched tenant must not inherit another tenant's tier"
         );
     }
 }

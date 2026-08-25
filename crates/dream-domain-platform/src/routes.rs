@@ -3,7 +3,10 @@
 //! resource-authorization matrix (`resource-grants*`), and E5 scene
 //! management (`scenes*`) — a named bundle of resource grants a member gets
 //! in one action by joining the scene, instead of an admin granting each
-//! skill/tool/model/channel one at a time.
+//! skill/tool/model/channel one at a time — and the E5 security policy
+//! baseline (`security-policy*`, three built-in tiers or a field-by-field
+//! custom override; see the migration's own doc comment for what is and
+//! isn't enforced yet).
 //!
 //! Mounted behind the upstream `auth_middleware` (relies on `CurrentUser` in
 //! request extensions). All routes are gated by `RequirePlatformAdmin`.
@@ -29,7 +32,7 @@ use crate::container::ContainerStatus;
 use crate::error::PlatformError;
 use crate::models::{
     CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, IpAllowlistConfigDto, ResourceGrantDto, SceneDto,
-    SiemConfigDto,
+    SecurityPolicyDto, SiemConfigDto,
 };
 use crate::rbac::RequirePlatformAdmin;
 use crate::siem::SiemStatus;
@@ -78,6 +81,14 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
         .route(
             "/api/one/admin/platform/scenes/{id}/members/{user_id}",
             delete(remove_scene_member),
+        )
+        .route(
+            "/api/one/admin/platform/security-policy",
+            get(get_security_policy).put(set_security_policy),
+        )
+        .route(
+            "/api/one/admin/platform/security-policy/tier",
+            post(apply_security_policy_tier),
         )
         .with_state(state)
 }
@@ -497,4 +508,72 @@ async fn remove_scene_member(
         .remove_scene_member(&actor.tenant_id, &id, &user_id)
         .await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+// --- E5 security policy baseline ---
+
+async fn get_security_policy(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<SecurityPolicyDto>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.get_security_policy(&actor.tenant_id).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetSecurityPolicyBody {
+    #[serde(default)]
+    terminal_tools_require_approval: bool,
+    #[serde(default)]
+    destructive_commands_blocked: bool,
+    #[serde(default)]
+    blocked_command_patterns: Vec<String>,
+    #[serde(default)]
+    external_network_denied_by_default: bool,
+    #[serde(default)]
+    message_scan_enabled: bool,
+    #[serde(default)]
+    message_redact_enabled: bool,
+    #[serde(default)]
+    send_rate_limit_per_minute: Option<i64>,
+}
+
+async fn set_security_policy(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Json(body): Json<SetSecurityPolicyBody>,
+) -> Result<Json<ApiResponse<SecurityPolicyDto>>, PlatformError> {
+    let dto = state
+        .service
+        .set_security_policy(
+            &actor.tenant_id,
+            body.terminal_tools_require_approval,
+            body.destructive_commands_blocked,
+            &body.blocked_command_patterns,
+            body.external_network_denied_by_default,
+            body.message_scan_enabled,
+            body.message_redact_enabled,
+            body.send_rate_limit_per_minute,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+#[derive(Deserialize)]
+struct ApplyTierBody {
+    tier: String,
+}
+
+async fn apply_security_policy_tier(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Json(body): Json<ApplyTierBody>,
+) -> Result<Json<ApiResponse<SecurityPolicyDto>>, PlatformError> {
+    let dto = state
+        .service
+        .apply_security_policy_tier(&actor.tenant_id, &body.tier)
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
 }

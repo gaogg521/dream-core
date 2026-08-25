@@ -84,6 +84,23 @@ pub struct EffectiveGrantDto {
     pub resource_ids: Vec<String>,
 }
 
+/// Security policy baseline (E5). One per tenant — see the migration's own
+/// doc comment for why this is a single baseline and not a template library.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecurityPolicyDto {
+    /// `"relaxed" | "standard" | "strict" | "custom"`.
+    pub tier: String,
+    pub terminal_tools_require_approval: bool,
+    pub destructive_commands_blocked: bool,
+    pub blocked_command_patterns: Vec<String>,
+    pub external_network_denied_by_default: bool,
+    pub message_scan_enabled: bool,
+    pub message_redact_enabled: bool,
+    pub send_rate_limit_per_minute: Option<i64>,
+    pub updated_at: Option<i64>,
+}
+
 /// A scene (E5 "场景管理"): a named bundle of resource grants + descriptive
 /// job-function tags. `member_count` is the current roster size, shown in
 /// the admin UI's scene list without a second round trip.
