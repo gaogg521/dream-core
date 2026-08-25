@@ -104,6 +104,27 @@ pub struct DepartedMemberDto {
     pub tenants: Vec<DepartedTenantRef>,
 }
 
+/// Rows per transaction when mirroring a directory pull.
+///
+/// SQLite has one writer, and the conversation path shares this database. A
+/// single transaction over a whole company's directory holds the write lock for
+/// as long as it takes to write every row: measured on the harness in
+/// `dream-core-db --example sqlite_write_contention`, 50,000 rows in one
+/// transaction pushed conversation-write p99 from 47 ms to 1.6 s, and a
+/// transaction only twice that long would outlast the 5 s `busy_timeout` and
+/// start failing those writes outright.
+///
+/// 2,000 rows measured at 26–106 ms per transaction, which keeps the
+/// conversation path's p99 impact around 47 ms.
+///
+/// The cost is that a pull is no longer one atomic write. That is acceptable
+/// here and nowhere near as bad as it sounds: the mirror is a cache of the
+/// IdP's directory, every row carries the same `last_seen_at` stamp, and an
+/// interrupted run simply leaves some rows un-refreshed until the next pull —
+/// which converges, because the completeness pass that marks people absent runs
+/// last and only when the pull reported itself complete.
+const DIRECTORY_WRITE_CHUNK: usize = 2_000;
+
 impl EnterpriseService {
     /// Write a pull into the mirror and, when it is complete, update who is
     /// missing.
@@ -113,10 +134,15 @@ impl EnterpriseService {
         input: &DirectorySyncInput,
     ) -> Result<DirectorySyncReport, EnterpriseError> {
         let pool = self.pool_ref();
+        // Computed once and reused by every chunk below. The completeness pass
+        // identifies absent people by `last_seen_at < now`, which is only exact
+        // because every row this run touches carries this same stamp — so the
+        // value must not be re-read per chunk.
         let now = now_ms() as i64;
-        let mut tx = pool.begin().await?;
 
-        for department in &input.departments {
+        for chunk in input.departments.chunks(DIRECTORY_WRITE_CHUNK) {
+            let mut tx = pool.begin().await?;
+            for department in chunk {
             sqlx::query(
                 "INSERT INTO one_directory_departments \
                    (enterprise_id, external_id, parent_external_id, name, first_seen_at, last_seen_at) \
@@ -134,9 +160,13 @@ impl EnterpriseService {
             .bind(now)
             .execute(&mut *tx)
             .await?;
+            }
+            tx.commit().await?;
         }
 
-        for person in &input.people {
+        for chunk in input.people.chunks(DIRECTORY_WRITE_CHUNK) {
+            let mut tx = pool.begin().await?;
+            for person in chunk {
             sqlx::query(
                 "INSERT INTO one_directory_people \
                    (enterprise_id, external_id, name, job_title, department_external_id, active, \
@@ -159,7 +189,13 @@ impl EnterpriseService {
             .bind(now)
             .execute(&mut *tx)
             .await?;
+            }
+            tx.commit().await?;
         }
+
+        // The completeness pass and the run record are small and belong
+        // together: the record must not claim "ok" unless the pass ran.
+        let mut tx = pool.begin().await?;
 
         let mut report = DirectorySyncReport {
             departments: input.departments.len(),
@@ -430,6 +466,44 @@ mod tests {
             department_external_id: Some("od_1".into()),
             active,
         }
+    }
+
+    /// A pull larger than one chunk must land completely, and the
+    /// completeness pass must still be exact across chunk boundaries.
+    ///
+    /// The pass identifies absent people by `last_seen_at < now`, which only
+    /// works because every chunk shares the one timestamp taken at the start.
+    /// Re-reading the clock per chunk would make rows written in a later chunk
+    /// look newer than rows from an earlier one, and the pass would start
+    /// marking present employees as departed.
+    #[tokio::test]
+    async fn snapshot_spanning_several_chunks_is_written_whole() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        crate::run_one_enterprise_migrations(db.pool()).await.unwrap();
+        let svc = EnterpriseService::new(db.pool().clone());
+
+        let people: Vec<_> = (0..DIRECTORY_WRITE_CHUNK * 2 + 7)
+            .map(|i| person(&format!("od_p{i}"), true))
+            .collect();
+        let expected = people.len();
+
+        let report = svc
+            .apply_directory_snapshot("ent1", &snapshot(people, true))
+            .await
+            .expect("a multi-chunk pull applies");
+
+        assert_eq!(report.people, expected);
+        assert_eq!(
+            report.newly_missing, 0,
+            "everyone was in this pull; the completeness pass must not mark anyone absent across chunk boundaries"
+        );
+
+        let stored: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_directory_people WHERE enterprise_id = ?")
+            .bind("ent1")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(stored as usize, expected, "every chunk committed");
     }
 
     fn snapshot(people: Vec<DirectoryPersonInput>, complete: bool) -> DirectorySyncInput {
