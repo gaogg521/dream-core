@@ -379,6 +379,12 @@ impl OrgService {
 
     /// Bulk-generate `count` invite codes at once (P2-4 onboarding). Each code
     /// is unique (delegates to `create_invite`). `count` is clamped to [1, 100].
+    ///
+    /// Not chunked like `map_directory_subtree`/`apply_directory_snapshot`:
+    /// `create_invite` never opens an explicit transaction, so this loop is
+    /// already 100 independently-committed single-row writes rather than one
+    /// unbounded transaction — the clamp alone keeps it far under the ~2000
+    /// row budget those two are chunked to.
     pub async fn create_invites_bulk(
         &self,
         tenant_id: &str,
@@ -2083,6 +2089,12 @@ impl OrgService {
         }
     }
 
+    /// Rows per transaction when writing a mapped subtree — see the comment
+    /// at its one call site inside `map_directory_subtree` for the measured
+    /// rationale (same limit and reasoning as
+    /// `dream_domain_enterprise::directory::DIRECTORY_WRITE_CHUNK`).
+    const DEPARTMENT_MAP_WRITE_CHUNK: usize = 2_000;
+
     /// Map a subtree of the company directory mirror into this project
     /// group's department tree (T6 stage 3). `all` is the deployment's whole
     /// directory mirror (the route handler reads it from
@@ -2221,44 +2233,58 @@ impl OrgService {
         let mut report = DirectoryMapReport::default();
         let now = now_ms() as i64;
 
-        for d in &ordered {
-            let is_root = d.external_id == root_external_id;
-            let local_parent_id: Option<String> = if is_root {
-                None
-            } else {
-                d.parent_external_id.as_ref().and_then(|p| by_external.get(p).cloned())
-            };
+        // Chunked for the same reason as `EnterpriseService::apply_directory_snapshot`
+        // (dream-domain-enterprise/src/directory.rs): a company directory subtree
+        // can scale with headcount, and one transaction over all of it would hold
+        // SQLite's single writer lock for the whole write — measured there at
+        // 632-2194ms for 50k rows against a 5s busy_timeout the conversation path
+        // shares. `DEPARTMENT_MAP_WRITE_CHUNK` keeps each transaction in the
+        // 26-106ms range that measurement found safe. Each chunk still commits
+        // atomically; only the whole-subtree write is no longer a single atomic
+        // unit, which is fine here for the same reason it's fine there — a
+        // partial run just leaves some rows for the next map to catch up on.
+        for chunk in ordered.chunks(Self::DEPARTMENT_MAP_WRITE_CHUNK) {
+            let mut tx = self.pool.begin().await?;
+            for d in chunk {
+                let is_root = d.external_id == root_external_id;
+                let local_parent_id: Option<String> = if is_root {
+                    None
+                } else {
+                    d.parent_external_id.as_ref().and_then(|p| by_external.get(p).cloned())
+                };
 
-            if let Some(existing_id) = by_external.get(&d.external_id).cloned() {
-                sqlx::query("UPDATE one_departments SET name = ?, parent_id = ?, updated_at = ? WHERE id = ?")
-                    .bind(&d.name)
+                if let Some(existing_id) = by_external.get(&d.external_id).cloned() {
+                    sqlx::query("UPDATE one_departments SET name = ?, parent_id = ?, updated_at = ? WHERE id = ?")
+                        .bind(&d.name)
+                        .bind(&local_parent_id)
+                        .bind(now)
+                        .bind(&existing_id)
+                        .execute(&mut *tx)
+                        .await?;
+                    report.updated.push(d.name.clone());
+                } else {
+                    let id = short_id("dept");
+                    sqlx::query(
+                        "INSERT INTO one_departments \
+                         (id, tenant_id, parent_id, name, source, directory_external_id, \
+                          directory_map_root_external_id, created_at, updated_at) \
+                         VALUES (?, ?, ?, ?, 'directory', ?, ?, ?, ?)",
+                    )
+                    .bind(&id)
+                    .bind(tenant_id)
                     .bind(&local_parent_id)
+                    .bind(&d.name)
+                    .bind(&d.external_id)
+                    .bind(root_external_id)
                     .bind(now)
-                    .bind(&existing_id)
-                    .execute(&self.pool)
+                    .bind(now)
+                    .execute(&mut *tx)
                     .await?;
-                report.updated.push(d.name.clone());
-            } else {
-                let id = short_id("dept");
-                sqlx::query(
-                    "INSERT INTO one_departments \
-                     (id, tenant_id, parent_id, name, source, directory_external_id, \
-                      directory_map_root_external_id, created_at, updated_at) \
-                     VALUES (?, ?, ?, ?, 'directory', ?, ?, ?, ?)",
-                )
-                .bind(&id)
-                .bind(tenant_id)
-                .bind(&local_parent_id)
-                .bind(&d.name)
-                .bind(&d.external_id)
-                .bind(root_external_id)
-                .bind(now)
-                .bind(now)
-                .execute(&self.pool)
-                .await?;
-                by_external.insert(d.external_id.clone(), id);
-                report.created.push(d.name.clone());
+                    by_external.insert(d.external_id.clone(), id);
+                    report.created.push(d.name.clone());
+                }
             }
+            tx.commit().await?;
         }
 
         // Anything previously mapped that fell out of the subtree this run —
@@ -2914,6 +2940,55 @@ mod tests {
         let ids_after: std::collections::HashSet<_> = depts.iter().map(|d| d.id.clone()).collect();
         assert_eq!(ids_before, ids_after, "same rows, just updated");
         assert!(depts.iter().any(|d| d.name == "后端与平台组"));
+    }
+
+    /// A subtree larger than `DEPARTMENT_MAP_WRITE_CHUNK` must still land
+    /// entirely in one call, split across multiple transactions rather than
+    /// one unbounded one. Exercises the exact boundary: one more row than a
+    /// single chunk, so the parent-resolution map (`by_external`) has to
+    /// carry state across a `tx.commit()` for at least one child.
+    #[tokio::test]
+    async fn map_directory_subtree_spans_multiple_write_chunks() {
+        let (_db, service, _user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+
+        let child_count = OrgService::DEPARTMENT_MAP_WRITE_CHUNK + 1;
+        let mut all = vec![dref("od_root", None, "研发中心")];
+        all.extend((0..child_count).map(|i| dref(&format!("od_child_{i}"), Some("od_root"), &format!("小组{i}"))));
+
+        let report = service
+            .map_directory_subtree(&tenant_id, "od_root", &all)
+            .await
+            .unwrap();
+        assert_eq!(report.created.len(), child_count + 1, "root + every child created");
+        assert!(report.updated.is_empty());
+
+        let depts = service.list_departments(&tenant_id).await.unwrap();
+        assert_eq!(depts.len(), child_count + 1);
+        let root = depts.iter().find(|d| d.name == "研发中心").unwrap();
+        assert_eq!(
+            depts
+                .iter()
+                .filter(|d| d.parent_id.as_deref() == Some(root.id.as_str()))
+                .count(),
+            child_count,
+            "every child resolved to the root's local id, including the ones written after the first chunk committed"
+        );
+
+        // Re-running with the same input must update every row in place, not
+        // duplicate any of them — proves the second run's own chunking also
+        // sees the full existing set, not just whichever chunk it's currently
+        // committing.
+        let report = service
+            .map_directory_subtree(&tenant_id, "od_root", &all)
+            .await
+            .unwrap();
+        assert_eq!(report.updated.len(), child_count + 1);
+        assert!(report.created.is_empty());
+        assert_eq!(
+            service.list_departments(&tenant_id).await.unwrap().len(),
+            child_count + 1
+        );
     }
 
     /// ⚠️ The safety rule the whole reconcile step leans on: a mapped row that
