@@ -34,13 +34,21 @@ use crate::siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
 /// are resolved together by `PlatformService::effective_resource_ids`.
 pub const GRANT_SUBJECT_TYPES: [&str; 3] = ["member", "department", "scene"];
 
-/// Valid `resource_type` values. Mirrors the four registries
+/// Valid `resource_type` values. Mirrors the five registries
 /// `dream-domain-devops` already has a `scope`/`visibility` column on
-/// (skills, MCP servers, model channels) plus digital employees
-/// (`dream-domain-employee`, no admin-facing registry yet). `model` and
-/// `channel` are one dimension here (`model_channel`) because they are one
-/// table upstream — a channel offers a set of models as a unit.
-pub const GRANT_RESOURCE_TYPES: [&str; 4] = ["skill", "mcp", "employee", "model_channel"];
+/// (skills, MCP servers, model channels, RAG knowledge documents) plus
+/// digital employees (`dream-domain-employee`, no admin-facing registry
+/// yet). `model` and `channel` are one dimension here (`model_channel`)
+/// because they are one table upstream — a channel offers a set of models
+/// as a unit. `knowledge` is the "知识库" half of E5's "知识与记忆治理" item
+/// — RAG documents (`dream_domain_devops::RagDocumentDto`) already exist and
+/// already carry `scope`/`visibility`, so this only needed a new
+/// `resource_type` value, not a new registry. There is no `resource_type`
+/// for "记忆集合" (memory collections): unlike knowledge documents, no
+/// memory-collection feature exists anywhere in this codebase to grant
+/// access to — governing a feature that isn't built would be fabricating
+/// both, not just the governance layer.
+pub const GRANT_RESOURCE_TYPES: [&str; 5] = ["skill", "mcp", "employee", "model_channel", "knowledge"];
 
 /// `resource_id` sentinel meaning "every resource of this type, now and
 /// whenever a new one is added" — the escape hatch for "give this department
@@ -1647,6 +1655,19 @@ mod tests {
         assert_eq!(grants.len(), 1);
         assert_eq!(grants[0].resource_id, "sk_1");
         assert_eq!(grants[0].granted_by, "admin1");
+    }
+
+    /// The "知识库" half of E5's "知识与记忆治理" item: RAG documents already
+    /// exist (`dream_domain_devops::RagDocumentDto`) and only needed a new
+    /// `resource_type` value to be grantable, not a new registry.
+    #[tokio::test]
+    async fn knowledge_is_a_valid_grant_resource_type() {
+        let (_db, service) = setup().await;
+        let grant = service
+            .grant_resource("t1", "member", "alice", "knowledge", "doc_1", "admin1")
+            .await
+            .unwrap();
+        assert_eq!(grant.resource_type, "knowledge");
     }
 
     #[tokio::test]
