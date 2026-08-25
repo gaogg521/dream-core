@@ -5,9 +5,15 @@ mode="${1:-release}"
 shift || true
 
 force=false
+# Everything else (e.g. `--features enterprise` from `just build-enterprise`)
+# is a real cargo flag and must reach `cargo build`, not just steer this
+# script's own cache check below.
+cargo_flags=()
 for flag in "$@"; do
     if [[ "$flag" == "--force" || "$flag" == "-f" ]]; then
         force=true
+    else
+        cargo_flags+=("$flag")
     fi
 done
 
@@ -23,14 +29,22 @@ sha256_file() {
 
 case "$mode" in
     release)
-        just _cargo build --release
-        binary="target/release/aioncore"
+        if ((${#cargo_flags[@]})); then
+            just _cargo build --release "${cargo_flags[@]}"
+        else
+            just _cargo build --release
+        fi
+        binary="target/release/dreamcore"
         sum_file="target/.build-sum"
         label="Build"
         ;;
     debug)
-        just _cargo build
-        binary="target/debug/aioncore"
+        if ((${#cargo_flags[@]})); then
+            just _cargo build "${cargo_flags[@]}"
+        else
+            just _cargo build
+        fi
+        binary="target/debug/dreamcore"
         sum_file="target/.build-debug-sum"
         label="Debug build"
         ;;

@@ -21,15 +21,19 @@ function Invoke-Native {
 }
 
 $force = $Flags -contains "--force" -or $Flags -contains "-f"
+# Everything else (e.g. `--features enterprise` from `just build-enterprise`)
+# is a real cargo flag and must reach `cargo build`, not just steer this
+# script's own cache check below.
+$cargoFlags = @($Flags | Where-Object { $_ -ne "--force" -and $_ -ne "-f" })
 
 if ($Mode -eq "release") {
-    Invoke-Native "just" @("_cargo", "build", "--release")
-    $binary = "target/release/aioncore.exe"
+    Invoke-Native "just" (@("_cargo", "build", "--release") + $cargoFlags)
+    $binary = "target/release/dreamcore.exe"
     $sumFile = "target/.build-sum"
     $label = "Build"
 } else {
-    Invoke-Native "just" @("_cargo", "build")
-    $binary = "target/debug/aioncore.exe"
+    Invoke-Native "just" (@("_cargo", "build") + $cargoFlags)
+    $binary = "target/debug/dreamcore.exe"
     $sumFile = "target/.build-debug-sum"
     $label = "Debug build"
 }
