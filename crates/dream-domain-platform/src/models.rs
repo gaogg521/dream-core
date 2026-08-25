@@ -55,3 +55,31 @@ pub struct SiemConfigDto {
     pub enabled: bool,
     pub updated_at: Option<i64>,
 }
+
+/// One row of the resource-authorization matrix (E5): `subject` (a member or
+/// a whole department) may reach `resource` (one skill / MCP server / digital
+/// employee / model channel, or every one of that type via `resource_id ==
+/// "*"`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceGrantDto {
+    pub id: String,
+    pub subject_type: String,
+    pub subject_id: String,
+    pub resource_type: String,
+    pub resource_id: String,
+    pub granted_by: String,
+    pub created_at: i64,
+}
+
+/// A member's resolved access to one resource type, after expanding both
+/// their own direct grants and every department grant reached by walking
+/// their department's ancestor chain. `all: true` short-circuits
+/// `resource_ids` (a wildcard grant makes the explicit id list moot); the
+/// list is otherwise the set of specific resource ids the caller may reach.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveGrantDto {
+    pub all: bool,
+    pub resource_ids: Vec<String>,
+}

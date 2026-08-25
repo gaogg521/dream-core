@@ -1,20 +1,33 @@
 //! `/api/one/admin/platform/*` routes — deployment infrastructure config
-//! (P1-3 container runtime + P2-2 realtime collaboration).
+//! (P1-3 container runtime + P2-2 realtime collaboration) and the E5
+//! resource-authorization matrix (`resource-grants*`).
 //!
 //! Mounted behind the upstream `auth_middleware` (relies on `CurrentUser` in
 //! request extensions). All routes are gated by `RequirePlatformAdmin`.
+//!
+//! ⚠️ The resource-grants endpoints let an admin record who may reach which
+//! skill / MCP server / digital employee / model channel, but nothing reads
+//! `PlatformService::effective_resource_ids` on the enforcement path yet — the
+//! four devops registries still gate purely on their own `scope`/`visibility`
+//! columns. This is the storage + resolution layer landing first because it's
+//! the part later work can't safely retrofit; wiring an actual check into
+//! each of the four resource kinds is separate, follow-up work.
 
-use axum::extract::State;
-use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::extract::{Path, Query, State};
+use axum::routing::{delete, get, post};
+use axum::{Extension, Json, Router};
 use serde::Deserialize;
 
 use dream_core_api_types::ApiResponse;
+use dream_core_auth::CurrentUser;
 
 use crate::collaboration::CollaborationStatus;
 use crate::container::ContainerStatus;
 use crate::error::PlatformError;
-use crate::models::{CollaborationConfigDto, ContainerConfigDto, IpAllowlistConfigDto, SiemConfigDto};
+use crate::models::{
+    CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, IpAllowlistConfigDto, ResourceGrantDto,
+    SiemConfigDto,
+};
 use crate::rbac::RequirePlatformAdmin;
 use crate::siem::SiemStatus;
 use crate::state::OnePlatformRouterState;
@@ -38,6 +51,18 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
         .route("/api/one/admin/platform/ip-allowlist/check", post(check_ip_allowlist))
         .route("/api/one/admin/platform/siem", get(get_siem).put(set_siem))
         .route("/api/one/admin/platform/siem/probe", post(probe_siem))
+        .route(
+            "/api/one/admin/platform/resource-grants",
+            get(list_resource_grants).post(create_resource_grant),
+        )
+        .route(
+            "/api/one/admin/platform/resource-grants/{id}",
+            delete(delete_resource_grant),
+        )
+        .route(
+            "/api/one/admin/platform/resource-grants/effective",
+            get(effective_resource_grants),
+        )
         .with_state(state)
 }
 
@@ -257,4 +282,96 @@ async fn probe_siem(
     RequirePlatformAdmin(actor): RequirePlatformAdmin,
 ) -> Result<Json<ApiResponse<SiemStatus>>, PlatformError> {
     Ok(Json(ApiResponse::ok(state.service.probe_siem(&actor.tenant_id).await?)))
+}
+
+// --- E5 resource authorization matrix ---
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListGrantsQuery {
+    #[serde(default)]
+    subject_type: Option<String>,
+    #[serde(default)]
+    subject_id: Option<String>,
+    #[serde(default)]
+    resource_type: Option<String>,
+}
+
+async fn list_resource_grants(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Query(query): Query<ListGrantsQuery>,
+) -> Result<Json<ApiResponse<Vec<ResourceGrantDto>>>, PlatformError> {
+    let grants = state
+        .service
+        .list_grants(
+            &actor.tenant_id,
+            query.subject_type.as_deref(),
+            query.subject_id.as_deref(),
+            query.resource_type.as_deref(),
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(grants)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateGrantBody {
+    subject_type: String,
+    subject_id: String,
+    resource_type: String,
+    resource_id: String,
+}
+
+async fn create_resource_grant(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<CreateGrantBody>,
+) -> Result<Json<ApiResponse<ResourceGrantDto>>, PlatformError> {
+    let dto = state
+        .service
+        .grant_resource(
+            &actor.tenant_id,
+            &body.subject_type,
+            &body.subject_id,
+            &body.resource_type,
+            &body.resource_id,
+            &user.id,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn delete_resource_grant(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, PlatformError> {
+    state.service.revoke_resource(&actor.tenant_id, &id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EffectiveGrantsQuery {
+    member_id: String,
+    resource_type: String,
+}
+
+/// What one member can reach for one resource type, resolved through their
+/// own grants and their department chain. Admin-gated for now, same as every
+/// other route here — a self-service "what can I see" endpoint for a caller
+/// to ask about themselves is a straightforward follow-up once something
+/// actually enforces this matrix, but nothing does yet (see the module docs).
+async fn effective_resource_grants(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Query(query): Query<EffectiveGrantsQuery>,
+) -> Result<Json<ApiResponse<EffectiveGrantDto>>, PlatformError> {
+    let dto = state
+        .service
+        .effective_resource_ids(&actor.tenant_id, &query.member_id, &query.resource_type)
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
 }

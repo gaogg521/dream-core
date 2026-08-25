@@ -18,6 +18,9 @@ pub enum PlatformError {
     #[error("Bad request: {0}")]
     BadRequest(String),
 
+    #[error("{0}")]
+    NotFound(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -28,6 +31,7 @@ impl PlatformError {
             Self::NotInEnterprise => "NOT_IN_ENTERPRISE",
             Self::Forbidden(_) => "FORBIDDEN",
             Self::BadRequest(_) => "BAD_REQUEST",
+            Self::NotFound(_) => "NOT_FOUND",
             Self::Internal(_) => "INTERNAL_ERROR",
         }
     }
@@ -35,6 +39,7 @@ impl PlatformError {
     fn status(&self) -> StatusCode {
         match self {
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
+            Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             _ => StatusCode::BAD_REQUEST,
         }

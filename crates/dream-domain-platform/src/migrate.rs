@@ -11,6 +11,10 @@ use crate::error::PlatformError;
 const MIGRATIONS: &[(&str, &str)] = &[
     ("001_init", include_str!("../migrations/001_init.sql")),
     ("002_security", include_str!("../migrations/002_security.sql")),
+    (
+        "003_resource_grants",
+        include_str!("../migrations/003_resource_grants.sql"),
+    ),
 ];
 
 /// Run all pending one-platform migrations. Idempotent; call once at startup
