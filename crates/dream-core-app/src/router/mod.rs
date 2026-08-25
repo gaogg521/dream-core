@@ -14,6 +14,8 @@ mod team_capability_resolver;
 mod team_conversation_adapters;
 mod trace;
 
+#[cfg(feature = "enterprise")]
+pub use routes::create_admin_router;
 /// Lives with the other one-billing adapters in `routes.rs`, but is wired in
 /// `AppServices` — the agent factory is built before any router exists.
 #[cfg(feature = "enterprise")]

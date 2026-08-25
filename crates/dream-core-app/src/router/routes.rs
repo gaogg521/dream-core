@@ -1228,6 +1228,156 @@ pub(crate) fn build_governance_plane(
     }
 }
 
+/// Route tree for the standalone `dreamcore-admin` binary.
+///
+/// Only the governance plane (`/api/one/{org,enterprise,billing,admin,sso}/*`
+/// — built by [`build_governance_plane`], the exact same assembly the main
+/// server mounts, so the two processes can never drift) plus the three
+/// admin-facing devops route groups ([`dream_domain_devops::admin_devops_routes`]:
+/// DLP rule authoring, model-channel deletion, offboarding ownership
+/// transfer). No conversation / agent / mcp / file / channel / cron /
+/// WebSocket surface, and no `/api/auth/*` — login happens against the main
+/// `dreamcore` process (proxied at the gateway's catch-all) and the resulting
+/// session cookie is presented to this process directly, since both trust the
+/// same JWT secret out of the same database.
+#[cfg(feature = "enterprise")]
+pub async fn create_admin_router(services: &AppServices) -> Result<Router, RouterBuildError> {
+    // Same five migrations `create_router_with_runtime` runs (see there for
+    // why billing must come after enterprise). `dream_domain_employee` is
+    // deliberately not run here: admin never touches its tables — see
+    // dream-en's docs/roadmap.zh-CN.md, E1.5's per-route survey.
+    dream_domain_org::run_one_migrations(services.database.pool())
+        .await
+        .map_err(|e| {
+            RouterBuildError::new("router.dream_domain_org.migrate", "failed to run one-org migrations").with_source(e)
+        })?;
+    dream_domain_sso::run_one_sso_migrations(services.database.pool())
+        .await
+        .map_err(|e| {
+            RouterBuildError::new("router.dream_domain_sso.migrate", "failed to run one-sso migrations").with_source(e)
+        })?;
+    dream_domain_devops::run_one_devops_migrations(services.database.pool())
+        .await
+        .map_err(|e| {
+            RouterBuildError::new(
+                "router.dream_domain_devops.migrate",
+                "failed to run one-devops migrations",
+            )
+            .with_source(e)
+        })?;
+    dream_domain_enterprise::run_one_enterprise_migrations(services.database.pool())
+        .await
+        .map_err(|e| {
+            RouterBuildError::new(
+                "router.dream_domain_enterprise.migrate",
+                "failed to run one-enterprise migrations",
+            )
+            .with_source(e)
+        })?;
+    // MUST run after one-enterprise: billing_001_init grandfathers existing
+    // one_enterprises rows to the top tier.
+    dream_domain_billing::run_one_billing_migrations(services.database.pool())
+        .await
+        .map_err(|e| {
+            RouterBuildError::new(
+                "router.dream_domain_billing.migrate",
+                "failed to run one-billing migrations",
+            )
+            .with_source(e)
+        })?;
+    dream_domain_platform::run_one_platform_migrations(services.database.pool())
+        .await
+        .map_err(|e| {
+            RouterBuildError::new(
+                "router.dream_domain_platform.migrate",
+                "failed to run one-platform migrations",
+            )
+            .with_source(e)
+        })?;
+
+    // Built ahead of `AuthState` so the IP allowlist can be wired into the
+    // auth middleware — mirrors `create_router_with_all_state`.
+    let one_platform_service = std::sync::Arc::new(dream_domain_platform::PlatformService::new(
+        services.database.pool().clone(),
+        crate::config::derive_encryption_key(&services.data_secret_raw),
+    ));
+    let policy_grace = services.policy_grace.clone();
+    let ip_allowlist: Option<std::sync::Arc<dyn dream_core_auth::IpAllowlistGate>> =
+        Some(std::sync::Arc::new(PlatformIpAllowlistGate {
+            platform: one_platform_service.clone(),
+            grace: policy_grace.clone(),
+        }));
+    let auth_mw_state = AuthState {
+        jwt_service: services.jwt_service.clone(),
+        user_repo: services.user_repo.clone(),
+        identity_mode: auth_identity_mode(services.identity_mode),
+        // No conversation-helper CLI ever calls this process.
+        runtime_token_verifier: None,
+        ip_allowlist,
+    };
+
+    let one_devops_service = std::sync::Arc::new(
+        dream_domain_devops::DevopsService::new(services.database.pool().clone())
+            .with_encryption_key(crate::config::derive_encryption_key(&services.data_secret_raw)),
+    );
+    let one_billing_service = services.billing.clone();
+
+    let governance = build_governance_plane(
+        services,
+        &auth_mw_state,
+        one_devops_service.clone(),
+        one_platform_service.clone(),
+        one_billing_service.clone(),
+    );
+
+    let one_devops_state = dream_domain_devops::OneDevopsRouterState::new(one_devops_service)
+        .with_tenant_resolver(governance.tenant_resolver.clone());
+    let admin_devops_authenticated = dream_domain_devops::admin_devops_routes(one_devops_state)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
+    let router = Router::new()
+        .route("/health", get(health_check))
+        .merge(governance.org)
+        .merge(governance.enterprise)
+        .merge(governance.billing)
+        .merge(governance.platform)
+        .merge(governance.sso_public)
+        .merge(governance.sso_admin)
+        .merge(admin_devops_authenticated)
+        .layer(middleware::from_fn_with_state(
+            services.cookie_config.clone(),
+            csrf_middleware,
+        ))
+        .layer(middleware::from_fn(security_headers_middleware));
+
+    let router = router.layer(DefaultBodyLimit::max(dream_core_common::constants::BODY_LIMIT));
+    let router = router.layer(middleware::from_fn(normalize_boundary_error_response));
+    let router = with_access_log(router);
+
+    // Governance calls only ever arrive same-origin through the gateway
+    // (admin console, admin API), so credentialed CORS with the request
+    // origin reflected back is all that's needed — no bespoke local-mode
+    // wildcard carve-out like the personal workbench has.
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::mirror_request())
+        .allow_credentials(true)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            HeaderName::from_static("x-csrf-token"),
+        ]);
+
+    Ok(router.layer(cors))
+}
+
 pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates, ws_state: WsHandlerState) -> Router {
     let boot = Instant::now();
     tracing::info!("startup: route tree build with states started");

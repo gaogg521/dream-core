@@ -8,6 +8,11 @@ exclude = ["data/**"]
 name = "dreamcore"
 path = "src/main.rs"
 
+[[bin]]
+name = "dreamcore-admin"
+path = "src/bin/admin.rs"
+required-features = ["enterprise"]
+
 [features]
 default = ["telegram", "lark", "dingtalk", "weixin", "slack", "discord"]
 

@@ -126,6 +126,31 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
         .with_state(state)
 }
 
+/// Governance-only subset of `/api/one/devops/*`, mounted by the standalone
+/// `dreamcore-admin` binary alongside org/enterprise/billing/platform/sso.
+///
+/// Every other devops route (requirements, skills, mcp-registry, rag,
+/// milestones, test-plans, pipelines) has no admin-console caller — the
+/// per-route front-end audit behind this split found the admin console only
+/// ever calls DLP rule authoring, model-channel deletion, and offboarding
+/// ownership transfer (see dream-en's docs/roadmap.zh-CN.md, E1.5) — so they
+/// stay exclusive to `one_devops_routes` on the personal-workbench process.
+pub fn admin_devops_routes(state: OneDevopsRouterState) -> Router {
+    Router::new()
+        .route("/api/one/devops/dlp/rules", get(list_dlp_rules).post(upsert_dlp_rule))
+        .route("/api/one/devops/dlp/rules/{id}", axum::routing::delete(delete_dlp_rule))
+        .route(
+            "/api/one/devops/model-channels/{id}",
+            axum::routing::delete(delete_model_channel),
+        )
+        .route("/api/one/devops/ownership/{user_id}/count", get(count_owned_resources))
+        .route(
+            "/api/one/devops/ownership/transfer",
+            axum::routing::post(transfer_ownership),
+        )
+        .with_state(state)
+}
+
 // -- requirements ---------------------------------------------------------
 
 async fn requirements_tree(
