@@ -20,11 +20,23 @@
 //!     --customer "Acme Inc" \
 //!     --tier enterprise \
 //!     --seats 50 \
-//!     --days 365
+//!     --days 365 \
+//!     --tenant-cap 10 \
+//!     --agent-node-cap 20 \
+//!     --cpu-cores-cap 64 \
+//!     --memory-mb-cap 131072 \
+//!     --module /admin/* \
+//!     --serial SN-0001
 //! ```
 //!
-//! Omit `--days` for a perpetual license; omit `--seats` to use the tier's
-//! default cap.
+//! Omit `--days` for a perpetual license; omit `--seats` (or any of the
+//! `--*-cap` flags) to leave that quota unlimited. `--module` is repeatable —
+//! each occurrence names one module this license authorizes, always
+//! open-ended (activation window / per-module expiry aren't exposed here;
+//! construct a `LicensePayload` directly for that). Omitting `--module`
+//! entirely leaves the license with no per-module restriction at all — see
+//! `LicensePayload::module_authorized`'s doc comment for why that means
+//! "every module authorized", not "none".
 //!
 //! # Inspect a key (no secret needed)
 //!
@@ -32,7 +44,7 @@
 //! cargo run -p one-billing --example license_tool -- inspect --key ONEWORK-...
 //! ```
 
-use dream_domain_billing::license_key::{LicensePayload, sign_license_key, verify_license_key};
+use dream_domain_billing::license_key::{LicenseModuleGrant, LicensePayload, sign_license_key, verify_license_key};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -44,7 +56,9 @@ fn main() {
         "inspect" => inspect(&args),
         _ => eprintln!(
             "usage:\n  license_tool keygen\n  license_tool issue --secret <B64> --customer <NAME> \
-             --tier <free|team|enterprise> [--seats N] [--days N]\n  license_tool inspect --key <KEY>"
+             --tier <free|team|enterprise> [--seats N] [--days N] [--tenant-cap N] [--agent-node-cap N] \
+             [--cpu-cores-cap N] [--memory-mb-cap N] [--module NAME]... [--serial S] [--app-id ID] \
+             [--file-name NAME]\n  license_tool inspect --key <KEY>"
         ),
     }
 }
@@ -70,6 +84,15 @@ fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     args.get(idx + 1).map(String::as_str)
 }
 
+/// Every occurrence's value, in order — for `--module`, which is repeatable.
+fn flag_all<'a>(args: &'a [String], name: &str) -> Vec<&'a str> {
+    args.iter()
+        .zip(args.iter().skip(1))
+        .filter(|(a, _)| *a == name)
+        .map(|(_, v)| v.as_str())
+        .collect()
+}
+
 fn issue(args: &[String]) {
     let Some(secret) = flag(args, "--secret") else {
         return eprintln!("--secret is required");
@@ -87,6 +110,15 @@ fn issue(args: &[String]) {
         .and_then(|s| s.parse::<i64>().ok())
         .map(|days| now + days * 24 * 3600 * 1000);
 
+    let modules = flag_all(args, "--module")
+        .into_iter()
+        .map(|module| LicenseModuleGrant {
+            module: module.to_owned(),
+            starts_at: None,
+            expires_at: None,
+        })
+        .collect();
+
     let payload = LicensePayload {
         lid: format!("lic_{}", uuid::Uuid::now_v7().simple()),
         customer: customer.to_owned(),
@@ -94,6 +126,14 @@ fn issue(args: &[String]) {
         seats,
         exp,
         iat: now,
+        tenant_cap: flag(args, "--tenant-cap").and_then(|s| s.parse::<i64>().ok()),
+        agent_node_cap: flag(args, "--agent-node-cap").and_then(|s| s.parse::<i64>().ok()),
+        cpu_cores_cap: flag(args, "--cpu-cores-cap").and_then(|s| s.parse::<i64>().ok()),
+        memory_mb_cap: flag(args, "--memory-mb-cap").and_then(|s| s.parse::<i64>().ok()),
+        modules,
+        serial: flag(args, "--serial").map(str::to_owned),
+        app_id: flag(args, "--app-id").map(str::to_owned),
+        file_name: flag(args, "--file-name").map(str::to_owned),
     };
 
     match sign_license_key(&payload, secret) {
@@ -112,6 +152,10 @@ fn issue(args: &[String]) {
                 payload.exp.map(|e| e.to_string()).unwrap_or_else(|| "never".into())
             );
             println!("license id: {}", payload.lid);
+            if !payload.modules.is_empty() {
+                let names: Vec<&str> = payload.modules.iter().map(|m| m.module.as_str()).collect();
+                println!("modules  : {}", names.join(", "));
+            }
             println!();
             println!("{key}");
         }

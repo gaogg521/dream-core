@@ -362,13 +362,25 @@ impl BillingService {
     ) -> Result<crate::license_key::LicensePayload, BillingError> {
         let payload = crate::license_key::verify_license_key(license_key)?;
 
+        // Re-serialized rather than storing the raw signed payload bytes: this
+        // table is a read model for the admin UI, not a re-verification
+        // source — `verify_license_key` already ran above, and a raw copy
+        // would need its own tamper story once it left the signed envelope.
+        let modules_json =
+            serde_json::to_string(&payload.modules).map_err(|e| BillingError::Internal(e.to_string()))?;
+
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO one_license_activation \
-                 (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by, \
+                  tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(license_id) DO UPDATE SET enterprise_id = excluded.enterprise_id, \
-                 activated_at = excluded.activated_at, activated_by = excluded.activated_by",
+                 activated_at = excluded.activated_at, activated_by = excluded.activated_by, \
+                 tenant_cap = excluded.tenant_cap, agent_node_cap = excluded.agent_node_cap, \
+                 cpu_cores_cap = excluded.cpu_cores_cap, memory_mb_cap = excluded.memory_mb_cap, \
+                 modules = excluded.modules, serial = excluded.serial, app_id = excluded.app_id, \
+                 file_name = excluded.file_name",
         )
         .bind(&payload.lid)
         .bind(enterprise_id)
@@ -379,6 +391,14 @@ impl BillingService {
         .bind(payload.iat)
         .bind(now_ms())
         .bind(activated_by)
+        .bind(payload.tenant_cap)
+        .bind(payload.agent_node_cap)
+        .bind(payload.cpu_cores_cap)
+        .bind(payload.memory_mb_cap)
+        .bind(&modules_json)
+        .bind(&payload.serial)
+        .bind(&payload.app_id)
+        .bind(&payload.file_name)
         .execute(&mut *tx)
         .await?;
 
@@ -410,16 +430,48 @@ impl BillingService {
     /// ever activated. Shown in the admin UI so an operator can see what was
     /// bought, for whom, and when it lapses.
     pub async fn active_license(&self, enterprise_id: &str) -> Result<Option<LicenseInfoDto>, BillingError> {
-        type Row = (String, String, String, Option<i64>, Option<i64>, i64);
+        #[allow(clippy::type_complexity)]
+        type Row = (
+            String,
+            String,
+            String,
+            Option<i64>,
+            Option<i64>,
+            i64,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
         let row: Option<Row> = sqlx::query_as(
-            "SELECT license_id, customer, tier, seats, expires_at, activated_at \
+            "SELECT license_id, customer, tier, seats, expires_at, activated_at, \
+                    tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name \
              FROM one_license_activation WHERE enterprise_id = ? ORDER BY activated_at DESC LIMIT 1",
         )
         .bind(enterprise_id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(
-            |(license_id, customer, tier, seats, expires_at, activated_at)| LicenseInfoDto {
+            |(
+                license_id,
+                customer,
+                tier,
+                seats,
+                expires_at,
+                activated_at,
+                tenant_cap,
+                agent_node_cap,
+                cpu_cores_cap,
+                memory_mb_cap,
+                modules_json,
+                serial,
+                app_id,
+                file_name,
+            )| LicenseInfoDto {
                 license_id,
                 customer,
                 tier,
@@ -427,6 +479,18 @@ impl BillingService {
                 expires_at,
                 activated_at,
                 expired: expires_at.is_some_and(|e| e <= now_ms()),
+                tenant_cap,
+                agent_node_cap,
+                cpu_cores_cap,
+                memory_mb_cap,
+                // A row written before billing_006 (or a corrupt value —
+                // neither should ever block reading the rest of the license)
+                // falls back to "no per-module restriction configured",
+                // same permissive default as an absent field.
+                modules: serde_json::from_str(&modules_json).unwrap_or_default(),
+                serial,
+                app_id,
+                file_name,
             },
         ))
     }
@@ -2242,5 +2306,58 @@ mod tests {
             .await
             .unwrap();
         assert!(unretained.is_empty());
+    }
+
+    /// `activate_license` needs a key signed by the vendor's (deliberately
+    /// offline, never-committed) private key, so it can't run end to end in a
+    /// unit test — this exercises `active_license`'s own read/deserialize
+    /// path directly against a row shaped the way `activate_license` writes
+    /// one (billing_006's E4 columns included).
+    #[tokio::test]
+    async fn active_license_reads_back_e4_quotas_and_modules() {
+        let svc = service().await;
+        sqlx::query(
+            "INSERT INTO one_license_activation \
+                 (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by, \
+                  tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name) \
+             VALUES ('lic1', 'ent1', 'Acme', 'enterprise', 50, NULL, 0, 0, 'admin1', \
+                     10, 20, 64, 131072, '[{\"module\":\"/admin/*\",\"startsAt\":null,\"expiresAt\":null}]', \
+                     'SN-0001', 'one-work', 'acme.lic')",
+        )
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+
+        let info = svc.active_license("ent1").await.unwrap().unwrap();
+        assert_eq!(info.tenant_cap, Some(10));
+        assert_eq!(info.agent_node_cap, Some(20));
+        assert_eq!(info.cpu_cores_cap, Some(64));
+        assert_eq!(info.memory_mb_cap, Some(131_072));
+        assert_eq!(info.modules.len(), 1);
+        assert_eq!(info.modules[0].module, "/admin/*");
+        assert_eq!(info.serial.as_deref(), Some("SN-0001"));
+        assert_eq!(info.app_id.as_deref(), Some("one-work"));
+        assert_eq!(info.file_name.as_deref(), Some("acme.lic"));
+    }
+
+    /// A row written before billing_006 has no `modules` value to read —
+    /// covered by the column's own `NOT NULL DEFAULT '[]'`, but confirmed
+    /// here in case a future edit weakens that default: this must still
+    /// resolve to "no restriction", not an error swallowing the whole license.
+    #[tokio::test]
+    async fn active_license_tolerates_a_pre_e4_row_with_no_quota_columns() {
+        let svc = service().await;
+        sqlx::query(
+            "INSERT INTO one_license_activation \
+                 (license_id, enterprise_id, customer, tier, issued_at, activated_at, activated_by) \
+             VALUES ('lic1', 'ent1', 'Acme', 'enterprise', 0, 0, 'admin1')",
+        )
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+
+        let info = svc.active_license("ent1").await.unwrap().unwrap();
+        assert_eq!(info.tenant_cap, None);
+        assert!(info.modules.is_empty());
     }
 }

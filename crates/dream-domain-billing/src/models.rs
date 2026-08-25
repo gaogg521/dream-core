@@ -2,6 +2,8 @@
 
 use serde::Serialize;
 
+use crate::license_key::LicenseModuleGrant;
+
 /// Whether a feature is included in the current plan.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -53,6 +55,18 @@ pub struct LicenseInfoDto {
     pub expires_at: Option<i64>,
     pub activated_at: i64,
     pub expired: bool,
+
+    // --- E4: quotas beyond seats, mirroring `LicensePayload`. `null` = unlimited. ---
+    pub tenant_cap: Option<i64>,
+    pub agent_node_cap: Option<i64>,
+    pub cpu_cores_cap: Option<i64>,
+    pub memory_mb_cap: Option<i64>,
+    /// Empty = no per-module restriction configured — see
+    /// `LicensePayload::module_authorized`'s doc comment for what that means.
+    pub modules: Vec<LicenseModuleGrant>,
+    pub serial: Option<String>,
+    pub app_id: Option<String>,
+    pub file_name: Option<String>,
 }
 
 /// One aggregation bucket (by user, by model, or by day).

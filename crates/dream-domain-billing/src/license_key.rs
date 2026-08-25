@@ -55,7 +55,10 @@ const KEY_PREFIX: &str = "ONEWORK-";
 /// The signed claims inside a license key.
 ///
 /// Field names are short and stable: they are part of the signed bytes, so
-/// renaming one invalidates every key already in the field.
+/// renaming one invalidates every key already in the field. New fields must
+/// be `#[serde(default)]` (or default-safe, like an empty `Vec`) so a key
+/// issued before the field existed still deserializes — every field added
+/// after `iat` follows this rule.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LicensePayload {
     /// Unique id for this key. Used to make activation idempotent and to let
@@ -66,7 +69,7 @@ pub struct LicensePayload {
     pub customer: String,
     /// `"free" | "team" | "enterprise"`.
     pub tier: String,
-    /// Seat cap. `None` = use the tier default (which may be unlimited).
+    /// Seat (user) cap. `None` = use the tier default (which may be unlimited).
     #[serde(default)]
     pub seats: Option<i64>,
     /// Expiry, epoch ms. `None` = perpetual.
@@ -74,6 +77,86 @@ pub struct LicensePayload {
     pub exp: Option<i64>,
     /// Issued-at, epoch ms. Informational.
     pub iat: i64,
+
+    // --- Quotas beyond seats (E4: reference-product parity, architecture
+    // plan §3.5). All `None` = unlimited, same convention as `seats` — so a
+    // key issued before these existed reads as unconstrained on every one of
+    // them, not as zero.
+    /// Project-group (tenant) count cap.
+    #[serde(default)]
+    pub tenant_cap: Option<i64>,
+    /// Agent runtime node cap.
+    #[serde(default)]
+    pub agent_node_cap: Option<i64>,
+    /// Aggregate CPU core cap across managed agent nodes.
+    #[serde(default)]
+    pub cpu_cores_cap: Option<i64>,
+    /// Aggregate memory cap (MB) across managed agent nodes.
+    #[serde(default)]
+    pub memory_mb_cap: Option<i64>,
+
+    /// Per-module authorization (E4). Each module gets its own optional
+    /// activation/expiry window, independent of the whole license's `exp` —
+    /// this is what lets a vendor sell `/admin/*` on a different clock than
+    /// the base subscription. See [`LicensePayload::module_authorized`] for
+    /// why an empty list means "no restriction" rather than "nothing
+    /// authorized": that is what keeps this field additive for every license
+    /// issued before it existed.
+    #[serde(default)]
+    pub modules: Vec<LicenseModuleGrant>,
+
+    /// Human-readable serial, shown alongside `lid` on the license detail
+    /// page for an operator to read off a paper/PDF copy.
+    #[serde(default)]
+    pub serial: Option<String>,
+    /// Product/application this key is issued for, for a vendor selling more
+    /// than one product line under the same signing key.
+    #[serde(default)]
+    pub app_id: Option<String>,
+    /// Suggested filename when a customer saves this key to disk.
+    #[serde(default)]
+    pub file_name: Option<String>,
+}
+
+/// One module's authorization window inside a [`LicensePayload`].
+///
+/// `module` is a stable identifier the checking code and the issuer agree on
+/// out of band — a route prefix like `/admin/*` (matching the reference
+/// product) or a UUID naming a specific add-on. This crate does not validate
+/// the identifier itself; that is the enforcement call site's job once one
+/// exists.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LicenseModuleGrant {
+    pub module: String,
+    /// `None` = authorized from the moment the license is read, not gated on
+    /// a future activation date.
+    #[serde(default)]
+    pub starts_at: Option<i64>,
+    /// `None` = no separate expiry for this module (falls back to the whole
+    /// license's own `exp`).
+    #[serde(default)]
+    pub expires_at: Option<i64>,
+}
+
+impl LicensePayload {
+    /// Whether `module` is authorized at `now_ms`.
+    ///
+    /// An empty `modules` list means this license has no per-module
+    /// restriction configured at all — every module the license's `tier`
+    /// would otherwise grant stays available. That is deliberate: it is what
+    /// makes `modules` additive for every license issued before this field
+    /// existed, per the struct's own doc comment. Once `modules` is
+    /// non-empty, it becomes an explicit allowlist: a module not named in it
+    /// is not authorized, even if the whole license is otherwise valid.
+    pub fn module_authorized(&self, module: &str, now_ms: i64) -> bool {
+        if self.modules.is_empty() {
+            return true;
+        }
+        self.modules.iter().any(|m| {
+            m.module == module && m.starts_at.is_none_or(|s| now_ms >= s) && m.expires_at.is_none_or(|e| now_ms < e)
+        })
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -180,6 +263,14 @@ mod tests {
             seats: Some(25),
             exp,
             iat: 1_700_000_000_000,
+            tenant_cap: None,
+            agent_node_cap: None,
+            cpu_cores_cap: None,
+            memory_mb_cap: None,
+            modules: Vec::new(),
+            serial: None,
+            app_id: None,
+            file_name: None,
         }
     }
 
@@ -247,7 +338,10 @@ mod tests {
         // Signed by a foreign key, so signature fails first — assert on the
         // expiry check directly instead, via a payload past its expiry.
         let p = payload("team", Some(1_600_000_000_000));
-        assert!(p.exp.unwrap() < dream_core_common::now_ms(), "fixture must be in the past");
+        assert!(
+            p.exp.unwrap() < dream_core_common::now_ms(),
+            "fixture must be in the past"
+        );
     }
 
     #[test]
@@ -258,5 +352,119 @@ mod tests {
             load_public_key().is_ok(),
             "LICENSE_PUBLIC_KEY_B64 must decode to a valid Ed25519 key"
         );
+    }
+
+    /// The whole point of the E4 field additions: a license signed before any
+    /// of them existed must still deserialize, with every new field reading
+    /// as "unconstrained" rather than failing to parse or, worse, `Some(0)` /
+    /// an implicit deny.
+    #[test]
+    fn a_pre_e4_payload_deserializes_with_permissive_defaults() {
+        let legacy_json = serde_json::json!({
+            "lid": "lic_legacy_1",
+            "customer": "Legacy Co",
+            "tier": "team",
+            "seats": 10,
+            "exp": null,
+            "iat": 1_700_000_000_000i64,
+        });
+        let payload: LicensePayload = serde_json::from_value(legacy_json).unwrap();
+        assert_eq!(payload.tenant_cap, None);
+        assert_eq!(payload.agent_node_cap, None);
+        assert_eq!(payload.cpu_cores_cap, None);
+        assert_eq!(payload.memory_mb_cap, None);
+        assert!(payload.modules.is_empty());
+        assert_eq!(payload.serial, None);
+        assert_eq!(payload.app_id, None);
+        assert_eq!(payload.file_name, None);
+
+        // And the permissive default for `modules` must actually mean
+        // "authorized" for every module, not just deserialize without error.
+        assert!(payload.module_authorized("/admin/*", dream_core_common::now_ms()));
+    }
+
+    #[test]
+    fn module_authorized_treats_a_nonempty_list_as_an_allowlist() {
+        let mut p = payload("enterprise", None);
+        p.modules = vec![LicenseModuleGrant {
+            module: "/admin/*".to_owned(),
+            starts_at: None,
+            expires_at: None,
+        }];
+
+        assert!(p.module_authorized("/admin/*", dream_core_common::now_ms()));
+        assert!(
+            !p.module_authorized("/billing/*", dream_core_common::now_ms()),
+            "a module not named in a non-empty list must not be authorized"
+        );
+    }
+
+    #[test]
+    fn module_authorized_respects_its_own_activation_window() {
+        let now = 1_700_000_000_000i64;
+        let p_not_yet = {
+            let mut p = payload("enterprise", None);
+            p.modules = vec![LicenseModuleGrant {
+                module: "/admin/*".to_owned(),
+                starts_at: Some(now + 1_000),
+                expires_at: None,
+            }];
+            p
+        };
+        assert!(!p_not_yet.module_authorized("/admin/*", now), "not active yet");
+        assert!(p_not_yet.module_authorized("/admin/*", now + 2_000), "active now");
+
+        let p_expired = {
+            let mut p = payload("enterprise", None);
+            p.modules = vec![LicenseModuleGrant {
+                module: "/admin/*".to_owned(),
+                starts_at: None,
+                expires_at: Some(now - 1_000),
+            }];
+            p
+        };
+        assert!(
+            !p_expired.module_authorized("/admin/*", now),
+            "a module past its own expiry must not be authorized even though the whole license may still be valid"
+        );
+    }
+
+    /// New fields round-trip through the real sign/verify path, not just
+    /// serde in isolation.
+    #[test]
+    fn new_fields_survive_a_real_sign_and_verify_round_trip() {
+        let mut p = payload("enterprise", None);
+        p.tenant_cap = Some(5);
+        p.agent_node_cap = Some(20);
+        p.cpu_cores_cap = Some(64);
+        p.memory_mb_cap = Some(131_072);
+        p.modules = vec![LicenseModuleGrant {
+            module: "/admin/*".to_owned(),
+            starts_at: None,
+            expires_at: None,
+        }];
+        p.serial = Some("SN-0001".to_owned());
+        p.app_id = Some("one-work".to_owned());
+        p.file_name = Some("acme-enterprise.lic".to_owned());
+
+        let sk = SigningKey::from_bytes(&[9u8; 32]);
+        let sk_b64 = URL_SAFE_NO_PAD.encode(sk.to_bytes());
+        let key = sign_license_key(&p, &sk_b64).unwrap();
+
+        // Decode by hand (verify_license_key checks against the shipped
+        // vendor key, not this test's throwaway one) to confirm the bytes
+        // round-trip exactly.
+        let body = key.strip_prefix(KEY_PREFIX).unwrap();
+        let (payload_b64, _) = body.split_once('.').unwrap();
+        let decoded: LicensePayload = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload_b64).unwrap()).unwrap();
+        assert_eq!(decoded.tenant_cap, Some(5));
+        assert_eq!(decoded.agent_node_cap, Some(20));
+        assert_eq!(decoded.cpu_cores_cap, Some(64));
+        assert_eq!(decoded.memory_mb_cap, Some(131_072));
+        assert_eq!(decoded.modules.len(), 1);
+        assert_eq!(decoded.modules[0].module, "/admin/*");
+        assert_eq!(decoded.serial.as_deref(), Some("SN-0001"));
+        assert_eq!(decoded.app_id.as_deref(), Some("one-work"));
+        assert_eq!(decoded.file_name.as_deref(), Some("acme-enterprise.lic"));
     }
 }
