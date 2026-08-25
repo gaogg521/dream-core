@@ -1,6 +1,9 @@
 //! `/api/one/admin/platform/*` routes — deployment infrastructure config
-//! (P1-3 container runtime + P2-2 realtime collaboration) and the E5
-//! resource-authorization matrix (`resource-grants*`).
+//! (P1-3 container runtime + P2-2 realtime collaboration), the E5
+//! resource-authorization matrix (`resource-grants*`), and E5 scene
+//! management (`scenes*`) — a named bundle of resource grants a member gets
+//! in one action by joining the scene, instead of an admin granting each
+//! skill/tool/model/channel one at a time.
 //!
 //! Mounted behind the upstream `auth_middleware` (relies on `CurrentUser` in
 //! request extensions). All routes are gated by `RequirePlatformAdmin`.
@@ -25,7 +28,7 @@ use crate::collaboration::CollaborationStatus;
 use crate::container::ContainerStatus;
 use crate::error::PlatformError;
 use crate::models::{
-    CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, IpAllowlistConfigDto, ResourceGrantDto,
+    CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, IpAllowlistConfigDto, ResourceGrantDto, SceneDto,
     SiemConfigDto,
 };
 use crate::rbac::RequirePlatformAdmin;
@@ -62,6 +65,19 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
         .route(
             "/api/one/admin/platform/resource-grants/effective",
             get(effective_resource_grants),
+        )
+        .route("/api/one/admin/platform/scenes", get(list_scenes).post(create_scene))
+        .route(
+            "/api/one/admin/platform/scenes/{id}",
+            axum::routing::put(update_scene).delete(delete_scene),
+        )
+        .route(
+            "/api/one/admin/platform/scenes/{id}/members",
+            get(list_scene_members).post(add_scene_member),
+        )
+        .route(
+            "/api/one/admin/platform/scenes/{id}/members/{user_id}",
+            delete(remove_scene_member),
         )
         .with_state(state)
 }
@@ -374,4 +390,111 @@ async fn effective_resource_grants(
         .effective_resource_ids(&actor.tenant_id, &query.member_id, &query.resource_type)
         .await?;
     Ok(Json(ApiResponse::ok(dto)))
+}
+
+// --- E5 scene management ---
+
+async fn list_scenes(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<Vec<SceneDto>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_scenes(&actor.tenant_id).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SceneBody {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    job_functions: Vec<String>,
+}
+
+async fn create_scene(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Json(body): Json<SceneBody>,
+) -> Result<Json<ApiResponse<SceneDto>>, PlatformError> {
+    let dto = state
+        .service
+        .create_scene(
+            &actor.tenant_id,
+            &body.name,
+            body.description.as_deref(),
+            &body.job_functions,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn update_scene(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+    Json(body): Json<SceneBody>,
+) -> Result<Json<ApiResponse<SceneDto>>, PlatformError> {
+    let dto = state
+        .service
+        .update_scene(
+            &actor.tenant_id,
+            &id,
+            &body.name,
+            body.description.as_deref(),
+            &body.job_functions,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn delete_scene(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, PlatformError> {
+    state.service.delete_scene(&actor.tenant_id, &id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn list_scene_members(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<String>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_scene_members(&actor.tenant_id, &id).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+struct AddSceneMemberBody {
+    #[serde(rename = "userId")]
+    user_id: String,
+}
+
+async fn add_scene_member(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+    Json(body): Json<AddSceneMemberBody>,
+) -> Result<Json<ApiResponse<()>>, PlatformError> {
+    state
+        .service
+        .add_scene_member(&actor.tenant_id, &id, &body.user_id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn remove_scene_member(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path((id, user_id)): Path<(String, String)>,
+) -> Result<Json<ApiResponse<()>>, PlatformError> {
+    state
+        .service
+        .remove_scene_member(&actor.tenant_id, &id, &user_id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
 }

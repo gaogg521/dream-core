@@ -83,3 +83,19 @@ pub struct EffectiveGrantDto {
     pub all: bool,
     pub resource_ids: Vec<String>,
 }
+
+/// A scene (E5 "场景管理"): a named bundle of resource grants + descriptive
+/// job-function tags. `member_count` is the current roster size, shown in
+/// the admin UI's scene list without a second round trip.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneDto {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub job_functions: Vec<String>,
+    pub built_in: bool,
+    pub member_count: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}

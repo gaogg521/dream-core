@@ -15,6 +15,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "003_resource_grants",
         include_str!("../migrations/003_resource_grants.sql"),
     ),
+    ("004_scenes", include_str!("../migrations/004_scenes.sql")),
 ];
 
 /// Run all pending one-platform migrations. Idempotent; call once at startup

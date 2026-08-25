@@ -21,16 +21,17 @@ use crate::container::{ContainerRuntime, ContainerSettings, ContainerStatus, Noo
 use crate::error::PlatformError;
 use crate::ip_allowlist::ip_allowed;
 use crate::models::{
-    CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, IpAllowlistConfigDto, ResourceGrantDto,
+    CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, IpAllowlistConfigDto, ResourceGrantDto, SceneDto,
     SiemConfigDto,
 };
 use crate::siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
 
 /// Valid `subject_type` values for a resource grant (E5 four-dimensional
-/// matrix): a specific member, or every member under a department (resolved
-/// at read time by walking the department tree — see
-/// `PlatformService::effective_resource_ids`).
-pub const GRANT_SUBJECT_TYPES: [&str; 2] = ["member", "department"];
+/// matrix): a specific member, every member under a department (resolved at
+/// read time by walking the department tree), or every member of a scene
+/// (E5 "场景管理" — see `PlatformService::scene_ids_for_member`). All three
+/// are resolved together by `PlatformService::effective_resource_ids`.
+pub const GRANT_SUBJECT_TYPES: [&str; 3] = ["member", "department", "scene"];
 
 /// Valid `resource_type` values. Mirrors the four registries
 /// `dream-domain-devops` already has a `scope`/`visibility` column on
@@ -700,11 +701,53 @@ impl PlatformService {
         Ok(chain)
     }
 
+    /// Every grant's `resource_id` for one `subject_type` across a set of
+    /// subject ids, folded into the caller's running `(all, resource_ids)`
+    /// state. Shared by `effective_resource_ids` across its three subject
+    /// dimensions (member / department / scene) so each is one query shape
+    /// instead of three near-duplicates. No-ops (and issues no query) once
+    /// `*all` is already true or `subject_ids` is empty — the caller decides
+    /// whether to bother calling this at all past that point.
+    async fn fold_grants_for_subjects(
+        &self,
+        tenant_id: &str,
+        subject_type: &str,
+        subject_ids: &[String],
+        resource_type: &str,
+        all: &mut bool,
+        resource_ids: &mut std::collections::HashSet<String>,
+    ) -> Result<(), PlatformError> {
+        if *all || subject_ids.is_empty() {
+            return Ok(());
+        }
+        let placeholders = vec!["?"; subject_ids.len()].join(", ");
+        let sql = format!(
+            "SELECT resource_id FROM one_resource_grants \
+             WHERE tenant_id = ? AND subject_type = ? AND resource_type = ? AND subject_id IN ({placeholders})"
+        );
+        let mut query = sqlx::query_as::<_, (String,)>(&sql)
+            .bind(tenant_id)
+            .bind(subject_type)
+            .bind(resource_type);
+        for subject_id in subject_ids {
+            query = query.bind(subject_id);
+        }
+        for (resource_id,) in query.fetch_all(&self.pool).await? {
+            if resource_id == GRANT_ALL_RESOURCES {
+                *all = true;
+                return Ok(());
+            }
+            resource_ids.insert(resource_id);
+        }
+        Ok(())
+    }
+
     /// Resolve what `user_id` may reach for `resource_type`: their own direct
-    /// grants, plus every grant on their department or any ancestor of it.
-    /// `all: true` (a wildcard grant anywhere in that set) means every
-    /// resource of this type is reachable — callers should treat
-    /// `resource_ids` as irrelevant in that case, not "empty = nothing".
+    /// grants, every grant on their department or any ancestor of it, and
+    /// every grant on a scene (E5) they belong to. `all: true` (a wildcard
+    /// grant anywhere in that set) means every resource of this type is
+    /// reachable — callers should treat `resource_ids` as irrelevant in that
+    /// case, not "empty = nothing".
     pub async fn effective_resource_ids(
         &self,
         tenant_id: &str,
@@ -718,45 +761,37 @@ impl PlatformService {
         }
 
         let department_ids = self.department_ancestry(tenant_id, user_id).await?;
+        let scene_ids = self.scene_ids_for_member(tenant_id, user_id).await?;
         let mut resource_ids = std::collections::HashSet::new();
         let mut all = false;
 
-        let member_grants: Vec<(String,)> = sqlx::query_as(
-            "SELECT resource_id FROM one_resource_grants \
-             WHERE tenant_id = ? AND subject_type = 'member' AND subject_id = ? AND resource_type = ?",
+        self.fold_grants_for_subjects(
+            tenant_id,
+            "member",
+            std::slice::from_ref(&user_id.to_owned()),
+            resource_type,
+            &mut all,
+            &mut resource_ids,
         )
-        .bind(tenant_id)
-        .bind(user_id)
-        .bind(resource_type)
-        .fetch_all(&self.pool)
         .await?;
-        for (resource_id,) in member_grants {
-            if resource_id == GRANT_ALL_RESOURCES {
-                all = true;
-            } else {
-                resource_ids.insert(resource_id);
-            }
-        }
-
-        if !all && !department_ids.is_empty() {
-            let placeholders = vec!["?"; department_ids.len()].join(", ");
-            let sql = format!(
-                "SELECT resource_id FROM one_resource_grants \
-                 WHERE tenant_id = ? AND subject_type = 'department' AND resource_type = ? \
-                   AND subject_id IN ({placeholders})"
-            );
-            let mut query = sqlx::query_as::<_, (String,)>(&sql).bind(tenant_id).bind(resource_type);
-            for department_id in department_ids {
-                query = query.bind(department_id);
-            }
-            for (resource_id,) in query.fetch_all(&self.pool).await? {
-                if resource_id == GRANT_ALL_RESOURCES {
-                    all = true;
-                    break;
-                }
-                resource_ids.insert(resource_id);
-            }
-        }
+        self.fold_grants_for_subjects(
+            tenant_id,
+            "department",
+            &department_ids,
+            resource_type,
+            &mut all,
+            &mut resource_ids,
+        )
+        .await?;
+        self.fold_grants_for_subjects(
+            tenant_id,
+            "scene",
+            &scene_ids,
+            resource_type,
+            &mut all,
+            &mut resource_ids,
+        )
+        .await?;
 
         Ok(EffectiveGrantDto {
             all,
@@ -767,7 +802,282 @@ impl PlatformService {
             },
         })
     }
+
+    // --- Scene management (E5) ---
+
+    /// The 5 reference-product built-ins, seeded as empty templates (name +
+    /// description + job-function tags, no resource grants — see the
+    /// migration's own doc comment for why they can't ship pre-populated).
+    /// An admin fills each in via `grant_resource("scene", scene_id, ...)`.
+    const BUILTIN_SCENES: [(&'static str, &'static str, &'static [&'static str]); 5] = [
+        ("办公", "日常办公协作场景", &["行政", "文秘"]),
+        ("IT运维", "IT 基础设施运维场景", &["运维工程师"]),
+        ("网络安全", "安全监控与响应场景", &["安全工程师"]),
+        ("新媒体运营", "内容创作与社媒运营场景", &["内容运营", "社媒运营"]),
+        ("市场营销", "市场推广与营销分析场景", &["市场专员"]),
+    ];
+
+    /// Idempotent: `(tenant_id, name)` is UNIQUE, so calling this on a tenant
+    /// that already has its built-ins is a no-op. Called from `list_scenes`
+    /// rather than any tenant-creation hook — this crate takes no dependency
+    /// on dream-domain-org (see the module docs), so there is no "a new
+    /// project group was just created" signal to hang this off of.
+    async fn seed_builtin_scenes(&self, tenant_id: &str) -> Result<(), PlatformError> {
+        let now = now_ms();
+        for (name, description, job_functions) in Self::BUILTIN_SCENES {
+            let job_functions_json =
+                serde_json::to_string(job_functions).map_err(|e| PlatformError::Internal(e.to_string()))?;
+            sqlx::query(
+                "INSERT INTO one_scenes (id, tenant_id, name, description, job_functions, built_in, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, 1, ?, ?) \
+                 ON CONFLICT(tenant_id, name) DO NOTHING",
+            )
+            .bind(generate_prefixed_id("scene"))
+            .bind(tenant_id)
+            .bind(name)
+            .bind(description)
+            .bind(&job_functions_json)
+            .bind(now)
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn scene_row_to_dto(&self, row: SceneRow) -> Result<SceneDto, PlatformError> {
+        let member_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_scene_members WHERE scene_id = ?")
+            .bind(&row.0)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(SceneDto {
+            id: row.0,
+            name: row.2,
+            description: row.3,
+            job_functions: serde_json::from_str(&row.4).unwrap_or_default(),
+            built_in: row.5,
+            member_count,
+            created_at: row.6,
+            updated_at: row.7,
+        })
+    }
+
+    pub async fn list_scenes(&self, tenant_id: &str) -> Result<Vec<SceneDto>, PlatformError> {
+        self.seed_builtin_scenes(tenant_id).await?;
+        let rows: Vec<SceneRow> = sqlx::query_as(
+            "SELECT id, tenant_id, name, description, job_functions, built_in, created_at, updated_at \
+             FROM one_scenes WHERE tenant_id = ? ORDER BY built_in DESC, name ASC",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(self.scene_row_to_dto(row).await?);
+        }
+        Ok(out)
+    }
+
+    pub async fn create_scene(
+        &self,
+        tenant_id: &str,
+        name: &str,
+        description: Option<&str>,
+        job_functions: &[String],
+    ) -> Result<SceneDto, PlatformError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(PlatformError::BadRequest("scene name must not be empty".into()));
+        }
+        let id = generate_prefixed_id("scene");
+        let now = now_ms();
+        let job_functions_json =
+            serde_json::to_string(job_functions).map_err(|e| PlatformError::Internal(e.to_string()))?;
+        sqlx::query(
+            "INSERT INTO one_scenes (id, tenant_id, name, description, job_functions, built_in, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
+        )
+        .bind(&id)
+        .bind(tenant_id)
+        .bind(name)
+        .bind(description)
+        .bind(&job_functions_json)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db) if db.is_unique_violation() => {
+                PlatformError::BadRequest(format!("a scene named '{name}' already exists"))
+            }
+            _ => PlatformError::from(e),
+        })?;
+        self.get_scene(tenant_id, &id)
+            .await?
+            .ok_or_else(|| PlatformError::Internal("scene vanished immediately after insert".into()))
+    }
+
+    async fn get_scene(&self, tenant_id: &str, scene_id: &str) -> Result<Option<SceneDto>, PlatformError> {
+        let row: Option<SceneRow> = sqlx::query_as(
+            "SELECT id, tenant_id, name, description, job_functions, built_in, created_at, updated_at \
+             FROM one_scenes WHERE tenant_id = ? AND id = ?",
+        )
+        .bind(tenant_id)
+        .bind(scene_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some(row) => Ok(Some(self.scene_row_to_dto(row).await?)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn update_scene(
+        &self,
+        tenant_id: &str,
+        scene_id: &str,
+        name: &str,
+        description: Option<&str>,
+        job_functions: &[String],
+    ) -> Result<SceneDto, PlatformError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(PlatformError::BadRequest("scene name must not be empty".into()));
+        }
+        let job_functions_json =
+            serde_json::to_string(job_functions).map_err(|e| PlatformError::Internal(e.to_string()))?;
+        let result = sqlx::query(
+            "UPDATE one_scenes SET name = ?, description = ?, job_functions = ?, updated_at = ? \
+             WHERE tenant_id = ? AND id = ?",
+        )
+        .bind(name)
+        .bind(description)
+        .bind(&job_functions_json)
+        .bind(now_ms())
+        .bind(tenant_id)
+        .bind(scene_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db) if db.is_unique_violation() => {
+                PlatformError::BadRequest(format!("a scene named '{name}' already exists"))
+            }
+            _ => PlatformError::from(e),
+        })?;
+        if result.rows_affected() == 0 {
+            return Err(PlatformError::NotFound("scene not found".into()));
+        }
+        self.get_scene(tenant_id, scene_id)
+            .await?
+            .ok_or_else(|| PlatformError::Internal("scene vanished immediately after update".into()))
+    }
+
+    /// Refuses a built-in scene — it can be edited (including its resource
+    /// grants) but not removed, same posture as every other "seeded default"
+    /// in this codebase.
+    pub async fn delete_scene(&self, tenant_id: &str, scene_id: &str) -> Result<(), PlatformError> {
+        let built_in: Option<(bool,)> =
+            sqlx::query_as("SELECT built_in FROM one_scenes WHERE tenant_id = ? AND id = ?")
+                .bind(tenant_id)
+                .bind(scene_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        match built_in {
+            None => return Err(PlatformError::NotFound("scene not found".into())),
+            Some((true,)) => return Err(PlatformError::BadRequest("a built-in scene cannot be deleted".into())),
+            Some((false,)) => {}
+        }
+
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM one_scene_members WHERE scene_id = ?")
+            .bind(scene_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "DELETE FROM one_resource_grants WHERE tenant_id = ? AND subject_type = 'scene' AND subject_id = ?",
+        )
+        .bind(tenant_id)
+        .bind(scene_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM one_scenes WHERE tenant_id = ? AND id = ?")
+            .bind(tenant_id)
+            .bind(scene_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Add `user_id` to `scene_id`'s roster. Idempotent — already being a
+    /// member is not an error, same posture as `grant_resource`.
+    pub async fn add_scene_member(&self, tenant_id: &str, scene_id: &str, user_id: &str) -> Result<(), PlatformError> {
+        self.require_scene(tenant_id, scene_id).await?;
+        sqlx::query(
+            "INSERT INTO one_scene_members (scene_id, tenant_id, user_id, added_at) VALUES (?, ?, ?, ?) \
+             ON CONFLICT(scene_id, user_id) DO NOTHING",
+        )
+        .bind(scene_id)
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn remove_scene_member(
+        &self,
+        tenant_id: &str,
+        scene_id: &str,
+        user_id: &str,
+    ) -> Result<(), PlatformError> {
+        self.require_scene(tenant_id, scene_id).await?;
+        sqlx::query("DELETE FROM one_scene_members WHERE scene_id = ? AND user_id = ?")
+            .bind(scene_id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_scene_members(&self, tenant_id: &str, scene_id: &str) -> Result<Vec<String>, PlatformError> {
+        self.require_scene(tenant_id, scene_id).await?;
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT user_id FROM one_scene_members WHERE scene_id = ? ORDER BY added_at ASC")
+                .bind(scene_id)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    async fn require_scene(&self, tenant_id: &str, scene_id: &str) -> Result<(), PlatformError> {
+        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_scenes WHERE tenant_id = ? AND id = ?")
+            .bind(tenant_id)
+            .bind(scene_id)
+            .fetch_one(&self.pool)
+            .await?;
+        if !exists {
+            return Err(PlatformError::NotFound("scene not found".into()));
+        }
+        Ok(())
+    }
+
+    /// Every scene `user_id` belongs to — the third subject dimension
+    /// `effective_resource_ids` folds in alongside their own grants and
+    /// their department ancestry.
+    async fn scene_ids_for_member(&self, tenant_id: &str, user_id: &str) -> Result<Vec<String>, PlatformError> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT scene_id FROM one_scene_members WHERE tenant_id = ? AND user_id = ?")
+                .bind(tenant_id)
+                .bind(user_id)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
 }
+
+type SceneRow = (String, String, String, Option<String>, String, bool, i64, i64);
 
 #[cfg(test)]
 mod tests {
@@ -1131,6 +1441,175 @@ mod tests {
         assert!(
             effective.resource_ids.is_empty(),
             "the explicit list is moot once `all` is true"
+        );
+    }
+
+    // --- E5 scene management ---
+
+    #[tokio::test]
+    async fn list_scenes_seeds_the_five_builtins_idempotently() {
+        let (_db, service) = setup().await;
+        let first = service.list_scenes("t1").await.unwrap();
+        assert_eq!(first.len(), 5);
+        assert!(first.iter().all(|s| s.built_in && s.member_count == 0));
+        let names: std::collections::HashSet<_> = first.iter().map(|s| s.name.as_str()).collect();
+        for expected in ["办公", "IT运维", "网络安全", "新媒体运营", "市场营销"] {
+            assert!(names.contains(expected), "missing built-in scene {expected}");
+        }
+
+        // A second tenant gets its own five — seeding is per-tenant, not global.
+        let t2 = service.list_scenes("t2").await.unwrap();
+        assert_eq!(t2.len(), 5);
+
+        // Re-listing t1 must not duplicate its built-ins.
+        let second = service.list_scenes("t1").await.unwrap();
+        assert_eq!(second.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn create_scene_rejects_a_duplicate_name_and_empty_name() {
+        let (_db, service) = setup().await;
+        service
+            .create_scene("t1", "Sales Team", Some("desc"), &["销售".to_owned()])
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .create_scene("t1", "Sales Team", None, &[])
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+        assert_eq!(
+            service.create_scene("t1", "   ", None, &[]).await.unwrap_err().code(),
+            "BAD_REQUEST"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_and_delete_scene_roundtrip_and_protect_builtins() {
+        let (_db, service) = setup().await;
+        let custom = service.create_scene("t1", "Custom", None, &[]).await.unwrap();
+
+        let updated = service
+            .update_scene(
+                "t1",
+                &custom.id,
+                "Custom Renamed",
+                Some("new desc"),
+                &["tag1".to_owned()],
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.name, "Custom Renamed");
+        assert_eq!(updated.description.as_deref(), Some("new desc"));
+        assert_eq!(updated.job_functions, vec!["tag1".to_owned()]);
+
+        service.delete_scene("t1", &custom.id).await.unwrap();
+        assert_eq!(
+            service
+                .update_scene("t1", &custom.id, "x", None, &[])
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND",
+            "deleted scene should be gone"
+        );
+
+        let builtins = service.list_scenes("t1").await.unwrap();
+        let builtin_id = &builtins[0].id;
+        assert_eq!(
+            service.delete_scene("t1", builtin_id).await.unwrap_err().code(),
+            "BAD_REQUEST",
+            "a built-in scene must not be deletable"
+        );
+    }
+
+    #[tokio::test]
+    async fn scene_membership_is_idempotent_and_listable() {
+        let (_db, service) = setup().await;
+        let scene = service.create_scene("t1", "Ops", None, &[]).await.unwrap();
+
+        service.add_scene_member("t1", &scene.id, "alice").await.unwrap();
+        service.add_scene_member("t1", &scene.id, "alice").await.unwrap(); // idempotent
+        service.add_scene_member("t1", &scene.id, "bob").await.unwrap();
+
+        let members = service.list_scene_members("t1", &scene.id).await.unwrap();
+        assert_eq!(members, vec!["alice".to_owned(), "bob".to_owned()]);
+        assert_eq!(
+            service
+                .list_scenes("t1")
+                .await
+                .unwrap()
+                .iter()
+                .find(|s| s.id == scene.id)
+                .unwrap()
+                .member_count,
+            2
+        );
+
+        service.remove_scene_member("t1", &scene.id, "alice").await.unwrap();
+        assert_eq!(
+            service.list_scene_members("t1", &scene.id).await.unwrap(),
+            vec!["bob".to_owned()]
+        );
+    }
+
+    /// The whole point of scenes: joining one reaches whatever the scene has
+    /// been granted, without a per-member grant.
+    #[tokio::test]
+    async fn effective_resource_ids_resolves_through_scene_membership() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "alice", "t1", "member").await;
+        let scene = service.create_scene("t1", "Ops", None, &[]).await.unwrap();
+        service
+            .grant_resource("t1", "scene", &scene.id, "mcp", "mcp_1", "admin1")
+            .await
+            .unwrap();
+
+        // Not a member yet: nothing reachable.
+        let before = service.effective_resource_ids("t1", "alice", "mcp").await.unwrap();
+        assert!(before.resource_ids.is_empty());
+
+        service.add_scene_member("t1", &scene.id, "alice").await.unwrap();
+        let after = service.effective_resource_ids("t1", "alice", "mcp").await.unwrap();
+        assert_eq!(after.resource_ids, vec!["mcp_1".to_owned()]);
+
+        // Leaving the scene must revoke what it granted.
+        service.remove_scene_member("t1", &scene.id, "alice").await.unwrap();
+        let gone = service.effective_resource_ids("t1", "alice", "mcp").await.unwrap();
+        assert!(gone.resource_ids.is_empty());
+    }
+
+    /// Deleting a non-built-in scene must clean up both its roster and
+    /// whatever it was granted — an orphaned `one_resource_grants` row
+    /// pointing at a scene that no longer exists would be silently inert but
+    /// is exactly the kind of stale state an audit later trips over.
+    #[tokio::test]
+    async fn delete_scene_cascades_members_and_grants() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "alice", "t1", "member").await;
+        let scene = service.create_scene("t1", "Ops", None, &[]).await.unwrap();
+        service.add_scene_member("t1", &scene.id, "alice").await.unwrap();
+        service
+            .grant_resource("t1", "scene", &scene.id, "mcp", "mcp_1", "admin1")
+            .await
+            .unwrap();
+
+        service.delete_scene("t1", &scene.id).await.unwrap();
+
+        assert!(
+            service.list_scene_members("t1", &scene.id).await.is_err(),
+            "scene itself is gone"
+        );
+        let remaining_grants = service
+            .list_grants("t1", Some("scene"), Some(&scene.id), None)
+            .await
+            .unwrap();
+        assert!(
+            remaining_grants.is_empty(),
+            "grants on the deleted scene must be cleaned up too"
         );
     }
 }
