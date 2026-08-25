@@ -17,6 +17,13 @@
 > 跨仓完整叙述（含前端 bug 与 CodeMirror 排查）见 dream-ui 同名文档。本 CLAUDE.md 只保留
 > 长期有效的规则，过程性细节请去读那份文档。
 
+> **2026-08-25**："一键体验免费模型"（OpenRouter trial key）功能，dream-core 侧新增
+> `POST /api/providers/trial-key`。本仓库的实现细节见
+> [session-2026-08-25-openrouter-trial-model.zh-CN.md](./docs/guides/session-2026-08-25-openrouter-trial-model.zh-CN.md)，
+> 跨三仓（含新建的 `dream-trial-broker`）完整背景见 dream-ui 同名文档。
+> **注意：功能默认关闭**——`DREAM_TRIAL_BROKER_URL` 环境变量尚未在任何地方配置，broker 也
+> 尚未部署。
+
 ## 三仓架构
 
 | 仓库 | 角色 | 关键产物 |

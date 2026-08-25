@@ -438,6 +438,14 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
     let http_client = reqwest::Client::new();
 
     let client_pref_repo = Arc::new(SqliteClientPreferenceRepository::new(pool.clone()));
+    // `None` when this deployment never configured a broker — reported
+    // plainly by `TrialKeyService` rather than silently doing nothing.
+    // Built before `client_pref_repo` is moved into `client_pref_service` below.
+    let trial_key_service = dream_core_system::TrialKeyService::new(
+        std::env::var("DREAM_TRIAL_BROKER_URL").ok(),
+        http_client.clone(),
+        client_pref_repo.clone(),
+    );
     let keep_awake_controller = Arc::new(dream_core_system::SystemKeepAwakeController::new());
     let client_pref_service = if services.identity_mode.is_local() {
         ClientPrefService::with_keep_awake_controller(client_pref_repo, keep_awake_controller, "system_default_user")
@@ -453,6 +461,7 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
             provider_repo.clone(),
             encryption_key,
         ))),
+        trial_key_service,
         model_fetch_service: ModelFetchService::new(provider_repo, encryption_key, http_client.clone()),
         protocol_detection_service: ProtocolDetectionService::new(http_client.clone()),
         version_check_service: VersionCheckService::new(http_client, env!("CARGO_PKG_VERSION").to_owned()),

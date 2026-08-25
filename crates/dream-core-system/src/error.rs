@@ -24,6 +24,12 @@ pub enum SystemError {
 
     #[error("Unprocessable entity: {0}")]
     UnprocessableEntity(String),
+
+    #[error("Rate limited")]
+    RateLimited,
+
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
 }
 
 impl From<DbError> for SystemError {

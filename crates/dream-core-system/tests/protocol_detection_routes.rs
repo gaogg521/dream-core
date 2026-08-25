@@ -37,6 +37,11 @@ fn build_state(db: &dream_core_db::Database) -> SystemRouterState {
         client_pref_service: ClientPrefService::new(Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone()))),
         provider_service: ProviderService::new(provider_repo.clone(), TEST_KEY),
         managed_provider_sync: None,
+        trial_key_service: dream_core_system::TrialKeyService::new(
+            None,
+            http_client.clone(),
+            Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone())),
+        ),
         content_inspection: std::sync::Arc::new(dream_core_system::ContentInspectionService::new()),
         model_fetch_service: ModelFetchService::new(provider_repo, TEST_KEY, http_client.clone()),
         protocol_detection_service: ProtocolDetectionService::new(http_client.clone()),

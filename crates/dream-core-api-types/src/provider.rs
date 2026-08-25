@@ -331,6 +331,28 @@ pub struct FetchModelsResponse {
     pub fixed_base_url: Option<String>,
 }
 
+/// Response for `POST /api/providers/trial-key` (no request body — the
+/// caller's stable per-install id is resolved server-side, see
+/// `TrialKeyService`).
+///
+/// Issues a capped-spend OpenRouter API key for a first-time user, minted by
+/// a company-run broker service (never dream-core itself — dream-core has no
+/// vendor credential to mint from).
+///
+/// The frontend is expected to turn this straight into a normal
+/// [`CreateProviderRequest`] (platform `OpenRouter`) — the issued key is a
+/// real, ordinary OpenRouter API key with a small daily spend cap set at
+/// issuance time, not a special credential type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrialKeyResponse {
+    /// Plaintext API key. Returned once; the broker cannot retrieve it again.
+    pub key: String,
+    pub base_url: String,
+    /// A small curated starter model list, picked by the broker so it can be
+    /// tuned without a client release.
+    pub models: Vec<String>,
+}
+
 /// Request body for `POST /api/providers/detect-protocol`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectProtocolRequest {

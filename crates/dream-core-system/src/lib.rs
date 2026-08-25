@@ -15,6 +15,7 @@ pub mod routes;
 pub mod runtime_prepare;
 pub mod settings;
 pub mod sysinfo;
+pub mod trial_key;
 pub mod version;
 
 pub use bedrock_probe::{ConnectionTestRouterState, ConnectionTestService, connection_test_routes};
@@ -29,4 +30,5 @@ pub use provider::ProviderService;
 pub use routes::{SystemRouterState, settings_routes, system_routes};
 pub use runtime_prepare::RuntimePrepareService;
 pub use settings::SettingsService;
+pub use trial_key::TrialKeyService;
 pub use version::VersionCheckService;

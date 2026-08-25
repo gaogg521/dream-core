@@ -10,7 +10,7 @@ use dream_core_api_types::{
     ApiResponse, ClientPreferencesResponse, CreateProviderRequest, DetectProtocolRequest, EnsureNodeRuntimeRequest,
     EnsureNodeRuntimeResponse, FeedbackDiagnosticsQuery, FeedbackDiagnosticsResponse, FetchModelsAnonymousRequest,
     FetchModelsRequest, FetchModelsResponse, ProtocolDetectionResponse, ProviderResponse, SystemInfoResponse,
-    SystemSettingsResponse, UpdateCheckRequest, UpdateCheckResult, UpdateClientPreferencesRequest,
+    SystemSettingsResponse, TrialKeyResponse, UpdateCheckRequest, UpdateCheckResult, UpdateClientPreferencesRequest,
     UpdateProviderRequest, UpdateSettingsRequest,
 };
 use dream_core_auth::{CurrentUser, is_webui_proxied};
@@ -24,6 +24,7 @@ use crate::protocol::ProtocolDetectionService;
 use crate::provider::ProviderService;
 use crate::runtime_prepare::RuntimePrepareService;
 use crate::settings::SettingsService;
+use crate::trial_key::TrialKeyService;
 use crate::version::VersionCheckService;
 
 /// Shared state for system route handlers.
@@ -37,6 +38,10 @@ pub struct SystemRouterState {
     pub version_check_service: VersionCheckService,
     pub runtime_prepare_service: RuntimePrepareService,
     pub feedback_diagnostics_service: FeedbackDiagnosticsService,
+    /// Issues capped-spend trial model keys from the company broker. See
+    /// `TrialKeyService` doc comment for why dream-core itself never holds
+    /// the vendor Management Key this depends on.
+    pub trial_key_service: TrialKeyService,
     /// Materializes company model channels as local providers. `None` on
     /// deployments that never wire it — the endpoint then reports plainly
     /// instead of silently doing nothing.
@@ -57,6 +62,13 @@ impl From<SystemError> for ApiError {
             SystemError::BadGateway(reason) => ApiError::BadGateway(reason),
             SystemError::Timeout(reason) => ApiError::Timeout(reason),
             SystemError::UnprocessableEntity(reason) => ApiError::UnprocessableEntity(reason),
+            SystemError::RateLimited => ApiError::RateLimited,
+            SystemError::ServiceUnavailable(reason) => ApiError::coded(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "daily_budget_exhausted",
+                reason,
+                None::<serde_json::Value>,
+            ),
         }
     }
 }
@@ -76,6 +88,7 @@ impl From<SystemError> for ApiError {
 /// - `DELETE /api/providers/:id`             — delete a provider
 /// - `POST /api/providers/:id/models`        — fetch models from remote API
 /// - `POST /api/providers/fetch-models`      — fetch models anonymously (pre-create preview)
+/// - `POST /api/providers/trial-key`         — issue a capped-spend trial model key for first-time users
 /// - `POST /api/providers/detect-protocol`   — detect API protocol
 /// - `GET  /api/system/info`                 — system directory & platform info
 /// - `POST /api/system/check-update`         — check GitHub for new versions
@@ -94,6 +107,7 @@ pub fn system_routes(state: SystemRouterState) -> Router {
         // "fetch-models" as a provider id.
         .route("/api/providers/detect-protocol", post(detect_protocol))
         .route("/api/providers/fetch-models", post(fetch_models_anonymous))
+        .route("/api/providers/trial-key", post(request_trial_key))
         .route("/api/providers/{id}", delete(delete_provider).put(update_provider))
         .route("/api/providers/{id}/models", post(fetch_models))
         .route("/api/providers/sync-model-channels", post(sync_model_channels))
@@ -453,6 +467,15 @@ async fn fetch_models_anonymous(
         .fetch_models_anonymous(&req)
         .await
         .map_err(ApiError::from)?;
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+/// No request body and no user identity needed — the dedup id is this
+/// install's own, resolved internally by `TrialKeyService`.
+async fn request_trial_key(
+    State(state): State<SystemRouterState>,
+) -> Result<Json<ApiResponse<TrialKeyResponse>>, ApiError> {
+    let result = state.trial_key_service.request_trial_key().await.map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(result)))
 }
 
