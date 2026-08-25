@@ -15,8 +15,8 @@ use dream_core_common::now_ms;
 
 use crate::error::BillingError;
 use crate::models::{
-    CheckoutResultDto, ConversationCostDto, DepartmentBudgetDto, LicenseInfoDto, MediaAssetDto,
-    MediaLedgerSettingsDto, PlanDto, UsageSummaryDto,
+    AgentSessionPageDto, CheckoutResultDto, ConversationCostDto, DepartmentBudgetDto, LicenseInfoDto, MediaAssetDto,
+    MediaLedgerSettingsDto, PlanDto, UsageEventPageDto, UsageSummaryDto,
 };
 use crate::service::{MediaAssetFilters, MediaUsage};
 use crate::state::OneBillingRouterState;
@@ -25,6 +25,8 @@ pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
     Router::new()
         .route("/api/one/billing/plan", get(billing_plan))
         .route("/api/one/billing/usage", get(billing_usage))
+        .route("/api/one/billing/usage-events", get(billing_usage_events))
+        .route("/api/one/billing/sessions", get(billing_sessions))
         .route("/api/one/billing/conversation-cost", get(billing_conversation_cost))
         .route("/api/one/billing/tier", put(billing_set_tier))
         .route("/api/one/billing/model-control", put(billing_set_model_control))
@@ -226,6 +228,82 @@ async fn billing_usage(
     const THIRTY_DAYS_MS: i64 = 30 * 24 * 3600 * 1000;
     let since = q.since.unwrap_or_else(|| now_ms() - THIRTY_DAYS_MS);
     Ok(Json(ApiResponse::ok(state.service.usage_summary(&eid, since).await?)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageEventsQuery {
+    #[serde(default)]
+    since: Option<i64>,
+    #[serde(default)]
+    user_id: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default = "default_page_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+}
+
+fn default_page_limit() -> i64 {
+    50
+}
+
+/// E5 "可观测" / LLM Trace: the raw per-turn record `usage_summary`'s
+/// buckets aggregate away. Admin-only, same gate as `billing_usage`.
+async fn billing_usage_events(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(q): Query<UsageEventsQuery>,
+) -> Result<Json<ApiResponse<UsageEventPageDto>>, BillingError> {
+    if !state.service.is_billing_admin(&user.id).await? {
+        return Err(BillingError::Forbidden("usage events are admin-only".into()));
+    }
+    let eid = state
+        .service
+        .resolve_enterprise_id(&user.id)
+        .await?
+        .ok_or(BillingError::EnterpriseNotFound)?;
+    const THIRTY_DAYS_MS: i64 = 30 * 24 * 3600 * 1000;
+    let since = q.since.unwrap_or_else(|| now_ms() - THIRTY_DAYS_MS);
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .list_usage_events(&eid, since, q.user_id.as_deref(), q.model.as_deref(), q.limit, q.offset)
+            .await?,
+    )))
+}
+
+#[derive(Deserialize)]
+struct SessionsQuery {
+    #[serde(default)]
+    since: Option<i64>,
+    #[serde(default = "default_page_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+}
+
+/// E5 "可观测" / 智能体会话: `one_usage_events` grouped by conversation.
+/// Admin-only, same gate as `billing_usage`.
+async fn billing_sessions(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(q): Query<SessionsQuery>,
+) -> Result<Json<ApiResponse<AgentSessionPageDto>>, BillingError> {
+    if !state.service.is_billing_admin(&user.id).await? {
+        return Err(BillingError::Forbidden("agent sessions are admin-only".into()));
+    }
+    let eid = state
+        .service
+        .resolve_enterprise_id(&user.id)
+        .await?
+        .ok_or(BillingError::EnterpriseNotFound)?;
+    const THIRTY_DAYS_MS: i64 = 30 * 24 * 3600 * 1000;
+    let since = q.since.unwrap_or_else(|| now_ms() - THIRTY_DAYS_MS);
+    Ok(Json(ApiResponse::ok(
+        state.service.list_sessions(&eid, since, q.limit, q.offset).await?,
+    )))
 }
 
 #[derive(Deserialize)]

@@ -118,6 +118,62 @@ pub struct ConversationCostDto {
     pub estimated_cost_micros: i64,
 }
 
+/// One `one_usage_events` row (E5 "可观测" / LLM Trace), verbatim — the
+/// per-call-shaped record `usage_summary`'s buckets aggregate away. Carries
+/// no prompt/response content: this table was never storing message text in
+/// the first place (see `BillingUsageRecorder` — it takes token counts, not
+/// text), so surfacing it raises no new privacy question, only whichever one
+/// already existed for the aggregate view.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageEventDto {
+    pub id: String,
+    pub user_id: String,
+    pub conversation_id: Option<String>,
+    pub model: Option<String>,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
+    pub estimated_cost_micros: i64,
+    pub created_at: i64,
+}
+
+/// A page of `UsageEventDto` plus the total row count matching the filter,
+/// so the admin UI can paginate without a second round trip to count.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageEventPageDto {
+    pub events: Vec<UsageEventDto>,
+    pub total: i64,
+}
+
+/// One agent session (E5 "可观测" / 智能体会话), derived purely from
+/// `one_usage_events` grouped by `conversation_id` — no new capture
+/// mechanism, and (same reasoning as `UsageEventDto`) no message content:
+/// only what was already being recorded per turn.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionDto {
+    pub conversation_id: String,
+    pub user_id: String,
+    /// Every distinct model used across this conversation's recorded turns.
+    pub models: Vec<String>,
+    pub turn_count: i64,
+    pub total_tokens: i64,
+    pub estimated_cost_micros: i64,
+    pub first_seen_at: i64,
+    pub last_seen_at: i64,
+}
+
+/// A page of `AgentSessionDto` plus the total session count matching the
+/// filter.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionPageDto {
+    pub sessions: Vec<AgentSessionDto>,
+    pub total: i64,
+}
+
 /// One department's spend cap and usage this window (T7). `department_id` is
 /// opaque here — one-billing does not depend on one-org, so it never resolves
 /// a name; the caller (an admin UI that already fetched the department list

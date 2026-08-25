@@ -16,8 +16,8 @@ use sqlx::SqlitePool;
 
 use crate::error::BillingError;
 use crate::models::{
-    CheckoutResultDto, DepartmentBudgetDto, EntitlementDto, LicenseInfoDto, MediaAssetDto, PlanDto, UsageBucketDto,
-    UsageSummaryDto,
+    AgentSessionDto, AgentSessionPageDto, CheckoutResultDto, DepartmentBudgetDto, EntitlementDto, LicenseInfoDto,
+    MediaAssetDto, PlanDto, UsageBucketDto, UsageEventDto, UsageEventPageDto, UsageSummaryDto,
 };
 
 /// Pluggable payment backend. The default `ManualBillingProvider` is a stub
@@ -1135,6 +1135,154 @@ impl BillingService {
             .collect())
     }
 
+    /// One page of raw `one_usage_events` rows (E5 "可观测" / LLM Trace) — the
+    /// per-call-shaped view `usage_summary`'s buckets aggregate away.
+    /// Filterable by user and/or model; always scoped to `enterprise_id` and
+    /// `since_ms`, same as `usage_summary`. `limit` is clamped to [1, 200]
+    /// so an unbounded query string can't force an unbounded response.
+    pub async fn list_usage_events(
+        &self,
+        enterprise_id: &str,
+        since_ms: i64,
+        user_id: Option<&str>,
+        model: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<UsageEventPageDto, BillingError> {
+        let limit = limit.clamp(1, 200);
+        let offset = offset.max(0);
+
+        let mut where_sql = "WHERE enterprise_id = ? AND created_at >= ?".to_owned();
+        if user_id.is_some() {
+            where_sql.push_str(" AND user_id = ?");
+        }
+        if model.is_some() {
+            where_sql.push_str(" AND model = ?");
+        }
+
+        let count_sql = format!("SELECT COUNT(*) FROM one_usage_events {where_sql}");
+        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql)
+            .bind(enterprise_id)
+            .bind(since_ms);
+        if let Some(u) = user_id {
+            count_query = count_query.bind(u);
+        }
+        if let Some(m) = model {
+            count_query = count_query.bind(m);
+        }
+        let total = count_query.fetch_one(&self.pool).await?;
+
+        let list_sql = format!(
+            "SELECT id, user_id, conversation_id, model, input_tokens, output_tokens, total_tokens, \
+                    estimated_cost_micros, created_at \
+             FROM one_usage_events {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        );
+        type Row = (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            i64,
+            i64,
+        );
+        let mut list_query = sqlx::query_as::<_, Row>(&list_sql).bind(enterprise_id).bind(since_ms);
+        if let Some(u) = user_id {
+            list_query = list_query.bind(u);
+        }
+        if let Some(m) = model {
+            list_query = list_query.bind(m);
+        }
+        let rows = list_query.bind(limit).bind(offset).fetch_all(&self.pool).await?;
+
+        let events = rows
+            .into_iter()
+            .map(
+                |(id, user_id, conversation_id, model, input_tokens, output_tokens, total_tokens, cost, created_at)| {
+                    UsageEventDto {
+                        id,
+                        user_id,
+                        conversation_id,
+                        model,
+                        input_tokens,
+                        output_tokens,
+                        total_tokens,
+                        estimated_cost_micros: cost,
+                        created_at,
+                    }
+                },
+            )
+            .collect();
+
+        Ok(UsageEventPageDto { events, total })
+    }
+
+    /// One page of agent sessions (E5 "可观测" / 智能体会话), derived by
+    /// grouping `one_usage_events` on `conversation_id` — rows with no
+    /// conversation id (never attributed to a specific session) are excluded
+    /// rather than folded into one synthetic "no conversation" bucket, which
+    /// would mix unrelated turns together under a misleading shared identity.
+    pub async fn list_sessions(
+        &self,
+        enterprise_id: &str,
+        since_ms: i64,
+        limit: i64,
+        offset: i64,
+    ) -> Result<AgentSessionPageDto, BillingError> {
+        let limit = limit.clamp(1, 200);
+        let offset = offset.max(0);
+
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT conversation_id) FROM one_usage_events \
+             WHERE enterprise_id = ? AND created_at >= ? AND conversation_id IS NOT NULL",
+        )
+        .bind(enterprise_id)
+        .bind(since_ms)
+        .fetch_one(&self.pool)
+        .await?;
+
+        type Row = (String, String, i64, i64, i64, i64, i64);
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT conversation_id, MIN(user_id), COUNT(*), COALESCE(SUM(total_tokens), 0), \
+                    COALESCE(SUM(estimated_cost_micros), 0), MIN(created_at), MAX(created_at) \
+             FROM one_usage_events \
+             WHERE enterprise_id = ? AND created_at >= ? AND conversation_id IS NOT NULL \
+             GROUP BY conversation_id ORDER BY MAX(created_at) DESC LIMIT ? OFFSET ?",
+        )
+        .bind(enterprise_id)
+        .bind(since_ms)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut sessions = Vec::with_capacity(rows.len());
+        for (conversation_id, user_id, turn_count, total_tokens, cost, first_seen_at, last_seen_at) in rows {
+            let models: Vec<String> = sqlx::query_scalar(
+                "SELECT DISTINCT model FROM one_usage_events \
+                 WHERE enterprise_id = ? AND conversation_id = ? AND model IS NOT NULL",
+            )
+            .bind(enterprise_id)
+            .bind(&conversation_id)
+            .fetch_all(&self.pool)
+            .await?;
+            sessions.push(AgentSessionDto {
+                conversation_id,
+                user_id,
+                models,
+                turn_count,
+                total_tokens,
+                estimated_cost_micros: cost,
+                first_seen_at,
+                last_seen_at,
+            });
+        }
+
+        Ok(AgentSessionPageDto { sessions, total })
+    }
+
     /// Begin a checkout (stubbed by the manual provider).
     pub fn create_checkout(&self, enterprise_id: &str, target_tier: &str) -> CheckoutResultDto {
         self.provider.create_checkout(enterprise_id, target_tier)
@@ -1440,6 +1588,111 @@ mod tests {
         assert_eq!(summary.by_user.len(), 1);
         assert_eq!(summary.by_user[0].key, "alice");
         assert_eq!(summary.by_model[0].key, "claude-opus-4-8");
+    }
+
+    #[tokio::test]
+    async fn list_usage_events_filters_and_paginates() {
+        let svc = service().await;
+        add_members(&svc, "ent1", 1).await;
+        sqlx::query("UPDATE one_enterprise_members SET user_id = 'alice' WHERE enterprise_id = 'ent1'")
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+        for i in 0..3 {
+            svc.record_turn("alice", Some("c1"), Some("claude-opus-4-8"), Some(10 + i), Some(20))
+                .await
+                .unwrap();
+        }
+        svc.record_turn("alice", Some("c1"), Some("gpt-4"), Some(5), Some(5))
+            .await
+            .unwrap();
+
+        let all = svc.list_usage_events("ent1", 0, None, None, 50, 0).await.unwrap();
+        assert_eq!(all.total, 4);
+        assert_eq!(all.events.len(), 4);
+        // Newest first.
+        assert!(all.events[0].created_at >= all.events[3].created_at);
+
+        let by_model = svc
+            .list_usage_events("ent1", 0, None, Some("gpt-4"), 50, 0)
+            .await
+            .unwrap();
+        assert_eq!(by_model.total, 1);
+        assert_eq!(by_model.events[0].model.as_deref(), Some("gpt-4"));
+
+        let page1 = svc.list_usage_events("ent1", 0, None, None, 2, 0).await.unwrap();
+        let page2 = svc.list_usage_events("ent1", 0, None, None, 2, 2).await.unwrap();
+        assert_eq!(
+            page1.total, 4,
+            "total reflects the whole filtered set, not just this page"
+        );
+        assert_eq!(page1.events.len(), 2);
+        assert_eq!(page2.events.len(), 2);
+        let page1_ids: std::collections::HashSet<_> = page1.events.iter().map(|e| e.id.clone()).collect();
+        let page2_ids: std::collections::HashSet<_> = page2.events.iter().map(|e| e.id.clone()).collect();
+        assert!(page1_ids.is_disjoint(&page2_ids), "pages must not overlap");
+    }
+
+    #[tokio::test]
+    async fn list_usage_events_is_scoped_per_enterprise() {
+        let svc = service().await;
+        add_members(&svc, "ent1", 1).await;
+        add_members(&svc, "ent2", 1).await;
+        sqlx::query("UPDATE one_enterprise_members SET user_id = 'alice' WHERE enterprise_id = 'ent1'")
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE one_enterprise_members SET user_id = 'bob' WHERE enterprise_id = 'ent2'")
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+        svc.record_turn("alice", Some("c1"), Some("claude-opus-4-8"), Some(10), Some(10))
+            .await
+            .unwrap();
+        svc.record_turn("bob", Some("c2"), Some("claude-opus-4-8"), Some(10), Some(10))
+            .await
+            .unwrap();
+
+        let ent1_events = svc.list_usage_events("ent1", 0, None, None, 50, 0).await.unwrap();
+        assert_eq!(ent1_events.total, 1);
+        assert_eq!(ent1_events.events[0].user_id, "alice");
+    }
+
+    #[tokio::test]
+    async fn list_sessions_groups_by_conversation_and_lists_every_model_used() {
+        let svc = service().await;
+        add_members(&svc, "ent1", 1).await;
+        sqlx::query("UPDATE one_enterprise_members SET user_id = 'alice' WHERE enterprise_id = 'ent1'")
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+        svc.record_turn("alice", Some("c1"), Some("claude-opus-4-8"), Some(100), Some(100))
+            .await
+            .unwrap();
+        svc.record_turn("alice", Some("c1"), Some("gpt-4"), Some(50), Some(50))
+            .await
+            .unwrap();
+        svc.record_turn("alice", Some("c2"), Some("claude-opus-4-8"), Some(10), Some(10))
+            .await
+            .unwrap();
+        // No conversation_id: must be excluded from sessions, not merged into
+        // a misleading "no conversation" bucket.
+        svc.record_turn("alice", None, Some("claude-opus-4-8"), Some(999), Some(999))
+            .await
+            .unwrap();
+
+        let page = svc.list_sessions("ent1", 0, 50, 0).await.unwrap();
+        assert_eq!(page.total, 2);
+        let c1 = page.sessions.iter().find(|s| s.conversation_id == "c1").unwrap();
+        assert_eq!(c1.turn_count, 2);
+        assert_eq!(c1.total_tokens, 300);
+        assert_eq!(c1.user_id, "alice");
+        let mut models = c1.models.clone();
+        models.sort();
+        assert_eq!(models, vec!["claude-opus-4-8".to_owned(), "gpt-4".to_owned()]);
+
+        let c2 = page.sessions.iter().find(|s| s.conversation_id == "c2").unwrap();
+        assert_eq!(c2.turn_count, 1);
     }
 
     /// dream conversations have no other way to surface a session cost (the
