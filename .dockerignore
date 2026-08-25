@@ -1,0 +1,16 @@
+# Keep the Docker build context to what the multi-stage build in Dockerfile
+# actually needs (workspace manifests + crates/) — mirrors the relevant
+# entries from .gitignore, plus VCS metadata Docker never needs regardless.
+.git
+.github
+
+target/
+**/target/
+
+# Dev-time SQLite DB / test artifacts under crates/dream-core-app/data —
+# never something a fresh image build should bake in.
+data/
+**/data/
+
+*.log
+.DS_Store
