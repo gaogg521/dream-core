@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 dream-core-common.workspace = true
-sqlx = { workspace = true, features = ["migrate"] }
+sqlx = { workspace = true, features = ["migrate", "postgres"] }
 async-trait.workspace = true
 fs2.workspace = true
 serde.workspace = true

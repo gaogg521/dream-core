@@ -8,6 +8,7 @@ mod instance_lock;
 mod legacy_handoff;
 mod migrate_repair;
 pub mod models;
+mod postgres;
 mod repository;
 
 pub use agent_binding::{
@@ -33,6 +34,7 @@ pub use models::{
     UpsertAssistantOverlayParams, UpsertAssistantPreferenceParams, UpsertConversationAssistantSnapshotParams,
     UpsertMarketplacePersonaParams, UpsertOverrideParams, UserStatus, UserType,
 };
+pub use postgres::{PgDatabase, init_database_postgres};
 pub use repository::channel::UpdatePluginStatusParams;
 pub use repository::conversation::{
     ConversationFilters, ConversationRowUpdate, MessagePageCursor, MessagePageDirection, MessagePageParams,
