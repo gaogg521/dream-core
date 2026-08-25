@@ -101,6 +101,37 @@ pub struct SecurityPolicyDto {
     pub updated_at: Option<i64>,
 }
 
+/// An open-integration API key (E5), redacted — never carries the secret or
+/// its hash. `key_prefix` is enough to tell keys apart in a list without
+/// ever re-displaying the full secret.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeyDto {
+    pub id: String,
+    pub name: String,
+    pub key_prefix: String,
+    pub allowed_paths: Vec<String>,
+    pub rate_limit_per_minute: Option<i64>,
+    /// `"active" | "revoked"`.
+    pub status: String,
+    pub created_by: String,
+    pub created_at: i64,
+    pub revoked_at: Option<i64>,
+    pub last_used_at: Option<i64>,
+}
+
+/// What `PlatformService::create_api_key` returns: the redacted record plus
+/// the plaintext secret, which exists in this shape exactly once — the
+/// caller must show it to the admin now, because it is never recoverable
+/// again (only `ApiKeyDto.key_prefix` and a hash survive past this call).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewApiKeyDto {
+    #[serde(flatten)]
+    pub key: ApiKeyDto,
+    pub secret: String,
+}
+
 /// A scene (E5 "场景管理"): a named bundle of resource grants + descriptive
 /// job-function tags. `member_count` is the current roster size, shown in
 /// the admin UI's scene list without a second round trip.

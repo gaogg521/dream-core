@@ -3,10 +3,11 @@
 //! resource-authorization matrix (`resource-grants*`), and E5 scene
 //! management (`scenes*`) — a named bundle of resource grants a member gets
 //! in one action by joining the scene, instead of an admin granting each
-//! skill/tool/model/channel one at a time — and the E5 security policy
-//! baseline (`security-policy*`, three built-in tiers or a field-by-field
-//! custom override; see the migration's own doc comment for what is and
-//! isn't enforced yet).
+//! skill/tool/model/channel one at a time — the E5 security policy baseline
+//! (`security-policy*`, three built-in tiers or a field-by-field custom
+//! override) — and E5 open-integration API keys (`api-keys*`). All three
+//! "E5" pieces share the same posture: see each migration's own doc comment
+//! for exactly what is and isn't enforced yet.
 //!
 //! Mounted behind the upstream `auth_middleware` (relies on `CurrentUser` in
 //! request extensions). All routes are gated by `RequirePlatformAdmin`.
@@ -31,8 +32,8 @@ use crate::collaboration::CollaborationStatus;
 use crate::container::ContainerStatus;
 use crate::error::PlatformError;
 use crate::models::{
-    CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, IpAllowlistConfigDto, ResourceGrantDto, SceneDto,
-    SecurityPolicyDto, SiemConfigDto,
+    ApiKeyDto, CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, IpAllowlistConfigDto, NewApiKeyDto,
+    ResourceGrantDto, SceneDto, SecurityPolicyDto, SiemConfigDto,
 };
 use crate::rbac::RequirePlatformAdmin;
 use crate::siem::SiemStatus;
@@ -90,6 +91,11 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
             "/api/one/admin/platform/security-policy/tier",
             post(apply_security_policy_tier),
         )
+        .route(
+            "/api/one/admin/platform/api-keys",
+            get(list_api_keys).post(create_api_key),
+        )
+        .route("/api/one/admin/platform/api-keys/{id}", delete(revoke_api_key))
         .with_state(state)
 }
 
@@ -576,4 +582,53 @@ async fn apply_security_policy_tier(
         .apply_security_policy_tier(&actor.tenant_id, &body.tier)
         .await?;
     Ok(Json(ApiResponse::ok(dto)))
+}
+
+// --- E5 open-integration API keys ---
+
+async fn list_api_keys(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<Vec<ApiKeyDto>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_api_keys(&actor.tenant_id).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateApiKeyBody {
+    name: String,
+    #[serde(default)]
+    allowed_paths: Vec<String>,
+    #[serde(default)]
+    rate_limit_per_minute: Option<i64>,
+}
+
+async fn create_api_key(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<CreateApiKeyBody>,
+) -> Result<Json<ApiResponse<NewApiKeyDto>>, PlatformError> {
+    let dto = state
+        .service
+        .create_api_key(
+            &actor.tenant_id,
+            &body.name,
+            &body.allowed_paths,
+            body.rate_limit_per_minute,
+            &user.id,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn revoke_api_key(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, PlatformError> {
+    state.service.revoke_api_key(&actor.tenant_id, &id).await?;
+    Ok(Json(ApiResponse::ok(())))
 }

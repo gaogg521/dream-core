@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use sqlx::SqlitePool;
 
-use dream_core_common::{decrypt_string, encrypt_string, generate_prefixed_id, now_ms};
+use dream_core_common::{decrypt_string, encrypt_string, generate_id_with_length, generate_prefixed_id, now_ms};
+use sha2::{Digest, Sha256};
 
 use crate::collaboration::{
     CollaborationProvider, CollaborationSettings, CollaborationStatus, NoopCollaborationProvider,
@@ -21,8 +22,8 @@ use crate::container::{ContainerRuntime, ContainerSettings, ContainerStatus, Noo
 use crate::error::PlatformError;
 use crate::ip_allowlist::ip_allowed;
 use crate::models::{
-    CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, IpAllowlistConfigDto, ResourceGrantDto, SceneDto,
-    SecurityPolicyDto, SiemConfigDto,
+    ApiKeyDto, CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, IpAllowlistConfigDto, NewApiKeyDto,
+    ResourceGrantDto, SceneDto, SecurityPolicyDto, SiemConfigDto,
 };
 use crate::siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
 
@@ -1253,7 +1254,158 @@ impl PlatformService {
         .await?;
         self.get_security_policy(tenant_id).await
     }
+
+    // --- Open-integration API keys (E5) ---
+
+    /// Shown chars of the plaintext secret kept as `key_prefix`, so the admin
+    /// console can tell keys apart ("sk_live_ab12…") without ever
+    /// re-displaying the full secret.
+    const API_KEY_PREFIX_LEN: usize = 12;
+
+    fn hash_api_key_secret(secret: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(secret.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+
+    /// Mint a new key. The plaintext `secret` is generated here, hashed for
+    /// storage, and returned exactly once in `NewApiKeyDto` — this is the
+    /// only call in this crate that ever sees it in the clear.
+    ///
+    /// ⚠️ This is a storage-layer op only: nothing in this codebase currently
+    /// authenticates a request against `one_api_keys`. Wiring that up needs a
+    /// new auth-middleware credential path (alongside the existing JWT/session
+    /// one in `dream-core-auth`) that hashes an incoming bearer token and
+    /// looks it up here, checks `status = 'active'`, and matches the request
+    /// path against `allowed_paths` before falling through to the normal
+    /// `CurrentUser` extraction — real, separate follow-up work, not
+    /// something this method can safely retrofit on its own.
+    pub async fn create_api_key(
+        &self,
+        tenant_id: &str,
+        name: &str,
+        allowed_paths: &[String],
+        rate_limit_per_minute: Option<i64>,
+        created_by: &str,
+    ) -> Result<NewApiKeyDto, PlatformError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(PlatformError::BadRequest("API key name must not be empty".into()));
+        }
+
+        let id = generate_prefixed_id("apikey");
+        let secret = format!("sk_live_{}", generate_id_with_length(Some(48)));
+        let key_prefix: String = secret.chars().take(Self::API_KEY_PREFIX_LEN).collect();
+        let key_hash = Self::hash_api_key_secret(&secret);
+        let allowed_paths_json =
+            serde_json::to_string(allowed_paths).map_err(|e| PlatformError::Internal(e.to_string()))?;
+        let now = now_ms();
+
+        sqlx::query(
+            "INSERT INTO one_api_keys \
+                 (id, tenant_id, name, key_prefix, key_hash, allowed_paths, rate_limit_per_minute, status, \
+                  created_by, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+        )
+        .bind(&id)
+        .bind(tenant_id)
+        .bind(name)
+        .bind(&key_prefix)
+        .bind(&key_hash)
+        .bind(&allowed_paths_json)
+        .bind(rate_limit_per_minute)
+        .bind(created_by)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        let key = self
+            .get_api_key(tenant_id, &id)
+            .await?
+            .ok_or_else(|| PlatformError::Internal("API key vanished immediately after insert".into()))?;
+        Ok(NewApiKeyDto { key, secret })
+    }
+
+    fn api_key_row_to_dto(row: ApiKeyRow) -> ApiKeyDto {
+        ApiKeyDto {
+            id: row.0,
+            name: row.1,
+            key_prefix: row.2,
+            allowed_paths: serde_json::from_str(&row.3).unwrap_or_default(),
+            rate_limit_per_minute: row.4,
+            status: row.5,
+            created_by: row.6,
+            created_at: row.7,
+            revoked_at: row.8,
+            last_used_at: row.9,
+        }
+    }
+
+    async fn get_api_key(&self, tenant_id: &str, id: &str) -> Result<Option<ApiKeyDto>, PlatformError> {
+        let row: Option<ApiKeyRow> = sqlx::query_as(
+            "SELECT id, name, key_prefix, allowed_paths, rate_limit_per_minute, status, created_by, created_at, \
+                    revoked_at, last_used_at \
+             FROM one_api_keys WHERE tenant_id = ? AND id = ?",
+        )
+        .bind(tenant_id)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(Self::api_key_row_to_dto))
+    }
+
+    pub async fn list_api_keys(&self, tenant_id: &str) -> Result<Vec<ApiKeyDto>, PlatformError> {
+        let rows: Vec<ApiKeyRow> = sqlx::query_as(
+            "SELECT id, name, key_prefix, allowed_paths, rate_limit_per_minute, status, created_by, created_at, \
+                    revoked_at, last_used_at \
+             FROM one_api_keys WHERE tenant_id = ? ORDER BY created_at DESC",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Self::api_key_row_to_dto).collect())
+    }
+
+    /// Idempotent: revoking an already-revoked key is not an error, same
+    /// posture as `grant_resource`/`add_scene_member`. Only a key that never
+    /// existed for this tenant is `NotFound`.
+    pub async fn revoke_api_key(&self, tenant_id: &str, id: &str) -> Result<(), PlatformError> {
+        let current: Option<(String,)> =
+            sqlx::query_as("SELECT status FROM one_api_keys WHERE tenant_id = ? AND id = ?")
+                .bind(tenant_id)
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+        match current {
+            None => Err(PlatformError::NotFound("API key not found".into())),
+            Some((status,)) if status == "revoked" => Ok(()),
+            Some(_) => {
+                sqlx::query(
+                    "UPDATE one_api_keys SET status = 'revoked', revoked_at = ? WHERE tenant_id = ? AND id = ?",
+                )
+                .bind(now_ms())
+                .bind(tenant_id)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+                Ok(())
+            }
+        }
+    }
 }
+
+type ApiKeyRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<i64>,
+    String,
+    String,
+    i64,
+    Option<i64>,
+    Option<i64>,
+);
 
 type SecurityPolicyRow = (String, bool, bool, String, bool, bool, bool, Option<i64>, i64);
 
@@ -1888,5 +2040,90 @@ mod tests {
             t2.tier, "relaxed",
             "an untouched tenant must not inherit another tenant's tier"
         );
+    }
+
+    // --- E5 open-integration API keys ---
+
+    #[tokio::test]
+    async fn create_api_key_returns_the_secret_once_and_never_again() {
+        let (_db, service) = setup().await;
+        let created = service
+            .create_api_key("t1", "CI bot", &["/api/one/devops/*".to_owned()], Some(60), "admin1")
+            .await
+            .unwrap();
+        assert!(created.secret.starts_with("sk_live_"));
+        assert!(
+            created.secret.starts_with(&created.key.key_prefix),
+            "the shown prefix must actually be a prefix of the real secret"
+        );
+        assert_eq!(created.key.status, "active");
+        assert_eq!(created.key.allowed_paths, vec!["/api/one/devops/*".to_owned()]);
+        assert_eq!(created.key.rate_limit_per_minute, Some(60));
+        assert_eq!(created.key.created_by, "admin1");
+
+        // The list/get-shaped view (ApiKeyDto) has no field the secret or its
+        // hash could leak through — this is enforced by the type itself, not
+        // by a runtime redaction step, so there's nothing to assert beyond
+        // "it's the type we expect" — but do assert the JSON wire shape has
+        // no `secret`/`keyHash` key, in case that ever changes.
+        let listed = service.list_api_keys("t1").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        let as_json = serde_json::to_string(&listed[0]).unwrap();
+        assert!(
+            !as_json.contains(&created.secret),
+            "the list view must never carry the plaintext secret"
+        );
+        assert!(
+            !as_json.to_lowercase().contains("hash"),
+            "the list view must never carry the hash either"
+        );
+    }
+
+    #[test]
+    fn hash_api_key_secret_is_deterministic_and_distinguishes_inputs() {
+        let a = PlatformService::hash_api_key_secret("secret-a");
+        let b = PlatformService::hash_api_key_secret("secret-a");
+        let c = PlatformService::hash_api_key_secret("secret-b");
+        assert_eq!(a, b, "hashing the same secret twice must produce the same hash");
+        assert_ne!(a, c);
+    }
+
+    #[tokio::test]
+    async fn create_api_key_rejects_an_empty_name() {
+        let (_db, service) = setup().await;
+        assert_eq!(
+            service
+                .create_api_key("t1", "   ", &[], None, "admin1")
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_api_key_is_idempotent_and_404s_only_for_a_truly_unknown_id() {
+        let (_db, service) = setup().await;
+        let created = service.create_api_key("t1", "Key", &[], None, "admin1").await.unwrap();
+
+        service.revoke_api_key("t1", &created.key.id).await.unwrap();
+        let after = service.list_api_keys("t1").await.unwrap();
+        assert_eq!(after[0].status, "revoked");
+        assert!(after[0].revoked_at.is_some());
+
+        // Revoking again must not error.
+        service.revoke_api_key("t1", &created.key.id).await.unwrap();
+
+        assert_eq!(
+            service.revoke_api_key("t1", "no-such-key").await.unwrap_err().code(),
+            "NOT_FOUND"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_keys_are_scoped_per_tenant() {
+        let (_db, service) = setup().await;
+        service.create_api_key("t1", "Key", &[], None, "admin1").await.unwrap();
+        assert!(service.list_api_keys("t2").await.unwrap().is_empty());
     }
 }
