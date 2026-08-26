@@ -100,17 +100,26 @@ impl DevopsService {
     /// `visibility='all'` — the same predicate the other registries use.
     pub async fn list_provider_channels(&self, viewer_user_id: &str) -> Result<Vec<ProviderChannelDto>, DevopsError> {
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
-        let sql = if privileged {
-            format!("SELECT {COLS} FROM one_provider_registry ORDER BY updated_at DESC")
-        } else {
-            format!(
-                "SELECT {COLS} FROM one_provider_registry WHERE {} ORDER BY updated_at DESC",
-                Self::member_visibility_where("")
-            )
-        };
-        let mut q = sqlx::query_as::<_, ProviderChannelDto>(&sql);
-        if !privileged {
-            q = q.bind(viewer_user_id);
+        if privileged {
+            let sql = format!("SELECT {COLS} FROM one_provider_registry ORDER BY updated_at DESC");
+            return Ok(sqlx::query_as::<_, ProviderChannelDto>(&sql)
+                .fetch_all(&self.pool)
+                .await?);
+        }
+        // Widened with `model_channel` grants, same as the other registries.
+        // Without this the matrix accepts, stores and reports a
+        // `model_channel` grant as effective while the member's channel list
+        // stays unchanged — a silently no-op grant the admin console renders
+        // as active.
+        let grants = self
+            .extra_grants(viewer_user_id, crate::grants::resource_type::MODEL_CHANNEL)
+            .await;
+        let (predicate, grant_binds) =
+            Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "", viewer_user_id);
+        let sql = format!("SELECT {COLS} FROM one_provider_registry WHERE {predicate} ORDER BY updated_at DESC");
+        let mut q = sqlx::query_as::<_, ProviderChannelDto>(&sql).bind(viewer_user_id);
+        for bind in &grant_binds {
+            q = q.bind(bind);
         }
         Ok(q.fetch_all(&self.pool).await?)
     }

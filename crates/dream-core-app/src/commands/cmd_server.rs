@@ -372,7 +372,15 @@ pub(crate) async fn run_server(
     // between us and process exit.
     let drain_started = shutdown_tx.subscribe();
 
-    let serve_future = axum::serve(listener, router)
+    // `into_make_service_with_connect_info`, not a bare `Router`: it is what
+    // injects the `ConnectInfo<SocketAddr>` extension that
+    // `dream_core_auth::middleware::resolve_caller_ip` reads for every request
+    // that did NOT arrive through the WebUI proxy. Without it that lookup
+    // returns `None` for every direct caller, and `PlatformIpAllowlistGate`
+    // turns "cannot verify the IP" into a 403 the moment an admin enables the
+    // allowlist — locking out every direct client (including the admin's own
+    // disable request) regardless of what the list actually says.
+    let serve_future = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(async move {
             let signal_result = shutdown_signal(parent_exit).await;
             // From here on the process must exit in bounded time so the

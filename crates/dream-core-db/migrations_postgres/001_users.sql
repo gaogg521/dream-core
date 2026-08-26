@@ -32,7 +32,12 @@ CREATE TABLE IF NOT EXISTS users (
     data_secret        TEXT,
     status             TEXT NOT NULL DEFAULT 'active'
                            CHECK (status IN ('active', 'disabled')),
-    session_generation INTEGER NOT NULL DEFAULT 0,
+    -- BIGINT, not INTEGER: every Rust layer models this as `i64`
+    -- (`models/user.rs`, `dream-core-auth::jwt`, `dream-core-api-types::auth`),
+    -- and sqlx's Postgres decode is an exact type match — `i64` against an
+    -- INT4 column fails at read time with a ColumnDecode error even though
+    -- the value always fits.
+    session_generation BIGINT NOT NULL DEFAULT 0,
     created_at         BIGINT NOT NULL,
     updated_at         BIGINT NOT NULL,
     last_login         BIGINT,

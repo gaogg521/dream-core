@@ -538,10 +538,17 @@ impl PlatformService {
         granted_by: &str,
     ) -> Result<ResourceGrantDto, PlatformError> {
         Self::validate_grant_kinds(subject_type, resource_type)?;
-        if subject_id.trim().is_empty() {
+        // Store the TRIMMED ids, not the raw ones: validating `.trim()` and
+        // then binding the original would let `" * "` pass the non-empty check
+        // and persist as a grant that matches neither `GRANT_ALL_RESOURCES` nor
+        // any real resource id — a permanently dead row the matrix UI renders
+        // as active. Same hazard for a padded `subject_id` vs `one_user_org`.
+        let subject_id = subject_id.trim();
+        let resource_id = resource_id.trim();
+        if subject_id.is_empty() {
             return Err(PlatformError::BadRequest("subject id must not be empty".into()));
         }
-        if resource_id.trim().is_empty() {
+        if resource_id.is_empty() {
             return Err(PlatformError::BadRequest("resource id must not be empty".into()));
         }
 
@@ -1411,6 +1418,28 @@ impl PlatformService {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(Self::api_key_row_to_dto).collect())
+    }
+
+    /// Revoke every active key a user minted, across all tenants. Called when
+    /// that user is removed from a company (via one-org's `CredentialRevoker`
+    /// seam), because an API key is a bearer credential with no session
+    /// generation to rotate: `invalidate_user_tokens` kills the leaver's JWTs
+    /// but their key would keep authenticating as them indefinitely, since
+    /// `authenticate_api_key` only checks `status = 'active'` and the user row
+    /// itself is untouched by removal. Same hazard model channel tokens have,
+    /// and the same answer.
+    ///
+    /// Returns the number of keys revoked so the caller can log it.
+    pub async fn revoke_api_keys_for_user(&self, user_id: &str) -> Result<u64, PlatformError> {
+        let result = sqlx::query(
+            "UPDATE one_api_keys SET status = 'revoked', revoked_at = ? \
+             WHERE created_by = ? AND status = 'active'",
+        )
+        .bind(now_ms())
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     /// Idempotent: revoking an already-revoked key is not an error, same
@@ -2286,6 +2315,75 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(outcome, ApiKeyAuthOutcome::PathNotAllowed);
+    }
+
+    /// A removed member's API key must stop authenticating. It has no session
+    /// generation to rotate, so without this it outlives every other
+    /// credential revocation path.
+    #[tokio::test]
+    async fn revoking_a_users_api_keys_stops_them_authenticating() {
+        let (_db, service) = setup().await;
+        let mine = service
+            .create_api_key("t1", "leaver key", &["/api/one/devops/*".to_owned()], None, "leaver")
+            .await
+            .unwrap();
+        let theirs = service
+            .create_api_key("t1", "stayer key", &["/api/one/devops/*".to_owned()], None, "stayer")
+            .await
+            .unwrap();
+
+        assert_eq!(service.revoke_api_keys_for_user("leaver").await.unwrap(), 1);
+
+        assert_eq!(
+            service
+                .authenticate_api_key(&mine.secret, "/api/one/devops/skills")
+                .await
+                .unwrap(),
+            ApiKeyAuthOutcome::Invalid
+        );
+        // Another member's key is untouched.
+        assert_eq!(
+            service
+                .authenticate_api_key(&theirs.secret, "/api/one/devops/skills")
+                .await
+                .unwrap(),
+            ApiKeyAuthOutcome::Authenticated {
+                user_id: "stayer".to_owned()
+            }
+        );
+    }
+
+    /// Idempotent, and revokes across every tenant the user minted keys in —
+    /// removal is per-user, and the caller does not know their tenants.
+    #[tokio::test]
+    async fn revoking_a_users_api_keys_spans_tenants_and_is_idempotent() {
+        let (_db, service) = setup().await;
+        service.create_api_key("t1", "k1", &[], None, "leaver").await.unwrap();
+        service.create_api_key("t2", "k2", &[], None, "leaver").await.unwrap();
+
+        assert_eq!(service.revoke_api_keys_for_user("leaver").await.unwrap(), 2);
+        // Second call finds nothing still active.
+        assert_eq!(service.revoke_api_keys_for_user("leaver").await.unwrap(), 0);
+        assert_eq!(service.revoke_api_keys_for_user("never-existed").await.unwrap(), 0);
+    }
+
+    /// A padded id must be stored trimmed, or it becomes a grant that matches
+    /// neither `GRANT_ALL_RESOURCES` nor any real resource id while the admin
+    /// console still renders it as active.
+    #[tokio::test]
+    async fn grant_resource_stores_trimmed_ids() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "alice", "t1", "member").await;
+        let grant = service
+            .grant_resource("t1", "member", "  alice  ", "skill", "  *  ", "admin1")
+            .await
+            .unwrap();
+        assert_eq!(grant.subject_id, "alice");
+        assert_eq!(grant.resource_id, GRANT_ALL_RESOURCES);
+
+        // And it resolves as the wildcard it was meant to be.
+        let effective = service.effective_resource_ids("t1", "alice", "skill").await.unwrap();
+        assert!(effective.all, "a trimmed '*' must resolve as a wildcard grant");
     }
 
     #[tokio::test]

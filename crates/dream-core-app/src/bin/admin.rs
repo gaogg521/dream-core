@@ -116,9 +116,16 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!(address = %addr, "dreamcore-admin: listening");
 
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // See the matching call in `commands/cmd_server.rs`: the admin plane is
+    // exactly where the IP allowlist matters most, and a bare `Router` never
+    // injects the `ConnectInfo` that `resolve_caller_ip` needs to answer with
+    // anything but `None`.
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     tracing::info!("dreamcore-admin: shutting down");
     services.database.close().await;

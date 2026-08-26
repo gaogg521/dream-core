@@ -105,7 +105,7 @@ impl DevopsService {
     }
 
     /// Resolve the viewer's extra reachability, if a matrix is wired at all.
-    async fn extra_grants(&self, viewer_user_id: &str, resource_type: &str) -> crate::grants::ExtraGrants {
+    pub(crate) async fn extra_grants(&self, viewer_user_id: &str, resource_type: &str) -> crate::grants::ExtraGrants {
         match self.grants.get() {
             Some(source) => source.extra_grants(viewer_user_id, resource_type).await,
             None => crate::grants::ExtraGrants::default(),
@@ -114,20 +114,49 @@ impl DevopsService {
 
     /// Widen a member-visibility predicate with the viewer's matrix grants.
     ///
-    /// Returns the SQL and the ids to bind after the viewer id. A wildcard
-    /// grant collapses to `OR 1=1`, which the query planner drops — cheaper and
-    /// clearer than enumerating every row's id.
-    fn widen_with_grants(base: &str, grants: &crate::grants::ExtraGrants, prefix: &str) -> (String, Vec<String>) {
+    /// Returns the SQL and the values to bind *after* the viewer id already
+    /// bound for `base`, in textual placeholder order.
+    ///
+    /// A grant widens **visibility** — "this member may reach an admin-only
+    /// skill" — and must never widen **tenancy**. The three shared registries
+    /// (`one_skill_registry` / `one_mcp_registry` / `one_rag_documents`) have
+    /// no `tenant_id` column, so the scope clause in
+    /// [`Self::member_tenant_reach_where`] is their ONLY tenant dimension (see
+    /// `012_collaboration_tenant_scope.sql`'s own header, which calls the
+    /// read-side equivalent a security bug). Both branches therefore keep that
+    /// clause: a wildcard means "every resource of this type *this viewer's
+    /// scopes contain*", not "every row in the table", and an explicit id is
+    /// honoured only within those scopes. `grant_resource` does not (and,
+    /// across a crate boundary, cannot) verify that a granted resource id
+    /// belongs to the granting tenant, so this is the layer that has to hold
+    /// the line.
+    pub(crate) fn widen_with_grants(
+        base: &str,
+        grants: &crate::grants::ExtraGrants,
+        prefix: &str,
+        viewer_user_id: &str,
+    ) -> (String, Vec<String>) {
         if grants.all {
-            return (format!("(({base}) OR 1 = 1)"), Vec::new());
+            return (
+                format!("(({base}) OR {})", Self::member_tenant_reach_where(prefix)),
+                vec![viewer_user_id.to_owned()],
+            );
         }
         if grants.ids.is_empty() {
             return (base.to_owned(), Vec::new());
         }
         let placeholders = vec!["?"; grants.ids.len()].join(", ");
+        // Bind order matches placeholder order: `base`'s viewer id is bound by
+        // the caller, then the tenant-reach clause's viewer id, then the ids.
+        let mut binds = Vec::with_capacity(grants.ids.len() + 1);
+        binds.push(viewer_user_id.to_owned());
+        binds.extend(grants.ids.iter().cloned());
         (
-            format!("(({base}) OR {prefix}id IN ({placeholders}))"),
-            grants.ids.clone(),
+            format!(
+                "(({base}) OR ({} AND {prefix}id IN ({placeholders})))",
+                Self::member_tenant_reach_where(prefix)
+            ),
+            binds,
         )
     }
 
@@ -759,8 +788,23 @@ impl DevopsService {
     /// single-table read, "d." for the `search_rag` join).
     pub(crate) fn member_visibility_where(prefix: &str) -> String {
         format!(
+            "{reach} AND {p}visibility = 'all'",
+            reach = Self::member_tenant_reach_where(prefix),
+            p = prefix
+        )
+    }
+
+    /// The tenant-reach half of [`Self::member_visibility_where`]: which rows
+    /// live in a scope this viewer participates in at all, independent of each
+    /// row's `visibility`.
+    ///
+    /// Split out so a matrix grant can widen visibility while keeping tenancy
+    /// intact — see [`Self::widen_with_grants`] for why that separation is
+    /// load-bearing.
+    pub(crate) fn member_tenant_reach_where(prefix: &str) -> String {
+        format!(
             "({p}scope = 'org' OR ({p}scope = 'team' AND {p}team_id IN \
-               (SELECT tenant_id FROM one_user_org WHERE user_id = ?))) AND {p}visibility = 'all'",
+               (SELECT tenant_id FROM one_user_org WHERE user_id = ?)))",
             p = prefix
         )
     }
@@ -880,7 +924,8 @@ impl DevopsService {
         let grants = self
             .extra_grants(viewer_user_id, crate::grants::resource_type::SKILL)
             .await;
-        let (predicate, grant_ids) = Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "");
+        let (predicate, grant_ids) =
+            Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "", viewer_user_id);
         let sql = format!("SELECT {COLS} FROM one_skill_registry WHERE {predicate} ORDER BY updated_at DESC");
         let mut q = sqlx::query_as::<_, SkillRegistryDto>(&sql).bind(viewer_user_id);
         for id in &grant_ids {
@@ -1048,7 +1093,8 @@ impl DevopsService {
         let grants = self
             .extra_grants(viewer_user_id, crate::grants::resource_type::MCP)
             .await;
-        let (predicate, grant_ids) = Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "");
+        let (predicate, grant_ids) =
+            Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "", viewer_user_id);
         let sql = format!("SELECT {COLS} FROM one_mcp_registry WHERE {predicate} ORDER BY updated_at DESC");
         let mut q = sqlx::query_as::<_, McpRegistryDto>(&sql).bind(viewer_user_id);
         for id in &grant_ids {
@@ -1217,7 +1263,8 @@ impl DevopsService {
         let grants = self
             .extra_grants(viewer_user_id, crate::grants::resource_type::KNOWLEDGE)
             .await;
-        let (predicate, grant_ids) = Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "");
+        let (predicate, grant_ids) =
+            Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "", viewer_user_id);
         let sql = format!("SELECT {COLS} FROM one_rag_documents WHERE {predicate} ORDER BY created_at DESC");
         let mut q = sqlx::query_as::<_, RagDocumentDto>(&sql).bind(viewer_user_id);
         for id in &grant_ids {
@@ -1647,10 +1694,23 @@ impl DevopsService {
         }
         let limit = top_k.max(1);
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
-        let acl_predicate = if privileged {
-            None
+        // Widened with the SAME knowledge grants `list_rag_documents` applies,
+        // so a granted document is actually *searchable* and not merely listed.
+        // Without this the grant is half-effective in the one place it affects
+        // agent behaviour: the member sees the document in their knowledge list
+        // and gets zero chunks from it in retrieval.
+        let (acl_predicate, acl_binds) = if privileged {
+            (None, Vec::new())
         } else {
-            Some(Self::member_visibility_where("d."))
+            let grants = self
+                .extra_grants(viewer_user_id, crate::grants::resource_type::KNOWLEDGE)
+                .await;
+            let (predicate, extra) =
+                Self::widen_with_grants(&Self::member_visibility_where("d."), &grants, "d.", viewer_user_id);
+            let mut binds = Vec::with_capacity(extra.len() + 1);
+            binds.push(viewer_user_id.to_owned());
+            binds.extend(extra);
+            (Some(predicate), binds)
         };
 
         // Dense half. The ACL lives in the join, exactly as before.
@@ -1667,8 +1727,8 @@ impl DevopsService {
             Some(predicate) => format!("{BASE} WHERE {predicate}"),
         };
         let mut q = sqlx::query_as::<_, (String, String, i64, String, Vec<u8>, String)>(&sql);
-        if acl_predicate.is_some() {
-            q = q.bind(viewer_user_id);
+        for bind in &acl_binds {
+            q = q.bind(bind);
         }
         let rows: Vec<(String, String, i64, String, Vec<u8>, String)> = q.fetch_all(&self.pool).await?;
 
@@ -1697,17 +1757,12 @@ impl DevopsService {
 
         // Lexical half. Best-effort: with FTS5 absent or the query unparseable
         // this returns empty and the result degrades to dense-only.
-        let lexical_ranked: Vec<String> = crate::retrieval::lexical_candidates(
-            &self.pool,
-            query,
-            acl_predicate.as_deref(),
-            viewer_user_id,
-            candidates,
-        )
-        .await?
-        .into_iter()
-        .map(|hit| hit.chunk_id)
-        .collect();
+        let lexical_ranked: Vec<String> =
+            crate::retrieval::lexical_candidates(&self.pool, query, acl_predicate.as_deref(), &acl_binds, candidates)
+                .await?
+                .into_iter()
+                .map(|hit| hit.chunk_id)
+                .collect();
 
         if lexical_ranked.is_empty() {
             // Nothing to fuse — keep the dense scores, which callers already
@@ -2402,6 +2457,87 @@ mod tests {
         assert!(
             ids.contains(&later.id),
             "a wildcard is not a snapshot of the ids that existed when it was granted"
+        );
+    }
+
+    /// Insert a skill owned by ANOTHER project group, bypassing `upsert_skill`
+    /// (whose `actor_can_touch_team` check correctly refuses to let a t1 admin
+    /// create a t2-scoped row). This models the real state: t2's own admin
+    /// created it.
+    async fn seed_other_tenant_skill(svc: &DevopsService, id: &str, tenant: &str, visibility: &str) {
+        sqlx::query(
+            "INSERT INTO one_skill_registry \
+                 (id, name, description, content, enabled, auto_active, scope, team_id, visibility, \
+                  created_by, created_at, updated_at) \
+             VALUES (?, ?, 'd', 'c', 1, 0, 'team', ?, ?, 'other-admin', 0, 0)",
+        )
+        .bind(id)
+        .bind(id)
+        .bind(tenant)
+        .bind(visibility)
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+    }
+
+    /// A grant widens VISIBILITY, never TENANCY. These three registries have no
+    /// `tenant_id` column, so the scope clause is their only tenant dimension —
+    /// a wildcard that collapsed the whole predicate to `OR 1 = 1` would hand
+    /// one project group's members another group's rows.
+    #[tokio::test]
+    async fn a_wildcard_grant_does_not_reach_another_tenants_rows() {
+        let svc = service().await;
+        seed_org(&svc).await;
+        let (_open, restricted) = seed_two_skills(&svc).await;
+        seed_other_tenant_skill(&svc, "t2-skill", "t2", "all").await;
+        svc.set_grants(std::sync::Arc::new(FixedGrants(crate::grants::ExtraGrants {
+            all: true,
+            ids: Vec::new(),
+        })));
+
+        let ids: Vec<_> = svc
+            .list_skills("member1")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+
+        // The wildcard still does its job inside the viewer's own scopes.
+        assert!(
+            ids.contains(&restricted),
+            "a wildcard must still reach admin-only rows in the viewer's own scope"
+        );
+        // ...but never crosses into another project group.
+        assert!(
+            !ids.contains(&"t2-skill".to_owned()),
+            "a wildcard grant must not reach another tenant's team-scoped rows"
+        );
+    }
+
+    /// Same boundary for an explicitly-granted id: `grant_resource` cannot
+    /// verify (across a crate boundary) that a granted resource belongs to the
+    /// granting tenant, so the read path has to hold the line.
+    #[tokio::test]
+    async fn an_explicit_grant_does_not_reach_another_tenants_row() {
+        let svc = service().await;
+        seed_org(&svc).await;
+        seed_other_tenant_skill(&svc, "t2-skill", "t2", "admin").await;
+        svc.set_grants(std::sync::Arc::new(FixedGrants(crate::grants::ExtraGrants {
+            all: false,
+            ids: vec!["t2-skill".to_owned()],
+        })));
+
+        let ids: Vec<_> = svc
+            .list_skills("member1")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert!(
+            !ids.contains(&"t2-skill".to_owned()),
+            "an explicit grant must not reach another tenant's row even when the id matches"
         );
     }
 

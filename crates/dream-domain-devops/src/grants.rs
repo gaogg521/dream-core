@@ -1,6 +1,6 @@
 //! Where a viewer's extra reachability comes from.
 //!
-//! The four registries in this crate gate reads on their own `scope` and
+//! The registries in this crate gate reads on their own `scope` and
 //! `visibility` columns, which express reachability in coarse strokes: a
 //! resource is reachable by the whole org, by one team, or — when
 //! `visibility = 'admin'` — by nobody but administrators. There is no way to
@@ -35,6 +35,7 @@ pub mod resource_type {
     pub const SKILL: &str = "skill";
     pub const MCP: &str = "mcp";
     pub const KNOWLEDGE: &str = "knowledge";
+    pub const MODEL_CHANNEL: &str = "model_channel";
 }
 
 /// What a viewer may additionally reach, beyond what `scope`/`visibility`

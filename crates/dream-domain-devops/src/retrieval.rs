@@ -182,11 +182,16 @@ pub struct LexicalHit {
 /// `acl_predicate` is the caller's already-built visibility SQL (or `None` for
 /// a privileged viewer); it is applied inside this query so an invisible
 /// document cannot take a candidate slot.
+/// `acl_binds` carries the values for every placeholder inside
+/// `acl_predicate`, in textual order — the viewer id, plus whatever a matrix
+/// grant added when the predicate was widened. Passing them as a slice rather
+/// than a single viewer id is what lets a widened (multi-placeholder)
+/// predicate be used here at all.
 pub async fn lexical_candidates(
     pool: &SqlitePool,
     query: &str,
     acl_predicate: Option<&str>,
-    viewer_user_id: &str,
+    acl_binds: &[String],
     limit: usize,
 ) -> Result<Vec<LexicalHit>, DevopsError> {
     if !ensure_fts_table(pool).await.is_available() {
@@ -210,8 +215,8 @@ pub async fn lexical_candidates(
     sql.push_str(&format!(" ORDER BY bm25({FTS_TABLE}) LIMIT ?"));
 
     let mut q = sqlx::query(&sql).bind(match_expr);
-    if acl_predicate.is_some() {
-        q = q.bind(viewer_user_id);
+    for bind in acl_binds {
+        q = q.bind(bind);
     }
     let rows = match q.bind(limit as i64).fetch_all(pool).await {
         Ok(rows) => rows,
@@ -322,7 +327,7 @@ mod tests {
 
         // An error code is precisely the kind of rare literal token a dense
         // embedding blurs — this is why the lexical ranker exists.
-        let hits = lexical_candidates(&pool, "ERR_QUOTA_4471", None, "admin", 10)
+        let hits = lexical_candidates(&pool, "ERR_QUOTA_4471", None, &[], 10)
             .await
             .unwrap();
         let ids: Vec<&str> = hits.iter().map(|h| h.chunk_id.as_str()).collect();
@@ -337,7 +342,7 @@ mod tests {
         seed(&pool).await;
         rebuild_index(&pool).await.unwrap();
 
-        let hits = lexical_candidates(&pool, "ERR_QUOTA_4471", Some(MEMBER_ACL), "member1", 10)
+        let hits = lexical_candidates(&pool, "ERR_QUOTA_4471", Some(MEMBER_ACL), &["member1".to_owned()], 10)
             .await
             .unwrap();
         let ids: Vec<&str> = hits.iter().map(|h| h.chunk_id.as_str()).collect();
@@ -358,7 +363,7 @@ mod tests {
         .unwrap();
         rebuild_index(&pool).await.unwrap();
 
-        let hits = lexical_candidates(&pool, "报销流程", None, "admin", 5).await.unwrap();
+        let hits = lexical_candidates(&pool, "报销流程", None, &[], 5).await.unwrap();
         assert_eq!(hits.len(), 1, "trigram tokenizer must match unsegmented Chinese");
         assert_eq!(hits[0].chunk_id, "zh1");
     }
@@ -376,7 +381,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let hits = lexical_candidates(&pool, "rewrote", None, "admin", 5).await.unwrap();
+        let hits = lexical_candidates(&pool, "rewrote", None, &[], 5).await.unwrap();
         assert_eq!(hits.len(), 1, "re-synced content is searchable");
 
         // Re-syncing must converge, not accumulate.
@@ -387,11 +392,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let hits = lexical_candidates(&pool, "rewrote", None, "admin", 5).await.unwrap();
+        let hits = lexical_candidates(&pool, "rewrote", None, &[], 5).await.unwrap();
         assert_eq!(hits.len(), 1, "re-sync must not duplicate rows");
 
         delete_document(&pool, "doc-a").await.unwrap();
-        let hits = lexical_candidates(&pool, "rewrote", None, "admin", 5).await.unwrap();
+        let hits = lexical_candidates(&pool, "rewrote", None, &[], 5).await.unwrap();
         assert!(hits.is_empty(), "deleted document must leave no lexical rows");
     }
 
@@ -416,7 +421,7 @@ mod tests {
         seed(&pool).await;
         rebuild_index(&pool).await.unwrap();
         for probe in ["ERR_QUOTA_4471 OR", "\"unbalanced", "NEAR(a b)", "*", "-"] {
-            let result = lexical_candidates(&pool, probe, None, "admin", 5).await;
+            let result = lexical_candidates(&pool, probe, None, &[], 5).await;
             assert!(result.is_ok(), "query {probe:?} should not error out");
         }
     }

@@ -12,13 +12,19 @@
 //! Mounted behind the upstream `auth_middleware` (relies on `CurrentUser` in
 //! request extensions). All routes are gated by `RequirePlatformAdmin`.
 //!
-//! ⚠️ The resource-grants endpoints let an admin record who may reach which
-//! skill / MCP server / digital employee / model channel, but nothing reads
-//! `PlatformService::effective_resource_ids` on the enforcement path yet — the
-//! four devops registries still gate purely on their own `scope`/`visibility`
-//! columns. This is the storage + resolution layer landing first because it's
-//! the part later work can't safely retrofit; wiring an actual check into
-//! each of the four resource kinds is separate, follow-up work.
+//! ⚠️ The resource-grants endpoints are **partially enforced**, so check
+//! before assuming a change here is inert:
+//!
+//! - **Enforced** (`dream-domain-devops` widens its read predicate with
+//!   `effective_resource_ids` via the `ResourceGrantSource` seam): `skill`,
+//!   `mcp`, `knowledge`, `model_channel`. Changing grant semantics changes
+//!   what members actually see on those four read paths.
+//! - **Not enforced**: `employee` — `dream-domain-employee` has no
+//!   `ResourceGrantSource` hook, so a grant of that type is recorded and
+//!   reported as effective while nothing consults it.
+//!
+//! A grant only ever *adds* reachability on the enforced paths, and never
+//! widens tenancy (see `DevopsService::widen_with_grants`).
 
 use axum::extract::{Path, Query, State};
 use axum::routing::{delete, get, post};
@@ -393,10 +399,13 @@ struct EffectiveGrantsQuery {
 }
 
 /// What one member can reach for one resource type, resolved through their
-/// own grants and their department chain. Admin-gated for now, same as every
-/// other route here — a self-service "what can I see" endpoint for a caller
-/// to ask about themselves is a straightforward follow-up once something
-/// actually enforces this matrix, but nothing does yet (see the module docs).
+/// own grants and their department chain. Admin-gated, same as every other
+/// route here — a self-service "what can I see" endpoint for a caller to ask
+/// about themselves is a straightforward follow-up.
+///
+/// ⚠️ This answers "what does the matrix say", which is not the same as "what
+/// will the member actually see": `employee` grants are resolved here but
+/// enforced nowhere (see the module docs for which types are live).
 async fn effective_resource_grants(
     State(state): State<OnePlatformRouterState>,
     RequirePlatformAdmin(actor): RequirePlatformAdmin,
