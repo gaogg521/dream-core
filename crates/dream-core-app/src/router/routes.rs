@@ -685,6 +685,158 @@ impl dream_core_conversation::SendGate for BillingSendGate {
     }
 }
 
+/// Per-member fixed-window send counter for `one_security_policy`'s
+/// `send_rate_limit_per_minute` (E5 security policy baseline). Unlike
+/// `dream_core_auth::RateLimiter`, the limit is not baked in at construction
+/// — it is read from the tenant's live policy on every check, since an admin
+/// can change it at any time via the admin console.
+#[cfg(feature = "enterprise")]
+struct SendRateLimiter {
+    counts: dashmap::DashMap<String, (u32, i64)>,
+    window_ms: i64,
+}
+
+#[cfg(feature = "enterprise")]
+impl SendRateLimiter {
+    fn new() -> Self {
+        Self::with_window_ms(60_000)
+    }
+
+    /// Test-only hook: a 60-second window can't be exercised end-to-end in a
+    /// unit test, so tests construct with a millisecond-scale window instead
+    /// (same technique as `dream_core_auth::RateLimiter`'s own tests).
+    fn with_window_ms(window_ms: i64) -> Self {
+        Self {
+            counts: dashmap::DashMap::new(),
+            window_ms,
+        }
+    }
+
+    /// Records this send and returns whether it stays within `limit_per_minute`
+    /// (a fixed window per `user_id`, matching the field's own "per minute"
+    /// semantics).
+    fn check_and_increment(&self, user_id: &str, limit_per_minute: u32) -> bool {
+        let now = dream_core_common::now_ms();
+        let mut entry = self
+            .counts
+            .entry(user_id.to_owned())
+            .or_insert((0, now + self.window_ms));
+        if now >= entry.1 {
+            entry.0 = 0;
+            entry.1 = now + self.window_ms;
+        }
+        if entry.0 >= limit_per_minute {
+            return false;
+        }
+        entry.0 += 1;
+        true
+    }
+}
+
+/// Enforces `one_security_policy.send_rate_limit_per_minute` on the
+/// pre-send path. `None` (the default for every tenant that has never
+/// touched their policy, or is on the `relaxed` tier) means unlimited —
+/// this gate never governs a caller that hasn't opted in, same posture as
+/// every other enterprise gate in this file.
+#[cfg(feature = "enterprise")]
+struct SecurityPolicySendRateGate {
+    platform: std::sync::Arc<dream_domain_platform::PlatformService>,
+    limiter: SendRateLimiter,
+    grace: std::sync::Arc<PolicyGrace>,
+}
+
+#[cfg(feature = "enterprise")]
+impl SecurityPolicySendRateGate {
+    fn new(
+        platform: std::sync::Arc<dream_domain_platform::PlatformService>,
+        grace: std::sync::Arc<PolicyGrace>,
+    ) -> Self {
+        Self {
+            platform,
+            limiter: SendRateLimiter::new(),
+            grace,
+        }
+    }
+
+    async fn check(&self, user_id: &str) -> Result<(), dream_core_conversation::PolicyDenial> {
+        let actor = match self.platform.resolve_actor(user_id).await {
+            // No enterprise membership: nothing governs this caller. Every
+            // standalone install and every personal-edition test lands here.
+            Ok(None) => return Ok(()),
+            Ok(Some(actor)) => {
+                self.grace.answered();
+                actor
+            }
+            Err(e) => return self.unanswerable(&e.to_string()),
+        };
+        let policy = match self.platform.get_security_policy(&actor.tenant_id).await {
+            Ok(policy) => {
+                self.grace.answered();
+                policy
+            }
+            Err(e) => return self.unanswerable(&e.to_string()),
+        };
+        let Some(limit) = policy.send_rate_limit_per_minute.filter(|l| *l > 0) else {
+            return Ok(());
+        };
+        if self.limiter.check_and_increment(user_id, limit as u32) {
+            Ok(())
+        } else {
+            Err(dream_core_conversation::PolicyDenial::new(
+                "SEND_RATE_LIMITED",
+                "You're sending messages faster than your organization's policy allows; please slow down",
+            ))
+        }
+    }
+
+    /// Same posture as `PlatformIpAllowlistGate::unanswerable`: a transient
+    /// platform-read failure must not stop every send in the process, so it
+    /// is tolerated within the shared grace window and only enforced once
+    /// the plane has been genuinely unreachable long enough to be an outage.
+    fn unanswerable(&self, error: &str) -> Result<(), dream_core_conversation::PolicyDenial> {
+        if self.grace.within_window() {
+            tracing::warn!(error, "send rate limit unanswerable; inside grace window");
+            return Ok(());
+        }
+        tracing::error!(
+            error,
+            "security policy plane unreachable beyond grace window; refusing enterprise-scoped sends"
+        );
+        Err(dream_core_conversation::PolicyDenial::new(
+            "ENTERPRISE_POLICY_UNAVAILABLE",
+            "Company policy has been unreachable for too long; switch to a personal workspace or contact your administrator",
+        ))
+    }
+}
+
+/// Combines the billing budget/model gate with the security-policy send-rate
+/// limit: both are pre-send checks, and `ConversationRouterState` has exactly
+/// one `SendGate` slot, so they compose here rather than each claiming it.
+#[cfg(feature = "enterprise")]
+struct EnterpriseSendGate {
+    billing: BillingSendGate,
+    rate: SecurityPolicySendRateGate,
+}
+
+#[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
+impl dream_core_conversation::SendGate for EnterpriseSendGate {
+    async fn check_send(
+        &self,
+        user_id: &str,
+        model: Option<&str>,
+    ) -> Result<(), dream_core_conversation::PolicyDenial> {
+        self.billing.check_send(user_id, model).await?;
+        self.rate.check(user_id).await
+    }
+
+    async fn check_model(&self, user_id: &str, model: &str) -> Result<(), dream_core_conversation::PolicyDenial> {
+        // Model-switch allowlisting only — the send-rate limit governs
+        // sends, not config changes, same as billing's own budget check.
+        self.billing.check_model(user_id, model).await
+    }
+}
+
 /// Adapts one-billing's `check_model_allowed` to the agent factory's
 /// `ModelAllowlistGate` (P0, vision delegate).
 ///
@@ -1641,9 +1793,12 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // allowlist are all billing-plane policy. `None` skips the check entirely
     // (see `dream_core_conversation::routes`), which is the pre-billing path.
     #[cfg(feature = "enterprise")]
-    let conversation_state = conversation_state.with_send_gate(std::sync::Arc::new(BillingSendGate {
-        billing: one_billing_service.clone(),
-        grace: policy_grace.clone(),
+    let conversation_state = conversation_state.with_send_gate(std::sync::Arc::new(EnterpriseSendGate {
+        billing: BillingSendGate {
+            billing: one_billing_service.clone(),
+            grace: policy_grace.clone(),
+        },
+        rate: SecurityPolicySendRateGate::new(one_platform_service.clone(), policy_grace.clone()),
     }));
     let conversation_authenticated =
         conversation_routes(conversation_state).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
@@ -2100,7 +2255,10 @@ mod tests {
     use serde_json::json;
 
     #[cfg(feature = "enterprise")]
-    use super::{ENTERPRISE_POLICY_GRACE_MS, PolicyGrace, PolicyVerdict, billing_denial};
+    use super::{
+        ENTERPRISE_POLICY_GRACE_MS, PolicyGrace, PolicyVerdict, SecurityPolicySendRateGate, SendRateLimiter,
+        billing_denial,
+    };
     use super::{
         boundary_error_for_status, create_router_with_runtime, forward_event_bus_to_websocket,
         is_global_websocket_event,
@@ -2255,5 +2413,139 @@ mod tests {
 
         assert_eq!(delivered["data"]["sequence"], 4);
         bridge.abort();
+    }
+
+    // --- SendRateLimiter (E5 security policy send-rate limit) ---
+
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn send_rate_limiter_enforces_the_limit_within_the_window() {
+        let limiter = SendRateLimiter::new();
+        assert!(limiter.check_and_increment("user-1", 2));
+        assert!(limiter.check_and_increment("user-1", 2));
+        assert!(!limiter.check_and_increment("user-1", 2));
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn send_rate_limiter_tracks_users_independently() {
+        let limiter = SendRateLimiter::new();
+        assert!(limiter.check_and_increment("user-a", 1));
+        assert!(limiter.check_and_increment("user-b", 1));
+        assert!(!limiter.check_and_increment("user-a", 1));
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn send_rate_limiter_resets_after_the_window_expires() {
+        let limiter = SendRateLimiter::with_window_ms(50);
+        assert!(limiter.check_and_increment("user-1", 1));
+        assert!(!limiter.check_and_increment("user-1", 1));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(limiter.check_and_increment("user-1", 1));
+    }
+
+    // --- SecurityPolicySendRateGate ---
+
+    #[cfg(feature = "enterprise")]
+    async fn platform_service_for_test() -> (dream_core_db::Database, Arc<dream_domain_platform::PlatformService>) {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        dream_domain_platform::run_one_platform_migrations(db.pool())
+            .await
+            .unwrap();
+        let service = Arc::new(dream_domain_platform::PlatformService::new(
+            db.pool().clone(),
+            [9u8; 32],
+        ));
+        (db, service)
+    }
+
+    /// Same minimal seed as `dream-domain-platform`'s own tests use for
+    /// `resolve_actor` — this crate doesn't depend on `dream-domain-org`, so
+    /// the tables are created inline rather than via a real org migration.
+    #[cfg(feature = "enterprise")]
+    async fn seed_membership(pool: &sqlx::SqlitePool, user_id: &str, tenant_id: &str) {
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, \
+                 role TEXT NOT NULL DEFAULT 'member', department_id TEXT, created_at INTEGER NOT NULL DEFAULT 0, \
+                 updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, tenant_id));\
+             CREATE TABLE IF NOT EXISTS one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, \
+                 updated_at INTEGER NOT NULL DEFAULT 0);",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO one_user_org (user_id, tenant_id, role) VALUES (?, ?, 'member')")
+            .bind(user_id)
+            .bind(tenant_id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    /// Personal edition / no enterprise membership: nothing governs the
+    /// caller, no matter how many sends arrive. This is the case every
+    /// standalone install and every unrelated test that drives the send
+    /// route without a real membership row must land in.
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn security_policy_send_rate_gate_passes_without_an_actor() {
+        let (_db, platform) = platform_service_for_test().await;
+        let gate = SecurityPolicySendRateGate::new(platform, Arc::new(PolicyGrace::new()));
+        for _ in 0..5 {
+            assert!(gate.check("no-membership-user").await.is_ok());
+        }
+    }
+
+    /// A tenant that has never touched its security policy (or is on the
+    /// `relaxed` tier) has `send_rate_limit_per_minute = None` — unlimited.
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn security_policy_send_rate_gate_passes_when_no_rate_limit_is_configured() {
+        let (db, platform) = platform_service_for_test().await;
+        seed_membership(db.pool(), "user-1", "t1").await;
+        let gate = SecurityPolicySendRateGate::new(platform, Arc::new(PolicyGrace::new()));
+        for _ in 0..5 {
+            assert!(gate.check("user-1").await.is_ok());
+        }
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn security_policy_send_rate_gate_blocks_once_the_configured_limit_is_reached() {
+        let (db, platform) = platform_service_for_test().await;
+        seed_membership(db.pool(), "user-1", "t1").await;
+        platform
+            .set_security_policy("t1", false, false, &[], false, false, false, Some(2))
+            .await
+            .unwrap();
+
+        let gate = SecurityPolicySendRateGate::new(platform, Arc::new(PolicyGrace::new()));
+        assert!(gate.check("user-1").await.is_ok());
+        assert!(gate.check("user-1").await.is_ok());
+        let denial = gate.check("user-1").await.unwrap_err();
+        assert_eq!(denial.code, "SEND_RATE_LIMITED");
+    }
+
+    /// Two tenants with different configured limits (or none at all) must
+    /// not interfere with each other's counters.
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn security_policy_send_rate_gate_isolates_tenants() {
+        let (db, platform) = platform_service_for_test().await;
+        seed_membership(db.pool(), "user-strict", "t-strict").await;
+        seed_membership(db.pool(), "user-relaxed", "t-relaxed").await;
+        platform
+            .set_security_policy("t-strict", false, false, &[], false, false, false, Some(1))
+            .await
+            .unwrap();
+
+        let gate = SecurityPolicySendRateGate::new(platform, Arc::new(PolicyGrace::new()));
+        assert!(gate.check("user-strict").await.is_ok());
+        assert!(gate.check("user-strict").await.is_err());
+        // The relaxed tenant's member is unaffected by the strict tenant's cap.
+        for _ in 0..5 {
+            assert!(gate.check("user-relaxed").await.is_ok());
+        }
     }
 }
