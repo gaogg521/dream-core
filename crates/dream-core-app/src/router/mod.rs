@@ -16,10 +16,11 @@ mod trace;
 
 #[cfg(feature = "enterprise")]
 pub use routes::create_admin_router;
-/// Lives with the other one-billing adapters in `routes.rs`, but is wired in
-/// `AppServices` — the agent factory is built before any router exists.
+/// Lives with the other one-billing/one-platform adapters in `routes.rs`,
+/// but is wired in `AppServices` — the agent factory is built before any
+/// router exists.
 #[cfg(feature = "enterprise")]
-pub(crate) use routes::{BillingModelAllowlistGate, PolicyGrace};
+pub(crate) use routes::{BillingModelAllowlistGate, PlatformToolCallSecurityGate, PolicyGrace};
 pub use routes::{
     RouterRuntime, create_router, create_router_with_all_state, create_router_with_runtime, create_router_with_states,
 };

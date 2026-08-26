@@ -2,7 +2,9 @@ use crate::agent_runtime::AgentRuntime;
 use crate::error::AgentError;
 use crate::protocol::acp::{PermissionDecision, PermissionRequest};
 use crate::protocol::events::{AgentStreamEvent, permission_request_to_event_data};
+use crate::security_policy::ToolCallSecurityGate;
 use agent_client_protocol::schema::v1::PermissionOptionKind as SdkPermissionOptionKind;
+use agent_client_protocol::schema::v1::ToolKind as SdkToolKind;
 use dream_core_api_types::TEAM_MCP_SERVER_NAME;
 use dream_core_common::Confirmation;
 use std::collections::HashMap;
@@ -10,7 +12,7 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, mpsc, oneshot};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 const AUTO_APPROVE_MCP_SERVERS: &[&str] = &[TEAM_MCP_SERVER_NAME];
 
@@ -31,15 +33,27 @@ pub struct PermissionRouter {
     pending_permissions: StdMutex<HashMap<String, PendingPermission>>,
     /// Whether a graceful shutdown is in progress.
     closing: AtomicBool,
+    /// The user this session belongs to, for the security-policy check below.
+    user_id: String,
+    /// Company security policy's destructive-command block and network-
+    /// fetch denial, `None` for personal builds and tests — every tool call
+    /// then flows through unmodified, exactly as before this existed.
+    tool_call_security_gate: Option<Arc<dyn ToolCallSecurityGate>>,
 }
 
 impl PermissionRouter {
     /// Create a new permission router.
-    pub fn new(permission_rx: mpsc::Receiver<PermissionRequest>) -> Self {
+    pub fn new(
+        permission_rx: mpsc::Receiver<PermissionRequest>,
+        user_id: String,
+        tool_call_security_gate: Option<Arc<dyn ToolCallSecurityGate>>,
+    ) -> Self {
         Self {
             permission_rx: Mutex::new(permission_rx),
             pending_permissions: StdMutex::new(HashMap::new()),
             closing: AtomicBool::new(false),
+            user_id,
+            tool_call_security_gate,
         }
     }
 
@@ -62,6 +76,52 @@ impl PermissionRouter {
                 runtime.bump_activity();
 
                 let call_id = perm_req.request.tool_call.tool_call_id.to_string();
+
+                // Company security policy takes priority over both
+                // auto-approval and the normal user-confirmation flow: a
+                // blocked command must never reach either.
+                if let Some(gate) = this.tool_call_security_gate.as_ref() {
+                    let command_text = extract_command_text(&perm_req.request);
+                    let is_network_fetch = perm_req.request.tool_call.fields.kind == Some(SdkToolKind::Fetch);
+                    match gate.check(&this.user_id, &command_text, is_network_fetch).await {
+                        Ok(Some(reason)) => {
+                            warn!(
+                                conversation_id = %runtime.conversation_id(),
+                                call_id,
+                                reason,
+                                "ACP permission request blocked by company security policy"
+                            );
+                            let decision = match select_reject_option_id(&perm_req.request) {
+                                Some(option_id) => PermissionDecision::Selected { option_id },
+                                None => PermissionDecision::Cancelled,
+                            };
+                            let _ = perm_req.response_tx.send(decision);
+                            continue;
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            // The check itself failed (e.g. a DB error) — this is
+                            // NOT the same as the policy allowing the call. Fail
+                            // closed on the one call rather than silently letting
+                            // a potentially-destructive command through, and
+                            // rather than freezing every other tool call in the
+                            // process (unlike the IP allowlist, this check never
+                            // gates the whole request).
+                            warn!(
+                                conversation_id = %runtime.conversation_id(),
+                                call_id,
+                                error,
+                                "ACP permission security-policy check failed; blocking this call"
+                            );
+                            let decision = match select_reject_option_id(&perm_req.request) {
+                                Some(option_id) => PermissionDecision::Selected { option_id },
+                                None => PermissionDecision::Cancelled,
+                            };
+                            let _ = perm_req.response_tx.send(decision);
+                            continue;
+                        }
+                    }
+                }
 
                 // Auto-approve team MCP tools without user interaction.
                 if let Some(option_id) = auto_approve_option_id(&perm_req.request) {
@@ -199,6 +259,40 @@ fn select_allow_option_id(request: &agent_client_protocol::schema::v1::RequestPe
         .map(|option| option.option_id.to_string())
 }
 
+/// The reject option to select when the security policy blocks a call
+/// outright. Prefers an explicit reject/cancel option so the agent (and
+/// transcript) sees a real refusal rather than a silently dropped request;
+/// falls back to [`PermissionDecision::Cancelled`] at the call site when no
+/// such option is offered.
+fn select_reject_option_id(request: &agent_client_protocol::schema::v1::RequestPermissionRequest) -> Option<String> {
+    request
+        .options
+        .iter()
+        .find(|option| {
+            matches!(
+                option.kind,
+                SdkPermissionOptionKind::RejectOnce | SdkPermissionOptionKind::RejectAlways
+            )
+        })
+        .map(|option| option.option_id.to_string())
+}
+
+/// Best-effort text to match blocked command patterns against: the tool
+/// call's title plus its raw input serialized to JSON. See
+/// [`ToolCallSecurityGate`]'s doc comment for why this doesn't assume a
+/// specific per-agent field name.
+fn extract_command_text(request: &agent_client_protocol::schema::v1::RequestPermissionRequest) -> String {
+    let title = request.tool_call.fields.title.as_deref().unwrap_or_default();
+    let raw_input = request
+        .tool_call
+        .fields
+        .raw_input
+        .as_ref()
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    format!("{title} {raw_input}")
+}
+
 fn extract_mcp_server_name(request: &agent_client_protocol::schema::v1::RequestPermissionRequest) -> Option<String> {
     extract_mcp_server_from_raw_input(request).or_else(|| {
         request
@@ -300,7 +394,7 @@ mod tests {
     #[test]
     fn get_confirmations_returns_pending_acp_permission() {
         let (_tx, rx) = mpsc::channel(1);
-        let router = PermissionRouter::new(rx);
+        let router = PermissionRouter::new(rx, "test-user".to_owned(), None);
         let (response_tx, _response_rx) = oneshot::channel();
 
         router.insert_pending_for_test("tool-1".to_owned(), response_tx, sample_confirmation("tool-1"));
@@ -315,7 +409,7 @@ mod tests {
     #[test]
     fn confirm_removes_pending_confirmation_and_forwards_option() {
         let (_tx, rx) = mpsc::channel(1);
-        let router = PermissionRouter::new(rx);
+        let router = PermissionRouter::new(rx, "test-user".to_owned(), None);
         let (response_tx, mut response_rx) = oneshot::channel();
         router.insert_pending_for_test("tool-1".to_owned(), response_tx, sample_confirmation("tool-1"));
 
@@ -452,7 +546,7 @@ mod tests {
     #[test]
     fn confirm_missing_permission_returns_specific_error() {
         let (_tx, rx) = mpsc::channel(1);
-        let router = PermissionRouter::new(rx);
+        let router = PermissionRouter::new(rx, "test-user".to_owned(), None);
 
         let error = router
             .confirm("missing-tool", "allow_once".to_owned(), "conv-1")
@@ -468,7 +562,7 @@ mod tests {
     #[test]
     fn cancel_all_removes_pending_confirmations() {
         let (_tx, rx) = mpsc::channel(1);
-        let router = PermissionRouter::new(rx);
+        let router = PermissionRouter::new(rx, "test-user".to_owned(), None);
         let (response_tx, _response_rx) = oneshot::channel();
         router.insert_pending_for_test("tool-1".to_owned(), response_tx, sample_confirmation("tool-1"));
 
@@ -480,7 +574,7 @@ mod tests {
     #[tokio::test]
     async fn start_routes_permission_request_and_exposes_recoverable_confirmation() {
         let (permission_tx, permission_rx) = mpsc::channel(1);
-        let router = Arc::new(PermissionRouter::new(permission_rx));
+        let router = Arc::new(PermissionRouter::new(permission_rx, "test-user".to_owned(), None));
         let runtime = AgentRuntime::new("conv-1", "/tmp/workspace", 8);
         let mut event_rx = runtime.subscribe();
         router.start(runtime);
@@ -533,7 +627,7 @@ mod tests {
     #[tokio::test]
     async fn start_auto_approves_team_mcp_with_existing_option_id() {
         let (permission_tx, permission_rx) = mpsc::channel(1);
-        let router = Arc::new(PermissionRouter::new(permission_rx));
+        let router = Arc::new(PermissionRouter::new(permission_rx, "test-user".to_owned(), None));
         let runtime = AgentRuntime::new("conv-1", "/tmp/workspace", 8);
         router.start(runtime);
 
@@ -563,5 +657,301 @@ mod tests {
             PermissionDecision::Selected { option_id } if option_id == "approved-for-session"
         ));
         assert!(router.get_confirmations().is_empty());
+    }
+
+    // --- Security policy: destructive-command / network-fetch gate ---
+
+    struct MockToolCallSecurityGate {
+        verdict: Result<Option<String>, String>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolCallSecurityGate for MockToolCallSecurityGate {
+        async fn check(
+            &self,
+            _user_id: &str,
+            _command_text: &str,
+            _is_network_fetch: bool,
+        ) -> Result<Option<String>, String> {
+            self.verdict.clone()
+        }
+    }
+
+    fn router_with_gate(
+        permission_rx: mpsc::Receiver<PermissionRequest>,
+        gate: MockToolCallSecurityGate,
+    ) -> Arc<PermissionRouter> {
+        Arc::new(PermissionRouter::new(
+            permission_rx,
+            "test-user".to_owned(),
+            Some(Arc::new(gate)),
+        ))
+    }
+
+    /// A blocked command must never reach the user for approval, and must
+    /// never fall through to auto-approval either — the reject decision is
+    /// sent back to the protocol layer directly.
+    #[tokio::test]
+    async fn start_blocks_a_call_the_security_policy_flags() {
+        let (permission_tx, permission_rx) = mpsc::channel(1);
+        let router = router_with_gate(
+            permission_rx,
+            MockToolCallSecurityGate {
+                verdict: Ok(Some("matches blocked pattern 'rm -rf'".to_owned())),
+            },
+        );
+        let runtime = AgentRuntime::new("conv-1", "/tmp/workspace", 8);
+        let mut event_rx = runtime.subscribe();
+        router.start(runtime);
+
+        let request = permission_request_with_title_and_raw_input(
+            "Run shell command",
+            Some(json!({ "command": "rm -rf /tmp/build" })),
+            vec![allow_once_option("allow_once"), reject_option("cancel")],
+        );
+        let (response_tx, response_rx) = oneshot::channel();
+
+        permission_tx
+            .send(PermissionRequest { request, response_tx })
+            .await
+            .expect("permission request should be accepted");
+
+        let decision = tokio::time::timeout(Duration::from_secs(1), response_rx)
+            .await
+            .expect("blocked call should respond")
+            .expect("responder should stay open");
+
+        assert!(matches!(
+            decision,
+            PermissionDecision::Selected { option_id } if option_id == "cancel"
+        ));
+        // No pending confirmation was ever registered — the user was never asked.
+        assert!(router.get_confirmations().is_empty());
+        // No AcpPermission event reached the UI either.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), event_rx.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    /// No reject/cancel option offered: falls back to `Cancelled` rather
+    /// than fabricating an option id the caller never actually offered.
+    #[tokio::test]
+    async fn start_blocks_with_no_reject_option_falls_back_to_cancelled() {
+        let (permission_tx, permission_rx) = mpsc::channel(1);
+        let router = router_with_gate(
+            permission_rx,
+            MockToolCallSecurityGate {
+                verdict: Ok(Some("blocked".to_owned())),
+            },
+        );
+        let runtime = AgentRuntime::new("conv-1", "/tmp/workspace", 8);
+        router.start(runtime);
+
+        let request = permission_request_with_title_and_raw_input(
+            "Run shell command",
+            Some(json!({ "command": "sudo shutdown now" })),
+            vec![allow_once_option("allow_once")],
+        );
+        let (response_tx, response_rx) = oneshot::channel();
+
+        permission_tx
+            .send(PermissionRequest { request, response_tx })
+            .await
+            .expect("permission request should be accepted");
+
+        let decision = tokio::time::timeout(Duration::from_secs(1), response_rx)
+            .await
+            .expect("blocked call should respond")
+            .expect("responder should stay open");
+
+        assert!(matches!(decision, PermissionDecision::Cancelled));
+    }
+
+    /// A failed policy check (DB error, say) fails closed on this one call —
+    /// it must not silently let a potentially-destructive command through.
+    #[tokio::test]
+    async fn start_blocks_when_the_policy_check_itself_fails() {
+        let (permission_tx, permission_rx) = mpsc::channel(1);
+        let router = router_with_gate(
+            permission_rx,
+            MockToolCallSecurityGate {
+                verdict: Err("platform db unreachable".to_owned()),
+            },
+        );
+        let runtime = AgentRuntime::new("conv-1", "/tmp/workspace", 8);
+        router.start(runtime);
+
+        let request = permission_request_with_title_and_raw_input(
+            "Run shell command",
+            Some(json!({ "command": "ls" })),
+            vec![allow_once_option("allow_once"), reject_option("cancel")],
+        );
+        let (response_tx, response_rx) = oneshot::channel();
+
+        permission_tx
+            .send(PermissionRequest { request, response_tx })
+            .await
+            .expect("permission request should be accepted");
+
+        let decision = tokio::time::timeout(Duration::from_secs(1), response_rx)
+            .await
+            .expect("failed check should still respond")
+            .expect("responder should stay open");
+
+        assert!(matches!(
+            decision,
+            PermissionDecision::Selected { option_id } if option_id == "cancel"
+        ));
+    }
+
+    /// A gate that permits the call (`Ok(None)`) must let it proceed through
+    /// the normal flow exactly as if no gate were wired at all.
+    #[tokio::test]
+    async fn start_forwards_to_the_user_when_the_gate_permits_the_call() {
+        let (permission_tx, permission_rx) = mpsc::channel(1);
+        let router = router_with_gate(permission_rx, MockToolCallSecurityGate { verdict: Ok(None) });
+        let runtime = AgentRuntime::new("conv-1", "/tmp/workspace", 8);
+        let mut event_rx = runtime.subscribe();
+        router.start(runtime);
+
+        let request = permission_request_with_title_and_raw_input(
+            "Write file",
+            Some(json!({ "path": "/tmp/notes.txt" })),
+            vec![allow_once_option("allow_once"), reject_option("cancel")],
+        );
+        let (response_tx, _response_rx) = oneshot::channel();
+
+        permission_tx
+            .send(PermissionRequest { request, response_tx })
+            .await
+            .expect("permission request should be accepted");
+
+        let event = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("permission event should be emitted")
+            .expect("permission event channel should stay open");
+        assert!(matches!(event, AgentStreamEvent::AcpPermission(_)));
+        assert_eq!(router.get_confirmations().len(), 1);
+    }
+
+    /// Records the `is_network_fetch` flag it was called with, so a test can
+    /// assert `PermissionRouter` correctly derived it from the request's
+    /// ACP `ToolKind` rather than always passing a fixed value.
+    struct RecordingToolCallSecurityGate {
+        seen: StdMutex<Vec<bool>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolCallSecurityGate for RecordingToolCallSecurityGate {
+        async fn check(
+            &self,
+            _user_id: &str,
+            _command_text: &str,
+            is_network_fetch: bool,
+        ) -> Result<Option<String>, String> {
+            self.seen.lock().unwrap().push(is_network_fetch);
+            Ok(None)
+        }
+    }
+
+    fn permission_request_with_kind(kind: SdkToolKind, options: Vec<PermissionOption>) -> RequestPermissionRequest {
+        RequestPermissionRequest::new(
+            "session-1",
+            SdkToolCallUpdate::new(
+                "tool-1",
+                ToolCallUpdateFields::new().kind(kind).title("Tool call".to_owned()),
+            ),
+            options,
+        )
+    }
+
+    /// A `ToolKind::Fetch` call ("retrieving external data" per the ACP
+    /// schema) must be reported to the gate as a network fetch.
+    #[tokio::test]
+    async fn start_flags_a_fetch_tool_call_as_network_fetch() {
+        let (permission_tx, permission_rx) = mpsc::channel(1);
+        let gate = Arc::new(RecordingToolCallSecurityGate {
+            seen: StdMutex::new(Vec::new()),
+        });
+        let router = Arc::new(PermissionRouter::new(
+            permission_rx,
+            "test-user".to_owned(),
+            Some(gate.clone() as Arc<dyn ToolCallSecurityGate>),
+        ));
+        let runtime = AgentRuntime::new("conv-1", "/tmp/workspace", 8);
+        router.start(runtime);
+
+        let request = permission_request_with_kind(SdkToolKind::Fetch, vec![allow_once_option("allow_once")]);
+        let (response_tx, _response_rx) = oneshot::channel();
+        permission_tx
+            .send(PermissionRequest { request, response_tx })
+            .await
+            .expect("permission request should be accepted");
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(gate.seen.lock().unwrap().as_slice(), &[true]);
+    }
+
+    /// A non-fetch call (e.g. editing a file) must be reported as `false`.
+    #[tokio::test]
+    async fn start_does_not_flag_a_non_fetch_tool_call_as_network_fetch() {
+        let (permission_tx, permission_rx) = mpsc::channel(1);
+        let gate = Arc::new(RecordingToolCallSecurityGate {
+            seen: StdMutex::new(Vec::new()),
+        });
+        let router = Arc::new(PermissionRouter::new(
+            permission_rx,
+            "test-user".to_owned(),
+            Some(gate.clone() as Arc<dyn ToolCallSecurityGate>),
+        ));
+        let runtime = AgentRuntime::new("conv-1", "/tmp/workspace", 8);
+        router.start(runtime);
+
+        let request = permission_request_with_kind(SdkToolKind::Edit, vec![allow_once_option("allow_once")]);
+        let (response_tx, _response_rx) = oneshot::channel();
+        permission_tx
+            .send(PermissionRequest { request, response_tx })
+            .await
+            .expect("permission request should be accepted");
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(gate.seen.lock().unwrap().as_slice(), &[false]);
+    }
+
+    #[test]
+    fn extract_command_text_combines_title_and_raw_input() {
+        let request = permission_request_with_title_and_raw_input(
+            "Run shell command",
+            Some(json!({ "command": "rm -rf /tmp" })),
+            vec![],
+        );
+        let text = extract_command_text(&request);
+        assert!(text.contains("Run shell command"));
+        assert!(text.contains("rm -rf /tmp"));
+    }
+
+    #[test]
+    fn extract_command_text_handles_no_raw_input() {
+        let request = permission_request_with_title_and_raw_input("Write file", None, vec![]);
+        let text = extract_command_text(&request);
+        assert!(text.contains("Write file"));
+    }
+
+    #[test]
+    fn select_reject_option_id_prefers_an_offered_reject_option() {
+        let request = permission_request_with_title_and_raw_input(
+            "x",
+            None,
+            vec![allow_once_option("allow_once"), reject_option("cancel")],
+        );
+        assert_eq!(select_reject_option_id(&request).as_deref(), Some("cancel"));
+    }
+
+    #[test]
+    fn select_reject_option_id_is_none_without_a_reject_option() {
+        let request = permission_request_with_title_and_raw_input("x", None, vec![allow_once_option("allow_once")]);
+        assert_eq!(select_reject_option_id(&request), None);
     }
 }

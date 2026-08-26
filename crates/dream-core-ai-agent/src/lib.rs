@@ -27,6 +27,7 @@ pub mod registry;
 pub mod routes;
 pub(crate) mod runtime_status;
 pub mod runtime_token;
+pub mod security_policy;
 pub(crate) mod services;
 pub mod session_agent;
 pub mod session_context;
@@ -70,6 +71,7 @@ pub use runtime_token::{
     RuntimeTokenClaims, RuntimeTokenError, RuntimeTokenIssue, RuntimeTokenScope, RuntimeTokenService,
     TEAM_RUNTIME_TOKEN_SESSION_GENERATION,
 };
+pub use security_policy::ToolCallSecurityGate;
 pub use services::AgentAvailabilityFeedbackPort;
 pub use services::AgentService;
 pub use services::RemoteAgentService;

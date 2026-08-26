@@ -321,6 +321,14 @@ impl AppServices {
             database.pool().clone(),
             Arc::new(dream_domain_billing::ManualBillingProvider),
         ));
+        // Own instance, same posture as `billing` above: cheap to construct
+        // (pool clone + key), needed here so the agent factory can take the
+        // destructive-command gate for the ACP permission router.
+        #[cfg(feature = "enterprise")]
+        let platform_for_agent_factory = Arc::new(dream_domain_platform::PlatformService::new(
+            database.pool().clone(),
+            encryption_key,
+        ));
 
         // NOT adopted this sync (2026-07-29): upstream wires a `session_spawner`
         // here for the direct-CLI SessionAgentTask path — see the matching notes
@@ -358,6 +366,15 @@ impl AppServices {
             })),
             #[cfg(not(feature = "enterprise"))]
             model_allowlist: None,
+            // Personal edition has no security policy to enforce: `None`
+            // means every ACP permission request flows through unmodified,
+            // exactly as before this existed.
+            #[cfg(feature = "enterprise")]
+            tool_call_security_gate: Some(Arc::new(crate::router::PlatformToolCallSecurityGate {
+                platform: platform_for_agent_factory,
+            })),
+            #[cfg(not(feature = "enterprise"))]
+            tool_call_security_gate: None,
         });
 
         // Agent factory is now wired. Future extension/custom agents

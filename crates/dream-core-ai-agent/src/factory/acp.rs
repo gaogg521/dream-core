@@ -537,7 +537,8 @@ pub(super) async fn build(
     let skill_mgr = deps.skill_manager.clone();
     let catalog_tx = deps.agent_registry.catalog_sender();
 
-    let (agent, domain_rx, notification_rx) = AcpAgentManager::build(params, skill_mgr, &catalog_tx).await?;
+    let (agent, domain_rx, notification_rx) =
+        AcpAgentManager::build(params, skill_mgr, &catalog_tx, deps.tool_call_security_gate.clone()).await?;
 
     let arc = Arc::new(agent);
     arc.start_permission_handler();

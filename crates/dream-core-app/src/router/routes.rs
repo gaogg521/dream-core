@@ -116,6 +116,49 @@ impl dream_domain_org::CredentialRevoker for ModelChannelRevoker {
     }
 }
 
+/// Revokes the open-integration API keys a leaver minted (E5).
+///
+/// An API key has no session generation to rotate, so
+/// `invalidate_user_tokens` does not touch it: without this a removed member
+/// keeps a working key to the company's governance API indefinitely, because
+/// `authenticate_api_key` only checks `status = 'active'` and their user row
+/// survives removal. Exactly the hazard `ModelChannelRevoker` exists for.
+#[cfg(feature = "enterprise")]
+struct ApiKeyRevoker(std::sync::Arc<dream_domain_platform::PlatformService>);
+
+#[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
+impl dream_domain_org::CredentialRevoker for ApiKeyRevoker {
+    async fn revoke_for_user(&self, user_id: &str) {
+        match self.0.revoke_api_keys_for_user(user_id).await {
+            Ok(0) => {}
+            Ok(revoked) => tracing::info!(user_id, revoked, "revoked open-integration API keys"),
+            // Never block the removal, same posture as `ModelChannelRevoker`:
+            // logged loudly because it leaves a live credential behind.
+            Err(error) => tracing::error!(%error, user_id, "failed to revoke API keys on removal"),
+        }
+    }
+}
+
+/// Runs several `CredentialRevoker`s for one removal. `OrgService` holds a
+/// single revoker slot, and a leaver now has two kinds of bearer credential
+/// that outlive JWT rotation (model channel tokens, API keys), so they compose
+/// here rather than either one displacing the other.
+#[cfg(feature = "enterprise")]
+struct CompositeCredentialRevoker(Vec<std::sync::Arc<dyn dream_domain_org::CredentialRevoker>>);
+
+#[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
+impl dream_domain_org::CredentialRevoker for CompositeCredentialRevoker {
+    async fn revoke_for_user(&self, user_id: &str) {
+        // Sequential and unconditional: each revoker already swallows its own
+        // errors, so one failing must not skip the others.
+        for revoker in &self.0 {
+            revoker.revoke_for_user(user_id).await;
+        }
+    }
+}
+
 /// Lets a company removal cut off the leaver's access without one-enterprise
 /// depending on one-org (same layer). one-org owns the per-user JWT secret and,
 /// via its own `CredentialRevoker`, the company model channel tokens — so both
@@ -391,8 +434,14 @@ impl dream_core_auth::IpAllowlistGate for PlatformIpAllowlistGate {
     async fn is_allowed(&self, user_id: &str, ip: Option<std::net::IpAddr>) -> Result<bool, String> {
         let actor = match self.platform.resolve_actor(user_id).await {
             // No actor: nothing governs this caller. A standalone install lands
-            // here on every request.
-            Ok(None) => return Ok(true),
+            // here on every request. Still `answered()` — the plane replied,
+            // it just replied "nobody governs this caller"; see
+            // `SecurityPolicySendRateGate::check` for why treating a reachable
+            // plane as silent would expire the shared grace window.
+            Ok(None) => {
+                self.grace.answered();
+                return Ok(true);
+            }
             Ok(Some(actor)) => {
                 self.grace.answered();
                 actor
@@ -654,7 +703,12 @@ impl BillingSendGate {
                 self.grace.answered();
                 Err(denial)
             }
-            PolicyVerdict::NotGoverned => Ok(()),
+            // The plane answered "no company on this server" — reachable, so it
+            // counts as answered for the shared grace window.
+            PolicyVerdict::NotGoverned => {
+                self.grace.answered();
+                Ok(())
+            }
             PolicyVerdict::Unanswerable if self.grace.within_window() => Ok(()),
             PolicyVerdict::Unanswerable => {
                 tracing::error!(
@@ -762,7 +816,15 @@ impl SecurityPolicySendRateGate {
         let actor = match self.platform.resolve_actor(user_id).await {
             // No enterprise membership: nothing governs this caller. Every
             // standalone install and every personal-edition test lands here.
-            Ok(None) => return Ok(()),
+            // Still `answered()`: the plane WAS reachable — it answered "no
+            // membership". Skipping it here would freeze the shared grace
+            // window at process start on any deployment whose traffic is all
+            // ungoverned, so the first transient DB error 30 minutes in would
+            // be treated as a dead policy plane.
+            Ok(None) => {
+                self.grace.answered();
+                return Ok(());
+            }
             Ok(Some(actor)) => {
                 self.grace.answered();
                 actor
@@ -779,7 +841,13 @@ impl SecurityPolicySendRateGate {
         let Some(limit) = policy.send_rate_limit_per_minute.filter(|l| *l > 0) else {
             return Ok(());
         };
-        if self.limiter.check_and_increment(user_id, limit as u32) {
+        // `send_rate_limit_per_minute` is an unvalidated `i64` straight from the
+        // admin console, so saturate rather than `as u32`: a deliberately-huge
+        // "effectively unlimited" value like 2^32 would otherwise WRAP TO ZERO
+        // and refuse every send for the whole tenant — the exact opposite of
+        // what the administrator asked for.
+        let limit = u32::try_from(limit).unwrap_or(u32::MAX);
+        if self.limiter.check_and_increment(user_id, limit) {
             Ok(())
         } else {
             Err(dream_core_conversation::PolicyDenial::new(
@@ -873,8 +941,12 @@ impl dream_core_ai_agent::ModelAllowlistGate for BillingModelAllowlistGate {
                 self.grace.answered();
                 Ok(false)
             }
-            // No company on this server governs nobody's model choice.
-            Err(dream_domain_billing::BillingError::EnterpriseNotFound) => Ok(true),
+            // No company on this server governs nobody's model choice. Still
+            // `answered()`: the plane was reachable, it just has no company.
+            Err(dream_domain_billing::BillingError::EnterpriseNotFound) => {
+                self.grace.answered();
+                Ok(true)
+            }
             // The check failed rather than the policy refusing. Same posture
             // as `BillingSendGate`: tolerated while the plane is only briefly
             // silent, enforced once the silence outlasts the grace window.
@@ -887,6 +959,56 @@ impl dream_core_ai_agent::ModelAllowlistGate for BillingModelAllowlistGate {
                 Err(other.to_string())
             }
         }
+    }
+}
+
+/// Adapts `one_security_policy`'s `destructive_commands_blocked` +
+/// `blocked_command_patterns` and `external_network_denied_by_default` to
+/// `dream-core-ai-agent`'s `ToolCallSecurityGate` port, consulted by the ACP
+/// permission router before a tool call reaches the user for approval (or
+/// is auto-approved).
+///
+/// No shared `PolicyGrace` here — unlike the IP allowlist or the send-rate
+/// gate, a failure in this check only fails closed on the ONE tool call
+/// that triggered it (the caller can just retry), not on every other
+/// request in the process, so there is no broad blast radius to protect
+/// against with a grace window.
+#[cfg(feature = "enterprise")]
+pub(crate) struct PlatformToolCallSecurityGate {
+    pub(crate) platform: std::sync::Arc<dream_domain_platform::PlatformService>,
+}
+
+#[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
+impl dream_core_ai_agent::ToolCallSecurityGate for PlatformToolCallSecurityGate {
+    async fn check(&self, user_id: &str, command_text: &str, is_network_fetch: bool) -> Result<Option<String>, String> {
+        let actor = match self.platform.resolve_actor(user_id).await {
+            // No enterprise membership: nothing governs this caller.
+            Ok(None) => return Ok(None),
+            Ok(Some(actor)) => actor,
+            Err(e) => return Err(e.to_string()),
+        };
+        let policy = self
+            .platform
+            .get_security_policy(&actor.tenant_id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if is_network_fetch && policy.external_network_denied_by_default {
+            return Ok(Some(
+                "blocked by company security policy (external network access denied by default)".to_owned(),
+            ));
+        }
+
+        if !policy.destructive_commands_blocked {
+            return Ok(None);
+        }
+        let haystack = command_text.to_lowercase();
+        let matched = policy
+            .blocked_command_patterns
+            .iter()
+            .find(|pattern| !pattern.is_empty() && haystack.contains(&pattern.to_lowercase()));
+        Ok(matched.map(|pattern| format!("blocked by company security policy (matches '{pattern}')")))
     }
 }
 
@@ -1352,7 +1474,10 @@ pub(crate) fn build_governance_plane(
             services.data_dir.clone(),
             crate::config::derive_encryption_key(&services.data_secret_raw),
         )
-        .with_credential_revoker(std::sync::Arc::new(ModelChannelRevoker(one_devops_service.clone()))),
+        .with_credential_revoker(std::sync::Arc::new(CompositeCredentialRevoker(vec![
+            std::sync::Arc::new(ModelChannelRevoker(one_devops_service.clone())),
+            std::sync::Arc::new(ApiKeyRevoker(one_platform_service.clone())),
+        ]))),
     );
     // one-enterprise service (真实企业 / company tier) — constructed here so its
     // company-admin bridges can be wired into one-org and one-sso below, and so
@@ -2256,8 +2381,8 @@ mod tests {
 
     #[cfg(feature = "enterprise")]
     use super::{
-        ENTERPRISE_POLICY_GRACE_MS, PolicyGrace, PolicyVerdict, SecurityPolicySendRateGate, SendRateLimiter,
-        billing_denial,
+        ENTERPRISE_POLICY_GRACE_MS, PlatformToolCallSecurityGate, PolicyGrace, PolicyVerdict,
+        SecurityPolicySendRateGate, SendRateLimiter, billing_denial,
     };
     use super::{
         boundary_error_for_status, create_router_with_runtime, forward_event_bus_to_websocket,
@@ -2547,5 +2672,121 @@ mod tests {
         for _ in 0..5 {
             assert!(gate.check("user-relaxed").await.is_ok());
         }
+    }
+
+    // --- PlatformToolCallSecurityGate ---
+
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn tool_call_security_gate_passes_without_an_actor() {
+        use dream_core_ai_agent::ToolCallSecurityGate;
+        let (_db, platform) = platform_service_for_test().await;
+        let gate = PlatformToolCallSecurityGate { platform };
+        assert!(
+            gate.check("no-membership-user", "rm -rf /", false)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn tool_call_security_gate_passes_on_the_relaxed_default() {
+        use dream_core_ai_agent::ToolCallSecurityGate;
+        let (db, platform) = platform_service_for_test().await;
+        seed_membership(db.pool(), "user-1", "t1").await;
+        let gate = PlatformToolCallSecurityGate { platform };
+        assert!(gate.check("user-1", "rm -rf /", true).await.unwrap().is_none());
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn tool_call_security_gate_blocks_a_matching_destructive_command() {
+        use dream_core_ai_agent::ToolCallSecurityGate;
+        let (db, platform) = platform_service_for_test().await;
+        seed_membership(db.pool(), "user-1", "t1").await;
+        platform.apply_security_policy_tier("t1", "standard").await.unwrap();
+
+        let gate = PlatformToolCallSecurityGate { platform };
+        // Uses only "sudo" (not e.g. "shutdown") so the matched pattern is
+        // unambiguous regardless of `blocked_command_patterns` iteration order.
+        let reason = gate
+            .check("user-1", "Run shell command: sudo apt-get remove foo", false)
+            .await
+            .unwrap();
+        assert!(reason.is_some());
+        assert!(reason.unwrap().contains("sudo"));
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn tool_call_security_gate_allows_a_non_matching_command_under_the_standard_tier() {
+        use dream_core_ai_agent::ToolCallSecurityGate;
+        let (db, platform) = platform_service_for_test().await;
+        seed_membership(db.pool(), "user-1", "t1").await;
+        platform.apply_security_policy_tier("t1", "standard").await.unwrap();
+
+        let gate = PlatformToolCallSecurityGate { platform };
+        assert!(
+            gate.check("user-1", "Read /tmp/notes.txt", false)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn tool_call_security_gate_blocks_network_fetch_under_the_strict_tier() {
+        use dream_core_ai_agent::ToolCallSecurityGate;
+        let (db, platform) = platform_service_for_test().await;
+        seed_membership(db.pool(), "user-1", "t1").await;
+        platform.apply_security_policy_tier("t1", "strict").await.unwrap();
+
+        let gate = PlatformToolCallSecurityGate { platform };
+        assert!(
+            gate.check("user-1", "Fetch https://example.com", true)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn tool_call_security_gate_allows_network_fetch_under_the_standard_tier() {
+        use dream_core_ai_agent::ToolCallSecurityGate;
+        let (db, platform) = platform_service_for_test().await;
+        seed_membership(db.pool(), "user-1", "t1").await;
+        // standard blocks destructive commands but not network access.
+        platform.apply_security_policy_tier("t1", "standard").await.unwrap();
+
+        let gate = PlatformToolCallSecurityGate { platform };
+        assert!(
+            gate.check("user-1", "Fetch https://example.com", true)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn tool_call_security_gate_does_not_flag_a_non_fetch_call_even_under_the_strict_tier() {
+        use dream_core_ai_agent::ToolCallSecurityGate;
+        let (db, platform) = platform_service_for_test().await;
+        seed_membership(db.pool(), "user-1", "t1").await;
+        platform.apply_security_policy_tier("t1", "strict").await.unwrap();
+
+        let gate = PlatformToolCallSecurityGate { platform };
+        // is_network_fetch = false: a non-network call must not be blocked by
+        // the network-denial flag, even though the tenant is on strict.
+        assert!(
+            gate.check("user-1", "Read /tmp/notes.txt", false)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

@@ -100,6 +100,7 @@ fn make_factory(
         antigravity_hook_base_url: None,
         antigravity_hook_tokens: Arc::new(dream_core_ai_agent::antigravity_hook::HookTokenRegistry::new()),
         model_allowlist: None,
+        tool_call_security_gate: None,
     })
 }
 

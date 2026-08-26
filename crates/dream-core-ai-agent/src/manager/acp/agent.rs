@@ -668,6 +668,7 @@ impl AcpAgentManager {
         params: Arc<AcpSessionParams>,
         skill_manager: Arc<AcpSkillManager>,
         catalog_tx: &CatalogSender,
+        tool_call_security_gate: Option<Arc<dyn crate::security_policy::ToolCallSecurityGate>>,
     ) -> Result<
         (
             Self,
@@ -676,7 +677,8 @@ impl AcpAgentManager {
         ),
         AgentError,
     > {
-        let (this, domain_event_rx, notification_rx) = AcpAgentManager::new(params, skill_manager).await?;
+        let (this, domain_event_rx, notification_rx) =
+            AcpAgentManager::new(params, skill_manager, tool_call_security_gate).await?;
         this.init(catalog_tx).await;
         Ok((this, domain_event_rx, notification_rx))
     }
@@ -684,6 +686,7 @@ impl AcpAgentManager {
     async fn new(
         params: Arc<AcpSessionParams>,
         skill_manager: Arc<AcpSkillManager>,
+        tool_call_security_gate: Option<Arc<dyn crate::security_policy::ToolCallSecurityGate>>,
     ) -> Result<
         (
             Self,
@@ -705,7 +708,11 @@ impl AcpAgentManager {
             permission_rx,
             notification_rx,
         } = startup;
-        let permission_router = Arc::new(PermissionRouter::new(permission_rx));
+        let permission_router = Arc::new(PermissionRouter::new(
+            permission_rx,
+            params.user_id.clone(),
+            tool_call_security_gate,
+        ));
 
         let snapshot = params.session_snapshot.as_ref();
         let initial_mode = initial_mode_from_params(&params);

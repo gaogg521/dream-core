@@ -87,6 +87,13 @@ pub struct AgentFactoryDeps {
     /// billing plane — the delegate is then chosen on capability alone, exactly
     /// as before this existed.
     pub model_allowlist: Option<Arc<dyn crate::model_policy::ModelAllowlistGate>>,
+    /// Company security policy's `destructive_commands_blocked` +
+    /// `blocked_command_patterns` and `external_network_denied_by_default`,
+    /// consulted by the ACP permission router before a tool call reaches
+    /// the user for approval (or is auto-approved). `None` for personal
+    /// builds and tests — every tool call then flows through unmodified,
+    /// exactly as before this existed.
+    pub tool_call_security_gate: Option<Arc<dyn crate::security_policy::ToolCallSecurityGate>>,
 }
 
 /// Build a production agent factory that dispatches to concrete agent types.
