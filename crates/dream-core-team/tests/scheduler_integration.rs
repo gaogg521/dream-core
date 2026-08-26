@@ -2,12 +2,12 @@ mod common;
 
 use std::sync::Arc;
 
+use common::MockTeamRepo;
 use dream_core_api_types::WebSocketMessage;
 use dream_core_realtime::EventBroadcaster;
 use dream_core_team::{
     Mailbox, MailboxMessageType, TaskBoard, TeamAgent, TeammateManager, TeammateRole, TeammateStatus, WAKE_TIMEOUT_MS,
 };
-use common::MockTeamRepo;
 
 // ---------------------------------------------------------------------------
 // Test infrastructure

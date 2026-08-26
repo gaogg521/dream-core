@@ -2,9 +2,9 @@ pub mod acp_assembler;
 
 mod acp;
 mod acp_launch_policy;
-pub(crate) mod dream_engine;
 mod antigravity;
 mod context;
+pub(crate) mod dream_engine;
 mod session_mcp;
 
 use std::path::PathBuf;

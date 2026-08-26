@@ -15,8 +15,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dream_core_api_types::{OpenAISpeechToTextConfig, SpeechToTextConfig};
 use base64::Engine as _;
+use dream_core_api_types::{OpenAISpeechToTextConfig, SpeechToTextConfig};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;

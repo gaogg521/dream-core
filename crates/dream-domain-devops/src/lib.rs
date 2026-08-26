@@ -19,11 +19,11 @@
 //! derived structure that can be rebuilt from `one_rag_chunks` at any time,
 //! which is what makes the startup backfill and any re-index safe.
 
-pub mod grants;
 pub mod breakdown;
 pub mod dlp_service;
 pub mod embedding;
 pub mod error;
+pub mod grants;
 pub mod migrate;
 pub mod model_proxy;
 pub mod models;

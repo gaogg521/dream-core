@@ -27,11 +27,11 @@ mod common;
 
 use std::sync::Arc;
 
+use common::MockTeamRepo;
 use dream_core_api_types::WebSocketMessage;
 use dream_core_realtime::EventBroadcaster;
 use dream_core_team::mcp::protocol::{read_frame, write_frame};
 use dream_core_team::{Mailbox, TaskBoard, TeamAgent, TeamMcpServer, TeammateManager, TeammateRole};
-use common::MockTeamRepo;
 use serde_json::{Value, json};
 use tokio::net::TcpStream;
 

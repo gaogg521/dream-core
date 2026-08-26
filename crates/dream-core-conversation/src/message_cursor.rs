@@ -1,5 +1,5 @@
-use dream_core_db::MessagePageCursor;
 use base64::Engine;
+use dream_core_db::MessagePageCursor;
 
 use crate::ConversationError;
 

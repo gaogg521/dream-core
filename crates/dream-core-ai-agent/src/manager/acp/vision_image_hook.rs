@@ -10,9 +10,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use dream_core_common::constants::AIONUI_FILES_MARKER;
 use dream_engine_config::config::VisionModelConfig;
 use dream_engine_types::message::{TokenUsage, extension_to_image_media_type};
-use dream_core_common::constants::AIONUI_FILES_MARKER;
 
 use crate::capability::image_description::describe_image_via_delegate;
 use crate::capability::local_ocr_skill::{

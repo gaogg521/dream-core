@@ -5,9 +5,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use dream_core_db::ISkillRepository;
 pub use dream_core_extension::ResolvedAgentSkill;
-use async_trait::async_trait;
 use tracing::warn;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

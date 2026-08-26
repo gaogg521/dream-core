@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use dream_core_api_types::WebSocketMessage;
 use dream_core_db::models::MessageRow;
 use dream_core_realtime::EventBroadcaster;
-use async_trait::async_trait;
 use tracing::info;
 
 use crate::error::TeamError;

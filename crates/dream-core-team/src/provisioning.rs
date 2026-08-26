@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use dream_core_ai_agent::IWorkerTaskManager;
 use dream_core_api_types::{
     AddAgentRequest, GetConfigOptionsResponse, McpRuntimeSnapshot, SetConfigOptionRequest, SetConfigOptionResponse,
@@ -8,7 +9,6 @@ use dream_core_api_types::{
 use dream_core_common::{AgentKillReason, AgentType, ProviderWithModel, generate_id};
 use dream_core_db::models::{AgentMetadataRow, TeamRow};
 use dream_core_db::{IAgentMetadataRepository, IProviderRepository, ITeamRepository, UpdateTeamParams};
-use async_trait::async_trait;
 use tracing::{info, warn};
 
 use crate::error::TeamError;

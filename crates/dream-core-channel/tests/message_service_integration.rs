@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use dream_core_ai_agent::agent_task::{AgentInstance, IAgentTask};
 use dream_core_ai_agent::protocol::events::FinishEventData;
 use dream_core_ai_agent::types::{BuildTaskOptions, SendMessageData};
@@ -21,7 +22,6 @@ use dream_core_db::{
     SqliteConversationRepository, init_database_memory,
 };
 use dream_core_realtime::EventBroadcaster;
-use async_trait::async_trait;
 use tokio::sync::broadcast;
 
 const TEST_OWNER_USER_ID: &str = "system_default_user";

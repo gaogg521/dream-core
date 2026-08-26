@@ -15,7 +15,7 @@ pub mod types;
 
 pub use adapter::{DetectedServer, McpAgentAdapter};
 pub use adapters::{
-    DreamEngineAdapter, DreamUiAdapter, ClaudeAdapter, CodeBuddyAdapter, CodexAdapter, GeminiAdapter, OpencodeAdapter,
+    ClaudeAdapter, CodeBuddyAdapter, CodexAdapter, DreamEngineAdapter, DreamUiAdapter, GeminiAdapter, OpencodeAdapter,
     QwenAdapter,
 };
 pub use connection_test::McpConnectionTestService;

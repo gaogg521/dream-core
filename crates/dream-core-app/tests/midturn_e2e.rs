@@ -16,9 +16,9 @@ use serde_json::json;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
 
+use common::{body_json, get_with_token, json_with_token, setup_and_login};
 use dream_core_ai_agent::{AgentInstance, IAgentTask, IMockAgent, WorkerTaskManagerImpl};
 use dream_core_app::{AppConfig, AppServices};
-use common::{body_json, get_with_token, json_with_token, setup_and_login};
 
 /// A mock agent whose event channel stays OPEN (the sender is held), so the
 /// spawned turn relay keeps waiting for frames and the turn claim stays held —

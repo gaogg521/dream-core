@@ -7,8 +7,8 @@ use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 
-use dream_core_db::{ConversationRowUpdate, IConversationRepository};
 use common::{body_json, build_app, build_app_with_mock_agents, get_request, get_with_token, setup_and_login};
+use dream_core_db::{ConversationRowUpdate, IConversationRepository};
 
 // ── Helpers ───────────────────────────────────────────────────────────
 

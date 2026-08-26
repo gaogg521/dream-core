@@ -266,8 +266,8 @@ fn parse_keep_awake_value(value: &serde_json::Value) -> Result<bool, SystemError
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dream_core_db::{SqliteClientPreferenceRepository, init_database_memory};
     use async_trait::async_trait;
+    use dream_core_db::{SqliteClientPreferenceRepository, init_database_memory};
     use serde_json::json;
     use std::io::Write;
     use std::sync::{Mutex, Once, OnceLock};
