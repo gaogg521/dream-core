@@ -25,7 +25,7 @@ const SUBCOMMAND: &str = "resetpass";
 const RESET_PASSWORD_LEN: usize = 16;
 
 pub async fn run_resetpass(cli: &Cli, args: &ResetpassArgs) -> Result<ExitCode, CliBoundaryError> {
-    let db_path = cli.data_dir.join("aionui-backend.db");
+    let db_path = dream_core_common::backend_db_path(&cli.data_dir);
     maybe_copy_legacy_database(&db_path).map_err(|_| database_error())?;
     let database = init_database(&db_path).await.map_err(|_| database_error())?;
 

@@ -8,7 +8,7 @@
 //! UI — is unchanged: only the *origin* of the paths moves from the client to
 //! this backend edge.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use dream_core_api_types::ChatFileRef;
 use dream_core_common::constants::AIONUI_FILES_MARKER;
@@ -35,19 +35,21 @@ impl ProjectService {
     /// content. Atomic: any bad reference (unknown pe, escape, missing file,
     /// out-of-root upload, unreadable local path) fails the whole message.
     ///
-    /// `upload_root` is the managed upload directory (`temp_dir()/dream`);
-    /// `Upload` paths must live under it.
+    /// `upload_roots` are the managed upload directories an `Upload` path may
+    /// live under — the current one plus the pre-rebrand one it replaced, so a
+    /// file staged before the rename still resolves (see
+    /// `dream_core_common::upload_paths`).
     pub async fn resolve_chat_message(
         &self,
         user_id: &str,
         content: &str,
         files: &[ChatFileRef],
-        upload_root: &Path,
+        upload_roots: &[PathBuf],
     ) -> Result<ResolvedChatMessage, ProjectError> {
         let mut paths = Vec::with_capacity(files.len());
         for file in files {
             paths.push(
-                self.resolve_chat_file_ref(user_id, file, upload_root, FileOp::Read)
+                self.resolve_chat_file_ref(user_id, file, upload_roots, FileOp::Read)
                     .await?,
             );
         }
@@ -68,7 +70,7 @@ impl ProjectService {
     /// - `Project` → [`resolve_reference`](Self::resolve_reference) with the caller's `op` (lexical +
     ///   realpath containment; read paths pass `Read`, the write endpoint passes `Write`); must exist
     ///   (file or folder).
-    /// - `Upload` → an existing regular file under the managed `upload_root` (D2 invariant).
+    /// - `Upload` → an existing regular file under one of the managed `upload_roots` (D2 invariant).
     /// - `Local` → a canonicalized existing regular file; **no sandbox** (the host picker that
     ///   produced it already exposes the whole filesystem).
     ///
@@ -78,7 +80,7 @@ impl ProjectService {
         &self,
         user_id: &str,
         file: &ChatFileRef,
-        upload_root: &Path,
+        upload_roots: &[PathBuf],
         op: FileOp,
     ) -> Result<String, ProjectError> {
         match file {
@@ -108,7 +110,7 @@ impl ProjectService {
                 if !candidate.is_file() {
                     return Err(ProjectError::ChatFileMissing { path: path.clone() });
                 }
-                if !path_within(upload_root, candidate) {
+                if !upload_roots.iter().any(|root| path_within(root, candidate)) {
                     return Err(ProjectError::UploadPathOutsideRoot { path: path.clone() });
                 }
                 Ok(path.clone())

@@ -31,8 +31,9 @@ use tracing::warn;
 /// `BUILTIN_IMAGE_GEN_LEGACY_NAMES` in the desktop shell
 /// (`packages/desktop/src/process/resources/builtinMcp/constants.ts`).
 const AUTO_INJECTED_BUILTIN_NAMES: &[&str] = &[
-    "aionui-image-generation",
+    "one-image-generation",
     // Legacy names, kept so installs that predate the rename keep working.
+    "aionui-image-generation",
     "AionUi Image Generation",
     "builtin-image-gen",
 ];
@@ -99,8 +100,8 @@ pub(crate) async fn load_session_mcp_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dream_core_db::DbError;
     use async_trait::async_trait;
+    use dream_core_db::DbError;
 
     fn row(id: &str, name: &str, enabled: bool, builtin: bool) -> McpServerRow {
         McpServerRow {

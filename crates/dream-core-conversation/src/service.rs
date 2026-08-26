@@ -14,6 +14,7 @@ use crate::message_cursor::{decode_message_cursor, encode_message_cursor};
 use crate::runtime_completion::RuntimeCompletionPublisher;
 use crate::runtime_persistence::{RuntimePersistenceCoordinator, RuntimeWriteKind};
 use crate::runtime_state::ConversationRuntimeStateService;
+use chrono::Datelike;
 use dream_core_api_types::ChatFileRef;
 use dream_core_api_types::{
     ASSISTANT_MCP_BINDING_CHANGED_EVENT, ApprovalCheckResponse, AssistantConversationOverridesRequest,
@@ -46,8 +47,9 @@ use dream_core_extension::AssistantRuleDispatcher;
 use dream_core_mcp::{AcpMcpCapabilities, parse_acp_mcp_capabilities};
 use dream_core_project::{FileOp, ProjectService, ReferenceInput, ResolvedChatMessage, canonical};
 use dream_core_realtime::EventBroadcaster;
-use dream_core_runtime::{RuntimeCommandProbe, probe_node_runtime_supported, probe_runtime_command, resolve_command_path};
-use chrono::Datelike;
+use dream_core_runtime::{
+    RuntimeCommandProbe, probe_node_runtime_supported, probe_runtime_command, resolve_command_path,
+};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
@@ -606,7 +608,7 @@ impl ConversationService {
             .ok_or_else(|| ConversationError::BadRequest {
                 reason: "project service unavailable; cannot resolve file attachments".to_owned(),
             })?;
-        let upload_root = std::env::temp_dir().join("dream");
+        let upload_root = dream_core_common::upload_roots();
         project
             .resolve_chat_message(user_id, content, files, &upload_root)
             .await
@@ -1799,7 +1801,8 @@ impl ConversationService {
         // (which resolves to the confirm-every-tool-call "default" mode).
         // A user's own later mode switch still persists as their preference
         // and takes precedence via the branches above.
-        if permission.is_none() && agent_type == AgentType::DreamEngine && definition.default_permission_mode == "auto" {
+        if permission.is_none() && agent_type == AgentType::DreamEngine && definition.default_permission_mode == "auto"
+        {
             permission = Some("yolo".to_string());
         }
 
@@ -5622,7 +5625,10 @@ fn upsert_conversation_mcp_status(
     statuses.push(status);
 }
 
-fn classify_repo_mcp_status(row: &dream_core_db::models::McpServerRow, support: McpSupportPolicy) -> ConversationMcpStatus {
+fn classify_repo_mcp_status(
+    row: &dream_core_db::models::McpServerRow,
+    support: McpSupportPolicy,
+) -> ConversationMcpStatus {
     if !support.supports_row_transport(&row.transport_type) {
         return ConversationMcpStatus {
             id: row.id.clone(),

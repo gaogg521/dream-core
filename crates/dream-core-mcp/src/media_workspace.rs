@@ -19,14 +19,29 @@
 //! should save next to the conversation".
 
 /// Name of the bundled media-generation MCP server.
+pub const BUILTIN_MEDIA_MCP_NAME: &str = "one-image-generation";
+
+/// Names the bundled server went by before the 1ONE rebrand.
 ///
-/// Still carries the upstream `dream-` prefix: existing installations
-/// recognise the server by this name, so renaming it is a product decision with
-/// a migration attached, not a branding sweep.
-pub const BUILTIN_MEDIA_MCP_NAME: &str = "aionui-image-generation";
+/// A stored MCP row keeps whatever name it was written with until the desktop
+/// shell's config migration rewrites it, and an install can run for a long time
+/// before that happens. Matching on the current name alone would mean those
+/// sessions stop being handed the workspace — the media tool would fall back to
+/// its own cwd and drop generated files in the application data folder, which is
+/// precisely the failure this module exists to prevent.
+pub const LEGACY_MEDIA_MCP_NAMES: &[&str] = &[
+    "aionui-image-generation",
+    "AionUi Image Generation",
+    "builtin-image-gen",
+];
+
+/// Is `server_name` the bundled media server, under any name it has carried?
+fn is_media_server(server_name: &str) -> bool {
+    server_name == BUILTIN_MEDIA_MCP_NAME || LEGACY_MEDIA_MCP_NAMES.contains(&server_name)
+}
 
 /// Environment variable the media MCP reads to decide where generated files go.
-pub const MEDIA_WORKSPACE_ENV: &str = "AIONUI_MEDIA_WORKSPACE_DIR";
+pub const MEDIA_WORKSPACE_ENV: &str = "DREAM_MEDIA_WORKSPACE_DIR";
 
 /// The workspace variable to add for `server_name`, if it wants one.
 ///
@@ -34,7 +49,7 @@ pub const MEDIA_WORKSPACE_ENV: &str = "AIONUI_MEDIA_WORKSPACE_DIR";
 /// value would override the tool's own fallback with nothing, which is worse
 /// than leaving it to fall back.
 pub fn media_workspace_env(server_name: &str, workspace: &str) -> Option<(String, String)> {
-    if server_name != BUILTIN_MEDIA_MCP_NAME {
+    if !is_media_server(server_name) {
         return None;
     }
     let workspace = workspace.trim();
@@ -45,7 +60,7 @@ pub fn media_workspace_env(server_name: &str, workspace: &str) -> Option<(String
 }
 
 /// Environment variable telling the media MCP which conversation it serves.
-pub const MEDIA_CONVERSATION_ENV: &str = "AIONUI_MEDIA_CONVERSATION_ID";
+pub const MEDIA_CONVERSATION_ENV: &str = "DREAM_MEDIA_CONVERSATION_ID";
 
 /// The conversation variable to add for `server_name`, if it wants one.
 ///
@@ -60,7 +75,7 @@ pub const MEDIA_CONVERSATION_ENV: &str = "AIONUI_MEDIA_CONVERSATION_ID";
 /// Same narrow scoping as the workspace variable: only the bundled media server
 /// gets it, never an arbitrary user-configured one.
 pub fn media_conversation_env(server_name: &str, conversation_id: &str) -> Option<(String, String)> {
-    if server_name != BUILTIN_MEDIA_MCP_NAME {
+    if !is_media_server(server_name) {
         return None;
     }
     let conversation_id = conversation_id.trim();
@@ -73,6 +88,47 @@ pub fn media_conversation_env(server_name: &str, conversation_id: &str) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// These names are a cross-language contract with the TypeScript media MCP
+    /// (`imageGenServer.ts`'s `sessionWorkspaceDir` / `sessionConversationId`),
+    /// and nothing but agreement on the literal string makes it work.
+    ///
+    /// The rebrand renamed the TypeScript half and left this one alone. Nothing
+    /// failed to compile and no test went red — the tool simply stopped being
+    /// told anything, fell back to `process.cwd()`, and every generated file
+    /// landed in the application data folder instead of the conversation, which
+    /// silently took the thumbnail, the open-folder and regenerate actions and
+    /// the cost line with it. Assert the literals so the next rename has to
+    /// touch both sides.
+    #[test]
+    fn env_names_match_the_typescript_media_server() {
+        assert_eq!(MEDIA_WORKSPACE_ENV, "DREAM_MEDIA_WORKSPACE_DIR");
+        assert_eq!(MEDIA_CONVERSATION_ENV, "DREAM_MEDIA_CONVERSATION_ID");
+    }
+
+    /// A stored MCP row keeps the name it was written with, so an install that
+    /// predates the rename keeps presenting the old one until the desktop
+    /// shell's config migration rewrites it. Matching only the current name
+    /// would leave those sessions without a workspace — the same silent
+    /// misplacement as the env-name drift above, reintroduced by the fix for it.
+    #[test]
+    fn the_media_server_is_recognised_under_every_name_it_has_carried() {
+        for name in [
+            "one-image-generation",
+            "aionui-image-generation",
+            "AionUi Image Generation",
+            "builtin-image-gen",
+        ] {
+            assert!(
+                media_workspace_env(name, "D:/work/conv-1").is_some(),
+                "workspace not handed to {name}"
+            );
+            assert!(
+                media_conversation_env(name, "conv-42").is_some(),
+                "conversation not handed to {name}"
+            );
+        }
+    }
 
     /// Without this the usage ledger row for an agent-initiated generation —
     /// the common case — points at no conversation, so a company can see that

@@ -21,7 +21,9 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use dream_core_ai_agent::{AgentRegistry, UnavailableReason};
-use dream_core_db::{IAgentMetadataRepository, SqliteAgentMetadataRepository, init_database, maybe_copy_legacy_database};
+use dream_core_db::{
+    IAgentMetadataRepository, SqliteAgentMetadataRepository, init_database, maybe_copy_legacy_database,
+};
 use dream_core_runtime::doctor_snapshot;
 
 use crate::cli::Cli;
@@ -34,7 +36,7 @@ pub async fn run_doctor(cli: &Cli, merged_path: &str) -> Result<ExitCode, CliBou
 
     // Use the real on-disk DB so the report reflects the user's actual
     // catalog (including custom agents they've added via the UI).
-    let db_path = cli.data_dir.join("aionui-backend.db");
+    let db_path = dream_core_common::backend_db_path(&cli.data_dir);
     maybe_copy_legacy_database(&db_path).map_err(|_| doctor_database_error())?;
     let database = init_database(&db_path).await.map_err(|_| doctor_database_error())?;
 

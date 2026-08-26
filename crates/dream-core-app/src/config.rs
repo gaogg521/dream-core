@@ -67,8 +67,12 @@ impl AppConfig {
     }
 
     /// Path to the SQLite database file.
+    ///
+    /// Resolves through `data_paths` so an install created before the rename
+    /// keeps opening the catalog it already has instead of silently starting a
+    /// new empty one beside it.
     pub fn database_path(&self) -> PathBuf {
-        self.data_dir.join("aionui-backend.db")
+        dream_core_common::backend_db_path(&self.data_dir)
     }
 }
 
@@ -136,10 +140,25 @@ mod tests {
 
     #[test]
     fn test_app_config_database_path() {
+        let dir = tempfile::tempdir().unwrap();
         let config = AppConfig {
-            data_dir: PathBuf::from("/tmp/aionui"),
+            data_dir: dir.path().to_path_buf(),
             ..Default::default()
         };
-        assert_eq!(config.database_path(), PathBuf::from("/tmp/aionui/aionui-backend.db"));
+        assert_eq!(config.database_path(), dir.path().join("one-backend.db"));
+    }
+
+    /// An upgrade must not point the backend at a name nothing on disk uses:
+    /// SQLite would create it, the catalog would come up empty, and the user
+    /// would open the app to find every conversation gone.
+    #[test]
+    fn database_path_keeps_using_a_pre_rebrand_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("aionui-backend.db"), b"existing catalog").unwrap();
+        let config = AppConfig {
+            data_dir: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        assert_eq!(config.database_path(), dir.path().join("aionui-backend.db"));
     }
 }

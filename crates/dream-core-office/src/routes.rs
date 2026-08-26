@@ -170,7 +170,7 @@ async fn start_preview(
     // office sandbox validation for callers that have not migrated yet.
     let validated_path = match &req.file {
         Some(file) => {
-            let upload_root = std::env::temp_dir().join("aionui");
+            let upload_root = dream_core_common::upload_roots();
             state
                 .project
                 .resolve_chat_file_ref(user_id, file, &upload_root, dream_core_project::FileOp::Read)
@@ -215,7 +215,7 @@ async fn stop_preview(
     // this branch stop can't match the watch and the officecli subprocess leaks.
     let target_path = match &req.file {
         Some(file) => {
-            let upload_root = std::env::temp_dir().join("aionui");
+            let upload_root = dream_core_common::upload_roots();
             state
                 .project
                 .resolve_chat_file_ref(user_id, file, &upload_root, dream_core_project::FileOp::Read)
@@ -264,7 +264,7 @@ async fn refresh_preview(
     // legacy device path.
     let target_path = match &req.file {
         Some(file) => {
-            let upload_root = std::env::temp_dir().join("aionui");
+            let upload_root = dream_core_common::upload_roots();
             state
                 .project
                 .resolve_chat_file_ref(user_id, file, &upload_root, dream_core_project::FileOp::Read)
@@ -670,7 +670,8 @@ mod tests {
         let proxy = Arc::new(ProxyService::new(wm.clone()));
 
         let db = dream_core_db::init_database_memory().await.unwrap();
-        let store: Arc<dyn dream_core_db::IProjectStore> = Arc::new(dream_core_db::SqliteProjectStore::new(db.pool().clone()));
+        let store: Arc<dyn dream_core_db::IProjectStore> =
+            Arc::new(dream_core_db::SqliteProjectStore::new(db.pool().clone()));
         let project = Arc::new(dream_core_project::ProjectService::new(store, std::env::temp_dir()));
 
         OfficeRouterState {

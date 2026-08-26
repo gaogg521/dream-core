@@ -571,10 +571,12 @@ async fn create_temp_file(
 // Content endpoint (ChatFileRef identity) — handlers
 // ---------------------------------------------------------------------------
 
-/// Managed upload directory (`<tmp>/dream`) used to validate `Upload`
-/// ChatFileRef variants — mirrors the chat send-boundary convention.
-fn content_upload_root() -> PathBuf {
-    std::env::temp_dir().join("aionui")
+/// Managed upload directories used to validate `Upload` ChatFileRef variants —
+/// mirrors the chat send-boundary convention. The pre-rebrand directory is kept
+/// as a read-only fallback so files staged before the rename still resolve; see
+/// `dream_core_common::upload_paths`.
+fn content_upload_root() -> Vec<PathBuf> {
+    dream_core_common::upload_roots()
 }
 
 /// Parse the optional `If-Match` header as a last-modified-millisecond stamp.

@@ -137,7 +137,14 @@ async fn system_resume(
     State(state): State<CronRouterState>,
     headers: HeaderMap,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    let is_internal = headers.get("x-aionui-internal").and_then(|value| value.to_str().ok()) == Some("1");
+    // Both names are accepted: the desktop shell ships with a pinned aioncore
+    // release, so a UI older than this backend is the normal state for a while
+    // after any rename. Accepting only the current name would make system-resume
+    // silently 403 for every such install — cron jobs would simply stop waking
+    // up after sleep, with nothing in the UI to say why.
+    let is_internal = ["x-dream-internal", "x-aionui-internal"]
+        .iter()
+        .any(|name| headers.get(*name).and_then(|value| value.to_str().ok()) == Some("1"));
     if !is_internal {
         return Err(ApiError::Forbidden("internal route".into()));
     }
@@ -394,7 +401,8 @@ mod tests {
     #[test]
     fn conversation_error_maps_through_boundary_mapper() {
         let err: ApiError =
-            CronError::Conversation(dream_core_conversation::ConversationError::NotFound { id: "conv-1".into() }).into();
+            CronError::Conversation(dream_core_conversation::ConversationError::NotFound { id: "conv-1".into() })
+                .into();
         assert!(matches!(err, ApiError::NotFound(msg) if msg == "Conversation conv-1 not found"));
     }
 

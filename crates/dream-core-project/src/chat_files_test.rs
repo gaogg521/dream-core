@@ -37,7 +37,7 @@ async fn resolves_project_file_and_inlines_marker() {
                 pe_id: pe_id.clone(),
                 relative_path: "note.txt".into(),
             }],
-            upload_root.path(),
+            &[upload_root.path().to_path_buf()],
         )
         .await
         .unwrap();
@@ -67,7 +67,7 @@ async fn resolves_project_directory_ref() {
                 pe_id,
                 relative_path: "sub".into(),
             }],
-            upload_root.path(),
+            &[upload_root.path().to_path_buf()],
         )
         .await
         .unwrap();
@@ -91,7 +91,7 @@ async fn resolves_project_root_ref_empty_relative_path() {
                 pe_id,
                 relative_path: String::new(),
             }],
-            upload_root.path(),
+            &[upload_root.path().to_path_buf()],
         )
         .await
         .unwrap();
@@ -141,7 +141,7 @@ async fn emitted_absolute_path_keeps_real_root_casing() {
                 pe_id: created.project_explorer.pe_id,
                 relative_path: "Brief.md".into(),
             }],
-            upload_root.path(),
+            &[upload_root.path().to_path_buf()],
         )
         .await
         .unwrap();
@@ -164,7 +164,7 @@ async fn emitted_absolute_path_keeps_real_root_casing() {
 async fn empty_files_leaves_content_unchanged() {
     let (service, _pe, _dir, upload_root) = setup().await;
     let out = service
-        .resolve_chat_message("system_default_user", "hi", &[], upload_root.path())
+        .resolve_chat_message("system_default_user", "hi", &[], &[upload_root.path().to_path_buf()])
         .await
         .unwrap();
     assert_eq!(out.content, "hi");
@@ -182,7 +182,7 @@ async fn missing_project_file_is_atomic_error() {
                 pe_id,
                 relative_path: "nope.txt".into(),
             }],
-            upload_root.path(),
+            &[upload_root.path().to_path_buf()],
         )
         .await
         .unwrap_err();
@@ -201,11 +201,65 @@ async fn upload_under_root_is_accepted() {
             "system_default_user",
             "",
             &[ChatFileRef::Upload { path: path.clone() }],
-            upload_root.path(),
+            &[upload_root.path().to_path_buf()],
         )
         .await
         .unwrap();
     assert_eq!(out.files, vec![path]);
+}
+
+/// The rebrand moved the managed upload directory from `<tmp>/aionui` to
+/// `<tmp>/dream`. Files staged under the old name did not move, so if reads
+/// stopped accepting it, every attachment a user had already picked — and every
+/// reference image a media job still points at — would start failing the D2
+/// containment check at send time with nothing to explain why.
+#[tokio::test]
+async fn upload_under_a_legacy_root_is_still_accepted() {
+    let (service, _pe, _dir, current_root) = setup().await;
+    let legacy_root = tempfile::tempdir().unwrap();
+    let staged = legacy_root.path().join("before-the-rename.png");
+    std::fs::write(&staged, b"x").unwrap();
+    let path = staged.to_string_lossy().into_owned();
+
+    let out = service
+        .resolve_chat_message(
+            "system_default_user",
+            "",
+            &[ChatFileRef::Upload { path: path.clone() }],
+            &[current_root.path().to_path_buf(), legacy_root.path().to_path_buf()],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(out.files, vec![path]);
+}
+
+/// Widening to two roots must not widen to "anywhere" — the managed-directory
+/// restriction is the whole point of the `Upload` variant.
+#[tokio::test]
+async fn upload_outside_every_root_is_still_rejected() {
+    let (service, _pe, _dir, current_root) = setup().await;
+    let legacy_root = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let stray = elsewhere.path().join("stray.png");
+    std::fs::write(&stray, b"x").unwrap();
+
+    let err = service
+        .resolve_chat_message(
+            "system_default_user",
+            "",
+            &[ChatFileRef::Upload {
+                path: stray.to_string_lossy().into_owned(),
+            }],
+            &[current_root.path().to_path_buf(), legacy_root.path().to_path_buf()],
+        )
+        .await
+        .expect_err("a path under neither managed root must not resolve");
+
+    assert!(
+        matches!(err, ProjectError::UploadPathOutsideRoot { .. }),
+        "expected UploadPathOutsideRoot, got {err:?}"
+    );
 }
 
 #[tokio::test]
@@ -223,7 +277,7 @@ async fn local_readable_file_resolves_and_inlines_marker() {
             "system_default_user",
             "see this",
             &[ChatFileRef::Local { path }],
-            upload_root.path(),
+            &[upload_root.path().to_path_buf()],
         )
         .await
         .unwrap();
@@ -256,7 +310,7 @@ async fn local_canonicalizes_symlink_to_target_path() {
             &[ChatFileRef::Local {
                 path: link_path.clone(),
             }],
-            upload_root.path(),
+            &[upload_root.path().to_path_buf()],
         )
         .await
         .unwrap();
@@ -285,7 +339,7 @@ async fn local_nonexistent_is_rejected() {
             "system_default_user",
             "x",
             &[ChatFileRef::Local { path: missing }],
-            upload_root.path(),
+            &[upload_root.path().to_path_buf()],
         )
         .await
         .unwrap_err();
@@ -304,7 +358,7 @@ async fn local_directory_is_rejected() {
             "system_default_user",
             "x",
             &[ChatFileRef::Local { path }],
-            upload_root.path(),
+            &[upload_root.path().to_path_buf()],
         )
         .await
         .unwrap_err();
@@ -326,7 +380,7 @@ async fn upload_outside_root_is_rejected() {
             &[ChatFileRef::Upload {
                 path: ext.to_string_lossy().into_owned(),
             }],
-            upload_root.path(),
+            &[upload_root.path().to_path_buf()],
         )
         .await
         .unwrap_err();

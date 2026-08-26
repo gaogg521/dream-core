@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, Weak};
 
+use dashmap::DashMap;
 use dream_core_ai_agent::{ActiveLeaseRegistry, AgentError, AgentInstance, IWorkerTaskManager, IdleCleanupCoordinator};
 use dream_core_api_types::ChatFileRef;
 use dream_core_api_types::{
@@ -25,7 +26,6 @@ use dream_core_db::{
 };
 use dream_core_project::{ProjectService, canonical};
 use dream_core_realtime::EventBroadcaster;
-use dashmap::DashMap;
 use tracing::{debug, info, warn};
 
 use crate::activity_mapping::{
@@ -2526,7 +2526,7 @@ impl TeamSessionService {
             .ok_or_else(|| {
                 TeamError::InvalidRequest("project service unavailable; cannot resolve file attachments".into())
             })?;
-        let upload_root = std::env::temp_dir().join("aionui");
+        let upload_root = dream_core_common::upload_roots();
         let resolved = project
             .resolve_chat_message(user_id, content, &files, &upload_root)
             .await

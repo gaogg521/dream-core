@@ -2,10 +2,6 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use dream_engine_agent::session::{ForkBoundary, Session, SessionManager};
-use dream_engine_config::compat::OpenAiApiMode;
-use dream_engine_config::config::{McpServerConfig, TransportType};
-use dream_engine_types::message::ImageInputCapability;
 use dream_core_api_types::{
     DreamEngineBuildExtra, ForkSpec, ModelImageInputCapability, ModelOpenAiApiMode, ModelSettings, SessionMcpServer,
     SessionMcpTransport, TEAM_MCP_SERVER_NAME, TeamMcpStdioConfig,
@@ -16,6 +12,10 @@ use dream_core_db::models::McpServerRow;
 use dream_core_mcp::media_workspace::{media_conversation_env, media_workspace_env};
 use dream_core_realtime::EventBroadcaster;
 use dream_core_runtime::ensure_runtime_command_with_reporter;
+use dream_engine_agent::session::{ForkBoundary, Session, SessionManager};
+use dream_engine_config::compat::OpenAiApiMode;
+use dream_engine_config::config::{McpServerConfig, TransportType};
+use dream_engine_types::message::ImageInputCapability;
 use serde_json::{Map, Value};
 use tracing::{debug, info, warn};
 
@@ -158,7 +158,7 @@ pub(super) async fn build(
     let vision_unavailable_reason = vision.unavailable_reason();
     let vision_model = vision.config;
 
-    let session_directory = deps.data_dir.join("aionrs-sessions");
+    let session_directory = dream_core_common::agent_sessions_dir(&deps.data_dir);
 
     let resume_session = resolve_build_session(
         &session_directory,
@@ -905,8 +905,12 @@ pub(crate) fn build_dream_engine_config(
         dream_engine_config::config::ProviderType::Anthropic | dream_engine_config::config::ProviderType::Vertex => {
             dream_engine_config::compat::ProviderCompat::anthropic_defaults().transport
         }
-        dream_engine_config::config::ProviderType::OpenAI => dream_engine_config::compat::ProviderCompat::openai_defaults().transport,
-        dream_engine_config::config::ProviderType::Bedrock => dream_engine_config::compat::ProviderCompat::bedrock_defaults().transport,
+        dream_engine_config::config::ProviderType::OpenAI => {
+            dream_engine_config::compat::ProviderCompat::openai_defaults().transport
+        }
+        dream_engine_config::config::ProviderType::Bedrock => {
+            dream_engine_config::compat::ProviderCompat::bedrock_defaults().transport
+        }
     };
     config.compat.transport.default_max_tokens = default_transport.default_max_tokens;
     config.compat.transport.model_max_tokens = default_transport.model_max_tokens;
@@ -1136,7 +1140,11 @@ mod tests {
                 .cloned())
         }
 
-        async fn find_by_name(&self, user_id: &str, name: &str) -> Result<Option<McpServerRow>, dream_core_db::DbError> {
+        async fn find_by_name(
+            &self,
+            user_id: &str,
+            name: &str,
+        ) -> Result<Option<McpServerRow>, dream_core_db::DbError> {
             Ok(self
                 .rows
                 .iter()
@@ -1440,7 +1448,8 @@ mod tests {
         ];
 
         for (platform, raw_base_url, model_id) in cases {
-            let (base_url, compat) = resolve_dream_engine_url_and_compat(platform, raw_base_url, "openai", model_id, false);
+            let (base_url, compat) =
+                resolve_dream_engine_url_and_compat(platform, raw_base_url, "openai", model_id, false);
 
             assert_eq!(base_url.as_deref(), Some(raw_base_url), "{model_id}");
             assert_eq!(compat.openai_api_mode, Some(OpenAiApiMode::Responses), "{model_id}");
@@ -1815,7 +1824,8 @@ mod tests {
             let provider = map_dream_engine_provider("custom", "m", None).expect(case.name);
             assert_eq!(provider, "openai", "{}", case.name);
 
-            let (base_url, compat) = resolve_dream_engine_url_and_compat("custom", case.base_url, &provider, "m", false);
+            let (base_url, compat) =
+                resolve_dream_engine_url_and_compat("custom", case.base_url, &provider, "m", false);
             assert_eq!(base_url.as_deref(), Some(case.base_url), "{}", case.name);
             assert_eq!(compat.api_path.as_deref(), Some("/chat/completions"), "{}", case.name);
             assert_eq!(
@@ -1906,7 +1916,8 @@ mod tests {
             let provider = map_dream_engine_provider(case.platform, "m", None).expect(case.name);
             assert_eq!(provider, case.expected_provider, "{}", case.name);
 
-            let (base_url, compat) = resolve_dream_engine_url_and_compat(case.platform, case.base_url, &provider, "m", false);
+            let (base_url, compat) =
+                resolve_dream_engine_url_and_compat(case.platform, case.base_url, &provider, "m", false);
             assert_eq!(base_url.as_deref(), case.expected_base_url, "{}", case.name);
             assert_eq!(compat.api_path.as_deref(), case.expected_api_path, "{}", case.name);
 

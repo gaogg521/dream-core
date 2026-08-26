@@ -1164,7 +1164,7 @@ impl crate::traits::IFileService for FileService {
         let name = file_name.to_owned();
 
         tokio::task::spawn_blocking(move || {
-            let tmp_dir = std::env::temp_dir().join("aionui");
+            let tmp_dir = dream_core_common::upload_root();
             std::fs::create_dir_all(&tmp_dir)
                 .map_err(|e| FileError::Internal(format!("cannot create temp directory: {e}")))?;
 
@@ -1218,7 +1218,7 @@ impl crate::traits::IFileService for FileService {
         let bytes = data.to_vec();
 
         tokio::task::spawn_blocking(move || {
-            let mut dir = std::env::temp_dir().join("aionui");
+            let mut dir = dream_core_common::upload_root();
             if let Some(conv_id) = conv_id.as_deref() {
                 dir = dir.join(conv_id);
             } else {

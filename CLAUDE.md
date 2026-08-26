@@ -17,6 +17,11 @@
 > 跨仓完整叙述（含前端 bug 与 CodeMirror 排查）见 dream-ui 同名文档。本 CLAUDE.md 只保留
 > 长期有效的规则，过程性细节请去读那份文档。
 
+> **2026-08-26**：媒体 MCP 的跨语言 env 契约在品牌迁移中被单边改名，导致生成的图片/视频
+> 落到 app 数据目录而不是会话工作区（前端媒体卡片因此整个不渲染）。同批把上传根目录与数据
+> 目录改成「读取回退别名」而非改名迁移。详见
+> [session-2026-08-26-media-env-contract-and-path-aliasing.zh-CN.md](./docs/guides/session-2026-08-26-media-env-contract-and-path-aliasing.zh-CN.md)。
+
 > **2026-08-25**："一键体验免费模型"（OpenRouter trial key）功能，dream-core 侧新增
 > `POST /api/providers/trial-key`。本仓库的实现细节见
 > [session-2026-08-25-openrouter-trial-model.zh-CN.md](./docs/guides/session-2026-08-25-openrouter-trial-model.zh-CN.md)，

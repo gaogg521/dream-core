@@ -2,7 +2,9 @@
 
 //! Shared primitives: error types, enums, ID generation, crypto, timestamps, and pagination.
 pub mod constants;
+pub mod data_paths;
 pub mod dlp;
+pub mod upload_paths;
 pub mod user_paths;
 
 mod agent_bridge;
@@ -27,6 +29,7 @@ pub use agent_bridge::{
 pub use backend_capabilities::{CapabilityOrigin, McpTransportCapabilities, ResolvedBackendCapabilities};
 pub use case_convert::{camel_to_snake, normalize_keys_to_snake_case};
 pub use crypto::{CryptoError, decrypt_string, encrypt_string};
+pub use data_paths::{agent_sessions_dir, backend_db_path, process_registry_dir, resolve_with_legacy};
 pub use enums::{
     AgentKillReason, AgentType, ConversationSource, ConversationStatus, FileChangeOperation, McpServerStatus,
     McpSource, MessagePosition, MessageStatus, MessageType, PreviewContentType, ProtocolType, RemoteAgentAuthType,
@@ -42,4 +45,5 @@ pub use pagination::PaginatedResult;
 pub use timestamp::{TimestampMs, now_ms};
 pub use tool_schema::{IncompatibilityReason, SchemaIncompatibility, is_tool_compatible, validate_tool};
 pub use types::{CommandSpec, Confirmation, ConfirmationOption, EnvVar, ProviderWithModel, UpdateType, VersionInfo};
+pub use upload_paths::{LEGACY_UPLOAD_ROOT_DIR, UPLOAD_ROOT_DIR, upload_root, upload_roots, within_any_root};
 pub use user_paths::{UserDirNameError, user_dir_name};

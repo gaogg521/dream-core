@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use fs2::FileExt;
 use uuid::Uuid;
 
-use crate::registry_store::{LOCK_FILE, SUBDIR};
+use crate::registry_store::{LOCK_FILE, registry_dir};
 
 /// Held single-instance lock. Held for the whole process lifetime by keeping
 /// this value alive; dropping it releases the advisory lock.
@@ -61,7 +61,7 @@ impl std::fmt::Display for LockHeld {
 /// returns `Err(LockHeld)` — the caller must NOT run any reap (IC-1: never
 /// reap a live sibling instance's processes).
 pub fn acquire_instance_lock(data_dir: &Path) -> Result<(InstanceLock, Uuid), LockHeld> {
-    let dir = data_dir.join(SUBDIR);
+    let dir = registry_dir(data_dir);
     let path = dir.join(LOCK_FILE);
     // create_dir_all is idempotent + benign under races (IC: already-isolated).
     if std::fs::create_dir_all(&dir).is_err() {

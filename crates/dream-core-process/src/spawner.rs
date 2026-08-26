@@ -133,7 +133,7 @@ impl<S: RegistryStore + 'static> Spawner for RealSpawner<S> {
 /// iCloud/Dropbox-synced — a synced id would defeat the guard). First call
 /// mints + persists a random UUID; later calls read it back.
 pub fn local_machine_id(os_local_cache_dir: &std::path::Path) -> String {
-    let path: PathBuf = os_local_cache_dir.join("aionui-process").join("machine-id");
+    let path: PathBuf = dream_core_common::process_registry_dir(os_local_cache_dir).join("machine-id");
     if let Ok(s) = std::fs::read_to_string(&path) {
         let t = s.trim();
         if !t.is_empty() {

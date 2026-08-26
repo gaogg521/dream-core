@@ -549,7 +549,7 @@ async fn resolve_chat_file_ref_project_variant_yields_the_absolute_path() {
                 pe_id: created.project_explorer.pe_id.clone(),
                 relative_path: "docs/report.xlsx".to_owned(),
             },
-            &std::env::temp_dir(),
+            &[std::env::temp_dir()],
             FileOp::Read,
         )
         .await
@@ -598,7 +598,7 @@ async fn resolve_chat_file_ref_project_variant_works_for_attached_folders() {
                 pe_id: entry.pe_id.clone(),
                 relative_path: "sheet.xlsx".to_owned(),
             },
-            &std::env::temp_dir(),
+            &[std::env::temp_dir()],
             FileOp::Read,
         )
         .await
@@ -629,7 +629,7 @@ async fn resolve_chat_file_ref_project_variant_rejects_missing_and_escaping_path
                 pe_id: pe_id.clone(),
                 relative_path: "nope.xlsx".to_owned(),
             },
-            &std::env::temp_dir(),
+            &[std::env::temp_dir()],
             FileOp::Read,
         )
         .await
@@ -645,7 +645,7 @@ async fn resolve_chat_file_ref_project_variant_rejects_missing_and_escaping_path
                 pe_id,
                 relative_path: "../../etc/passwd".to_owned(),
             },
-            &std::env::temp_dir(),
+            &[std::env::temp_dir()],
             FileOp::Read,
         )
         .await

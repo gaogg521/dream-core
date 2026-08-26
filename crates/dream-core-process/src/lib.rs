@@ -34,7 +34,8 @@ pub use proc_control::{
 };
 pub use process::{BoxedStdin, BoxedStdout, ManagedProcess, TerminalExit};
 pub use registry_store::{
-    FileRegistryStore, LOCK_FILE, ProcessIdentity, REGISTRY_FILE, RegisteredProcess, RegistryStore, SUBDIR,
+    FileRegistryStore, LOCK_FILE, ProcessIdentity, REGISTRY_FILE, RUNTIME_DIR, RegisteredProcess, RegistryStore,
+    registry_dir,
 };
 pub use spawner::{RealSpawner, Spawner, local_machine_id};
 pub use supervisor::{

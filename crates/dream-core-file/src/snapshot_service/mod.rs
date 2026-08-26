@@ -16,9 +16,9 @@ use git2::Repository;
 use crate::types::{CompareResult, SnapshotInfo, SnapshotMode};
 
 use helpers::{
-    SNAPSHOT_DIR_PREFIX, WorkspaceState, build_info, discard_single_file, init_snapshot_repo, list_branches, open_repo,
-    parse_statuses, read_baseline, reset_single_file, resolve_workspace, stage_all_with_deletions, stage_single_file,
-    temp_repo_path, unstage_all_files, unstage_single_file,
+    LEGACY_SNAPSHOT_DIR_PREFIX, SNAPSHOT_DIR_PREFIX, WorkspaceState, build_info, discard_single_file,
+    init_snapshot_repo, list_branches, open_repo, parse_statuses, read_baseline, reset_single_file, resolve_workspace,
+    stage_all_with_deletions, stage_single_file, temp_repo_path, unstage_all_files, unstage_single_file,
 };
 
 // ---------------------------------------------------------------------------
@@ -62,7 +62,7 @@ impl SnapshotService {
                 Ok(n) => n,
                 Err(_) => continue,
             };
-            if name.starts_with(SNAPSHOT_DIR_PREFIX) {
+            if name.starts_with(SNAPSHOT_DIR_PREFIX) || name.starts_with(LEGACY_SNAPSHOT_DIR_PREFIX) {
                 let path = entry.path();
                 if let Err(e) = std::fs::remove_dir_all(&path) {
                     tracing::warn!(

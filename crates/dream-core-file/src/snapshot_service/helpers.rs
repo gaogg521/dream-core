@@ -19,7 +19,12 @@ use crate::types::{CompareResult, FileChangeInfo, SnapshotInfo, SnapshotMode};
 // ---------------------------------------------------------------------------
 
 /// Prefix for temporary snapshot directories under the system temp dir.
-pub(super) const SNAPSHOT_DIR_PREFIX: &str = "aionui-snapshot-";
+pub(super) const SNAPSHOT_DIR_PREFIX: &str = "one-snapshot-";
+
+/// Pre-rebrand prefix. New directories never use it, but stale-snapshot cleanup
+/// still sweeps it — dropping it would strand every directory created before the
+/// rename in the user's temp folder, with nothing left that knows to delete them.
+pub(super) const LEGACY_SNAPSHOT_DIR_PREFIX: &str = "aionui-snapshot-";
 
 /// Exclude rules written to `<git-dir>/info/exclude` for snapshot mode.
 /// These patterns prevent large/generated directories from being tracked.
@@ -41,9 +46,9 @@ Thumbs.db
 ";
 
 /// Signature name used for snapshot commits.
-const SNAPSHOT_SIG_NAME: &str = "aionui";
+const SNAPSHOT_SIG_NAME: &str = "1ONE";
 /// Signature email used for snapshot commits.
-const SNAPSHOT_SIG_EMAIL: &str = "snapshot@aionui.local";
+const SNAPSHOT_SIG_EMAIL: &str = "snapshot@1one.local";
 /// Commit message for the initial snapshot baseline.
 const SNAPSHOT_INITIAL_MSG: &str = "Initial snapshot";
 

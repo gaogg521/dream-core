@@ -17,4 +17,5 @@ getrandom.workspace = true
 semver.workspace = true
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }

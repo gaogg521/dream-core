@@ -15,7 +15,18 @@ use crate::ProcessError;
 
 /// Subdir + filenames, namespaced so they are provably disjoint from the
 /// existing mechanism's artifacts and from bun's `runtime.lock` (IC-3/IC-4).
-pub const SUBDIR: &str = "runtime/aionui-process";
+pub const RUNTIME_DIR: &str = "runtime";
+
+/// Resolved registry directory under `data_dir`.
+///
+/// A function rather than a `&str` constant because the leaf name falls back to
+/// its pre-rebrand spelling when that is what exists on disk — an install whose
+/// registry and instance lock already live under the old name must keep finding
+/// them, or single-instance detection and process reaping both silently start
+/// from an empty registry.
+pub fn registry_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
+    dream_core_common::process_registry_dir(&data_dir.join(RUNTIME_DIR))
+}
 pub const REGISTRY_FILE: &str = "registry.json";
 pub const LOCK_FILE: &str = "instance.lock";
 /// Cross-process advisory lock for the registry read-modify-write (F49).
@@ -120,7 +131,7 @@ pub struct FileRegistryStore {
 
 impl FileRegistryStore {
     pub fn new(data_dir: &Path) -> Self {
-        let dir = data_dir.join(SUBDIR);
+        let dir = registry_dir(data_dir);
         let store = Self {
             path: dir.join(REGISTRY_FILE),
             lock_path: dir.join(REGISTRY_LOCK_FILE),
