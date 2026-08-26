@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use sqlx::SqlitePool;
 
+use dream_core_common::constants::API_KEY_TOKEN_PREFIX;
 use dream_core_common::{decrypt_string, encrypt_string, generate_id_with_length, generate_prefixed_id, now_ms};
 use sha2::{Digest, Sha256};
 
@@ -1280,14 +1281,9 @@ impl PlatformService {
     /// storage, and returned exactly once in `NewApiKeyDto` — this is the
     /// only call in this crate that ever sees it in the clear.
     ///
-    /// ⚠️ This is a storage-layer op only: nothing in this codebase currently
-    /// authenticates a request against `one_api_keys`. Wiring that up needs a
-    /// new auth-middleware credential path (alongside the existing JWT/session
-    /// one in `dream-core-auth`) that hashes an incoming bearer token and
-    /// looks it up here, checks `status = 'active'`, and matches the request
-    /// path against `allowed_paths` before falling through to the normal
-    /// `CurrentUser` extraction — real, separate follow-up work, not
-    /// something this method can safely retrofit on its own.
+    /// Authenticating a request against `one_api_keys` is [`Self::authenticate_api_key`],
+    /// consulted from `dream-core-auth`'s middleware via the `ApiKeyGate` port
+    /// (`dream-core-auth` cannot depend on this crate directly).
     pub async fn create_api_key(
         &self,
         tenant_id: &str,
@@ -1302,7 +1298,7 @@ impl PlatformService {
         }
 
         let id = generate_prefixed_id("apikey");
-        let secret = format!("sk_live_{}", generate_id_with_length(Some(48)));
+        let secret = format!("{API_KEY_TOKEN_PREFIX}{}", generate_id_with_length(Some(48)));
         let key_prefix: String = secret.chars().take(Self::API_KEY_PREFIX_LEN).collect();
         let key_hash = Self::hash_api_key_secret(&secret);
         let allowed_paths_json =
@@ -1332,6 +1328,49 @@ impl PlatformService {
             .await?
             .ok_or_else(|| PlatformError::Internal("API key vanished immediately after insert".into()))?;
         Ok(NewApiKeyDto { key, secret })
+    }
+
+    /// Validate a raw bearer token against `one_api_keys` and, if it
+    /// authorizes `request_path`, resolve the user to act as.
+    ///
+    /// The resolved identity is the key's `created_by` (the admin who minted
+    /// it) — an API key acts AS a real user, the same way a JWT session does,
+    /// so every downstream tenant/permission lookup that already keys off
+    /// `user_id` (resource grants, `TenantResolver`, …) needs no new plumbing.
+    ///
+    /// Looked up by hash across all tenants (not scoped by `tenant_id`,
+    /// unlike every other method here) because the caller doesn't know its
+    /// tenant in advance — the hash itself, a SHA-256 of 48 random hex
+    /// characters, is the credential's effective unique identifier.
+    pub async fn authenticate_api_key(
+        &self,
+        secret: &str,
+        request_path: &str,
+    ) -> Result<ApiKeyAuthOutcome, PlatformError> {
+        let key_hash = Self::hash_api_key_secret(secret);
+        let row: Option<(String, String, String)> = sqlx::query_as(
+            "SELECT id, created_by, allowed_paths FROM one_api_keys WHERE key_hash = ? AND status = 'active'",
+        )
+        .bind(&key_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some((id, created_by, allowed_paths_json)) = row else {
+            return Ok(ApiKeyAuthOutcome::Invalid);
+        };
+
+        let allowed_paths: Vec<String> = serde_json::from_str(&allowed_paths_json).unwrap_or_default();
+        if !api_key_path_allowed(request_path, &allowed_paths) {
+            return Ok(ApiKeyAuthOutcome::PathNotAllowed);
+        }
+
+        sqlx::query("UPDATE one_api_keys SET last_used_at = ? WHERE id = ?")
+            .bind(now_ms())
+            .bind(&id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(ApiKeyAuthOutcome::Authenticated { user_id: created_by })
     }
 
     fn api_key_row_to_dto(row: ApiKeyRow) -> ApiKeyDto {
@@ -1414,6 +1453,32 @@ type ApiKeyRow = (
     Option<i64>,
     Option<i64>,
 );
+
+/// Result of [`PlatformService::authenticate_api_key`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApiKeyAuthOutcome {
+    /// No active key matches this secret's hash — an invalid or revoked
+    /// credential. Deliberately not distinguished from "revoked" to the
+    /// caller: both mean "this token does not authenticate".
+    Invalid,
+    /// The key is valid but its `allowed_paths` does not cover the request.
+    PathNotAllowed,
+    /// The key is valid and authorizes this path; resolves to `created_by`.
+    Authenticated { user_id: String },
+}
+
+/// Whether `request_path` is covered by any pattern in `allowed_paths`.
+/// Patterns are either an exact path or a `*`-suffixed prefix (the only
+/// shape `PlatformService::create_api_key` accepts admins entering, e.g.
+/// `/api/one/devops/*`). An empty `allowed_paths` list matches nothing —
+/// see `one_api_keys`'s migration comment: a key with no paths scoped in
+/// must never be mistaken for an unrestricted one.
+fn api_key_path_allowed(request_path: &str, allowed_paths: &[String]) -> bool {
+    allowed_paths.iter().any(|pattern| match pattern.strip_suffix('*') {
+        Some(prefix) => request_path.starts_with(prefix),
+        None => request_path == pattern,
+    })
+}
 
 type SecurityPolicyRow = (String, bool, bool, String, bool, bool, bool, Option<i64>, i64);
 
@@ -2146,5 +2211,106 @@ mod tests {
         let (_db, service) = setup().await;
         service.create_api_key("t1", "Key", &[], None, "admin1").await.unwrap();
         assert!(service.list_api_keys("t2").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn authenticate_api_key_accepts_a_matching_secret_on_an_allowed_path() {
+        let (_db, service) = setup().await;
+        let created = service
+            .create_api_key("t1", "CI bot", &["/api/one/devops/*".to_owned()], None, "admin1")
+            .await
+            .unwrap();
+
+        let outcome = service
+            .authenticate_api_key(&created.secret, "/api/one/devops/skills")
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            ApiKeyAuthOutcome::Authenticated {
+                user_id: "admin1".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn authenticate_api_key_rejects_an_unknown_secret() {
+        let (_db, service) = setup().await;
+        let outcome = service
+            .authenticate_api_key("sk_live_not-a-real-key", "/api/one/devops/skills")
+            .await
+            .unwrap();
+        assert_eq!(outcome, ApiKeyAuthOutcome::Invalid);
+    }
+
+    #[tokio::test]
+    async fn authenticate_api_key_rejects_a_revoked_key() {
+        let (_db, service) = setup().await;
+        let created = service
+            .create_api_key("t1", "CI bot", &["/api/one/devops/*".to_owned()], None, "admin1")
+            .await
+            .unwrap();
+        service.revoke_api_key("t1", &created.key.id).await.unwrap();
+
+        let outcome = service
+            .authenticate_api_key(&created.secret, "/api/one/devops/skills")
+            .await
+            .unwrap();
+        assert_eq!(outcome, ApiKeyAuthOutcome::Invalid);
+    }
+
+    #[tokio::test]
+    async fn authenticate_api_key_rejects_a_path_outside_allowed_paths() {
+        let (_db, service) = setup().await;
+        let created = service
+            .create_api_key("t1", "CI bot", &["/api/one/devops/*".to_owned()], None, "admin1")
+            .await
+            .unwrap();
+
+        let outcome = service
+            .authenticate_api_key(&created.secret, "/api/one/billing/usage")
+            .await
+            .unwrap();
+        assert_eq!(outcome, ApiKeyAuthOutcome::PathNotAllowed);
+    }
+
+    /// A key created with no `allowed_paths` (the default) must authorize
+    /// nothing, not everything — see `one_api_keys`'s migration comment.
+    #[tokio::test]
+    async fn authenticate_api_key_with_no_allowed_paths_authorizes_nothing() {
+        let (_db, service) = setup().await;
+        let created = service.create_api_key("t1", "Key", &[], None, "admin1").await.unwrap();
+
+        let outcome = service
+            .authenticate_api_key(&created.secret, "/api/one/devops/skills")
+            .await
+            .unwrap();
+        assert_eq!(outcome, ApiKeyAuthOutcome::PathNotAllowed);
+    }
+
+    #[tokio::test]
+    async fn authenticate_api_key_matches_an_exact_path_without_a_wildcard() {
+        let (_db, service) = setup().await;
+        let created = service
+            .create_api_key("t1", "Key", &["/api/one/billing/usage".to_owned()], None, "admin1")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            service
+                .authenticate_api_key(&created.secret, "/api/one/billing/usage")
+                .await
+                .unwrap(),
+            ApiKeyAuthOutcome::Authenticated {
+                user_id: "admin1".to_owned()
+            }
+        );
+        assert_eq!(
+            service
+                .authenticate_api_key(&created.secret, "/api/one/billing/usage/extra")
+                .await
+                .unwrap(),
+            ApiKeyAuthOutcome::PathNotAllowed
+        );
     }
 }

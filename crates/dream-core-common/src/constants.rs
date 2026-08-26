@@ -17,6 +17,13 @@ pub const COOKIE_NAME: &str = "dream-session";
 pub const COOKIE_MAX_AGE_DAYS: u32 = 30;
 pub const CSRF_COOKIE_NAME: &str = "dream-csrf-token";
 pub const CSRF_HEADER_NAME: &str = "x-csrf-token";
+/// Prefix marking a bearer token as an open-integration API key
+/// (`one_api_keys`, `dream-domain-platform::PlatformService::create_api_key`)
+/// rather than a JWT — the auth middleware (`dream-core-auth`) checks this to
+/// route the credential to the right verification path. Shared here because
+/// neither crate may depend on the other (auth is Foundation layer, platform
+/// is Domain layer).
+pub const API_KEY_TOKEN_PREFIX: &str = "sk_live_";
 
 // --- Server ---
 

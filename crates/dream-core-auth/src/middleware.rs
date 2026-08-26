@@ -142,6 +142,34 @@ pub trait IRuntimeTokenVerifier: Send + Sync {
     fn verify_conversation_helper(&self, token: &str, user_id: &str, conversation_id: &str) -> bool;
 }
 
+/// Outcome of validating a bearer token against the open-integration API key
+/// store (`one_api_keys`, `dream-domain-platform::PlatformService`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApiKeyVerdict {
+    /// No active key matches this secret — an invalid or revoked credential.
+    /// Deliberately not distinguished to the caller: both simply fail to
+    /// authenticate, the same as a garbled JWT would.
+    Invalid,
+    /// The key is valid but does not cover the requested path.
+    PathNotAllowed,
+    /// The key is valid and authorizes this path; resolves to the user who
+    /// created it — an API key acts AS a real user, same as a JWT session.
+    Authenticated { user_id: String },
+}
+
+/// Port for validating an open-integration API key
+/// (`dream_core_common::constants::API_KEY_TOKEN_PREFIX`-prefixed bearer
+/// token) against `one_api_keys`.
+///
+/// Implemented in the composition layer over
+/// `dream-domain-platform::PlatformService`; `dream-core-auth` must not
+/// depend on that domain crate directly (same arrangement as
+/// [`IpAllowlistGate`] / [`IRuntimeTokenVerifier`]).
+#[async_trait]
+pub trait ApiKeyGate: Send + Sync {
+    async fn authenticate(&self, secret: &str, request_path: &str) -> Result<ApiKeyVerdict, String>;
+}
+
 /// Authenticated user injected into request extensions by the auth middleware.
 ///
 /// Route handlers extract this from `request.extensions()` to identify
@@ -186,6 +214,13 @@ pub struct AuthState {
     /// keeps the feature strictly additive rather than a behavior change for
     /// anything that hasn't opted in).
     pub ip_allowlist: Option<Arc<dyn IpAllowlistGate>>,
+    /// Open-integration API key credential channel, `None` to disable it
+    /// entirely (personal edition, and any call site that hasn't wired one).
+    /// When `None`, a bearer token shaped like an API key simply fails to
+    /// authenticate — same as any other unrecognized credential — rather
+    /// than falling through to JWT verification (which would also fail, but
+    /// with a less accurate error).
+    pub api_key_gate: Option<Arc<dyn ApiKeyGate>>,
 }
 
 /// Authentication middleware that verifies JWT tokens and injects `CurrentUser`.
@@ -243,6 +278,15 @@ pub async fn auth_middleware(
         // channel used by agent subprocess CLIs.
         return runtime_token_channel(&state, request, next).await;
     };
+
+    // A token shaped like an open-integration API key is never a JWT, so
+    // route it to the dedicated channel instead of letting JWT verification
+    // fail on it. Local mode never reaches this point (it returns early
+    // above), so API keys only ever apply to real network traffic — the
+    // strict path is exactly where a service-to-service credential belongs.
+    if token.starts_with(dream_core_common::constants::API_KEY_TOKEN_PREFIX) {
+        return api_key_channel(&state, &token, request, next).await;
+    }
 
     let payload = state.jwt_service.verify(&token).map_err(|e| {
         tracing::debug!("Token verification failed: {e}");
@@ -369,6 +413,81 @@ async fn runtime_token_channel(state: &AuthState, mut request: Request, next: Ne
     Ok(next.run(request).await)
 }
 
+/// Authenticate a request whose bearer token is shaped like an open-
+/// integration API key (`API_KEY_TOKEN_PREFIX`-prefixed) rather than a JWT.
+///
+/// Applies the same AionPro identity-mode and IP-allowlist checks as the JWT
+/// path so an API key cannot bypass either — the only thing genuinely
+/// different about this credential is how it resolves to a user, and that
+/// it additionally restricts the caller to `allowed_paths`.
+async fn api_key_channel(
+    state: &AuthState,
+    secret: &str,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let Some(gate) = state.api_key_gate.as_ref() else {
+        return Err(ApiError::Unauthorized("Invalid or expired token".into()));
+    };
+
+    let request_path = request.uri().path().to_owned();
+    let verdict = gate.authenticate(secret, &request_path).await.map_err(|error| {
+        tracing::error!(%error, "auth middleware: API key lookup failed");
+        ApiError::Internal("Authentication service unavailable".into())
+    })?;
+
+    let user_id = match verdict {
+        ApiKeyVerdict::Invalid => return Err(ApiError::Unauthorized("Invalid or expired token".into())),
+        ApiKeyVerdict::PathNotAllowed => {
+            return Err(ApiError::Forbidden("API key is not authorized for this path".into()));
+        }
+        ApiKeyVerdict::Authenticated { user_id } => user_id,
+    };
+
+    let user = state
+        .user_repo
+        .find_active_by_id(&user_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "api key channel user lookup failed");
+            ApiError::Internal("Authentication service unavailable".into())
+        })?
+        .ok_or_else(|| ApiError::Unauthorized("Invalid authentication subject".into()))?;
+
+    if state.identity_mode == AuthIdentityMode::AionPro && user.user_type != UserType::Aionpro {
+        return Err(ApiError::coded(
+            StatusCode::UNAUTHORIZED,
+            "USER_CONTEXT_REQUIRED",
+            "User context required.",
+            None,
+        ));
+    }
+
+    if let Some(ip_gate) = &state.ip_allowlist {
+        let ip = resolve_caller_ip(&request);
+        match ip_gate.is_allowed(&user.id, ip).await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(user_id = %user.id, ?ip, "auth middleware: API key request blocked by IP allowlist");
+                return Err(ApiError::Forbidden("IP address not permitted".into()));
+            }
+            Err(error) => {
+                tracing::error!(user_id = %user.id, %error, "auth middleware: IP allowlist check failed");
+                return Err(ApiError::Internal("IP allowlist check failed".into()));
+            }
+        }
+    }
+
+    request.extensions_mut().insert(CurrentUser {
+        id: user.id,
+        username: user.username.unwrap_or_else(|| "external_user".to_string()),
+        user_type: user.user_type,
+        status: user.status,
+    });
+
+    Ok(next.run(request).await)
+}
+
 /// Local-mode authentication middleware that skips JWT verification.
 ///
 /// Injects a fixed `CurrentUser` with id and username `system_default_user`.
@@ -418,6 +537,7 @@ mod tests {
             identity_mode: AuthIdentityMode::Local,
             runtime_token_verifier: None,
             ip_allowlist: None,
+            api_key_gate: None,
         };
         Router::new()
             .route("/test", get(echo_user))
@@ -643,6 +763,7 @@ mod tests {
             identity_mode: AuthIdentityMode::UserSession,
             runtime_token_verifier: None,
             ip_allowlist,
+            api_key_gate: None,
         };
         Router::new()
             .route("/test", get(echo_user))
@@ -839,6 +960,7 @@ mod tests {
             identity_mode: AuthIdentityMode::Local,
             runtime_token_verifier: None,
             ip_allowlist: Some(Arc::new(DenyGate)),
+            api_key_gate: None,
         };
         let app = Router::new()
             .route("/test", get(echo_user))
@@ -868,11 +990,205 @@ mod tests {
             identity_mode: AuthIdentityMode::Local,
             runtime_token_verifier: None,
             ip_allowlist: Some(Arc::new(DenyGate)),
+            api_key_gate: None,
         };
         let app = Router::new()
             .route("/test", get(echo_user))
             .route_layer(axum::middleware::from_fn_with_state(state, auth_middleware));
 
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // --- API key channel ---
+
+    /// Models `PlatformApiKeyGate` without depending on `dream-domain-platform`
+    /// (a Domain-layer crate this Foundation-layer crate must not depend on).
+    struct MockApiKeyGate {
+        verdict: ApiKeyVerdict,
+    }
+    #[async_trait]
+    impl ApiKeyGate for MockApiKeyGate {
+        async fn authenticate(&self, _secret: &str, _request_path: &str) -> Result<ApiKeyVerdict, String> {
+            Ok(self.verdict.clone())
+        }
+    }
+
+    fn api_key_app(
+        user_repo: Arc<dyn IUserRepository>,
+        jwt_service: Arc<JwtService>,
+        api_key_gate: Option<Arc<dyn ApiKeyGate>>,
+    ) -> Router {
+        let state = AuthState {
+            jwt_service,
+            user_repo,
+            identity_mode: AuthIdentityMode::UserSession,
+            runtime_token_verifier: None,
+            ip_allowlist: None,
+            api_key_gate,
+        };
+        Router::new()
+            .route("/test", get(echo_user))
+            .route_layer(axum::middleware::from_fn_with_state(state, auth_middleware))
+    }
+
+    const API_KEY_BEARER: &str = "sk_live_test-secret-does-not-matter-mock-gate-ignores-it";
+
+    #[tokio::test]
+    async fn api_key_channel_authenticates_and_resolves_the_created_by_user() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(dream_core_db::SqliteUserRepository::new(db.pool().clone()));
+        let user = user_repo.create_user("api-owner", "pw").await.unwrap();
+        let jwt = Arc::new(JwtService::new("test-secret".to_string()));
+
+        let gate: Arc<dyn ApiKeyGate> = Arc::new(MockApiKeyGate {
+            verdict: ApiKeyVerdict::Authenticated {
+                user_id: user.id.clone(),
+            },
+        });
+        let app = api_key_app(user_repo, jwt, Some(gate));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("Authorization", format!("Bearer {API_KEY_BEARER}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_string(response).await, format!("{}:api-owner", user.id));
+    }
+
+    #[tokio::test]
+    async fn api_key_channel_rejects_an_invalid_key() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(dream_core_db::SqliteUserRepository::new(db.pool().clone()));
+        let jwt = Arc::new(JwtService::new("test-secret".to_string()));
+
+        let gate: Arc<dyn ApiKeyGate> = Arc::new(MockApiKeyGate {
+            verdict: ApiKeyVerdict::Invalid,
+        });
+        let app = api_key_app(user_repo, jwt, Some(gate));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("Authorization", format!("Bearer {API_KEY_BEARER}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn api_key_channel_forbids_a_path_outside_allowed_paths() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(dream_core_db::SqliteUserRepository::new(db.pool().clone()));
+        let jwt = Arc::new(JwtService::new("test-secret".to_string()));
+
+        let gate: Arc<dyn ApiKeyGate> = Arc::new(MockApiKeyGate {
+            verdict: ApiKeyVerdict::PathNotAllowed,
+        });
+        let app = api_key_app(user_repo, jwt, Some(gate));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("Authorization", format!("Bearer {API_KEY_BEARER}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// A key that authenticates to a user who no longer exists (or was
+    /// deactivated) must 401, mirroring the JWT path's `find_active_by_id`
+    /// invariant — an API key is not exempt from "the acting user must
+    /// still exist and be active".
+    #[tokio::test]
+    async fn api_key_channel_rejects_a_key_whose_user_no_longer_exists() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(dream_core_db::SqliteUserRepository::new(db.pool().clone()));
+        let jwt = Arc::new(JwtService::new("test-secret".to_string()));
+
+        let gate: Arc<dyn ApiKeyGate> = Arc::new(MockApiKeyGate {
+            verdict: ApiKeyVerdict::Authenticated {
+                user_id: "no-such-user".to_owned(),
+            },
+        });
+        let app = api_key_app(user_repo, jwt, Some(gate));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("Authorization", format!("Bearer {API_KEY_BEARER}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// No gate wired (personal edition, or any call site that hasn't opted
+    /// in) — an API-key-shaped token must fail closed, not silently fall
+    /// through to JWT verification.
+    #[tokio::test]
+    async fn api_key_channel_without_a_gate_wired_rejects_the_token() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(dream_core_db::SqliteUserRepository::new(db.pool().clone()));
+        let jwt = Arc::new(JwtService::new("test-secret".to_string()));
+
+        let app = api_key_app(user_repo, jwt, None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("Authorization", format!("Bearer {API_KEY_BEARER}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// An ordinary JWT bearer token must still verify normally when an API
+    /// key gate happens to be wired — the prefix check must not swallow
+    /// real sessions.
+    #[tokio::test]
+    async fn api_key_gate_wired_does_not_interfere_with_ordinary_jwt_sessions() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(dream_core_db::SqliteUserRepository::new(db.pool().clone()));
+        let user = user_repo.create_user("zhaogao", "pw").await.unwrap();
+        let jwt = Arc::new(JwtService::new("test-secret".to_string()));
+        let token = jwt.sign(&user.id, user.username.as_deref().unwrap_or("u")).unwrap();
+
+        let gate: Arc<dyn ApiKeyGate> = Arc::new(MockApiKeyGate {
+            verdict: ApiKeyVerdict::Invalid,
+        });
+        let app = api_key_app(user_repo, jwt, Some(gate));
         let response = app
             .oneshot(
                 Request::builder()

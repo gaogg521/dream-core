@@ -438,6 +438,39 @@ impl PlatformIpAllowlistGate {
     }
 }
 
+/// Adapts `PlatformService::authenticate_api_key` (E5 open-integration API
+/// keys) to `dream-core-auth`'s `ApiKeyGate` port.
+///
+/// Unlike the IP allowlist, a lookup failure here has no "unanswerable, fail
+/// open with a grace window" story: this gate is only ever consulted for a
+/// request that is *already* presenting an API-key-shaped credential, never
+/// for the personal workbench or an ordinary JWT session, so there is no
+/// broad blast radius to protect against — a genuine DB error should simply
+/// 500 that one request, same as any other backend failure.
+#[cfg(feature = "enterprise")]
+struct PlatformApiKeyGate {
+    platform: std::sync::Arc<dream_domain_platform::PlatformService>,
+}
+
+#[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
+impl dream_core_auth::ApiKeyGate for PlatformApiKeyGate {
+    async fn authenticate(&self, secret: &str, request_path: &str) -> Result<dream_core_auth::ApiKeyVerdict, String> {
+        use dream_domain_platform::ApiKeyAuthOutcome;
+        self.platform
+            .authenticate_api_key(secret, request_path)
+            .await
+            .map(|outcome| match outcome {
+                ApiKeyAuthOutcome::Invalid => dream_core_auth::ApiKeyVerdict::Invalid,
+                ApiKeyAuthOutcome::PathNotAllowed => dream_core_auth::ApiKeyVerdict::PathNotAllowed,
+                ApiKeyAuthOutcome::Authenticated { user_id } => {
+                    dream_core_auth::ApiKeyVerdict::Authenticated { user_id }
+                }
+            })
+            .map_err(|e| e.to_string())
+    }
+}
+
 /// Adapts one-billing's `BillingService::record_turn` to the conversation
 /// crate's `UsageRecorder` trait (P0-3). Fire-and-forget: spawns the async
 /// insert so metering never blocks or fails the send path.
@@ -1365,6 +1398,10 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
             platform: one_platform_service.clone(),
             grace: policy_grace.clone(),
         }));
+    let api_key_gate: Option<std::sync::Arc<dyn dream_core_auth::ApiKeyGate>> =
+        Some(std::sync::Arc::new(PlatformApiKeyGate {
+            platform: one_platform_service.clone(),
+        }));
     let auth_mw_state = AuthState {
         jwt_service: services.jwt_service.clone(),
         user_repo: services.user_repo.clone(),
@@ -1372,6 +1409,7 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
         // No conversation-helper CLI ever calls this process.
         runtime_token_verifier: None,
         ip_allowlist,
+        api_key_gate,
     };
 
     let one_devops_service = std::sync::Arc::new(
@@ -1545,6 +1583,16 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     #[cfg(not(feature = "enterprise"))]
     let ip_allowlist: Option<std::sync::Arc<dyn dream_core_auth::IpAllowlistGate>> = None;
 
+    // Same posture as the allowlist: only a real enterprise deployment has
+    // any `one_api_keys` rows to authenticate against.
+    #[cfg(feature = "enterprise")]
+    let api_key_gate: Option<std::sync::Arc<dyn dream_core_auth::ApiKeyGate>> =
+        Some(std::sync::Arc::new(PlatformApiKeyGate {
+            platform: one_platform_service.clone(),
+        }));
+    #[cfg(not(feature = "enterprise"))]
+    let api_key_gate: Option<std::sync::Arc<dyn dream_core_auth::ApiKeyGate>> = None;
+
     let auth_mw_state = AuthState {
         jwt_service: services.jwt_service.clone(),
         user_repo: services.user_repo.clone(),
@@ -1553,6 +1601,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
             runtime_token_service: services.runtime_token_service.clone(),
         })),
         ip_allowlist,
+        api_key_gate,
     };
 
     // System routes protected by auth middleware
