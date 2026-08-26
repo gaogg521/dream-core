@@ -1076,6 +1076,50 @@ pub fn create_router_with_states(services: &AppServices, states: ModuleStates) -
 ///
 /// Full-control variant used by tests that need to override
 /// module services and WebSocket behaviour.
+/// Bridges the enterprise resource-authorization matrix
+/// (`dream-domain-platform`) to the four registries that read it
+/// (`dream-domain-devops`). Same shape as every other adapter here: the
+/// registries own a trait, the enterprise plane owns the data, and this layer
+/// is the only place that knows both exist.
+///
+/// A matrix that cannot be read yields no grants rather than an error. The
+/// registries then fall back to their own `scope`/`visibility` predicates,
+/// which is the same posture the policy gates take: an unreachable enterprise
+/// plane must not make a member's skills vanish from their own workbench.
+#[cfg(feature = "enterprise")]
+struct MatrixGrantSource {
+    platform: std::sync::Arc<dream_domain_platform::PlatformService>,
+    org: std::sync::Arc<dream_domain_org::OrgService>,
+}
+
+#[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
+impl dream_domain_devops::grants::ResourceGrantSource for MatrixGrantSource {
+    async fn extra_grants(&self, viewer_user_id: &str, resource_type: &str) -> dream_domain_devops::grants::ExtraGrants {
+        let tenant_id = match self.org.tenant_of(viewer_user_id).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(user_id = viewer_user_id, error = %e, "resource matrix: no tenant for viewer; no extra grants");
+                return Default::default();
+            }
+        };
+        match self
+            .platform
+            .effective_resource_ids(&tenant_id, viewer_user_id, resource_type)
+            .await
+        {
+            Ok(dto) => dream_domain_devops::grants::ExtraGrants {
+                all: dto.all,
+                ids: dto.resource_ids,
+            },
+            Err(e) => {
+                tracing::warn!(user_id = viewer_user_id, resource_type, error = %e, "resource matrix unreadable; no extra grants");
+                Default::default()
+            }
+        }
+    }
+}
+
 /// Every route group that exists only when `enterprise` is compiled in.
 ///
 /// Extracted so the full server and the standalone admin binary mount exactly
@@ -1093,6 +1137,9 @@ pub(crate) struct GovernancePlane {
     /// Handed back rather than kept: one-employee and one-devops both need it,
     /// and it can only be built from the org service constructed in here.
     pub tenant_resolver: std::sync::Arc<dyn dream_domain_employee::TenantResolver>,
+    /// Same reason: the matrix needs both the platform service and the org
+    /// service, and this is the only place that holds both.
+    pub grant_source: std::sync::Arc<dyn dream_domain_devops::grants::ResourceGrantSource>,
 }
 
 /// The three services are built by the caller because they are needed earlier:
@@ -1217,6 +1264,12 @@ pub(crate) fn build_governance_plane(
     let one_sso_public = dream_domain_sso::one_sso_public_routes(one_sso_state.clone());
     let one_sso_admin = dream_domain_sso::one_sso_admin_routes(one_sso_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+    let grant_source: std::sync::Arc<dyn dream_domain_devops::grants::ResourceGrantSource> =
+        std::sync::Arc::new(MatrixGrantSource {
+            platform: one_platform_service.clone(),
+            org: one_org_service.clone(),
+        });
+
     GovernancePlane {
         org: one_org_authenticated,
         enterprise: one_enterprise_authenticated,
@@ -1225,6 +1278,7 @@ pub(crate) fn build_governance_plane(
         sso_public: one_sso_public,
         sso_admin: one_sso_admin,
         tenant_resolver,
+        grant_source,
     }
 }
 
@@ -1329,6 +1383,10 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
         one_platform_service.clone(),
         one_billing_service.clone(),
     );
+    // Same wiring as the full server: the console's own registry reads must see
+    // the matrix too, or an admin would be shown a different set of skills here
+    // than the members they granted them to actually get.
+    one_devops_service.set_grants(governance.grant_source.clone());
 
     let one_devops_state = dream_domain_devops::OneDevopsRouterState::new(one_devops_service)
         .with_tenant_resolver(governance.tenant_resolver.clone());
@@ -1649,6 +1707,11 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     );
     #[cfg(feature = "enterprise")]
     let tenant_resolver = governance.tenant_resolver.clone();
+    // Widens the four registries' read predicates with the matrix. Must run on
+    // the same service instance the routes were built from — hence `set` on a
+    // shared handle rather than a builder.
+    #[cfg(feature = "enterprise")]
+    one_devops_service.set_grants(governance.grant_source.clone());
 
 
     // one-employee digital employee routes (/api/one/employee/*).

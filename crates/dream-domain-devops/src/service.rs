@@ -23,6 +23,17 @@ pub struct DevopsService {
     /// writes then fail loudly rather than storing a key in the clear, which
     /// is the failure mode that would actually hurt.
     pub(crate) encryption_key: Option<[u8; 32]>,
+    /// Enterprise resource-authorization matrix. Unset in the personal
+    /// edition and in tests, and then the registries' own `scope`/`visibility`
+    /// predicates decide alone — bit-for-bit the behaviour that shipped before
+    /// the matrix existed.
+    ///
+    /// A `OnceLock` rather than a builder field because the router assembles
+    /// this service *before* it can build the matrix (the matrix needs the org
+    /// service, which is constructed later), and every clone of this service
+    /// must see the same wiring. Set once at assembly, read without locking
+    /// afterwards.
+    pub(crate) grants: std::sync::OnceLock<std::sync::Arc<dyn crate::grants::ResourceGrantSource>>,
 }
 
 #[derive(Debug, Default)]
@@ -72,6 +83,7 @@ impl DevopsService {
         Self {
             pool,
             encryption_key: None,
+            grants: std::sync::OnceLock::new(),
         }
     }
 
@@ -81,6 +93,42 @@ impl DevopsService {
     pub fn with_encryption_key(mut self, key: [u8; 32]) -> Self {
         self.encryption_key = Some(key);
         self
+    }
+
+    /// Wire the enterprise resource-authorization matrix. Called once by the
+    /// app router, and only when the `enterprise` feature is on. Takes `&self`
+    /// so it can run after this service has already been shared.
+    pub fn set_grants(&self, grants: std::sync::Arc<dyn crate::grants::ResourceGrantSource>) {
+        if self.grants.set(grants).is_err() {
+            tracing::warn!("resource-grant source already wired; ignoring the second attempt");
+        }
+    }
+
+    /// Resolve the viewer's extra reachability, if a matrix is wired at all.
+    async fn extra_grants(&self, viewer_user_id: &str, resource_type: &str) -> crate::grants::ExtraGrants {
+        match self.grants.get() {
+            Some(source) => source.extra_grants(viewer_user_id, resource_type).await,
+            None => crate::grants::ExtraGrants::default(),
+        }
+    }
+
+    /// Widen a member-visibility predicate with the viewer's matrix grants.
+    ///
+    /// Returns the SQL and the ids to bind after the viewer id. A wildcard
+    /// grant collapses to `OR 1=1`, which the query planner drops — cheaper and
+    /// clearer than enumerating every row's id.
+    fn widen_with_grants(base: &str, grants: &crate::grants::ExtraGrants, prefix: &str) -> (String, Vec<String>) {
+        if grants.all {
+            return (format!("(({base}) OR 1 = 1)"), Vec::new());
+        }
+        if grants.ids.is_empty() {
+            return (base.to_owned(), Vec::new());
+        }
+        let placeholders = vec!["?"; grants.ids.len()].join(", ");
+        (
+            format!("(({base}) OR {prefix}id IN ({placeholders}))"),
+            grants.ids.clone(),
+        )
     }
 
     // -- requirements -----------------------------------------------------
@@ -820,17 +868,19 @@ impl DevopsService {
         const COLS: &str = "id, name, description, content, enabled, auto_active, scope, team_id, visibility, \
                             created_by, created_at, updated_at";
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
-        let sql = if privileged {
-            format!("SELECT {COLS} FROM one_skill_registry ORDER BY updated_at DESC")
-        } else {
-            format!(
-                "SELECT {COLS} FROM one_skill_registry WHERE {} ORDER BY updated_at DESC",
-                Self::member_visibility_where("")
-            )
-        };
-        let mut q = sqlx::query_as::<_, SkillRegistryDto>(&sql);
-        if !privileged {
-            q = q.bind(viewer_user_id);
+        if privileged {
+            let sql = format!("SELECT {COLS} FROM one_skill_registry ORDER BY updated_at DESC");
+            return Ok(sqlx::query_as::<_, SkillRegistryDto>(&sql).fetch_all(&self.pool).await?);
+        }
+        // A matrix grant can only widen this predicate, never narrow it, so a
+        // deployment with no matrix configured runs the identical query it ran
+        // before the matrix existed.
+        let grants = self.extra_grants(viewer_user_id, crate::grants::resource_type::SKILL).await;
+        let (predicate, grant_ids) = Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "");
+        let sql = format!("SELECT {COLS} FROM one_skill_registry WHERE {predicate} ORDER BY updated_at DESC");
+        let mut q = sqlx::query_as::<_, SkillRegistryDto>(&sql).bind(viewer_user_id);
+        for id in &grant_ids {
+            q = q.bind(id);
         }
         Ok(q.fetch_all(&self.pool).await?)
     }
@@ -984,17 +1034,19 @@ impl DevopsService {
         const COLS: &str = "id, name, type, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, \
                             created_by, created_at, updated_at";
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
-        let sql = if privileged {
-            format!("SELECT {COLS} FROM one_mcp_registry ORDER BY updated_at DESC")
-        } else {
-            format!(
-                "SELECT {COLS} FROM one_mcp_registry WHERE {} ORDER BY updated_at DESC",
-                Self::member_visibility_where("")
-            )
-        };
-        let mut q = sqlx::query_as::<_, McpRegistryDto>(&sql);
-        if !privileged {
-            q = q.bind(viewer_user_id);
+        if privileged {
+            let sql = format!("SELECT {COLS} FROM one_mcp_registry ORDER BY updated_at DESC");
+            return Ok(sqlx::query_as::<_, McpRegistryDto>(&sql).fetch_all(&self.pool).await?);
+        }
+        // A matrix grant can only widen this predicate, never narrow it, so a
+        // deployment with no matrix configured runs the identical query it ran
+        // before the matrix existed.
+        let grants = self.extra_grants(viewer_user_id, crate::grants::resource_type::MCP).await;
+        let (predicate, grant_ids) = Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "");
+        let sql = format!("SELECT {COLS} FROM one_mcp_registry WHERE {predicate} ORDER BY updated_at DESC");
+        let mut q = sqlx::query_as::<_, McpRegistryDto>(&sql).bind(viewer_user_id);
+        for id in &grant_ids {
+            q = q.bind(id);
         }
         Ok(q.fetch_all(&self.pool).await?)
     }
@@ -1149,17 +1201,19 @@ impl DevopsService {
         const COLS: &str = "id, title, file_path, file_size, mime_type, status, last_error, chunk_count, \
                             scope, team_id, visibility, created_by, created_at";
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
-        let sql = if privileged {
-            format!("SELECT {COLS} FROM one_rag_documents ORDER BY created_at DESC")
-        } else {
-            format!(
-                "SELECT {COLS} FROM one_rag_documents WHERE {} ORDER BY created_at DESC",
-                Self::member_visibility_where("")
-            )
-        };
-        let mut q = sqlx::query_as::<_, RagDocumentDto>(&sql);
-        if !privileged {
-            q = q.bind(viewer_user_id);
+        if privileged {
+            let sql = format!("SELECT {COLS} FROM one_rag_documents ORDER BY created_at DESC");
+            return Ok(sqlx::query_as::<_, RagDocumentDto>(&sql).fetch_all(&self.pool).await?);
+        }
+        // A matrix grant can only widen this predicate, never narrow it, so a
+        // deployment with no matrix configured runs the identical query it ran
+        // before the matrix existed.
+        let grants = self.extra_grants(viewer_user_id, crate::grants::resource_type::KNOWLEDGE).await;
+        let (predicate, grant_ids) = Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "");
+        let sql = format!("SELECT {COLS} FROM one_rag_documents WHERE {predicate} ORDER BY created_at DESC");
+        let mut q = sqlx::query_as::<_, RagDocumentDto>(&sql).bind(viewer_user_id);
+        for id in &grant_ids {
+            q = q.bind(id);
         }
         Ok(q.fetch_all(&self.pool).await?)
     }
@@ -2199,6 +2253,116 @@ mod tests {
             .unwrap();
         run_one_devops_migrations(&pool).await.unwrap();
         DevopsService::new(pool)
+    }
+
+    /// A grant source that hands back whatever the test asks for, so the
+    /// widening can be checked without standing up the enterprise plane.
+    struct FixedGrants(crate::grants::ExtraGrants);
+
+    #[async_trait::async_trait]
+    impl crate::grants::ResourceGrantSource for FixedGrants {
+        async fn extra_grants(&self, _viewer: &str, _resource_type: &str) -> crate::grants::ExtraGrants {
+            self.0.clone()
+        }
+    }
+
+    /// Make `member1` a real member and `admin1` an admin.
+    ///
+    /// Without this the viewer has no `one_user_org` row, which
+    /// `viewer_is_privileged` reads as standalone mode and treats as
+    /// privileged — so every skill would be visible and the test would prove
+    /// nothing about the member path.
+    async fn seed_org(svc: &DevopsService) {
+        sqlx::raw_sql(
+            "CREATE TABLE one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, tenant_id));
+             CREATE TABLE one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('member1', 't1', 'member');
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('admin1', 't1', 'org_admin');",
+        )
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+    }
+
+    /// Seed one skill members can reach and one only admins can.
+    async fn seed_two_skills(svc: &DevopsService) -> (String, String) {
+        let open = svc
+            .upsert_skill(None, "open", "d", "c", true, false, "org", None, "all", "admin1")
+            .await
+            .unwrap();
+        let restricted = svc
+            .upsert_skill(None, "restricted", "d", "c", true, false, "org", None, "admin", "admin1")
+            .await
+            .unwrap();
+        (open.id, restricted.id)
+    }
+
+    /// The invariant that makes wiring the matrix safe to ship: with no grant
+    /// source at all, a member sees exactly what the `scope`/`visibility`
+    /// predicate alone allowed. Every deployment that never opens the matrix
+    /// stays on this path.
+    #[tokio::test]
+    async fn without_a_matrix_a_member_sees_only_what_visibility_allows() {
+        let svc = service().await;
+        seed_org(&svc).await;
+        let (open, restricted) = seed_two_skills(&svc).await;
+
+        let ids: Vec<_> = svc.list_skills("member1").await.unwrap().into_iter().map(|s| s.id).collect();
+        assert!(ids.contains(&open), "an org-wide, all-visible skill stays reachable");
+        assert!(!ids.contains(&restricted), "an admin-only skill stays hidden");
+    }
+
+    /// A grant reaches past `visibility = 'admin'` — the whole point of the
+    /// matrix, and the thing the registries' own columns cannot express.
+    #[tokio::test]
+    async fn a_grant_reaches_an_otherwise_admin_only_skill() {
+        let svc = service().await;
+        seed_org(&svc).await;
+        let (open, restricted) = seed_two_skills(&svc).await;
+        svc.set_grants(std::sync::Arc::new(FixedGrants(crate::grants::ExtraGrants {
+            all: false,
+            ids: vec![restricted.clone()],
+        })));
+
+        let ids: Vec<_> = svc.list_skills("member1").await.unwrap().into_iter().map(|s| s.id).collect();
+        assert!(ids.contains(&restricted), "the granted skill becomes reachable");
+        assert!(ids.contains(&open), "a grant adds; it must never take the baseline away");
+    }
+
+    /// A wildcard grant covers resources created after it was written, which is
+    /// why it cannot be stored as an enumeration of ids.
+    #[tokio::test]
+    async fn a_wildcard_grant_covers_everything_including_later_rows() {
+        let svc = service().await;
+        seed_org(&svc).await;
+        let (_open, restricted) = seed_two_skills(&svc).await;
+        svc.set_grants(std::sync::Arc::new(FixedGrants(crate::grants::ExtraGrants {
+            all: true,
+            ids: Vec::new(),
+        })));
+
+        let later = svc
+            .upsert_skill(None, "added-later", "d", "c", true, false, "org", None, "admin", "admin1")
+            .await
+            .unwrap();
+
+        let ids: Vec<_> = svc.list_skills("member1").await.unwrap().into_iter().map(|s| s.id).collect();
+        assert!(ids.contains(&restricted));
+        assert!(ids.contains(&later.id), "a wildcard is not a snapshot of the ids that existed when it was granted");
+    }
+
+    /// An empty answer must not be read as "deny everything" — that inversion
+    /// would empty every member's registry the moment the matrix went live.
+    #[tokio::test]
+    async fn an_empty_grant_answer_changes_nothing() {
+        let svc = service().await;
+        seed_org(&svc).await;
+        let (open, restricted) = seed_two_skills(&svc).await;
+        svc.set_grants(std::sync::Arc::new(FixedGrants(crate::grants::ExtraGrants::default())));
+
+        let ids: Vec<_> = svc.list_skills("member1").await.unwrap().into_iter().map(|s| s.id).collect();
+        assert!(ids.contains(&open), "no grants is not the same as no access");
+        assert!(!ids.contains(&restricted));
     }
 
     #[tokio::test]
