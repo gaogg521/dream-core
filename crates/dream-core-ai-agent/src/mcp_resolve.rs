@@ -210,7 +210,11 @@ mod tests {
                 .find(|row| row.user_id == user_id && row.id == id)
                 .cloned())
         }
-        async fn find_by_name(&self, user_id: &str, name: &str) -> Result<Option<McpServerRow>, dream_core_db::DbError> {
+        async fn find_by_name(
+            &self,
+            user_id: &str,
+            name: &str,
+        ) -> Result<Option<McpServerRow>, dream_core_db::DbError> {
             Ok(self
                 .rows
                 .iter()

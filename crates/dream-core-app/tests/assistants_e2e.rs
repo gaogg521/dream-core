@@ -12,12 +12,15 @@ mod common;
 
 use std::sync::Arc;
 
+use axum::http::StatusCode;
 use dream_core_api_types::{
     AgentManagementRow, AgentManagementStatus, AgentSnapshotCheckKind, AgentSnapshotCheckStatus, AgentSource,
     AgentSourceInfo, BehaviorPolicy,
 };
 use dream_core_app::{AppConfig, AppServices, ModuleStates, build_module_states, create_router_with_states};
-use dream_core_assistant::{AssistantAgentCatalogPort, AssistantRouterState, AssistantService, BuiltinAssistantRegistry};
+use dream_core_assistant::{
+    AssistantAgentCatalogPort, AssistantRouterState, AssistantService, BuiltinAssistantRegistry,
+};
 use dream_core_common::AgentType;
 use dream_core_db::{
     IAssistantDefinitionRepository, IAssistantOverlayRepository, IAssistantOverrideRepository,
@@ -30,7 +33,6 @@ use dream_core_extension::{
     AssistantRuleDispatcher, ExtensionRegistry, ExtensionRouterState, ExtensionSource, ExtensionStateStore,
     ExternalPathsManager, HubIndexManager, HubInstaller, HubRouterState, ScanPath, SkillPaths, SkillRouterState,
 };
-use axum::http::StatusCode;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -269,7 +271,9 @@ async fn fixture() -> Fixture {
     };
     states.skill = SkillRouterState {
         skill_paths,
-        skill_repo: std::sync::Arc::new(dream_core_db::SqliteSkillRepository::new(services.database.pool().clone())),
+        skill_repo: std::sync::Arc::new(dream_core_db::SqliteSkillRepository::new(
+            services.database.pool().clone(),
+        )),
         external_paths_manager: ext_paths_mgr,
         assistant_dispatcher: None, // wired below once service is constructed
     };

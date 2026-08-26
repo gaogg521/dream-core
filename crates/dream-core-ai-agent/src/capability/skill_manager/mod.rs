@@ -68,7 +68,10 @@ impl AcpSkillManager {
         })
     }
 
-    pub fn new_with_repo(paths: Arc<dream_core_extension::SkillPaths>, skill_repo: Arc<dyn ISkillRepository>) -> Arc<Self> {
+    pub fn new_with_repo(
+        paths: Arc<dream_core_extension::SkillPaths>,
+        skill_repo: Arc<dyn ISkillRepository>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             cache: RwLock::new(HashMap::new()),
             discovered: RwLock::new(false),

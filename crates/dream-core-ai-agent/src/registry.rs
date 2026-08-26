@@ -23,7 +23,9 @@ use dream_core_api_types::{
 };
 use dream_core_common::{AgentType, now_ms};
 use dream_core_db::{AgentMetadataRow, IAgentMetadataRepository, UpdateAgentHandshakeParams};
-use dream_core_runtime::{RuntimeCommandProbe, probe_node_runtime_supported, probe_runtime_command, resolve_command_path};
+use dream_core_runtime::{
+    RuntimeCommandProbe, probe_node_runtime_supported, probe_runtime_command, resolve_command_path,
+};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tokio::sync::{RwLock, mpsc};

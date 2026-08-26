@@ -1647,7 +1647,10 @@ mod tests {
         let img = dir.join("keep-path.png");
         std::fs::write(&img, b"fakepng").unwrap();
         let img = img.to_string_lossy().into_owned();
-        let content = format!("read this\n\n{}\n{img}", dream_core_common::constants::AIONUI_FILES_MARKER);
+        let content = format!(
+            "read this\n\n{}\n{img}",
+            dream_core_common::constants::AIONUI_FILES_MARKER
+        );
         let data = SendMessageData {
             content: content.clone(),
             msg_id: "m4".into(),
@@ -1679,7 +1682,10 @@ mod tests {
         let img = dir.join("vanishing.png");
         std::fs::write(&img, b"fakepng").unwrap();
         let img_path = img.to_string_lossy().into_owned();
-        let content = format!("gone\n\n{}\n{img_path}", dream_core_common::constants::AIONUI_FILES_MARKER);
+        let content = format!(
+            "gone\n\n{}\n{img_path}",
+            dream_core_common::constants::AIONUI_FILES_MARKER
+        );
         let data = SendMessageData {
             content: content.clone(),
             msg_id: "m3".into(),

@@ -870,12 +870,16 @@ impl DevopsService {
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
         if privileged {
             let sql = format!("SELECT {COLS} FROM one_skill_registry ORDER BY updated_at DESC");
-            return Ok(sqlx::query_as::<_, SkillRegistryDto>(&sql).fetch_all(&self.pool).await?);
+            return Ok(sqlx::query_as::<_, SkillRegistryDto>(&sql)
+                .fetch_all(&self.pool)
+                .await?);
         }
         // A matrix grant can only widen this predicate, never narrow it, so a
         // deployment with no matrix configured runs the identical query it ran
         // before the matrix existed.
-        let grants = self.extra_grants(viewer_user_id, crate::grants::resource_type::SKILL).await;
+        let grants = self
+            .extra_grants(viewer_user_id, crate::grants::resource_type::SKILL)
+            .await;
         let (predicate, grant_ids) = Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "");
         let sql = format!("SELECT {COLS} FROM one_skill_registry WHERE {predicate} ORDER BY updated_at DESC");
         let mut q = sqlx::query_as::<_, SkillRegistryDto>(&sql).bind(viewer_user_id);
@@ -1041,7 +1045,9 @@ impl DevopsService {
         // A matrix grant can only widen this predicate, never narrow it, so a
         // deployment with no matrix configured runs the identical query it ran
         // before the matrix existed.
-        let grants = self.extra_grants(viewer_user_id, crate::grants::resource_type::MCP).await;
+        let grants = self
+            .extra_grants(viewer_user_id, crate::grants::resource_type::MCP)
+            .await;
         let (predicate, grant_ids) = Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "");
         let sql = format!("SELECT {COLS} FROM one_mcp_registry WHERE {predicate} ORDER BY updated_at DESC");
         let mut q = sqlx::query_as::<_, McpRegistryDto>(&sql).bind(viewer_user_id);
@@ -1208,7 +1214,9 @@ impl DevopsService {
         // A matrix grant can only widen this predicate, never narrow it, so a
         // deployment with no matrix configured runs the identical query it ran
         // before the matrix existed.
-        let grants = self.extra_grants(viewer_user_id, crate::grants::resource_type::KNOWLEDGE).await;
+        let grants = self
+            .extra_grants(viewer_user_id, crate::grants::resource_type::KNOWLEDGE)
+            .await;
         let (predicate, grant_ids) = Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "");
         let sql = format!("SELECT {COLS} FROM one_rag_documents WHERE {predicate} ORDER BY created_at DESC");
         let mut q = sqlx::query_as::<_, RagDocumentDto>(&sql).bind(viewer_user_id);
@@ -2291,7 +2299,18 @@ mod tests {
             .await
             .unwrap();
         let restricted = svc
-            .upsert_skill(None, "restricted", "d", "c", true, false, "org", None, "admin", "admin1")
+            .upsert_skill(
+                None,
+                "restricted",
+                "d",
+                "c",
+                true,
+                false,
+                "org",
+                None,
+                "admin",
+                "admin1",
+            )
             .await
             .unwrap();
         (open.id, restricted.id)
@@ -2307,7 +2326,13 @@ mod tests {
         seed_org(&svc).await;
         let (open, restricted) = seed_two_skills(&svc).await;
 
-        let ids: Vec<_> = svc.list_skills("member1").await.unwrap().into_iter().map(|s| s.id).collect();
+        let ids: Vec<_> = svc
+            .list_skills("member1")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
         assert!(ids.contains(&open), "an org-wide, all-visible skill stays reachable");
         assert!(!ids.contains(&restricted), "an admin-only skill stays hidden");
     }
@@ -2324,9 +2349,18 @@ mod tests {
             ids: vec![restricted.clone()],
         })));
 
-        let ids: Vec<_> = svc.list_skills("member1").await.unwrap().into_iter().map(|s| s.id).collect();
+        let ids: Vec<_> = svc
+            .list_skills("member1")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
         assert!(ids.contains(&restricted), "the granted skill becomes reachable");
-        assert!(ids.contains(&open), "a grant adds; it must never take the baseline away");
+        assert!(
+            ids.contains(&open),
+            "a grant adds; it must never take the baseline away"
+        );
     }
 
     /// A wildcard grant covers resources created after it was written, which is
@@ -2342,13 +2376,33 @@ mod tests {
         })));
 
         let later = svc
-            .upsert_skill(None, "added-later", "d", "c", true, false, "org", None, "admin", "admin1")
+            .upsert_skill(
+                None,
+                "added-later",
+                "d",
+                "c",
+                true,
+                false,
+                "org",
+                None,
+                "admin",
+                "admin1",
+            )
             .await
             .unwrap();
 
-        let ids: Vec<_> = svc.list_skills("member1").await.unwrap().into_iter().map(|s| s.id).collect();
+        let ids: Vec<_> = svc
+            .list_skills("member1")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
         assert!(ids.contains(&restricted));
-        assert!(ids.contains(&later.id), "a wildcard is not a snapshot of the ids that existed when it was granted");
+        assert!(
+            ids.contains(&later.id),
+            "a wildcard is not a snapshot of the ids that existed when it was granted"
+        );
     }
 
     /// An empty answer must not be read as "deny everything" — that inversion
@@ -2360,7 +2414,13 @@ mod tests {
         let (open, restricted) = seed_two_skills(&svc).await;
         svc.set_grants(std::sync::Arc::new(FixedGrants(crate::grants::ExtraGrants::default())));
 
-        let ids: Vec<_> = svc.list_skills("member1").await.unwrap().into_iter().map(|s| s.id).collect();
+        let ids: Vec<_> = svc
+            .list_skills("member1")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
         assert!(ids.contains(&open), "no grants is not the same as no access");
         assert!(!ids.contains(&restricted));
     }

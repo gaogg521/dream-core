@@ -81,10 +81,9 @@ impl TrialKeyService {
 
         let status = response.status();
         if status.is_success() {
-            return response
-                .json::<TrialKeyResponse>()
-                .await
-                .map_err(|e| SystemError::BadGateway(format!("trial key broker returned an unexpected response: {e}")));
+            return response.json::<TrialKeyResponse>().await.map_err(|e| {
+                SystemError::BadGateway(format!("trial key broker returned an unexpected response: {e}"))
+            });
         }
 
         let reason = response
@@ -96,9 +95,9 @@ impl TrialKeyService {
         Err(match status.as_u16() {
             409 => SystemError::Conflict("this device has already claimed a trial model key".into()),
             429 => SystemError::RateLimited,
-            503 => {
-                SystemError::ServiceUnavailable("today's trial key budget has been used up, please try again tomorrow".into())
-            }
+            503 => SystemError::ServiceUnavailable(
+                "today's trial key budget has been used up, please try again tomorrow".into(),
+            ),
             _ => SystemError::BadGateway(format!("trial key broker rejected the request ({status}): {reason}")),
         })
     }
@@ -141,7 +140,8 @@ mod tests {
 
     async fn service_with_broker(broker_base_url: Option<String>) -> TrialKeyService {
         let db = init_database_memory().await.unwrap();
-        let repo: Arc<dyn IClientPreferenceRepository> = Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone()));
+        let repo: Arc<dyn IClientPreferenceRepository> =
+            Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone()));
         TrialKeyService::new(broker_base_url, reqwest::Client::new(), repo)
     }
 

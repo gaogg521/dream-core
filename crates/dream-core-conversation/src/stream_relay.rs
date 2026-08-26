@@ -3339,7 +3339,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl IConversationRepository for RecordingRepo {
-        async fn get(&self, _user_id: &str, _id: &str) -> Result<Option<dream_core_db::models::ConversationRow>, DbError> {
+        async fn get(
+            &self,
+            _user_id: &str,
+            _id: &str,
+        ) -> Result<Option<dream_core_db::models::ConversationRow>, DbError> {
             Ok(self.conversation.lock().unwrap().clone())
         }
         async fn owner_user_id(&self, _id: &str) -> Result<Option<String>, DbError> {

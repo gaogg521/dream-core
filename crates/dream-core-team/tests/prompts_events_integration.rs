@@ -3,6 +3,8 @@ mod common;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use async_trait::async_trait;
+use common::MockTeamRepo;
 use dream_core_api_types::{
     TeamAgentRemovedPayload, TeamAgentRenamedPayload, TeamAgentSpawnedPayload, TeamAgentStatusPayload, WebSocketMessage,
 };
@@ -19,8 +21,6 @@ use dream_core_team::types::{
 };
 use dream_core_team::visibility::TeamVisibilityPolicy;
 use dream_core_team::{Mailbox, TaskBoard, TeammateManager};
-use async_trait::async_trait;
-use common::MockTeamRepo;
 
 // ---------------------------------------------------------------------------
 // Test helpers

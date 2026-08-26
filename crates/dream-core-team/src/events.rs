@@ -438,7 +438,8 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].name, "team.childTurnStarted");
 
-        let payload: dream_core_api_types::TeamChildTurnPayload = serde_json::from_value(events[0].data.clone()).unwrap();
+        let payload: dream_core_api_types::TeamChildTurnPayload =
+            serde_json::from_value(events[0].data.clone()).unwrap();
         assert_eq!(payload.team_id, "team-1");
         assert_eq!(payload.team_run_id, "run-1");
         assert_eq!(payload.slot_id, "worker-1");

@@ -284,7 +284,12 @@ impl IConversationRepository for MockRepo {
         Ok(())
     }
 
-    async fn update(&self, user_id: &str, id: &str, updates: &ConversationRowUpdate) -> Result<(), dream_core_db::DbError> {
+    async fn update(
+        &self,
+        user_id: &str,
+        id: &str,
+        updates: &ConversationRowUpdate,
+    ) -> Result<(), dream_core_db::DbError> {
         let mut rows = self.rows.lock().unwrap();
         let row = rows
             .iter_mut()
@@ -550,7 +555,11 @@ impl IConversationRepository for MockRepo {
         Ok(())
     }
 
-    async fn delete_messages_by_conversation(&self, _user_id: &str, conv_id: &str) -> Result<(), dream_core_db::DbError> {
+    async fn delete_messages_by_conversation(
+        &self,
+        _user_id: &str,
+        conv_id: &str,
+    ) -> Result<(), dream_core_db::DbError> {
         self.messages
             .lock()
             .unwrap()
@@ -576,7 +585,9 @@ impl IConversationRepository for MockRepo {
             .cloned())
     }
 
-    async fn list_stale_runtime_messages(&self) -> Result<Vec<dream_core_db::StaleRuntimeMessageRow>, dream_core_db::DbError> {
+    async fn list_stale_runtime_messages(
+        &self,
+    ) -> Result<Vec<dream_core_db::StaleRuntimeMessageRow>, dream_core_db::DbError> {
         let messages = self.messages.lock().unwrap();
         let rows = self.rows.lock().unwrap();
         Ok(messages
@@ -1863,7 +1874,9 @@ async fn create_returns_conversation_with_defaults() {
 
 // ── Project-bind side branch tests ─────────────────────────────────
 
-async fn make_injected_project_service(temp_root: &std::path::Path) -> std::sync::Arc<dream_core_project::ProjectService> {
+async fn make_injected_project_service(
+    temp_root: &std::path::Path,
+) -> std::sync::Arc<dream_core_project::ProjectService> {
     // A real store on an in-memory DB; temp_root mirrors the app wiring
     // (`work_dir/conversations`) so classification matches production. The
     // Database handle is leaked so the shared in-memory pool outlives the test.

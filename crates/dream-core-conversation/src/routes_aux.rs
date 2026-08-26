@@ -1,16 +1,16 @@
 #![allow(clippy::disallowed_types)]
 
 use crate::state::ConversationRouterState;
+use axum::Router;
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{Extension, Json, Path, Query, State};
+use axum::routing::{get, post, put};
 use dream_core_api_types::{
     ApiResponse, SetConfigOptionRequest, SetConfigOptionResponse, SideQuestionRequest, SideQuestionResponse,
     SlashCommandItem, WorkspaceBrowseQuery, WorkspaceEntry,
 };
 use dream_core_auth::CurrentUser;
 use dream_core_common::ApiError;
-use axum::Router;
-use axum::extract::rejection::JsonRejection;
-use axum::extract::{Extension, Json, Path, Query, State};
-use axum::routing::{get, post, put};
 
 /// Build the conversation-ops router (no auth layer applied — the caller is
 /// responsible for wrapping this with the auth middleware).

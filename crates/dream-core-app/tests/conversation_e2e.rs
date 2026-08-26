@@ -2,13 +2,13 @@
 
 mod common;
 
+use axum::http::StatusCode;
 use dream_core_db::{
     IAssistantDefinitionRepository, IAssistantOverlayRepository, IAssistantPreferenceRepository,
     IConversationRepository, SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository,
     SqliteAssistantPreferenceRepository, SqliteConversationRepository, UpsertAssistantDefinitionParams,
     UpsertAssistantOverlayParams, UpsertAssistantPreferenceParams,
 };
-use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -527,8 +527,10 @@ async fn t1_5c_create_rejects_missing_workspace_path() {
     let (mut app, services) = build_app().await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
 
-    let missing_workspace =
-        std::env::temp_dir().join(format!("aionui-conv-missing-{}", dream_core_common::generate_short_id()));
+    let missing_workspace = std::env::temp_dir().join(format!(
+        "aionui-conv-missing-{}",
+        dream_core_common::generate_short_id()
+    ));
 
     let body = json!({
         "type": "acp",

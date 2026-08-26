@@ -45,13 +45,13 @@ pub use dream_core_api_types::{AcpBuildExtra, AcpModelInfo, DreamEngineBuildExtr
 // Backend-static capability table (session layer's single source of truth) —
 // re-exported so the conversation layer can read the mid-turn bit for a
 // conversation whose agent task is not currently live.
-pub use dream_core_session::backend_supports_midturn_delivery;
-pub use dream_core_session::effective_agent_capabilities;
 pub use capability::skill_manager::{
     AcpSkillManager, SkillDefinition, SkillIndex, build_skills_index_text, build_system_instructions,
     build_system_instructions_with_skills_index, detect_skill_load_request, prepare_first_message,
     prepare_first_message_with_skills_index,
 };
+pub use dream_core_session::backend_supports_midturn_delivery;
+pub use dream_core_session::effective_agent_capabilities;
 pub use error::AgentError;
 pub use factory::dream_engine::resolve_provider_config_for_bridge;
 pub use factory::{AgentFactoryDeps, build_agent_factory};

@@ -34,7 +34,7 @@ use dream_core_extension::{
 };
 use dream_core_file::{BrowseRoots, FileRouterState, FileService, FileWatchService, SnapshotService};
 use dream_core_mcp::{
-    DreamEngineAdapter, DreamUiAdapter, ClaudeAdapter, CodeBuddyAdapter, CodexAdapter, GeminiAdapter, McpAgentAdapter,
+    ClaudeAdapter, CodeBuddyAdapter, CodexAdapter, DreamEngineAdapter, DreamUiAdapter, GeminiAdapter, McpAgentAdapter,
     McpConfigService, McpConnectionTestService, McpRouterState, McpSyncService, OpencodeAdapter, QwenAdapter,
 };
 use dream_core_office::{
@@ -531,7 +531,8 @@ pub fn build_file_state(services: &AppServices) -> Result<FileRouterState, Route
     let shell = Arc::new(dream_core_shell::ShellService::new(Arc::new(
         dream_core_shell::DefaultSystemOpener,
     )));
-    let revealer: dream_core_file::ItemRevealerRef = Arc::new(super::item_revealer::ShellItemRevealer::new(shell.clone()));
+    let revealer: dream_core_file::ItemRevealerRef =
+        Arc::new(super::item_revealer::ShellItemRevealer::new(shell.clone()));
     let system_opener: dream_core_file::SystemFileOpenerRef =
         Arc::new(super::system_file_opener::ShellSystemFileOpener::new(shell.clone()));
     // Clipboard capability for `/api/fs/copy-absolute-path`: the backend resolves
@@ -565,7 +566,8 @@ pub fn build_project_state(services: &AppServices) -> ProjectRouterState {
 /// Build the default `McpRouterState` from application services.
 pub fn build_mcp_state(services: &AppServices) -> McpRouterState {
     let pool = services.database.pool().clone();
-    let repo: Arc<dyn dream_core_db::IMcpServerRepository> = Arc::new(dream_core_db::SqliteMcpServerRepository::new(pool));
+    let repo: Arc<dyn dream_core_db::IMcpServerRepository> =
+        Arc::new(dream_core_db::SqliteMcpServerRepository::new(pool));
 
     let adapters: Vec<Arc<dyn McpAgentAdapter>> = vec![
         // Bound to the Claude bridge's isolated CLAUDE_CONFIG_DIR so MCP
@@ -603,7 +605,9 @@ struct GeneratedAssistantMaterializerAdapter {
 }
 
 #[async_trait::async_trait]
-impl dream_core_channel::channel_settings::ChannelGeneratedAssistantMaterializer for GeneratedAssistantMaterializerAdapter {
+impl dream_core_channel::channel_settings::ChannelGeneratedAssistantMaterializer
+    for GeneratedAssistantMaterializerAdapter
+{
     async fn ensure_generated_assistants(&self, user_id: &str) {
         // list_for_user runs the per-user generated reconcile as a side effect.
         if let Err(error) = self.assistant.list_for_user(user_id).await {
@@ -862,7 +866,8 @@ pub fn build_team_state(
     }
 
     let pool = services.database.pool().clone();
-    let team_repo: Arc<dyn dream_core_db::ITeamRepository> = Arc::new(dream_core_db::SqliteTeamRepository::new(pool.clone()));
+    let team_repo: Arc<dyn dream_core_db::ITeamRepository> =
+        Arc::new(dream_core_db::SqliteTeamRepository::new(pool.clone()));
     let conv_service = services.conversation_service.clone();
     let conv_repo: Arc<dyn IConversationRepository> = Arc::new(SqliteConversationRepository::new(pool));
     let adapters = Arc::new(TeamConversationAdapters::new(
@@ -910,7 +915,8 @@ pub fn build_team_state(
 /// Build the default `CronRouterState` from application services.
 pub fn build_cron_state(services: &AppServices) -> CronRouterState {
     let pool = services.database.pool().clone();
-    let cron_repo: Arc<dyn dream_core_db::ICronRepository> = Arc::new(dream_core_db::SqliteCronRepository::new(pool.clone()));
+    let cron_repo: Arc<dyn dream_core_db::ICronRepository> =
+        Arc::new(dream_core_db::SqliteCronRepository::new(pool.clone()));
     let agent_metadata_repo: Arc<dyn IAgentMetadataRepository> = Arc::new(SqliteAgentMetadataRepository::new(pool));
 
     // Reuse the app-level ConversationService (AppServices is the sole service

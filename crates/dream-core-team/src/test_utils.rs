@@ -390,6 +390,7 @@ impl ITeamRepository for MockTeamRepo {
 pub(crate) mod workspace_harness {
     use std::sync::{Arc, Mutex};
 
+    use async_trait::async_trait;
     use dream_core_ai_agent::{AgentError, IWorkerTaskManager};
     use dream_core_api_types::{
         AcpConfigOptionDto, AcpConfigSelectOptionDto, ConfigOptionConfirmation, CreateTeamRequest,
@@ -409,7 +410,6 @@ pub(crate) mod workspace_harness {
         UpdateTeamParams,
     };
     use dream_core_realtime::EventBroadcaster;
-    use async_trait::async_trait;
 
     use crate::ports::{
         AgentTurnCancellationPort, AgentTurnExecutionError, AgentTurnExecutionPort, AgentTurnOutcome, AgentTurnRequest,
@@ -1678,7 +1678,11 @@ pub(crate) mod workspace_harness {
             }])
         }
 
-        async fn find_by_id(&self, _user_id: &str, _id: &str) -> Result<Option<dream_core_db::models::Provider>, DbError> {
+        async fn find_by_id(
+            &self,
+            _user_id: &str,
+            _id: &str,
+        ) -> Result<Option<dream_core_db::models::Provider>, DbError> {
             Ok(None)
         }
 

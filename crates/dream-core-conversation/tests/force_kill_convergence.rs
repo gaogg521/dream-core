@@ -19,9 +19,13 @@ use dream_core_conversation::{
     runtime_state::ConversationRuntimeStateService,
     stream_relay::{RelayTerminal, StreamRelay},
 };
-use dream_core_db::{IConversationRepository, SqliteConversationRepository, init_database_memory, models::ConversationRow};
+use dream_core_db::{
+    IConversationRepository, SqliteConversationRepository, init_database_memory, models::ConversationRow,
+};
 use dream_core_realtime::BroadcastEventBus;
-use dream_core_session::{Admission, BackendError, Capabilities, Command, CommandReceipt, SessionBackend, SessionEnvelope};
+use dream_core_session::{
+    Admission, BackendError, Capabilities, Command, CommandReceipt, SessionBackend, SessionEnvelope,
+};
 use futures_util::stream::BoxStream;
 
 /// A `SessionBackend` whose turn NEVER terminates on its own (`events()` is a

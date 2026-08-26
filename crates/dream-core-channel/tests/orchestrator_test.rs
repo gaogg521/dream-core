@@ -39,7 +39,8 @@ fn make_text_message(user_id: &str, chat_id: &str, text: &str) -> UnifiedIncomin
 async fn unauthorized_user_gets_pairing_response() {
     let db = dream_core_db::init_database_memory().await.unwrap();
     let pool = db.pool().clone();
-    let repo: Arc<dyn dream_core_db::IChannelRepository> = Arc::new(dream_core_db::SqliteChannelRepository::new(pool.clone()));
+    let repo: Arc<dyn dream_core_db::IChannelRepository> =
+        Arc::new(dream_core_db::SqliteChannelRepository::new(pool.clone()));
     let bus = Arc::new(dream_core_realtime::BroadcastEventBus::new(64));
 
     let pref_repo: Arc<dyn dream_core_db::IClientPreferenceRepository> =

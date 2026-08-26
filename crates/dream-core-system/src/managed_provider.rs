@@ -202,7 +202,11 @@ mod tests {
         }
     }
 
-    async fn sync_service() -> (ManagedProviderSync, Arc<dyn IProviderRepository>, dream_core_db::Database) {
+    async fn sync_service() -> (
+        ManagedProviderSync,
+        Arc<dyn IProviderRepository>,
+        dream_core_db::Database,
+    ) {
         let db = init_database_memory().await.unwrap();
         let repo: Arc<dyn IProviderRepository> = Arc::new(SqliteProviderRepository::new(db.pool().clone()));
         (ManagedProviderSync::new(repo.clone(), KEY), repo, db)

@@ -18,17 +18,17 @@
 
 use std::sync::Arc;
 
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{Json, Path, State};
+use axum::http::StatusCode;
+use axum::routing::{delete, get, post};
+use axum::{Extension, Router};
 use dream_core_api_types::{
     ApiResponse, AttachFolderRequest, ProjectDetailResponse, ProjectEntry, ProjectExplorer, ResolveRefRequest,
     ResolveRefResponse,
 };
 use dream_core_auth::CurrentUser;
 use dream_core_common::ApiError;
-use axum::extract::rejection::JsonRejection;
-use axum::extract::{Json, Path, State};
-use axum::http::StatusCode;
-use axum::routing::{delete, get, post};
-use axum::{Extension, Router};
 use serde_json::json;
 
 use crate::canonical;

@@ -15,6 +15,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use dream_engine_config::compact::CompactConfig;
 use dream_engine_config::config::{Config, McpConfig, SessionConfig, ToolsConfig, VisionModelConfig};
 use dream_engine_config::file_cache::FileCacheConfig;
@@ -25,8 +27,6 @@ use dream_engine_config::shell::ShellConfig;
 use dream_engine_providers::{LlmProvider, create_provider};
 use dream_engine_types::llm::{LlmEvent, LlmRequest};
 use dream_engine_types::message::{ContentBlock, ImageUrl, Message, Role, TokenUsage, extension_to_image_media_type};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 
 /// Output cap for one description. Vision answers are prose, not file dumps.
 const VISION_MAX_TOKENS: u32 = 4_000;

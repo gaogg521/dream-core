@@ -562,7 +562,10 @@ impl StreamPersistenceAdapter {
 
     /// Persist a tool_group event (array of tool summaries).
     #[tracing::instrument(skip_all)]
-    pub async fn persist_tool_group(&self, entries: &[dream_core_ai_agent::protocol::events::tool_call::ToolGroupEntry]) {
+    pub async fn persist_tool_group(
+        &self,
+        entries: &[dream_core_ai_agent::protocol::events::tool_call::ToolGroupEntry],
+    ) {
         if !self.allows_write(RuntimeWriteKind::ToolGroupPersist) {
             return;
         }

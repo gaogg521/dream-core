@@ -475,7 +475,11 @@ async fn fetch_models_anonymous(
 async fn request_trial_key(
     State(state): State<SystemRouterState>,
 ) -> Result<Json<ApiResponse<TrialKeyResponse>>, ApiError> {
-    let result = state.trial_key_service.request_trial_key().await.map_err(ApiError::from)?;
+    let result = state
+        .trial_key_service
+        .request_trial_key()
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(result)))
 }
 

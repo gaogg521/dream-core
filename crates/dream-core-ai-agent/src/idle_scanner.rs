@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use dream_core_common::{AgentKillReason, now_ms};
 use async_trait::async_trait;
+use dream_core_common::{AgentKillReason, now_ms};
 use tracing::{debug, info, warn};
 
 use crate::task_manager::IWorkerTaskManager;
@@ -220,8 +220,8 @@ pub fn resolve_idle_config_from_env() -> (i64, i64, u64) {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use dream_core_common::AgentKillReason;
     use async_trait::async_trait;
+    use dream_core_common::AgentKillReason;
 
     use super::*;
     use crate::agent_task::AgentInstance;

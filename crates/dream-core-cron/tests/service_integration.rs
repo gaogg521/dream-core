@@ -10,6 +10,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use axum::Extension;
+use axum::body::{Body, to_bytes};
+use axum::http::{Method, Request, StatusCode};
 use dream_core_ai_agent::AgentRegistry;
 use dream_core_ai_agent::agent_task::AgentInstance;
 use dream_core_ai_agent::types::BuildTaskOptions;
@@ -33,9 +36,6 @@ use dream_core_db::{
     models::{ConversationAssistantSnapshotRow, CronJobRow, MessageRow},
 };
 use dream_core_realtime::EventBroadcaster;
-use axum::Extension;
-use axum::body::{Body, to_bytes};
-use axum::http::{Method, Request, StatusCode};
 
 use dream_core_cron::events::CronEventEmitter;
 use dream_core_cron::executor::JobExecutor;
@@ -133,7 +133,11 @@ impl dream_core_ai_agent::task_manager::IWorkerTaskManager for StubTaskManager {
     ) -> Result<AgentInstance, dream_core_ai_agent::AgentError> {
         Err(dream_core_ai_agent::AgentError::internal("stub"))
     }
-    fn kill(&self, _: &str, _: Option<dream_core_common::AgentKillReason>) -> Result<(), dream_core_ai_agent::AgentError> {
+    fn kill(
+        &self,
+        _: &str,
+        _: Option<dream_core_common::AgentKillReason>,
+    ) -> Result<(), dream_core_ai_agent::AgentError> {
         Ok(())
     }
     fn kill_and_wait(
@@ -173,7 +177,10 @@ impl StubConvRepo {
         }
     }
 
-    async fn seed_sqlite_row(&self, row: &dream_core_db::models::ConversationRow) -> Result<(), dream_core_db::DbError> {
+    async fn seed_sqlite_row(
+        &self,
+        row: &dream_core_db::models::ConversationRow,
+    ) -> Result<(), dream_core_db::DbError> {
         let repo = SqliteConversationRepository::new(self.sqlite_pool.clone());
         if repo.get(&row.user_id, &row.id).await?.is_some() {
             return Ok(());
@@ -761,7 +768,11 @@ impl IConversationRepository for StubConvRepo {
     ) -> Result<(), dream_core_db::DbError> {
         Ok(())
     }
-    async fn delete_messages_by_conversation(&self, _user_id: &str, _conv_id: &str) -> Result<(), dream_core_db::DbError> {
+    async fn delete_messages_by_conversation(
+        &self,
+        _user_id: &str,
+        _conv_id: &str,
+    ) -> Result<(), dream_core_db::DbError> {
         Ok(())
     }
     async fn get_message_by_msg_id(
@@ -1947,7 +1958,9 @@ async fn update_team_conversation_job_rejects_execution_mode_change() {
     };
 
     let err = svc.update_job("u1", &created.id, req).await.unwrap_err();
-    assert!(matches!(err, dream_core_cron::error::CronError::InvalidExecutionMode(message) if message.contains("Team")));
+    assert!(
+        matches!(err, dream_core_cron::error::CronError::InvalidExecutionMode(message) if message.contains("Team"))
+    );
 }
 
 #[tokio::test]
@@ -2482,7 +2495,10 @@ async fn sc5_invalid_cron_expression() {
         },
     );
     let err = svc.add_job("u1", req).await.unwrap_err();
-    assert!(matches!(err, dream_core_cron::error::CronError::InvalidCronExpression(_)));
+    assert!(matches!(
+        err,
+        dream_core_cron::error::CronError::InvalidCronExpression(_)
+    ));
 }
 
 // ── SC-6: Cron with timezone ──────────────────────────────────────

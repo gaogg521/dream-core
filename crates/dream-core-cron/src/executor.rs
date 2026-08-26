@@ -1313,7 +1313,9 @@ mod tests {
     use dream_core_ai_agent::agent_task::{AgentInstance, IAgentTask, IMockAgent};
     use dream_core_ai_agent::protocol::events::{FinishEventData, TextEventData};
     use dream_core_ai_agent::types::{BuildTaskOptions, SendMessageData};
-    use dream_core_api_types::{AgentModeResponse, ConfigOptionConfirmation, SetConfigOptionResponse, WebSocketMessage};
+    use dream_core_api_types::{
+        AgentModeResponse, ConfigOptionConfirmation, SetConfigOptionResponse, WebSocketMessage,
+    };
     use dream_core_common::{AgentKillReason, ConversationStatus, PaginatedResult, TimestampMs};
     use dream_core_db::{
         ConversationArtifactRow, ConversationFilters, ConversationRowUpdate, MessagePageParams, MessagePageResult,
@@ -2498,7 +2500,10 @@ mod tests {
             async fn owner_user_id(&self, _id: &str) -> Result<Option<String>, dream_core_db::DbError> {
                 Ok(None)
             }
-            async fn create(&self, _row: &dream_core_db::models::ConversationRow) -> Result<(), dream_core_db::DbError> {
+            async fn create(
+                &self,
+                _row: &dream_core_db::models::ConversationRow,
+            ) -> Result<(), dream_core_db::DbError> {
                 Ok(())
             }
             async fn update(
@@ -3451,7 +3456,11 @@ mod tests {
         ) -> Result<bool, dream_core_db::DbError> {
             Ok(false)
         }
-        async fn delete_for_user(&self, _user_id: &str, _conversation_id: &str) -> Result<bool, dream_core_db::DbError> {
+        async fn delete_for_user(
+            &self,
+            _user_id: &str,
+            _conversation_id: &str,
+        ) -> Result<bool, dream_core_db::DbError> {
             Ok(false)
         }
         async fn load_runtime_state_for_user(
@@ -3484,7 +3493,10 @@ mod tests {
         ) -> Result<Vec<dream_core_db::models::AgentMetadataRow>, dream_core_db::DbError> {
             self.list_all().await
         }
-        async fn get(&self, _id: &str) -> Result<Option<dream_core_db::models::AgentMetadataRow>, dream_core_db::DbError> {
+        async fn get(
+            &self,
+            _id: &str,
+        ) -> Result<Option<dream_core_db::models::AgentMetadataRow>, dream_core_db::DbError> {
             Ok(None)
         }
         async fn get_for_user(

@@ -7,10 +7,10 @@ use crate::error::AgentError;
 use crate::factory::AgentFactoryDeps;
 use crate::factory::acp_assembler::{WorkspaceInfo, assemble_acp_params};
 use crate::factory::acp_launch_policy::{AcpLaunchPolicyInput, apply_acp_launch_policy};
+use crate::factory::context::FactoryContext;
 use crate::factory::dream_engine::{
     map_dream_engine_provider, resolve_dream_engine_url_and_compat_with_mode, resolve_model_compat_overrides,
 };
-use crate::factory::context::FactoryContext;
 use crate::factory::session_mcp::load_session_mcp_rows;
 use crate::manager::acp::{AcpAgentManager, CatalogForwarder};
 use crate::registry::AgentRegistry;
@@ -1518,7 +1518,11 @@ mod tests {
         async fn find_by_id(&self, _user_id: &str, _id: &str) -> Result<Option<McpServerRow>, dream_core_db::DbError> {
             unimplemented!()
         }
-        async fn find_by_name(&self, _user_id: &str, _name: &str) -> Result<Option<McpServerRow>, dream_core_db::DbError> {
+        async fn find_by_name(
+            &self,
+            _user_id: &str,
+            _name: &str,
+        ) -> Result<Option<McpServerRow>, dream_core_db::DbError> {
             unimplemented!()
         }
         async fn list_by_ids_any(

@@ -1095,7 +1095,11 @@ struct MatrixGrantSource {
 #[async_trait::async_trait]
 #[cfg(feature = "enterprise")]
 impl dream_domain_devops::grants::ResourceGrantSource for MatrixGrantSource {
-    async fn extra_grants(&self, viewer_user_id: &str, resource_type: &str) -> dream_domain_devops::grants::ExtraGrants {
+    async fn extra_grants(
+        &self,
+        viewer_user_id: &str,
+        resource_type: &str,
+    ) -> dream_domain_devops::grants::ExtraGrants {
         let tenant_id = match self.org.tenant_of(viewer_user_id).await {
             Ok(id) => id,
             Err(e) => {
@@ -1588,8 +1592,10 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // allowlist are all billing-plane policy. `None` skips the check entirely
     // (see `dream_core_conversation::routes`), which is the pre-billing path.
     #[cfg(feature = "enterprise")]
-    let conversation_state =
-        conversation_state.with_send_gate(std::sync::Arc::new(BillingSendGate { billing: one_billing_service.clone(), grace: policy_grace.clone() }));
+    let conversation_state = conversation_state.with_send_gate(std::sync::Arc::new(BillingSendGate {
+        billing: one_billing_service.clone(),
+        grace: policy_grace.clone(),
+    }));
     let conversation_authenticated =
         conversation_routes(conversation_state).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -1597,8 +1603,10 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // the P1-2 model allowlist is enforced at model selection.
     let conversation_ops_state = states.conversation;
     #[cfg(feature = "enterprise")]
-    let conversation_ops_state =
-        conversation_ops_state.with_send_gate(std::sync::Arc::new(BillingSendGate { billing: one_billing_service.clone(), grace: policy_grace.clone() }));
+    let conversation_ops_state = conversation_ops_state.with_send_gate(std::sync::Arc::new(BillingSendGate {
+        billing: one_billing_service.clone(),
+        grace: policy_grace.clone(),
+    }));
     let conversation_ops_authenticated = conversation_ops_routes(conversation_ops_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -1712,7 +1720,6 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // shared handle rather than a builder.
     #[cfg(feature = "enterprise")]
     one_devops_service.set_grants(governance.grant_source.clone());
-
 
     // one-employee digital employee routes (/api/one/employee/*).
     // Wire the team session service so /run-team can drive existing team
@@ -1846,9 +1853,8 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // the context handler reads it to answer with the caller's role, exactly as
     // `OrgService::effective_role` would. See `personal_identity_routes`.
     #[cfg(not(feature = "enterprise"))]
-    let router = router.merge(
-        personal_identity_routes().route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware)),
-    );
+    let router = router
+        .merge(personal_identity_routes().route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware)));
 
     // Conditionally merge WeChat login SSE route (feature-gated)
     #[cfg(feature = "weixin")]
@@ -2044,11 +2050,12 @@ mod tests {
     use dream_core_realtime::{BroadcastEventBus, EventBroadcaster, WebSocketManager, WsOutbound};
     use serde_json::json;
 
-    use super::{
-        boundary_error_for_status, create_router_with_runtime, forward_event_bus_to_websocket, is_global_websocket_event,
-    };
     #[cfg(feature = "enterprise")]
     use super::{ENTERPRISE_POLICY_GRACE_MS, PolicyGrace, PolicyVerdict, billing_denial};
+    use super::{
+        boundary_error_for_status, create_router_with_runtime, forward_event_bus_to_websocket,
+        is_global_websocket_event,
+    };
     use crate::config::AppConfig;
     use crate::services::AppServices;
 

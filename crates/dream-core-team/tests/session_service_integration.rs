@@ -50,6 +50,7 @@ fn assert_workspace_contains(workspace: &str, segments: &str) {
     );
 }
 
+use common::MockTeamRepo;
 use dream_core_team::ports::{
     AgentTurnCancellationPort, AgentTurnExecutionError, AgentTurnExecutionPort, AgentTurnOutcome, AgentTurnRequest,
     AgentTurnStarted, AgentTurnStatus, TeamAssistantCatalogEntry, TeamAssistantCatalogPort,
@@ -61,7 +62,6 @@ use dream_core_team::{
     TeamMcpSnapshotResolution, TeamProjectionMessageStore,
 };
 use dream_core_team::{TeamError, TeamSessionService};
-use common::MockTeamRepo;
 
 struct TestTeamToolCapabilityPort;
 
@@ -380,8 +380,10 @@ struct FakePresetAssistantSnapshot {
 
 impl FakeConversationPorts {
     fn new(repo: Arc<MockConversationRepo>) -> Self {
-        let workspace_root =
-            std::env::temp_dir().join(format!("aionui-team-fake-workspaces-{}", dream_core_common::generate_id()));
+        let workspace_root = std::env::temp_dir().join(format!(
+            "aionui-team-fake-workspaces-{}",
+            dream_core_common::generate_id()
+        ));
         Self {
             repo,
             workspace_root,
@@ -521,7 +523,10 @@ impl TeamConversationProvisioningPort for FakeConversationPorts {
         })
     }
 
-    async fn conversation_workspace(&self, conversation_id: &str) -> Result<Option<String>, dream_core_team::TeamError> {
+    async fn conversation_workspace(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<String>, dream_core_team::TeamError> {
         Ok(self.repo.get_extra(conversation_id).and_then(|extra| {
             extra
                 .get("workspace")
@@ -588,7 +593,10 @@ impl TeamConversationProvisioningPort for FakeConversationPorts {
         })
     }
 
-    async fn conversation_assistant_id(&self, conversation_id: &str) -> Result<Option<String>, dream_core_team::TeamError> {
+    async fn conversation_assistant_id(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<String>, dream_core_team::TeamError> {
         Ok(self.repo.get_extra(conversation_id).and_then(|extra| {
             extra
                 .get("assistant_id")
@@ -994,7 +1002,12 @@ impl ITeamRepository for FullMockTeamRepo {
     async fn get_team_for_restore(&self, id: &str) -> Result<Option<dream_core_db::models::TeamRow>, DbError> {
         Ok(self.teams.lock().unwrap().iter().find(|t| t.id == id).cloned())
     }
-    async fn update_team(&self, user_id: &str, id: &str, params: &dream_core_db::UpdateTeamParams) -> Result<(), DbError> {
+    async fn update_team(
+        &self,
+        user_id: &str,
+        id: &str,
+        params: &dream_core_db::UpdateTeamParams,
+    ) -> Result<(), DbError> {
         if params.workspace.is_some() && *self.fail_workspace_update.lock().unwrap() {
             return Err(DbError::Init("forced workspace writeback failure".into()));
         }
@@ -1029,7 +1042,11 @@ impl ITeamRepository for FullMockTeamRepo {
         Ok(())
     }
 
-    async fn write_message(&self, user_id: &str, row: &dream_core_db::models::MailboxMessageRow) -> Result<(), DbError> {
+    async fn write_message(
+        &self,
+        user_id: &str,
+        row: &dream_core_db::models::MailboxMessageRow,
+    ) -> Result<(), DbError> {
         if *self.fail_message_writes.lock().unwrap() {
             return Err(DbError::Init("forced mailbox write failure".into()));
         }
@@ -1090,7 +1107,10 @@ impl ITeamRepository for FullMockTeamRepo {
             .list_messages_by_team_paged(team_id, cursor, direction, limit)
             .await
     }
-    async fn list_messages_by_ids(&self, ids: &[String]) -> Result<Vec<dream_core_db::models::MailboxMessageRow>, DbError> {
+    async fn list_messages_by_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<dream_core_db::models::MailboxMessageRow>, DbError> {
         self.inner.list_messages_by_ids(ids).await
     }
     async fn delete_mailbox_by_team(&self, user_id: &str, team_id: &str) -> Result<(), DbError> {
@@ -1117,7 +1137,11 @@ impl ITeamRepository for FullMockTeamRepo {
     ) -> Result<(), DbError> {
         self.inner.update_task(user_id, team_id, task_id, params).await
     }
-    async fn list_tasks(&self, user_id: &str, team_id: &str) -> Result<Vec<dream_core_db::models::TeamTaskRow>, DbError> {
+    async fn list_tasks(
+        &self,
+        user_id: &str,
+        team_id: &str,
+    ) -> Result<Vec<dream_core_db::models::TeamTaskRow>, DbError> {
         self.inner.list_tasks(user_id, team_id).await
     }
     async fn list_tasks_by_ids(
@@ -3006,8 +3030,10 @@ async fn create_team_with_workspace_writes_same_workspace_to_team_and_initial_ag
     let agent_metadata_repo: Arc<dyn IAgentMetadataRepository> = Arc::new(StubAgentMetadataRepo::empty());
     let (svc, _, conv_repo) =
         setup_with_factory_and_metadata_and_conversation_repo(success_factory(), agent_metadata_repo);
-    let workspace_dir =
-        std::env::temp_dir().join(format!("aionui-team-user-workspace-{}", dream_core_common::generate_id()));
+    let workspace_dir = std::env::temp_dir().join(format!(
+        "aionui-team-user-workspace-{}",
+        dream_core_common::generate_id()
+    ));
     std::fs::create_dir_all(&workspace_dir).unwrap();
     let workspace = workspace_dir.to_string_lossy().into_owned();
 
@@ -3053,7 +3079,8 @@ async fn create_team_side_branch_backfills_project_binding_when_injected() {
     .execute(db.pool())
     .await
     .unwrap();
-    let store: Arc<dyn dream_core_db::IProjectStore> = Arc::new(dream_core_db::SqliteProjectStore::new(db.pool().clone()));
+    let store: Arc<dyn dream_core_db::IProjectStore> =
+        Arc::new(dream_core_db::SqliteProjectStore::new(db.pool().clone()));
     std::mem::forget(db);
     svc.with_project_service(Arc::new(dream_core_project::ProjectService::new(
         store,
@@ -8669,7 +8696,10 @@ async fn activity_kind_task_only_paginates_tasks() {
         .await
         .unwrap();
     assert_eq!(page.items.len(), 1);
-    assert!(matches!(page.items[0].kind, dream_core_api_types::TeamActivityKind::Task));
+    assert!(matches!(
+        page.items[0].kind,
+        dream_core_api_types::TeamActivityKind::Task
+    ));
 }
 
 #[tokio::test]

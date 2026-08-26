@@ -343,7 +343,9 @@ async fn acp_agent_kill_terminates_process() {
 
     assert!(agent.last_activity_at() > 0);
 
-    agent.kill(Some(dream_core_common::AgentKillReason::IdleTimeout)).unwrap();
+    agent
+        .kill(Some(dream_core_common::AgentKillReason::IdleTimeout))
+        .unwrap();
 
     tokio::time::sleep(Duration::from_millis(1000)).await;
 }

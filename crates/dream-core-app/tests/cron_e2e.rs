@@ -87,7 +87,12 @@ async fn ensure_default_assistant(app: &mut axum::Router, token: &str, csrf: &st
     );
 }
 
-async fn ensure_conversation(services: &dream_core_app::AppServices, user_id: &str, conversation_id: &str, title: &str) {
+async fn ensure_conversation(
+    services: &dream_core_app::AppServices,
+    user_id: &str,
+    conversation_id: &str,
+    title: &str,
+) {
     if conversation_id.trim().is_empty() {
         return;
     }

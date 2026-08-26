@@ -4770,7 +4770,10 @@ mod build_mapping_tests {
 
     #[async_trait::async_trait]
     impl IMcpServerRepository for DirectMcpRepo {
-        async fn list(&self, user_id: &str) -> Result<Vec<dream_core_db::models::McpServerRow>, dream_core_db::DbError> {
+        async fn list(
+            &self,
+            user_id: &str,
+        ) -> Result<Vec<dream_core_db::models::McpServerRow>, dream_core_db::DbError> {
             Ok(self.rows.iter().filter(|row| row.user_id == user_id).cloned().collect())
         }
 
@@ -5915,7 +5918,9 @@ mod persist_tests {
     //! `AcpSessionSyncService` but which this direct-CLI path must do itself. Without
     //! these the resume anchor + mode/model precedence source are never written.
     use super::*;
-    use dream_core_db::{CreateAcpSessionParams, IAcpSessionRepository, SqliteAcpSessionRepository, init_database_memory};
+    use dream_core_db::{
+        CreateAcpSessionParams, IAcpSessionRepository, SqliteAcpSessionRepository, init_database_memory,
+    };
 
     // Returns both the repo and the owning Database — the caller binds the Database
     // for the test's lifetime (the cloned SqlitePool keeps the in-memory DB alive).
@@ -6471,7 +6476,10 @@ mod persist_tests {
         );
         let resp = task.set_config_option("reasoning_effort", "high").await.unwrap();
         assert!(
-            matches!(resp.confirmation, dream_core_api_types::ConfigOptionConfirmation::Observed),
+            matches!(
+                resp.confirmation,
+                dream_core_api_types::ConfigOptionConfirmation::Observed
+            ),
             "effort switch must be Observed (optimistic override), not command_ack"
         );
         let effort = resp
@@ -7844,7 +7852,11 @@ mod pump_tests {
             .collect()
     }
 
-    fn wf_detail(r#ref: &str, label: &str, state: dream_core_session::WorkflowLoopState) -> dream_core_session::SessionEvent {
+    fn wf_detail(
+        r#ref: &str,
+        label: &str,
+        state: dream_core_session::WorkflowLoopState,
+    ) -> dream_core_session::SessionEvent {
         SessionEvent::SubagentDetail {
             r#ref: r#ref.into(),
             parent_ref: Some("task-wf".into()),
@@ -9111,20 +9123,21 @@ mod pump_tests {
     // return an empty Vec unconditionally.)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn get_confirmations_recovers_pending_ask_user_question() {
-        let backend: Arc<dyn SessionBackend> = Arc::new(PendingPermBackend(dream_core_session::PendingPermissionView {
-            request_id: "req-recover".into(),
-            tool_name: "AskUserQuestion".into(),
-            // The BARE questions[] array — matching what claude_conn's
-            // pending_permission_requests() actually stores
-            // (`perm.input.get("questions").cloned()`). The old fixture carried
-            // the {questions:[…]} wrapper, so the projection passed here while
-            // silently degrading to Allow/Reject against the real backend
-            // (caught live in the 2026-08-04 e2e).
-            questions: Some(serde_json::json!([{
-                "question": "Which?",
-                "options": [{"label": "A"}, {"label": "B"}]
-            }])),
-        }));
+        let backend: Arc<dyn SessionBackend> =
+            Arc::new(PendingPermBackend(dream_core_session::PendingPermissionView {
+                request_id: "req-recover".into(),
+                tool_name: "AskUserQuestion".into(),
+                // The BARE questions[] array — matching what claude_conn's
+                // pending_permission_requests() actually stores
+                // (`perm.input.get("questions").cloned()`). The old fixture carried
+                // the {questions:[…]} wrapper, so the projection passed here while
+                // silently degrading to Allow/Reject against the real backend
+                // (caught live in the 2026-08-04 e2e).
+                questions: Some(serde_json::json!([{
+                    "question": "Which?",
+                    "options": [{"label": "A"}, {"label": "B"}]
+                }])),
+            }));
         let task = SessionAgentTask::new(
             AgentType::Acp,
             "conv-1".into(),
@@ -9150,11 +9163,12 @@ mod pump_tests {
     // A pending ordinary tool permission recovers as the generic allow/deny card.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn get_confirmations_recovers_generic_permission() {
-        let backend: Arc<dyn SessionBackend> = Arc::new(PendingPermBackend(dream_core_session::PendingPermissionView {
-            request_id: "req-tool".into(),
-            tool_name: "Bash".into(),
-            questions: None,
-        }));
+        let backend: Arc<dyn SessionBackend> =
+            Arc::new(PendingPermBackend(dream_core_session::PendingPermissionView {
+                request_id: "req-tool".into(),
+                tool_name: "Bash".into(),
+                questions: None,
+            }));
         let task = SessionAgentTask::new(
             AgentType::Acp,
             "conv-1".into(),
@@ -9245,7 +9259,10 @@ mod pump_tests {
         );
         let resp = task.set_config_option("mode", "plan").await.unwrap();
         assert!(
-            matches!(resp.confirmation, dream_core_api_types::ConfigOptionConfirmation::Observed),
+            matches!(
+                resp.confirmation,
+                dream_core_api_types::ConfigOptionConfirmation::Observed
+            ),
             "mode switch must be Observed, got {:?}",
             resp.confirmation
         );
@@ -9542,7 +9559,10 @@ mod pump_tests {
         );
         let resp = task.set_config_option("model", "sonnet").await.unwrap();
         assert!(
-            matches!(resp.confirmation, dream_core_api_types::ConfigOptionConfirmation::Observed),
+            matches!(
+                resp.confirmation,
+                dream_core_api_types::ConfigOptionConfirmation::Observed
+            ),
             "model switch must be Observed, got {:?}",
             resp.confirmation
         );

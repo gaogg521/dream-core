@@ -7,11 +7,11 @@
 //! additional Responses API fields (`store`, `parallel_tool_calls`, ...)
 //! this bridge does not act on.
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use dream_engine_types::llm::LlmRequest;
 use dream_engine_types::message::{ContentBlock, ImageUrl, Message, Role};
 use dream_engine_types::tool::ToolDef;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::Deserialize;
 use serde_json::Value;
 

@@ -114,7 +114,11 @@ mod tests {
                 .cloned())
         }
 
-        async fn find_by_name(&self, user_id: &str, name: &str) -> Result<Option<McpServerRow>, dream_core_db::DbError> {
+        async fn find_by_name(
+            &self,
+            user_id: &str,
+            name: &str,
+        ) -> Result<Option<McpServerRow>, dream_core_db::DbError> {
             Ok(self
                 .servers
                 .iter()

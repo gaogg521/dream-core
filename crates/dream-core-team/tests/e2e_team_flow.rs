@@ -24,6 +24,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+use async_trait::async_trait;
+use common::MockTeamRepo;
 use dream_core_ai_agent::AgentError;
 use dream_core_ai_agent::agent_task::{AgentInstance, IAgentTask, IMockAgent};
 use dream_core_ai_agent::protocol::events::{AgentStreamEvent, FinishEventData};
@@ -43,8 +45,6 @@ use dream_core_team::ports::{
 };
 use dream_core_team::service::TeamSessionService;
 use dream_core_team::{TeamAgent, TeamProjectionMessageStore, TeamSession, TeammateRole};
-use async_trait::async_trait;
-use common::MockTeamRepo;
 use serde_json::{Value, json};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, oneshot};
@@ -481,9 +481,9 @@ impl IAgentTask for RecordingAgent {
     async fn send_message(&self, data: SendMessageData) -> Result<(), dream_core_ai_agent::AgentSendError> {
         self.sent.lock().unwrap().push(data);
         match &self.fail_with {
-            Some(msg) => Err(dream_core_ai_agent::AgentSendError::from_agent_error(AgentError::internal(
-                msg.clone(),
-            ))),
+            Some(msg) => Err(dream_core_ai_agent::AgentSendError::from_agent_error(
+                AgentError::internal(msg.clone()),
+            )),
             None => Ok(()),
         }
     }
@@ -1703,7 +1703,10 @@ async fn one_notify_drains_five_intents_after_busy_turn() {
     let mut queued_message_ids = Vec::new();
     for index in 1..=5 {
         let ack = session.send_message(&format!("queued-{index}"), None).await.unwrap();
-        assert_eq!(ack.enqueue_status, dream_core_api_types::TeamMessageEnqueueStatus::Queued);
+        assert_eq!(
+            ack.enqueue_status,
+            dream_core_api_types::TeamMessageEnqueueStatus::Queued
+        );
         assert_eq!(ack.run.team_run_id, first.run.team_run_id);
         queued_message_ids.push(ack.message_id);
     }

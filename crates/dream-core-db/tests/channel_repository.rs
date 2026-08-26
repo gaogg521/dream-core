@@ -7,7 +7,9 @@
 use std::sync::Arc;
 
 use dream_core_db::models::{AssistantSessionRow, AssistantUserRow, ChannelPluginRow, PairingCodeRow};
-use dream_core_db::{DbError, IChannelRepository, SqliteChannelRepository, UpdatePluginStatusParams, init_database_memory};
+use dream_core_db::{
+    DbError, IChannelRepository, SqliteChannelRepository, UpdatePluginStatusParams, init_database_memory,
+};
 
 const OWNER_ID: &str = "system_default_user";
 

@@ -4,20 +4,20 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::error::AgentError;
+use dream_core_api_types::{
+    HealthStatus, ProviderHealthCheckErrorKind, ProviderHealthCheckRequest, ProviderHealthCheckResponse,
+};
+use dream_core_db::{IProviderRepository, models::Provider};
 use dream_engine_agent::bootstrap::AgentBootstrap;
 use dream_engine_agent::engine::AgentEngine;
 use dream_engine_agent::output::OutputSink;
 use dream_engine_agent::output::null_sink::NullSink;
 use dream_engine_config::config::{CliArgs, Config};
-use dream_core_api_types::{
-    HealthStatus, ProviderHealthCheckErrorKind, ProviderHealthCheckRequest, ProviderHealthCheckResponse,
-};
-use dream_core_db::{IProviderRepository, models::Provider};
 use regex::Regex;
 use tracing::{info, warn};
 
 use crate::factory::dream_engine::{
-    map_dream_engine_provider, resolve_dream_engine_url_and_compat_with_mode, resolve_bedrock_config,
+    map_dream_engine_provider, resolve_bedrock_config, resolve_dream_engine_url_and_compat_with_mode,
     resolve_model_compat_overrides,
 };
 use crate::types::AionrsResolvedConfig;
@@ -341,9 +341,9 @@ pub(crate) fn extract_http_status(message: &str) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dream_engine_config::compat::OpenAiApiMode;
     use dream_core_common::encrypt_string;
     use dream_core_db::{CreateProviderParams, DbError, UpdateProviderParams};
+    use dream_engine_config::compat::OpenAiApiMode;
 
     const TEST_KEY: [u8; 32] = [0xAB; 32];
     const TEST_USER_ID: &str = "user-1";

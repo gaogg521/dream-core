@@ -600,7 +600,9 @@ async fn created_at_id_ordering_is_scoped_per_conversation() {
 #[tokio::test]
 async fn concurrent_insert_message_does_not_require_sequence_allocation() {
     let dir = tempfile::tempdir().unwrap();
-    let db = dream_core_db::init_database(&dir.path().join("messages.db")).await.unwrap();
+    let db = dream_core_db::init_database(&dir.path().join("messages.db"))
+        .await
+        .unwrap();
     let repo = SqliteConversationRepository::new(db.pool().clone());
     let conv = make_conversation("seq-race");
     repo.create(&conv).await.unwrap();

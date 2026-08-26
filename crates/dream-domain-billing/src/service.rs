@@ -1710,9 +1710,15 @@ mod tests {
             .await
             .unwrap();
         // A different conversation for the same user must not bleed in.
-        svc.record_turn("solo", Some("conv_y"), Some("claude-opus-4-8"), Some(9_999), Some(9_999))
-            .await
-            .unwrap();
+        svc.record_turn(
+            "solo",
+            Some("conv_y"),
+            Some("claude-opus-4-8"),
+            Some(9_999),
+            Some(9_999),
+        )
+        .await
+        .unwrap();
 
         let cost = svc.conversation_cost("solo", "conv_x").await.unwrap();
         assert!(cost > 0);

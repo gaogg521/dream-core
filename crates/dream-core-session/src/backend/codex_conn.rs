@@ -8134,8 +8134,11 @@ mod tests {
                 _spec: dream_core_common::CommandSpec,
                 _extra_env: &[(String, String)],
                 _opaque_owner_tag: &str,
-            ) -> Result<std::sync::Arc<dream_core_process::ManagedProcess>, dream_core_process::ProcessError> {
-                Err(dream_core_process::ProcessError::workspace_unavailable("/gone/workspace"))
+            ) -> Result<std::sync::Arc<dream_core_process::ManagedProcess>, dream_core_process::ProcessError>
+            {
+                Err(dream_core_process::ProcessError::workspace_unavailable(
+                    "/gone/workspace",
+                ))
             }
         }
 

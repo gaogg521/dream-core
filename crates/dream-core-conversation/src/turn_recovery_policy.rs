@@ -367,8 +367,13 @@ mod tests {
     fn non_acp_agent_does_not_auto_replay() {
         let outcome = retryable_clean_error();
 
-        let decision =
-            TurnRecoveryPolicy::decide(AgentType::DreamEngine, None, &outcome, RuntimeLifecycleState::Active, false);
+        let decision = TurnRecoveryPolicy::decide(
+            AgentType::DreamEngine,
+            None,
+            &outcome,
+            RuntimeLifecycleState::Active,
+            false,
+        );
 
         assert_eq!(decision, TurnRecoveryDecision::None);
     }

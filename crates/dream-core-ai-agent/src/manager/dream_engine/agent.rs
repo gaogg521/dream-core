@@ -5,6 +5,13 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use dream_core_api_types::{
+    AcpConfigOptionDto, AcpConfigSelectOptionDto, AgentModeResponse, ConfigOptionConfirmation,
+    GetConfigOptionsResponse, SetConfigOptionResponse, SlashCommandItem,
+};
+use dream_core_common::{
+    AgentKillReason, AgentType, Confirmation, ConversationStatus, ErrorChain, TimestampMs, generate_short_id, now_ms,
+};
 use dream_engine_agent::bootstrap::AgentBootstrap;
 use dream_engine_agent::engine::AgentEngine;
 use dream_engine_agent::output::OutputSink;
@@ -14,13 +21,6 @@ use dream_engine_config::config::{CliArgs, Config, McpServerConfig, ProviderType
 use dream_engine_mcp::manager::McpManager;
 use dream_engine_protocol::commands::{ApprovalScope, SessionMode};
 use dream_engine_protocol::{ToolApprovalManager, ToolApprovalResult};
-use dream_core_api_types::{
-    AcpConfigOptionDto, AcpConfigSelectOptionDto, AgentModeResponse, ConfigOptionConfirmation,
-    GetConfigOptionsResponse, SetConfigOptionResponse, SlashCommandItem,
-};
-use dream_core_common::{
-    AgentKillReason, AgentType, Confirmation, ConversationStatus, ErrorChain, TimestampMs, generate_short_id, now_ms,
-};
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify, broadcast};
 use tokio::time::timeout;

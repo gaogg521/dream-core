@@ -143,23 +143,23 @@ impl EnterpriseService {
         for chunk in input.departments.chunks(DIRECTORY_WRITE_CHUNK) {
             let mut tx = pool.begin().await?;
             for department in chunk {
-            sqlx::query(
-                "INSERT INTO one_directory_departments \
+                sqlx::query(
+                    "INSERT INTO one_directory_departments \
                    (enterprise_id, external_id, parent_external_id, name, first_seen_at, last_seen_at) \
                  VALUES (?, ?, ?, ?, ?, ?) \
                  ON CONFLICT(enterprise_id, external_id) DO UPDATE SET \
                    parent_external_id = excluded.parent_external_id, \
                    name = excluded.name, \
                    last_seen_at = excluded.last_seen_at",
-            )
-            .bind(enterprise_id)
-            .bind(&department.external_id)
-            .bind(department.parent_external_id.as_deref())
-            .bind(&department.name)
-            .bind(now)
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
+                )
+                .bind(enterprise_id)
+                .bind(&department.external_id)
+                .bind(department.parent_external_id.as_deref())
+                .bind(&department.name)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
             }
             tx.commit().await?;
         }
@@ -167,8 +167,8 @@ impl EnterpriseService {
         for chunk in input.people.chunks(DIRECTORY_WRITE_CHUNK) {
             let mut tx = pool.begin().await?;
             for person in chunk {
-            sqlx::query(
-                "INSERT INTO one_directory_people \
+                sqlx::query(
+                    "INSERT INTO one_directory_people \
                    (enterprise_id, external_id, name, job_title, department_external_id, active, \
                     first_seen_at, last_seen_at, missing_since) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL) \
@@ -178,17 +178,17 @@ impl EnterpriseService {
                    department_external_id = excluded.department_external_id, \
                    active = excluded.active, \
                    last_seen_at = excluded.last_seen_at",
-            )
-            .bind(enterprise_id)
-            .bind(&person.external_id)
-            .bind(person.name.as_deref())
-            .bind(person.job_title.as_deref())
-            .bind(person.department_external_id.as_deref())
-            .bind(i64::from(person.active))
-            .bind(now)
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
+                )
+                .bind(enterprise_id)
+                .bind(&person.external_id)
+                .bind(person.name.as_deref())
+                .bind(person.job_title.as_deref())
+                .bind(person.department_external_id.as_deref())
+                .bind(i64::from(person.active))
+                .bind(now)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
             }
             tx.commit().await?;
         }
