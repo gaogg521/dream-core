@@ -19,9 +19,19 @@ fn map_arch() -> &'static str {
     }
 }
 
-/// Resolve the cache directory for DreamUI.
+/// Brand-named subdirectory of `parent`, preferring the current name but
+/// staying on the pre-rebrand one while that is what exists on disk.
+fn brand_dir(parent: &std::path::Path, current: &str) -> std::path::PathBuf {
+    dream_core_common::resolve_with_legacy(parent, current, "aionui")
+}
+
+/// Resolve the cache directory.
 ///
-/// Priority: `ONE_CACHE_DIR` env → `dirs::cache_dir()/dream`.
+/// Priority: `ONE_CACHE_DIR` env → `dirs::cache_dir()/one`, falling back to the
+/// pre-rebrand directory when that is the one already on disk. This doc comment
+/// used to claim `/dream` while the code joined `aionui`: the rebrand updated
+/// the comment and left the literal, which is why a running backend still
+/// still reported a cache path under the pre-rebrand name long afterwards.
 fn resolve_cache_dir() -> String {
     if let Ok(v) = std::env::var("ONE_CACHE_DIR")
         && !v.is_empty()
@@ -29,13 +39,14 @@ fn resolve_cache_dir() -> String {
         return v;
     }
     dirs::cache_dir()
-        .map(|p| p.join("aionui").to_string_lossy().into_owned())
+        .map(|p| brand_dir(&p, "one").to_string_lossy().into_owned())
         .unwrap_or_default()
 }
 
 /// Resolve the work (data) directory for DreamUI.
 ///
-/// Priority: `ONE_WORK_DIR` env → `dirs::data_dir()/dream`.
+/// Priority: `ONE_WORK_DIR` env → `dirs::data_dir()/one`, with the same
+/// pre-rebrand fallback as the cache directory.
 fn resolve_work_dir() -> String {
     if let Ok(v) = std::env::var("ONE_WORK_DIR")
         && !v.is_empty()
@@ -43,16 +54,20 @@ fn resolve_work_dir() -> String {
         return v;
     }
     dirs::data_dir()
-        .map(|p| p.join("aionui").to_string_lossy().into_owned())
+        .map(|p| brand_dir(&p, "one").to_string_lossy().into_owned())
         .unwrap_or_default()
 }
 
 /// Resolve the log directory for DreamUI.
 ///
 /// Priority: `ONE_LOG_DIR` env →
-///   macOS: `~/Library/Logs/dream`
-///   Linux: `dirs::state_dir()/dream/logs` (XDG_STATE_HOME)
-///   Windows: `dirs::data_dir()/dream/logs`
+///   macOS: `~/Library/Logs/one`
+///   Linux: `dirs::state_dir()/one/logs` (XDG_STATE_HOME)
+///   Windows: `dirs::data_dir()/one/logs`
+///
+/// Each keeps its pre-rebrand sibling when that directory is the one that
+/// exists, so an install's log history stays in one place — the diagnose skill
+/// tails whatever this returns.
 fn resolve_log_dir() -> String {
     if let Ok(v) = std::env::var("ONE_LOG_DIR")
         && !v.is_empty()
@@ -63,15 +78,17 @@ fn resolve_log_dir() -> String {
     if cfg!(target_os = "macos")
         && let Some(home) = dirs::home_dir()
     {
-        return home.join("Library/Logs/aionui").to_string_lossy().into_owned();
+        return brand_dir(&home.join("Library/Logs"), "one")
+            .to_string_lossy()
+            .into_owned();
     }
     // Linux: XDG state dir
     if let Some(state) = dirs::state_dir() {
-        return state.join("aionui/logs").to_string_lossy().into_owned();
+        return brand_dir(&state, "one").join("logs").to_string_lossy().into_owned();
     }
     // Fallback: data_dir/dream/logs
     dirs::data_dir()
-        .map(|p| p.join("aionui/logs").to_string_lossy().into_owned())
+        .map(|p| brand_dir(&p, "one").join("logs").to_string_lossy().into_owned())
         .unwrap_or_default()
 }
 
@@ -113,27 +130,35 @@ mod tests {
         assert!(!info.arch.is_empty());
     }
 
+    /// Asserting the literal `aionui` here is what let the hardcoded path
+    /// survive the rebrand — the test agreed with the bug. What actually
+    /// matters is that a directory is resolved under one of the two brands.
     #[test]
-    fn test_env_override_cache_dir() {
-        // This test verifies the resolve logic reads env vars.
-        // We cannot reliably set env in parallel tests, so just verify
-        // the default path contains "dream".
-        let dir = resolve_cache_dir();
-        assert!(dir.contains("aionui"), "cache_dir should contain 'aionui': {dir}");
+    fn defaults_resolve_to_a_brand_directory() {
+        for dir in [resolve_cache_dir(), resolve_work_dir(), resolve_log_dir()] {
+            let lower = dir.to_ascii_lowercase();
+            assert!(
+                lower.contains("one") || lower.contains(concat!("aion", "ui")),
+                "unexpected directory: {dir}"
+            );
+        }
     }
 
+    /// A fresh machine has neither directory, so a new install gets the current
+    /// name rather than being handed the pre-rebrand one.
     #[test]
-    fn test_env_override_work_dir() {
-        let dir = resolve_work_dir();
-        assert!(dir.contains("aionui"), "work_dir should contain 'aionui': {dir}");
+    fn a_missing_legacy_directory_is_not_chosen() {
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(brand_dir(empty.path(), "one"), empty.path().join("one"));
     }
 
+    /// An install that already has the pre-rebrand directory keeps it, or its
+    /// cache and log history are orphaned in place.
     #[test]
-    fn test_env_override_log_dir() {
-        let dir = resolve_log_dir();
-        assert!(
-            dir.to_ascii_lowercase().contains("aionui"),
-            "log_dir should contain 'aionui' (case-insensitive): {dir}"
-        );
+    fn an_existing_legacy_directory_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = concat!("aion", "ui");
+        std::fs::create_dir(dir.path().join(legacy)).unwrap();
+        assert_eq!(brand_dir(dir.path(), "one"), dir.path().join(legacy));
     }
 }
