@@ -2342,7 +2342,7 @@ impl AssistantService {
     /// extension (for `Content-Type` inference).
     ///
     /// - Built-in source → read from the embedded bundle (or the disk
-    ///   override when `AIONUI_BUILTIN_ASSISTANTS_PATH` is set).
+    ///   override when `ONE_BUILTIN_ASSISTANTS_PATH` is set).
     /// - User source → read the managed avatar filename recorded on the
     ///   unified assistant definition.
     ///
@@ -4539,7 +4539,7 @@ mod tests {
         let mut disabled = mk_builtin("builtin-writer", "Writer");
         disabled.default_enabled = false;
         disabled.sort_order = 50;
-        let mut butler = mk_builtin("aionui-assistant", "Butler");
+        let mut butler = mk_builtin("one-assistant", "Butler");
         butler.default_enabled = true;
         butler.sort_order = 0;
         let fx = fixture_with_builtins(vec![disabled, butler]).await;
@@ -4548,10 +4548,10 @@ mod tests {
         let writer = list.iter().find(|a| a.id == "builtin-writer").unwrap();
         assert!(!writer.enabled, "non-butler builtin defaults to disabled");
         assert_eq!(writer.sort_order, 50, "sort_order comes from manifest");
-        let butler_resp = list.iter().find(|a| a.id == "aionui-assistant").unwrap();
+        let butler_resp = list.iter().find(|a| a.id == "one-assistant").unwrap();
         assert!(butler_resp.enabled, "butler defaults to enabled");
         assert_eq!(butler_resp.sort_order, 0);
-        let butler_idx = list.iter().position(|a| a.id == "aionui-assistant").unwrap();
+        let butler_idx = list.iter().position(|a| a.id == "one-assistant").unwrap();
         let writer_idx = list.iter().position(|a| a.id == "builtin-writer").unwrap();
         assert!(butler_idx < writer_idx, "butler (0) sorts before writer (50)");
     }
@@ -5568,13 +5568,13 @@ mod tests {
 
     #[tokio::test]
     async fn bootstrap_reactivates_soft_deleted_builtin_definition_by_source_ref() {
-        let mut builtin = mk_builtin("aionui-assistant", "AionUi Butler");
-        builtin.rule_file = Some("rules/aionui-assistant.{locale}.md".into());
+        let mut builtin = mk_builtin("one-assistant", "AionUi Butler");
+        builtin.rule_file = Some("rules/one-assistant.{locale}.md".into());
         let fx = fixture_with_builtins(vec![builtin]).await;
 
         let original = fx
             .definition_repo
-            .get_by_assistant_id("aionui-assistant")
+            .get_by_assistant_id("one-assistant")
             .await
             .unwrap()
             .expect("builtin definition should be materialized");
@@ -5584,7 +5584,7 @@ mod tests {
             .expect("soft-delete builtin definition");
         assert!(
             fx.definition_repo
-                .get_by_assistant_id("aionui-assistant")
+                .get_by_assistant_id("one-assistant")
                 .await
                 .unwrap()
                 .is_none(),
@@ -5595,12 +5595,12 @@ mod tests {
 
         let restored = fx
             .definition_repo
-            .get_by_assistant_id("aionui-assistant")
+            .get_by_assistant_id("one-assistant")
             .await
             .unwrap()
             .expect("bootstrap should reactivate the soft-deleted builtin");
         assert_eq!(restored.id, original.id);
-        assert_eq!(restored.rule_resource_ref.as_deref(), Some("aionui-assistant"));
+        assert_eq!(restored.rule_resource_ref.as_deref(), Some("one-assistant"));
         assert!(restored.deleted_at.is_none());
     }
 

@@ -2,11 +2,11 @@
 
 use std::path::{Path, PathBuf};
 
-/// Priority: `--work-dir` CLI flag → `AIONUI_WORK_DIR` env (when non-empty) →
+/// Priority: `--work-dir` CLI flag → `ONE_WORK_DIR` env (when non-empty) →
 /// `--data-dir` fallback.
 pub(super) fn resolve_work_dir(cli_work_dir: Option<PathBuf>, data_dir: &Path) -> PathBuf {
     cli_work_dir.unwrap_or_else(|| {
-        std::env::var("AIONUI_WORK_DIR")
+        std::env::var("ONE_WORK_DIR")
             .ok()
             .filter(|s| !s.is_empty())
             .map(PathBuf::from)

@@ -203,7 +203,7 @@ fn cron_skill_does_not_instruct_agents_to_write_payload_files() {
     assert!(!skill.contains("/tmp/aionui-cron"));
     assert!(!skill.contains("python3"));
     assert!(!skill.contains("dream_core_cron.py"));
-    assert!(skill.contains("$AIONUI_HELPER_BIN"));
+    assert!(skill.contains("$ONE_HELPER_BIN"));
     assert!(!skill.contains("cron-helper"));
     assert!(skill.contains("config cron current list"));
     assert!(skill.contains("config cron current create"));

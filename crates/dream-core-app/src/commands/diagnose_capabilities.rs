@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 
-const RUNTIME_ENV: [&str; 3] = ["AIONUI_BASE_URL", "AIONUI_CONVERSATION_ID", "AIONUI_USER_ID"];
+const RUNTIME_ENV: [&str; 3] = ["ONE_BASE_URL", "ONE_CONVERSATION_ID", "ONE_USER_ID"];
 
 pub(crate) fn data() -> Value {
     json!({
@@ -14,7 +14,7 @@ pub(crate) fn data() -> Value {
             "business_flags": false,
             "selectors": {
                 "conversation_id": {
-                    "current": "resolve from AIONUI_CONVERSATION_ID",
+                    "current": "resolve from ONE_CONVERSATION_ID",
                     "literal": "treat as conversation id"
                 }
             }
@@ -31,9 +31,9 @@ pub(crate) fn data() -> Value {
             }
         },
         "runtime_context": {
-            "primary": "AIONUI_CONVERSATION_ID",
+            "primary": "ONE_CONVERSATION_ID",
             "environment": RUNTIME_ENV,
-            "optional_environment": ["AIONUI_LOG_DIR"]
+            "optional_environment": ["ONE_LOG_DIR"]
         },
         "safety": {
             "read_only": true,
@@ -80,7 +80,7 @@ pub(crate) fn data() -> Value {
             domain("logs", &[
                 command(CommandDescriptor {
                     path: &["logs", "tail"],
-                    description: "Tail aioncore logs from AIONUI_LOG_DIR or stdin log_dir.",
+                    description: "Tail aioncore logs from ONE_LOG_DIR or stdin log_dir.",
                     input: "stdin_json",
                     stdin_fields: &["log_dir", "lines", "errors_only", "conversation_id"],
                     selectors: &["conversation_id"],

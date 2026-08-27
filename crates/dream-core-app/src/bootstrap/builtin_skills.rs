@@ -6,7 +6,7 @@ use anyhow::Result;
 use tracing::warn;
 
 /// Gated by a `.version` file so this is a no-op on subsequent starts with
-/// the same binary. When `AIONUI_BUILTIN_SKILLS_PATH` is set, skip
+/// the same binary. When `ONE_BUILTIN_SKILLS_PATH` is set, skip
 /// materialization — the override path is the source of truth in that mode.
 pub(super) async fn materialize_builtin_skills(data_dir: &Path) -> Result<()> {
     let skip = std::env::var(dream_core_extension::BUILTIN_SKILLS_ENV_VAR)

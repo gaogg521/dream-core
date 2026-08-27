@@ -15,10 +15,10 @@ fn team_command() -> Command {
 async fn team_capabilities_prints_contract_without_runtime_env() {
     let output = team_command()
         .arg("capabilities")
-        .env_remove("AIONUI_BASE_URL")
-        .env_remove("AIONUI_CONVERSATION_ID")
-        .env_remove("AIONUI_USER_ID")
-        .env_remove("AIONUI_RUNTIME_TOKEN")
+        .env_remove("ONE_BASE_URL")
+        .env_remove("ONE_CONVERSATION_ID")
+        .env_remove("ONE_USER_ID")
+        .env_remove("ONE_RUNTIME_TOKEN")
         .output()
         .await
         .unwrap();
@@ -48,10 +48,10 @@ async fn team_capabilities_prints_contract_without_runtime_env() {
 async fn team_help_prints_markdown_without_runtime_env() {
     let output = team_command()
         .arg("help")
-        .env_remove("AIONUI_BASE_URL")
-        .env_remove("AIONUI_CONVERSATION_ID")
-        .env_remove("AIONUI_USER_ID")
-        .env_remove("AIONUI_RUNTIME_TOKEN")
+        .env_remove("ONE_BASE_URL")
+        .env_remove("ONE_CONVERSATION_ID")
+        .env_remove("ONE_USER_ID")
+        .env_remove("ONE_RUNTIME_TOKEN")
         .output()
         .await
         .unwrap();
@@ -67,10 +67,10 @@ async fn team_help_prints_markdown_without_runtime_env() {
 async fn tool_command_rejects_forged_identity_fields_before_http_call() {
     let mut child = team_command()
         .args(["send-message"])
-        .env("AIONUI_BASE_URL", "http://127.0.0.1:9")
-        .env("AIONUI_CONVERSATION_ID", "conv-1")
-        .env("AIONUI_USER_ID", "user-1")
-        .env("AIONUI_RUNTIME_TOKEN", "token-1")
+        .env("ONE_BASE_URL", "http://127.0.0.1:9")
+        .env("ONE_CONVERSATION_ID", "conv-1")
+        .env("ONE_USER_ID", "user-1")
+        .env("ONE_RUNTIME_TOKEN", "token-1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -101,10 +101,10 @@ async fn tool_command_rejects_forged_identity_fields_before_http_call() {
 async fn team_context_requires_runtime_env_and_prints_json_error() {
     let output = team_command()
         .arg("context")
-        .env_remove("AIONUI_BASE_URL")
-        .env_remove("AIONUI_CONVERSATION_ID")
-        .env_remove("AIONUI_USER_ID")
-        .env_remove("AIONUI_RUNTIME_TOKEN")
+        .env_remove("ONE_BASE_URL")
+        .env_remove("ONE_CONVERSATION_ID")
+        .env_remove("ONE_USER_ID")
+        .env_remove("ONE_RUNTIME_TOKEN")
         .output()
         .await
         .unwrap();

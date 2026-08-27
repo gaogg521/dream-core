@@ -505,7 +505,7 @@
       "agent_ref": "dream",
       "enabled_skills": [
         "openclaw-setup",
-        "aionui-webui-setup"
+        "one-webui-setup"
       ],
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
@@ -1087,7 +1087,7 @@
       "models": []
     },
     {
-      "id": "aionui-assistant",
+      "id": "one-assistant",
       "sort_order": 0,
       "default_enabled": true,
       "name": "1ONE Butler",
@@ -1104,16 +1104,16 @@
         "ru-RU": "Ваш универсальный дворецкий 1ONE: настройка ассистентов, навыков, серверов MCP и провайдеров LLM; настройка удалённого доступа, чтобы открывать 1ONE с телефона или делиться ссылкой; и диагностика проблем — зависших разговоров, сбоев моделей или почему не выполнилась запланированная задача.",
         "uk-UA": "Ваш універсальний дворецький 1ONE: налаштування асистентів, навичок, серверів MCP і провайдерів LLM; налаштування віддаленого доступу, щоб відкривати 1ONE з телефона або ділитися посиланням; і діагностика проблем — зависань розмов, збоїв моделей або чому не виконалося заплановане завдання."
       },
-      "avatar": "avatars/aionui-assistant.jpg",
+      "avatar": "avatars/one-assistant.jpg",
       "agent_ref": "dream",
       "enabled_skills": [
-        "aionui-config",
-        "aionui-troubleshooting",
-        "aionui-webui-public"
+        "one-config",
+        "one-troubleshooting",
+        "one-webui-public"
       ],
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
-      "rule_file": "rules/aionui-assistant.{locale}.md",
+      "rule_file": "rules/one-assistant.{locale}.md",
       "prompts": [
         "Add a new LLM provider and API key, then set it as the default model",
         "Set up remote access for me, so I can open 1ONE from my phone when I'm out",

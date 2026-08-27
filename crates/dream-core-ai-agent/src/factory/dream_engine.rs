@@ -1082,7 +1082,7 @@ mod tests {
     #[cfg(unix)]
     impl BundledRuntimeModeGuard {
         fn install(root: &Path) -> Self {
-            unsafe { std::env::set_var("AIONUI_BUNDLED_MANAGED_RESOURCES", root) };
+            unsafe { std::env::set_var("ONE_BUNDLED_MANAGED_RESOURCES", root) };
             set_managed_resources_mode(ManagedResourcesMode::Bundled);
             Self
         }
@@ -1091,7 +1091,7 @@ mod tests {
     #[cfg(unix)]
     impl Drop for BundledRuntimeModeGuard {
         fn drop(&mut self) {
-            unsafe { std::env::remove_var("AIONUI_BUNDLED_MANAGED_RESOURCES") };
+            unsafe { std::env::remove_var("ONE_BUNDLED_MANAGED_RESOURCES") };
             set_managed_resources_mode(ManagedResourcesMode::Download);
         }
     }

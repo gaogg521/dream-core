@@ -14,20 +14,20 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 pub(crate) struct Cli {
     /// Host address to listen on.
     ///
-    /// Also settable via `AIONUI_HOST` — container orchestration injects
+    /// Also settable via `ONE_HOST` — container orchestration injects
     /// config through env vars, not argv, so a server deployment should not
     /// need a bespoke entrypoint script just to pass these four flags.
-    #[arg(long, env = "AIONUI_HOST", default_value_t = String::from(dream_core_common::constants::DEFAULT_HOST))]
+    #[arg(long, env = "ONE_HOST", default_value_t = String::from(dream_core_common::constants::DEFAULT_HOST))]
     pub host: String,
 
-    /// Port number to listen on. Also settable via `AIONUI_PORT`.
-    #[arg(long, env = "AIONUI_PORT", default_value_t = dream_core_common::constants::DEFAULT_PORT)]
+    /// Port number to listen on. Also settable via `ONE_PORT`.
+    #[arg(long, env = "ONE_PORT", default_value_t = dream_core_common::constants::DEFAULT_PORT)]
     pub port: u16,
 
     /// Data directory for database and file storage. Also settable via
-    /// `AIONUI_DATA_DIR` — this is the directory a container deployment
+    /// `ONE_DATA_DIR` — this is the directory a container deployment
     /// mounts a persistent volume onto.
-    #[arg(long, env = "AIONUI_DATA_DIR", default_value = "data")]
+    #[arg(long, env = "ONE_DATA_DIR", default_value = "data")]
     pub data_dir: PathBuf,
 
     /// Parent process ID used to terminate the backend when the desktop app dies.
@@ -35,7 +35,7 @@ pub(crate) struct Cli {
     pub parent_pid: Option<u32>,
 
     /// Working directory for conversation workspaces.
-    /// Falls back to AIONUI_WORK_DIR env, then to data-dir.
+    /// Falls back to ONE_WORK_DIR env, then to data-dir.
     #[arg(long)]
     pub work_dir: Option<PathBuf>,
 
@@ -52,13 +52,13 @@ pub(crate) struct Cli {
     pub identity_mode: IdentityModeArg,
 
     /// Directory for log files. Defaults to {data-dir}/logs/.
-    /// Also settable via `AIONUI_LOG_DIR`.
-    #[arg(long, env = "AIONUI_LOG_DIR")]
+    /// Also settable via `ONE_LOG_DIR`.
+    #[arg(long, env = "ONE_LOG_DIR")]
     pub log_dir: Option<PathBuf>,
 
     /// Log level filter (e.g. "info", "debug", "info,dream_core_mcp=trace").
-    /// Also settable via `AIONUI_LOG_LEVEL`.
-    #[arg(long, env = "AIONUI_LOG_LEVEL")]
+    /// Also settable via `ONE_LOG_LEVEL`.
+    #[arg(long, env = "ONE_LOG_LEVEL")]
     pub log_level: Option<String>,
 
     /// Dump prompt diagnostics to {data-dir}/prompt-dumps.
@@ -938,7 +938,7 @@ mod tests {
 
     /// Container orchestration injects config through env vars, not argv —
     /// this is what lets a server deployment skip a bespoke entrypoint script
-    /// just to translate `AIONUI_PORT=8080` into `--port 8080`. Uses
+    /// just to translate `ONE_PORT=8080` into `--port 8080`. Uses
     /// `try_parse_from` with `env::set_var` scoped to this one process
     /// invocation-equivalent call, mirroring how clap itself tests `env`.
     #[test]
@@ -946,11 +946,11 @@ mod tests {
         // SAFETY: test-only, no other thread in this process reads these
         // specific env vars concurrently.
         unsafe {
-            std::env::set_var("AIONUI_HOST", "0.0.0.0");
-            std::env::set_var("AIONUI_PORT", "9000");
-            std::env::set_var("AIONUI_DATA_DIR", "/data");
-            std::env::set_var("AIONUI_LOG_DIR", "/data/logs");
-            std::env::set_var("AIONUI_LOG_LEVEL", "debug");
+            std::env::set_var("ONE_HOST", "0.0.0.0");
+            std::env::set_var("ONE_PORT", "9000");
+            std::env::set_var("ONE_DATA_DIR", "/data");
+            std::env::set_var("ONE_LOG_DIR", "/data/logs");
+            std::env::set_var("ONE_LOG_LEVEL", "debug");
         }
         let cli = Cli::parse_from(["aioncore"]);
         assert_eq!(cli.host, "0.0.0.0");
@@ -960,11 +960,11 @@ mod tests {
         assert_eq!(cli.log_level.as_deref(), Some("debug"));
         // SAFETY: same test-only justification as above.
         unsafe {
-            std::env::remove_var("AIONUI_HOST");
-            std::env::remove_var("AIONUI_PORT");
-            std::env::remove_var("AIONUI_DATA_DIR");
-            std::env::remove_var("AIONUI_LOG_DIR");
-            std::env::remove_var("AIONUI_LOG_LEVEL");
+            std::env::remove_var("ONE_HOST");
+            std::env::remove_var("ONE_PORT");
+            std::env::remove_var("ONE_DATA_DIR");
+            std::env::remove_var("ONE_LOG_DIR");
+            std::env::remove_var("ONE_LOG_LEVEL");
         }
     }
 
@@ -974,13 +974,13 @@ mod tests {
     fn explicit_cli_flag_overrides_env_var() {
         // SAFETY: test-only.
         unsafe {
-            std::env::set_var("AIONUI_PORT", "9000");
+            std::env::set_var("ONE_PORT", "9000");
         }
         let cli = Cli::parse_from(["aioncore", "--port", "7000"]);
         assert_eq!(cli.port, 7000);
         // SAFETY: same test-only justification as above.
         unsafe {
-            std::env::remove_var("AIONUI_PORT");
+            std::env::remove_var("ONE_PORT");
         }
     }
 

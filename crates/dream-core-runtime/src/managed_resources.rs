@@ -21,7 +21,7 @@ pub struct ManagedResourceSource {
     pub root: PathBuf,
 }
 
-const BUNDLED_RESOURCES_ENV: &str = "AIONUI_BUNDLED_MANAGED_RESOURCES";
+const BUNDLED_RESOURCES_ENV: &str = "ONE_BUNDLED_MANAGED_RESOURCES";
 
 pub fn set_managed_resources_mode(mode: ManagedResourcesMode) {
     *mode_lock().write().expect("managed resources mode lock poisoned") = mode;

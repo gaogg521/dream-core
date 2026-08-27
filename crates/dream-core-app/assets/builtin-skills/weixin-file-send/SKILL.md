@@ -26,15 +26,15 @@ Without the protocol block, the app will not actually send the file.
 Append one or more protocol blocks at the end of the final reply:
 
 ```text
-[AIONUI_CHANNEL_SEND]
+[ONE_CHANNEL_SEND]
 {"type":"image","path":"./output/chart.png","caption":"Chart ready"}
-[/AIONUI_CHANNEL_SEND]
+[/ONE_CHANNEL_SEND]
 ```
 
 ```text
-[AIONUI_CHANNEL_SEND]
+[ONE_CHANNEL_SEND]
 {"type":"file","path":"./output/report.pdf","fileName":"report.pdf","caption":"Report ready"}
-[/AIONUI_CHANNEL_SEND]
+[/ONE_CHANNEL_SEND]
 ```
 
 ## Rules
@@ -57,15 +57,15 @@ User-visible text with image:
 ```text
 I generated the chart and sent it below.
 
-[AIONUI_CHANNEL_SEND]
+[ONE_CHANNEL_SEND]
 {"type":"image","path":"./output/chart.png","caption":"Sales chart"}
-[/AIONUI_CHANNEL_SEND]
+[/ONE_CHANNEL_SEND]
 ```
 
 File only:
 
 ```text
-[AIONUI_CHANNEL_SEND]
+[ONE_CHANNEL_SEND]
 {"type":"file","path":"./output/report.pdf","fileName":"report.pdf","caption":"Weekly report"}
-[/AIONUI_CHANNEL_SEND]
+[/ONE_CHANNEL_SEND]
 ```

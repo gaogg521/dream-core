@@ -405,9 +405,9 @@ async fn config_mcp_oauth_logout_reads_status_before_and_after_write() {
 
     let mut child = config_command()
         .args(["mcp", "oauth", "logout"])
-        .env("AIONUI_BASE_URL", &base_url)
-        .env("AIONUI_CONVERSATION_ID", "conv-mcp")
-        .env("AIONUI_USER_ID", "user-mcp")
+        .env("ONE_BASE_URL", &base_url)
+        .env("ONE_CONVERSATION_ID", "conv-mcp")
+        .env("ONE_USER_ID", "user-mcp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -446,9 +446,9 @@ async fn config_mcp_oauth_logout_reads_status_before_and_after_write() {
 async fn config_capabilities_prints_agent_readable_contract_without_runtime_env() {
     let output = config_command()
         .arg("capabilities")
-        .env_remove("AIONUI_BASE_URL")
-        .env_remove("AIONUI_CONVERSATION_ID")
-        .env_remove("AIONUI_USER_ID")
+        .env_remove("ONE_BASE_URL")
+        .env_remove("ONE_CONVERSATION_ID")
+        .env_remove("ONE_USER_ID")
         .output()
         .await
         .unwrap();
@@ -472,7 +472,7 @@ async fn config_capabilities_prints_agent_readable_contract_without_runtime_env(
     assert_eq!(stdout["data"]["input"]["default_mode"], "stdin_json");
     assert_eq!(
         stdout["data"]["input"]["selectors"]["assistant_id"]["current"],
-        "resolve via AIONUI_CONVERSATION_ID"
+        "resolve via ONE_CONVERSATION_ID"
     );
 
     let domains = stdout["data"]["domains"]
@@ -504,9 +504,9 @@ async fn config_provider_update_reads_collection_before_and_after_write() {
 
     let mut child = config_command()
         .args(["providers", "update"])
-        .env("AIONUI_BASE_URL", &base_url)
-        .env("AIONUI_CONVERSATION_ID", "conv-provider")
-        .env("AIONUI_USER_ID", "user-provider")
+        .env("ONE_BASE_URL", &base_url)
+        .env("ONE_CONVERSATION_ID", "conv-provider")
+        .env("ONE_USER_ID", "user-provider")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -553,9 +553,9 @@ async fn config_conversation_rename_patches_name_and_reads_resource_before_and_a
 
     let mut child = config_command()
         .args(["conversation", "rename"])
-        .env("AIONUI_BASE_URL", &base_url)
-        .env("AIONUI_CONVERSATION_ID", "conv-current")
-        .env("AIONUI_USER_ID", "user-rename")
+        .env("ONE_BASE_URL", &base_url)
+        .env("ONE_CONVERSATION_ID", "conv-current")
+        .env("ONE_USER_ID", "user-rename")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -602,9 +602,9 @@ async fn config_external_paths_add_reads_collection_before_and_after_write() {
 
     let mut child = config_command()
         .args(["skills", "external-paths", "add"])
-        .env("AIONUI_BASE_URL", &base_url)
-        .env("AIONUI_CONVERSATION_ID", "conv-skill")
-        .env("AIONUI_USER_ID", "user-skill")
+        .env("ONE_BASE_URL", &base_url)
+        .env("ONE_CONVERSATION_ID", "conv-skill")
+        .env("ONE_USER_ID", "user-skill")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -640,9 +640,9 @@ async fn config_payload_commands_resolve_current_conversation_and_user_selectors
 
     let mut child = config_command()
         .args(["cron", "jobs", "create"])
-        .env("AIONUI_BASE_URL", &base_url)
-        .env("AIONUI_CONVERSATION_ID", "conv-selector")
-        .env("AIONUI_USER_ID", "user-selector")
+        .env("ONE_BASE_URL", &base_url)
+        .env("ONE_CONVERSATION_ID", "conv-selector")
+        .env("ONE_USER_ID", "user-selector")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -697,9 +697,9 @@ async fn config_mcp_server_update_reads_server_id_from_stdin_and_redacts_metadat
 
     let mut child = config_command()
         .args(["mcp", "servers", "update"])
-        .env("AIONUI_BASE_URL", &base_url)
-        .env("AIONUI_CONVERSATION_ID", "conv-mcp")
-        .env("AIONUI_USER_ID", "user-mcp")
+        .env("ONE_BASE_URL", &base_url)
+        .env("ONE_CONVERSATION_ID", "conv-mcp")
+        .env("ONE_USER_ID", "user-mcp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -754,9 +754,9 @@ async fn config_provider_create_redacts_api_key_from_stdout() {
 
     let mut child = config_command()
         .args(["providers", "create"])
-        .env("AIONUI_BASE_URL", &base_url)
-        .env("AIONUI_CONVERSATION_ID", "conv-provider")
-        .env("AIONUI_USER_ID", "user-provider")
+        .env("ONE_BASE_URL", &base_url)
+        .env("ONE_CONVERSATION_ID", "conv-provider")
+        .env("ONE_USER_ID", "user-provider")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -792,9 +792,9 @@ async fn config_agent_custom_update_reads_agent_id_from_stdin() {
 
     let mut child = config_command()
         .args(["agents", "custom", "update"])
-        .env("AIONUI_BASE_URL", &base_url)
-        .env("AIONUI_CONVERSATION_ID", "conv-agent")
-        .env("AIONUI_USER_ID", "user-agent")
+        .env("ONE_BASE_URL", &base_url)
+        .env("ONE_CONVERSATION_ID", "conv-agent")
+        .env("ONE_USER_ID", "user-agent")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -835,9 +835,9 @@ async fn config_cron_job_skill_save_reads_job_id_from_stdin() {
 
     let mut child = config_command()
         .args(["cron", "jobs", "skill", "save"])
-        .env("AIONUI_BASE_URL", &base_url)
-        .env("AIONUI_CONVERSATION_ID", "conv-cron")
-        .env("AIONUI_USER_ID", "user-cron")
+        .env("ONE_BASE_URL", &base_url)
+        .env("ONE_CONVERSATION_ID", "conv-cron")
+        .env("ONE_USER_ID", "user-cron")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -881,9 +881,9 @@ async fn config_context_resolves_current_conversation_assistant() {
 
     let output = config_command()
         .arg("context")
-        .env("AIONUI_BASE_URL", &base_url)
-        .env("AIONUI_CONVERSATION_ID", "conv-current")
-        .env("AIONUI_USER_ID", "user-current")
+        .env("ONE_BASE_URL", &base_url)
+        .env("ONE_CONVERSATION_ID", "conv-current")
+        .env("ONE_USER_ID", "user-current")
         .output()
         .await
         .unwrap();
@@ -910,9 +910,9 @@ async fn config_assistant_rule_read_resolves_current_assistant_selector() {
 
     let mut child = config_command()
         .args(["assistants", "rule", "read"])
-        .env("AIONUI_BASE_URL", &base_url)
-        .env("AIONUI_CONVERSATION_ID", "conv-current")
-        .env("AIONUI_USER_ID", "user-current")
+        .env("ONE_BASE_URL", &base_url)
+        .env("ONE_CONVERSATION_ID", "conv-current")
+        .env("ONE_USER_ID", "user-current")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -959,9 +959,9 @@ async fn config_assistant_rule_write_redacts_rule_content_from_metadata() {
 
     let mut child = config_command()
         .args(["assistants", "rule", "write"])
-        .env("AIONUI_BASE_URL", &base_url)
-        .env("AIONUI_CONVERSATION_ID", "conv-current")
-        .env("AIONUI_USER_ID", "user-current")
+        .env("ONE_BASE_URL", &base_url)
+        .env("ONE_CONVERSATION_ID", "conv-current")
+        .env("ONE_USER_ID", "user-current")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1007,9 +1007,9 @@ async fn config_cron_current_update_reads_job_id_from_stdin_and_sends_runtime_he
 
     let mut child = config_command()
         .args(["cron", "current", "update"])
-        .env("AIONUI_BASE_URL", &base_url)
-        .env("AIONUI_CONVERSATION_ID", "conv-cron")
-        .env("AIONUI_USER_ID", "user-cron")
+        .env("ONE_BASE_URL", &base_url)
+        .env("ONE_CONVERSATION_ID", "conv-cron")
+        .env("ONE_USER_ID", "user-cron")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1064,9 +1064,9 @@ async fn config_context_fails_with_stable_error_when_conversation_env_missing() 
 
     let output = config_command()
         .arg("context")
-        .env("AIONUI_BASE_URL", &base_url)
-        .env_remove("AIONUI_CONVERSATION_ID")
-        .env("AIONUI_USER_ID", "user-current")
+        .env("ONE_BASE_URL", &base_url)
+        .env_remove("ONE_CONVERSATION_ID")
+        .env("ONE_USER_ID", "user-current")
         .output()
         .await
         .unwrap();
@@ -1078,40 +1078,40 @@ async fn config_context_fails_with_stable_error_when_conversation_env_missing() 
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains(
-        "CONFIG_ENV_MISSING command=\"config context\" field=\"AIONUI_CONVERSATION_ID\": missing required environment variable"
+        "CONFIG_ENV_MISSING command=\"config context\" field=\"ONE_CONVERSATION_ID\": missing required environment variable"
     ));
 }
 
 #[test]
 fn builtin_config_skills_use_config_cli_not_python_or_cron_helper() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/builtin-skills/auto-inject");
-    let aionui_config = std::fs::read_to_string(root.join("aionui-config/SKILL.md")).unwrap();
+    let aionui_config = std::fs::read_to_string(root.join("one-config/SKILL.md")).unwrap();
     let cron = std::fs::read_to_string(root.join("cron/SKILL.md")).unwrap();
 
     for forbidden in ["python3", "aionui_api.py", "lsof", "netstat", "curl"] {
         assert!(
             !aionui_config.contains(forbidden),
-            "aionui-config skill must not mention {forbidden}"
+            "one-config skill must not mention {forbidden}"
         );
     }
-    assert!(aionui_config.contains("\"$AIONUI_HELPER_BIN\" config context"));
-    assert!(aionui_config.contains("\"$AIONUI_HELPER_BIN\" config capabilities"));
+    assert!(aionui_config.contains("\"$ONE_HELPER_BIN\" config context"));
+    assert!(aionui_config.contains("\"$ONE_HELPER_BIN\" config capabilities"));
     assert!(aionui_config.contains("assistant_id\": \"current"));
     for command in [
-        "\"$AIONUI_HELPER_BIN\" config mcp servers",
-        "\"$AIONUI_HELPER_BIN\" config providers",
-        "\"$AIONUI_HELPER_BIN\" config settings",
-        "\"$AIONUI_HELPER_BIN\" config agents",
-        "\"$AIONUI_HELPER_BIN\" config cron jobs",
-        "\"$AIONUI_HELPER_BIN\" config skills external-paths",
+        "\"$ONE_HELPER_BIN\" config mcp servers",
+        "\"$ONE_HELPER_BIN\" config providers",
+        "\"$ONE_HELPER_BIN\" config settings",
+        "\"$ONE_HELPER_BIN\" config agents",
+        "\"$ONE_HELPER_BIN\" config cron jobs",
+        "\"$ONE_HELPER_BIN\" config skills external-paths",
     ] {
         assert!(
             aionui_config.contains(command),
-            "aionui-config skill must document {command}"
+            "one-config skill must document {command}"
         );
     }
 
     assert!(!cron.contains("cron-helper"));
-    assert!(cron.contains("\"$AIONUI_HELPER_BIN\" config cron current list"));
+    assert!(cron.contains("\"$ONE_HELPER_BIN\" config cron current list"));
     assert!(cron.contains("\"job_id\""));
 }

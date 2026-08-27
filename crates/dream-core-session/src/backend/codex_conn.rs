@@ -8078,7 +8078,7 @@ mod tests {
                     cwd: Some("/tmp/work".into()),
                     extra_args: vec!["--flag".into()],
                     spawn_env: vec![dream_core_common::EnvVar {
-                        name: "AIONUI_CONVERSATION_ID".into(),
+                        name: "ONE_CONVERSATION_ID".into(),
                         value: "conv-1".into(),
                     }],
                     ..Default::default()
@@ -8114,7 +8114,7 @@ mod tests {
                 .iter()
                 .map(|e| (e.name.as_str(), e.value.as_str()))
                 .collect::<Vec<_>>(),
-            [("AIONUI_CONVERSATION_ID", "conv-1")],
+            [("ONE_CONVERSATION_ID", "conv-1")],
             "spawn_env forwarded into CommandSpec.env"
         );
     }
@@ -9019,8 +9019,8 @@ mod tests {
         // No thread/started ever — bound_thread exhausts its budget. Use a short env
         // budget so the test does not wait the full 30s (the real cold-start window).
         // SAFETY: restored after; this assertion is about the ERROR CLASSIFICATION.
-        let saved = std::env::var("AIONUI_HANDSHAKE_TIMEOUT_SECS").ok();
-        unsafe { std::env::set_var("AIONUI_HANDSHAKE_TIMEOUT_SECS", "1") };
+        let saved = std::env::var("ONE_HANDSHAKE_TIMEOUT_SECS").ok();
+        unsafe { std::env::set_var("ONE_HANDSHAKE_TIMEOUT_SECS", "1") };
         let fake = FakeAgentIo::never_exits(Vec::new());
         let backend = CodexSessionBackend::build_with_io("codex-r8", Box::new(fake)).await;
         let res = backend
@@ -9033,8 +9033,8 @@ mod tests {
             })
             .await;
         match saved {
-            Some(v) => unsafe { std::env::set_var("AIONUI_HANDSHAKE_TIMEOUT_SECS", v) },
-            None => unsafe { std::env::remove_var("AIONUI_HANDSHAKE_TIMEOUT_SECS") },
+            Some(v) => unsafe { std::env::set_var("ONE_HANDSHAKE_TIMEOUT_SECS", v) },
+            None => unsafe { std::env::remove_var("ONE_HANDSHAKE_TIMEOUT_SECS") },
         }
         // codex-500 fix: the error must be the RETRYABLE HandshakeTimeout (agent still
         // starting), NOT a bare Transport that mapped to an opaque 500. (Was Transport
@@ -9462,21 +9462,21 @@ mod tests {
         // Default (no env): 30s parity with legacy ACP. We assert >= 15s so a future
         // tweak within reason passes, but the old 2s would fail loudly.
         // SAFETY: single-threaded assertion on a process-global; we restore after.
-        let saved = std::env::var("AIONUI_HANDSHAKE_TIMEOUT_SECS").ok();
-        unsafe { std::env::remove_var("AIONUI_HANDSHAKE_TIMEOUT_SECS") };
+        let saved = std::env::var("ONE_HANDSHAKE_TIMEOUT_SECS").ok();
+        unsafe { std::env::remove_var("ONE_HANDSHAKE_TIMEOUT_SECS") };
         assert!(
             super::super::handshake_budget() >= std::time::Duration::from_secs(15),
             "handshake budget must cover a cold start (>=15s), NOT the old magic 2s"
         );
-        unsafe { std::env::set_var("AIONUI_HANDSHAKE_TIMEOUT_SECS", "45") };
+        unsafe { std::env::set_var("ONE_HANDSHAKE_TIMEOUT_SECS", "45") };
         assert_eq!(
             super::super::handshake_budget(),
             std::time::Duration::from_secs(45),
             "env override honored"
         );
         match saved {
-            Some(v) => unsafe { std::env::set_var("AIONUI_HANDSHAKE_TIMEOUT_SECS", v) },
-            None => unsafe { std::env::remove_var("AIONUI_HANDSHAKE_TIMEOUT_SECS") },
+            Some(v) => unsafe { std::env::set_var("ONE_HANDSHAKE_TIMEOUT_SECS", v) },
+            None => unsafe { std::env::remove_var("ONE_HANDSHAKE_TIMEOUT_SECS") },
         }
     }
 

@@ -1138,7 +1138,7 @@ mod tests {
     }
 
     use crate::AppConfig;
-    use dream_core_ai_agent::types::{AIONUI_BASE_URL_ENV, AIONUI_HELPER_BIN_ENV, BuildTaskOptions, SendMessageData};
+    use dream_core_ai_agent::types::{BASE_URL_ENV, BuildTaskOptions, HELPER_BIN_ENV, SendMessageData};
     use dream_core_ai_agent::{
         AgentError, AgentInstance, AgentSendError, AgentStreamEvent, IAgentTask, IMockAgent, IWorkerTaskManager,
         WorkerTaskManagerImpl,
@@ -1455,12 +1455,12 @@ mod tests {
         let env = wait_for_captured_env(&captured_env).await;
         assert!(
             env.iter()
-                .any(|(key, value)| key == AIONUI_HELPER_BIN_ENV && !value.is_empty()),
-            "cron conversation runtime env should include AIONUI_HELPER_BIN"
+                .any(|(key, value)| key == HELPER_BIN_ENV && !value.is_empty()),
+            "cron conversation runtime env should include ONE_HELPER_BIN"
         );
         assert!(
-            env.contains(&(AIONUI_BASE_URL_ENV.to_owned(), config.local_base_url())),
-            "cron conversation runtime env should include AIONUI_BASE_URL"
+            env.contains(&(BASE_URL_ENV.to_owned(), config.local_base_url())),
+            "cron conversation runtime env should include ONE_BASE_URL"
         );
 
         services.database.close().await;

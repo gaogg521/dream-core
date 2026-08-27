@@ -27,30 +27,34 @@ use dream_core_app::{AppConfig, AppServices, IdentityMode, create_admin_router};
     version
 )]
 struct Cli {
-    /// Host address to listen on. Also settable via `AIONUI_HOST`.
-    #[arg(long, env = "AIONUI_HOST", default_value_t = String::from(dream_core_common::constants::DEFAULT_HOST))]
+    /// Host address to listen on. Also settable via `ONE_HOST`.
+    #[arg(long, env = "ONE_HOST", default_value_t = String::from(dream_core_common::constants::DEFAULT_HOST))]
     host: String,
 
-    /// Port number to listen on. Also settable via `AIONUI_ADMIN_PORT`.
+    /// Port number to listen on. Also settable via `ONE_ADMIN_PORT`.
     ///
     /// Defaults to `dreamcore`'s own default port + 1 so the two can run
     /// side by side without a config change.
-    #[arg(long, env = "AIONUI_ADMIN_PORT", default_value_t = dream_core_common::constants::DEFAULT_PORT + 1)]
+    #[arg(long, env = "ONE_ADMIN_PORT", default_value_t = dream_core_common::constants::DEFAULT_PORT + 1)]
     port: u16,
 
     /// Data directory for the shared database. MUST point at the same
     /// directory as the `dreamcore` process it is paired with. Also settable
-    /// via `AIONUI_DATA_DIR`.
-    #[arg(long, env = "AIONUI_DATA_DIR", default_value = "data")]
+    /// via `ONE_DATA_DIR`.
+    #[arg(long, env = "ONE_DATA_DIR", default_value = "data")]
     data_dir: PathBuf,
 
     /// Log level filter (e.g. "info", "debug"). Also settable via
-    /// `AIONUI_LOG_LEVEL`.
-    #[arg(long, env = "AIONUI_LOG_LEVEL")]
+    /// `ONE_LOG_LEVEL`.
+    #[arg(long, env = "ONE_LOG_LEVEL")]
     log_level: Option<String>,
 }
 
 fn main() -> ExitCode {
+    // Same contract as the main binary: adopt legacy env names before `clap`
+    // reads them, while this process is still single-threaded.
+    unsafe { dream_core_common::adopt_legacy_env() };
+
     let cli = Cli::parse();
     init_tracing(cli.log_level.as_deref());
 

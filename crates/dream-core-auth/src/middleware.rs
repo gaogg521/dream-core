@@ -125,7 +125,7 @@ pub enum AuthIdentityMode {
 }
 
 /// Header carrying the conversation-runtime helper token minted by the backend
-/// and injected into agent subprocess environments as `AIONUI_RUNTIME_TOKEN`.
+/// and injected into agent subprocess environments as `ONE_RUNTIME_TOKEN`.
 pub const RUNTIME_TOKEN_HEADER: &str = "x-aionui-runtime-token";
 /// Header carrying the acting user id asserted by the helper CLI.
 pub const RUNTIME_USER_ID_HEADER: &str = "x-aionui-user-id";

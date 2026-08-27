@@ -12,10 +12,10 @@ pub struct CookieConfig {
 impl CookieConfig {
     /// Create cookie config from environment variables.
     ///
-    /// - `AIONUI_HTTPS=true` → Secure flag, SameSite=Strict
+    /// - `ONE_HTTPS=true` → Secure flag, SameSite=Strict
     /// - Otherwise → no Secure flag, SameSite=Lax (for remote HTTP access)
     pub fn from_env() -> Self {
-        let https = std::env::var("AIONUI_HTTPS")
+        let https = std::env::var("ONE_HTTPS")
             .map(|v| v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
         Self {

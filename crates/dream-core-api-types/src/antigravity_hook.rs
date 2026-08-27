@@ -28,11 +28,11 @@ pub struct AntigravityHookConfig {
 impl AntigravityHookConfig {
     /// env key the hook reads to learn Dream UI's base URL (scheme + host +
     /// port, e.g. `http://127.0.0.1:25808`).
-    pub const ENV_BASE_URL: &'static str = "AIONUI_ANTIGRAVITY_HOOK_BASE_URL";
+    pub const ENV_BASE_URL: &'static str = "ONE_ANTIGRAVITY_HOOK_BASE_URL";
     /// env key the hook reads to learn its auth token.
-    pub const ENV_TOKEN: &'static str = "AIONUI_ANTIGRAVITY_HOOK_TOKEN";
+    pub const ENV_TOKEN: &'static str = "ONE_ANTIGRAVITY_HOOK_TOKEN";
     /// env key the hook reads to learn which conversation it belongs to.
-    pub const ENV_CONVERSATION_ID: &'static str = "AIONUI_ANTIGRAVITY_HOOK_CONVERSATION_ID";
+    pub const ENV_CONVERSATION_ID: &'static str = "ONE_ANTIGRAVITY_HOOK_CONVERSATION_ID";
     /// Header carrying [`Self::ENV_TOKEN`] on the callback request.
     pub const TOKEN_HEADER: &'static str = "x-aionui-hook-token";
     /// Name under which the bridge registers itself in `hooks.json`.

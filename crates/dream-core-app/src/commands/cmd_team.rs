@@ -11,10 +11,10 @@ use serde_json::{Value, json};
 use crate::cli::{TeamArgs, TeamCommand, TeamTaskCommand};
 use crate::commands::team_capabilities;
 
-const ENV_BASE_URL: &str = "AIONUI_BASE_URL";
-const ENV_USER_ID: &str = "AIONUI_USER_ID";
-const ENV_CONVERSATION_ID: &str = "AIONUI_CONVERSATION_ID";
-const ENV_RUNTIME_TOKEN: &str = "AIONUI_RUNTIME_TOKEN";
+const ENV_BASE_URL: &str = "ONE_BASE_URL";
+const ENV_USER_ID: &str = "ONE_USER_ID";
+const ENV_CONVERSATION_ID: &str = "ONE_CONVERSATION_ID";
+const ENV_RUNTIME_TOKEN: &str = "ONE_RUNTIME_TOKEN";
 
 pub(crate) async fn run_team(args: TeamArgs) -> ExitCode {
     match run_team_inner(args).await {

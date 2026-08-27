@@ -231,8 +231,8 @@ async fn probe_or_reject(req: &CustomAgentUpsertRequest) -> Result<(), AgentErro
     // Gated behind cfg(test) / the `test-support` feature so production
     // builds cannot be tricked into skipping the probe via env var.
     #[cfg(any(test, feature = "test-support"))]
-    if std::env::var("AIONUI_BYPASS_PROBE").is_ok() {
-        tracing::warn!("AIONUI_BYPASS_PROBE set — skipping custom agent probe. Test-only.");
+    if std::env::var("ONE_BYPASS_PROBE").is_ok() {
+        tracing::warn!("ONE_BYPASS_PROBE set — skipping custom agent probe. Test-only.");
         return Ok(());
     }
 

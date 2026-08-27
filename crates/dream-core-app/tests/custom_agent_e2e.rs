@@ -7,11 +7,11 @@
 //!   - Forbidden when operating on a builtin id through the custom-only paths
 //!   - Test-on-save CLI-not-found rejection (runs the real probe)
 //!
-//! Gates the probe with AIONUI_BYPASS_PROBE for happy paths so CI does not
+//! Gates the probe with ONE_BYPASS_PROBE for happy paths so CI does not
 //! need an ACP CLI installed. Unset bypass for the single test that
 //! verifies the CLI-not-found path.
 //!
-//! Thread safety: `AIONUI_BYPASS_PROBE` is a process-wide env var.  Tests
+//! Thread safety: `ONE_BYPASS_PROBE` is a process-wide env var.  Tests
 //! that set or clear it hold `ENV_MUTEX` for their entire body so no two
 //! tests race on the var simultaneously.
 
@@ -29,7 +29,7 @@ use common::{body_json, build_app, get_with_token, json_with_token, setup_and_lo
 
 // ── Global lock for env-var mutation ─────────────────────────────────────────
 //
-// Any test that reads or writes AIONUI_BYPASS_PROBE must hold this lock for
+// Any test that reads or writes ONE_BYPASS_PROBE must hold this lock for
 // its entire body.  This serialises all probe-sensitive tests within a single
 // test binary regardless of how many threads `cargo test` uses.
 
@@ -69,7 +69,7 @@ async fn custom_agent_full_roundtrip() {
     let _guard = lock_env().await;
     // SAFETY: single env-var mutation under ENV_MUTEX; restored at function end.
     unsafe {
-        std::env::set_var("AIONUI_BYPASS_PROBE", "1");
+        std::env::set_var("ONE_BYPASS_PROBE", "1");
     }
 
     let (mut app, services) = build_app().await;
@@ -172,7 +172,7 @@ async fn custom_agent_full_roundtrip() {
     );
 
     unsafe {
-        std::env::remove_var("AIONUI_BYPASS_PROBE");
+        std::env::remove_var("ONE_BYPASS_PROBE");
     }
 }
 
@@ -182,7 +182,7 @@ async fn custom_agent_full_roundtrip() {
 async fn custom_agent_advanced_overrides_persist() {
     let _guard = lock_env().await;
     unsafe {
-        std::env::set_var("AIONUI_BYPASS_PROBE", "1");
+        std::env::set_var("ONE_BYPASS_PROBE", "1");
     }
 
     let (mut app, services) = build_app().await;
@@ -210,14 +210,14 @@ async fn custom_agent_advanced_overrides_persist() {
     assert_eq!(json["data"]["description"], "test");
 
     unsafe {
-        std::env::remove_var("AIONUI_BYPASS_PROBE");
+        std::env::remove_var("ONE_BYPASS_PROBE");
     }
 }
 
 // ── Bad path: validation ──────────────────────────────────────────────────────
 //
 // These tests exercise the validate_upsert() path which fires before the
-// probe, so they do not need AIONUI_BYPASS_PROBE and do not need the lock.
+// probe, so they do not need ONE_BYPASS_PROBE and do not need the lock.
 
 #[tokio::test]
 async fn create_rejects_empty_name() {
@@ -246,7 +246,7 @@ async fn create_rejects_empty_command() {
 async fn update_unknown_id_returns_404() {
     let _guard = lock_env().await;
     unsafe {
-        std::env::set_var("AIONUI_BYPASS_PROBE", "1");
+        std::env::set_var("ONE_BYPASS_PROBE", "1");
     }
 
     let (mut app, services) = build_app().await;
@@ -263,7 +263,7 @@ async fn update_unknown_id_returns_404() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
     unsafe {
-        std::env::remove_var("AIONUI_BYPASS_PROBE");
+        std::env::remove_var("ONE_BYPASS_PROBE");
     }
 }
 
@@ -271,7 +271,7 @@ async fn update_unknown_id_returns_404() {
 async fn update_builtin_id_returns_403() {
     let _guard = lock_env().await;
     unsafe {
-        std::env::set_var("AIONUI_BYPASS_PROBE", "1");
+        std::env::set_var("ONE_BYPASS_PROBE", "1");
     }
 
     let (mut app, services) = build_app().await;
@@ -289,7 +289,7 @@ async fn update_builtin_id_returns_403() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
     unsafe {
-        std::env::remove_var("AIONUI_BYPASS_PROBE");
+        std::env::remove_var("ONE_BYPASS_PROBE");
     }
 }
 
@@ -325,12 +325,12 @@ async fn set_enabled_unknown_id_returns_404() {
 
 #[tokio::test]
 async fn test_on_save_cli_not_found_blocks_upsert() {
-    // Hold ENV_MUTEX to guarantee AIONUI_BYPASS_PROBE is unset for the
+    // Hold ENV_MUTEX to guarantee ONE_BYPASS_PROBE is unset for the
     // duration of this test — no bypass-setting test can interleave.
     let _guard = lock_env().await;
     unsafe {
         // Ensure clean state regardless of test ordering.
-        std::env::remove_var("AIONUI_BYPASS_PROBE");
+        std::env::remove_var("ONE_BYPASS_PROBE");
     }
 
     let (mut app, services) = build_app().await;

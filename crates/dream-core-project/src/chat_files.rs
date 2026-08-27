@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use dream_core_api_types::ChatFileRef;
-use dream_core_common::constants::AIONUI_FILES_MARKER;
+use dream_core_common::constants::ONE_FILES_MARKER;
 
 use crate::canonical;
 use crate::service::ProjectService;
@@ -57,7 +57,7 @@ impl ProjectService {
         let content = if paths.is_empty() {
             content.to_owned()
         } else {
-            format!("{content}\n\n{AIONUI_FILES_MARKER}\n{}", paths.join("\n"))
+            format!("{content}\n\n{ONE_FILES_MARKER}\n{}", paths.join("\n"))
         };
         Ok(ResolvedChatMessage { content, files: paths })
     }

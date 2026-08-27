@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use dream_core_common::constants::AIONUI_FILES_MARKER;
+use dream_core_common::constants::ONE_FILES_MARKER;
 use tracing::warn;
 
 use crate::types::PromptMediaCaps;
@@ -122,7 +122,7 @@ fn classify(path: &str, caps: PromptMediaCaps) -> Option<MediaAttachment> {
 /// `files` exactly (same validation as dream `strip_attachment_metadata`);
 /// otherwise return `content` unchanged.
 fn strip_files_marker<'a>(content: &'a str, files: &[String]) -> &'a str {
-    let Some((user_text, metadata)) = content.rsplit_once(AIONUI_FILES_MARKER) else {
+    let Some((user_text, metadata)) = content.rsplit_once(ONE_FILES_MARKER) else {
         return content;
     };
     let metadata_files = metadata.lines().map(str::trim).filter(|line| !line.is_empty());
@@ -138,7 +138,7 @@ fn append_files_marker(content: &str, paths: &[String]) -> String {
     if paths.is_empty() {
         content.to_owned()
     } else {
-        format!("{content}\n\n{AIONUI_FILES_MARKER}\n{}", paths.join("\n"))
+        format!("{content}\n\n{ONE_FILES_MARKER}\n{}", paths.join("\n"))
     }
 }
 
@@ -192,7 +192,7 @@ mod tests {
     };
 
     fn inline(content: &str, paths: &[&str]) -> String {
-        format!("{content}\n\n{AIONUI_FILES_MARKER}\n{}", paths.join("\n"))
+        format!("{content}\n\n{ONE_FILES_MARKER}\n{}", paths.join("\n"))
     }
 
     fn temp_file(name: &str, bytes: &[u8]) -> String {

@@ -318,8 +318,8 @@ pub(crate) async fn run_server(
     // interval and kills ACP agents idle beyond their timeout — solo
     // (single-chat) agents at the solo threshold, team sessions cleaned as a
     // whole at the team threshold. Thresholds and scan interval default to
-    // 10 min / 30 min / 60 s and are overridable via AIONUI_IDLE_TIMEOUT_SECS,
-    // AIONUI_TEAM_IDLE_TIMEOUT_SECS, and AIONUI_IDLE_SCAN_INTERVAL_SECS. The
+    // 10 min / 30 min / 60 s and are overridable via ONE_IDLE_TIMEOUT_SECS,
+    // ONE_TEAM_IDLE_TIMEOUT_SECS, and ONE_IDLE_SCAN_INTERVAL_SECS. The
     // watch channel propagates graceful-shutdown so the scanner exits on
     // SIGINT/SIGTERM.
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);

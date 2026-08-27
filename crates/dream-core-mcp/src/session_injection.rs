@@ -218,12 +218,12 @@ fn hashmap_to_pairs(map: &HashMap<String, String>) -> Vec<NameValuePair> {
 /// Sorted by name for deterministic output, consistent with `hashmap_to_pairs`.
 fn build_image_gen_env(config: &ImageGenConfig) -> Vec<NameValuePair> {
     let entries: [(&str, &Option<String>); 6] = [
-        ("AIONUI_IMG_API_KEY", &config.api_key),
-        ("AIONUI_IMG_API_URL", &config.api_url),
-        ("AIONUI_IMG_MODEL", &config.model),
-        ("AIONUI_IMG_QUALITY", &config.quality),
-        ("AIONUI_IMG_SIZE", &config.size),
-        ("AIONUI_IMG_STYLE", &config.style),
+        ("ONE_IMG_API_KEY", &config.api_key),
+        ("ONE_IMG_API_URL", &config.api_url),
+        ("ONE_IMG_MODEL", &config.model),
+        ("ONE_IMG_QUALITY", &config.quality),
+        ("ONE_IMG_SIZE", &config.size),
+        ("ONE_IMG_STYLE", &config.style),
     ];
 
     entries
@@ -540,7 +540,7 @@ mod tests {
                 assert_eq!(command, "/usr/bin/img-gen");
                 assert!(args.is_empty());
                 assert_eq!(env.len(), 6);
-                assert_eq!(env[0].name, "AIONUI_IMG_API_KEY");
+                assert_eq!(env[0].name, "ONE_IMG_API_KEY");
                 assert_eq!(env[0].value, "sk-test");
             }
             _ => panic!("expected Stdio"),
@@ -561,9 +561,9 @@ mod tests {
             AcpSessionMcpServer::Stdio { env, .. } => {
                 assert_eq!(env.len(), 2);
                 // Sorted alphabetically: API_URL before MODEL
-                assert_eq!(env[0].name, "AIONUI_IMG_API_URL");
+                assert_eq!(env[0].name, "ONE_IMG_API_URL");
                 assert_eq!(env[0].value, "https://api.openai.com");
-                assert_eq!(env[1].name, "AIONUI_IMG_MODEL");
+                assert_eq!(env[1].name, "ONE_IMG_MODEL");
                 assert_eq!(env[1].value, "dall-e-3");
             }
             _ => panic!("expected Stdio"),

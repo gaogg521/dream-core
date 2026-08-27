@@ -13,7 +13,7 @@ use crate::active_lease::ActiveLeaseRegistry;
 use crate::agent_task::AgentInstance;
 use crate::error::AgentError;
 use crate::runtime_token::{RuntimeTokenScope, RuntimeTokenService, TEAM_RUNTIME_TOKEN_SESSION_GENERATION};
-use crate::types::{AIONUI_RUNTIME_TOKEN_ENV, BuildTaskOptions, RuntimeCapabilities};
+use crate::types::{BuildTaskOptions, RUNTIME_TOKEN_ENV, RuntimeCapabilities};
 
 /// Factory function that creates an [`AgentInstance`] from build options.
 ///
@@ -149,14 +149,11 @@ impl WorkerTaskManagerImpl {
             TEAM_RUNTIME_TOKEN_SESSION_GENERATION,
             scopes,
         );
+        options.context.runtime_env.retain(|(key, _)| key != RUNTIME_TOKEN_ENV);
         options
             .context
             .runtime_env
-            .retain(|(key, _)| key != AIONUI_RUNTIME_TOKEN_ENV);
-        options
-            .context
-            .runtime_env
-            .push((AIONUI_RUNTIME_TOKEN_ENV.to_owned(), issue.token));
+            .push((RUNTIME_TOKEN_ENV.to_owned(), issue.token));
     }
 }
 
@@ -536,7 +533,7 @@ mod tests {
         options
             .context
             .runtime_env
-            .push((AIONUI_RUNTIME_TOKEN_ENV.to_owned(), runtime_token.to_owned()));
+            .push((RUNTIME_TOKEN_ENV.to_owned(), runtime_token.to_owned()));
         options.runtime_capabilities.conversation_runtime_context_version = Some(CONVERSATION_RUNTIME_CONTEXT_VERSION);
         options
     }
@@ -671,7 +668,7 @@ mod tests {
                         .context
                         .runtime_env
                         .iter()
-                        .find(|(key, _)| key == AIONUI_RUNTIME_TOKEN_ENV)
+                        .find(|(key, _)| key == RUNTIME_TOKEN_ENV)
                     {
                         observed_tokens.lock().unwrap().push(token.clone());
                     }

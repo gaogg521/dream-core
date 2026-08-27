@@ -262,7 +262,7 @@ mod tests {
     use std::ffi::OsStr;
     use std::path::Path;
 
-    const CHILD_MARKER: &str = "AIONUI_RUNTIME_AGENT_ENV_TEST_CHILD";
+    const CHILD_MARKER: &str = "ONE_RUNTIME_AGENT_ENV_TEST_CHILD";
 
     #[cfg(unix)]
     #[tokio::test]
@@ -274,8 +274,8 @@ mod tests {
                 &shell,
                 r#"#!/bin/sh
 printf '%s\n' \
-  'AIONUI_SHELL_ONLY=from-shell' \
-  'AIONUI_OVERLAY=from-shell' \
+  'ONE_SHELL_ONLY=from-shell' \
+  'ONE_OVERLAY=from-shell' \
   'PATH=/shell/bin:/current/bin' \
   'NODE_OPTIONS=--inspect' \
   'CLAUDECODE=1' \
@@ -293,8 +293,8 @@ printf '%s\n' \
                 .env(CHILD_MARKER, "1")
                 .env("SHELL", &shell)
                 .env("PATH", "/current/bin")
-                .env("AIONUI_CURRENT_ONLY", "from-current")
-                .env("AIONUI_OVERLAY", "from-current")
+                .env("ONE_CURRENT_ONLY", "from-current")
+                .env("ONE_OVERLAY", "from-current")
                 .env("NODE_OPTIONS", "--require parent")
                 .env("CLAUDECODE", "1")
                 .env("SSL_CERT_FILE", "/tmp/current-cert.pem")
@@ -319,9 +319,9 @@ printf '%s\n' \
                 .map(|(_, value)| value.to_string_lossy().into_owned())
         };
 
-        assert_eq!(value("AIONUI_CURRENT_ONLY").as_deref(), Some("from-current"));
-        assert_eq!(value("AIONUI_SHELL_ONLY").as_deref(), Some("from-shell"));
-        assert_eq!(value("AIONUI_OVERLAY").as_deref(), Some("from-shell"));
+        assert_eq!(value("ONE_CURRENT_ONLY").as_deref(), Some("from-current"));
+        assert_eq!(value("ONE_SHELL_ONLY").as_deref(), Some("from-shell"));
+        assert_eq!(value("ONE_OVERLAY").as_deref(), Some("from-shell"));
         assert_eq!(value("NODE_OPTIONS"), None);
         assert_eq!(value("CLAUDECODE"), None);
         assert_eq!(value("SSL_CERT_FILE"), None);

@@ -1,7 +1,7 @@
 //! Rewrite flattened image attachment paths for text-only bridge targets.
 //!
 //! ACP has no attachment field in its prompt request. The project layer
-//! therefore appends resolved paths under `AIONUI_FILES_MARKER`, and the
+//! therefore appends resolved paths under `ONE_FILES_MARKER`, and the
 //! external Claude/Codex CLI receives those paths as ordinary text. A bridged
 //! custom model that cannot accept images must never be left to infer their
 //! contents from a filename: this hook turns each *verified* image path into
@@ -10,7 +10,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use dream_core_common::constants::AIONUI_FILES_MARKER;
+use dream_core_common::constants::ONE_FILES_MARKER;
 use dream_engine_config::config::VisionModelConfig;
 use dream_engine_types::message::{TokenUsage, extension_to_image_media_type};
 
@@ -171,7 +171,7 @@ async fn rewrite_image_attachment_paths(
         };
     }
 
-    let marker = format!("{AIONUI_FILES_MARKER}\n");
+    let marker = format!("{ONE_FILES_MARKER}\n");
     let Some((prefix, attachment_lines)) = prompt.split_once(&marker) else {
         return RewriteOutcome {
             prompt,
@@ -308,10 +308,7 @@ mod tests {
     }
 
     fn attachment_prompt(lines: &[&str]) -> String {
-        format!(
-            "Explain the attachments.\n\n{AIONUI_FILES_MARKER}\n{}",
-            lines.join("\n")
-        )
+        format!("Explain the attachments.\n\n{ONE_FILES_MARKER}\n{}", lines.join("\n"))
     }
 
     #[tokio::test]

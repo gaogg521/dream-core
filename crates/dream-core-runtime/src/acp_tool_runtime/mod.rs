@@ -1200,7 +1200,7 @@ mod tests {
         if !crate::test_support::run_in_env_child(
             "acp_tool_runtime::tests::bundled_acp_tool_missing_reports_bundled_resource_missing",
             |command| {
-                command.env("AIONUI_BUNDLED_MANAGED_RESOURCES", &bundled_root);
+                command.env("ONE_BUNDLED_MANAGED_RESOURCES", &bundled_root);
             },
         ) {
             return;
@@ -1358,12 +1358,12 @@ mod tests {
         if !crate::test_support::run_in_env_child(
             "acp_tool_runtime::tests::bundled_validation_failure_does_not_fallback_to_remote_download",
             |command| {
-                command.env("AIONUI_BUNDLED_MANAGED_RESOURCES", &bundled_root);
+                command.env("ONE_BUNDLED_MANAGED_RESOURCES", &bundled_root);
             },
         ) {
             return;
         }
-        let bundled_root = std::path::PathBuf::from(std::env::var_os("AIONUI_BUNDLED_MANAGED_RESOURCES").unwrap());
+        let bundled_root = std::path::PathBuf::from(std::env::var_os("ONE_BUNDLED_MANAGED_RESOURCES").unwrap());
         let spec = platform_spec().unwrap();
         let source_root = bundled_root
             .join("acp")

@@ -1,4 +1,4 @@
-use dream_core_common::constants::AIONUI_FILES_MARKER;
+use dream_core_common::constants::ONE_FILES_MARKER;
 use dream_engine_types::message::ContentBlock;
 
 const ATTACHED_FILES_HEADER: &str = "[Attached files]";
@@ -32,7 +32,7 @@ fn strip_attachment_metadata<'a>(content: &'a str, files: &[String]) -> &'a str 
     if files.is_empty() {
         return content;
     }
-    let Some((user_text, metadata)) = content.rsplit_once(AIONUI_FILES_MARKER) else {
+    let Some((user_text, metadata)) = content.rsplit_once(ONE_FILES_MARKER) else {
         return content;
     };
     let metadata_files = metadata.lines().map(str::trim).filter(|line| !line.is_empty());

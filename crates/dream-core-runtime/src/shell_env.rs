@@ -429,7 +429,7 @@ mod tests {
 
     #[cfg(unix)]
     fn run_in_env_child(test_name: &str, envs: &[(&str, &str)], removals: &[&str]) -> bool {
-        const CHILD_ENV: &str = "AIONUI_RUNTIME_SHELL_ENV_TEST_CHILD";
+        const CHILD_ENV: &str = "ONE_RUNTIME_SHELL_ENV_TEST_CHILD";
 
         if std::env::var_os(CHILD_ENV).is_some() {
             return true;

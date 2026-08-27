@@ -138,7 +138,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn spawn_for_sdk_uses_clean_agent_env_and_explicit_overrides() {
-        const CHILD_ENV: &str = "AIONUI_TEST_SDK_AGENT_ENV_CHILD";
+        const CHILD_ENV: &str = "ONE_TEST_SDK_AGENT_ENV_CHILD";
 
         if std::env::var_os(CHILD_ENV).is_none() {
             let temp = tempfile::tempdir().unwrap();
@@ -147,8 +147,8 @@ mod tests {
                 &shell,
                 r#"#!/bin/sh
 printf '%s\n' \
-  'AIONUI_SHELL_ONLY=from-shell' \
-  'AIONUI_OVERLAY=from-shell' \
+  'ONE_SHELL_ONLY=from-shell' \
+  'ONE_OVERLAY=from-shell' \
   'PATH=/shell/bin:/bin:/usr/bin' \
   'NODE_OPTIONS=--inspect' \
   'npm_lifecycle_event=start'
@@ -179,18 +179,18 @@ printf '%s\n' \
 
         let mut config = simple_script_config(
             "printf 'shell=%s\nconfig=%s\noverlay=%s\nnpm=%s\nnode=%s\n' \
-             \"${AIONUI_SHELL_ONLY:-unset}\" \
-             \"${AIONUI_CONFIG_ONLY:-unset}\" \
-             \"${AIONUI_OVERLAY:-unset}\" \
+             \"${ONE_SHELL_ONLY:-unset}\" \
+             \"${ONE_CONFIG_ONLY:-unset}\" \
+             \"${ONE_OVERLAY:-unset}\" \
              \"${npm_lifecycle_event:-unset}\" \
              \"${NODE_OPTIONS:-unset}\"",
         );
         config.env.push(EnvVar {
-            name: "AIONUI_CONFIG_ONLY".into(),
+            name: "ONE_CONFIG_ONLY".into(),
             value: "from-config".into(),
         });
         config.env.push(EnvVar {
-            name: "AIONUI_OVERLAY".into(),
+            name: "ONE_OVERLAY".into(),
             value: "from-config".into(),
         });
 

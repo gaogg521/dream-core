@@ -29,8 +29,8 @@ pub(crate) const INIT_TIMEOUT_SECS: u64 = 30;
 pub(crate) const COLD_START_INIT_TIMEOUT_SECS: u64 = 300;
 
 /// Overrides [`COLD_START_INIT_TIMEOUT_SECS`] for environments whose first-run
-/// install is slower still. Mirrors `AIONUI_HANDSHAKE_TIMEOUT_SECS`.
-const COLD_START_TIMEOUT_ENV: &str = "AIONUI_ACP_INIT_TIMEOUT_SECS";
+/// install is slower still. Mirrors `ONE_HANDSHAKE_TIMEOUT_SECS`.
+const COLD_START_TIMEOUT_ENV: &str = "ONE_ACP_INIT_TIMEOUT_SECS";
 
 /// The chosen budget plus the reason, so the caller can log which one applied
 /// instead of leaving a 300s wait unexplained.

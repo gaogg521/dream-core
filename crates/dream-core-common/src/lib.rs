@@ -4,6 +4,7 @@
 pub mod constants;
 pub mod data_paths;
 pub mod dlp;
+pub mod legacy_env;
 pub mod upload_paths;
 pub mod user_paths;
 
@@ -41,6 +42,7 @@ pub use error::{
 };
 pub use hooks::OnConversationDelete;
 pub use id::{fnv1a_hex8, generate_id, generate_id_with_length, generate_prefixed_id, generate_short_id};
+pub use legacy_env::{ADOPTED_ENV_SUFFIXES, adopt_legacy_env};
 pub use pagination::PaginatedResult;
 pub use timestamp::{TimestampMs, now_ms};
 pub use tool_schema::{IncompatibilityReason, SchemaIncompatibility, is_tool_compatible, validate_tool};

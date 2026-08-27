@@ -282,10 +282,10 @@ pub async fn run_directory_sync(
     // `parse_feishu_config` keeps `base_url` out of admin-editable config on
     // purpose, and turning it into a saved setting would make "where do our
     // company credentials get sent" something an API call can change.
-    if let Ok(base) = std::env::var("AIONUI_FEISHU_BASE_URL")
+    if let Ok(base) = std::env::var("ONE_FEISHU_BASE_URL")
         && !base.trim().is_empty()
     {
-        tracing::warn!(base = %base, "directory sync using AIONUI_FEISHU_BASE_URL override (development only)");
+        tracing::warn!(base = %base, "directory sync using ONE_FEISHU_BASE_URL override (development only)");
         config.base_url = Some(base);
     }
 

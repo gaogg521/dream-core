@@ -17,6 +17,12 @@ use crate::error::MainError;
 // MainError has been moved to src/error.rs
 
 fn main() -> ExitCode {
+    // Before `clap` parses and before the runtime starts: adopt any `AIONUI_*`
+    // an operator still has set. Doing it here rather than at ~50 read sites is
+    // what lets every one of them use the current name only — and `set_var` is
+    // only sound while this process is still single-threaded.
+    unsafe { dream_core_common::adopt_legacy_env() };
+
     match run_main() {
         Ok(exit_code) => exit_code,
         Err(error) => {

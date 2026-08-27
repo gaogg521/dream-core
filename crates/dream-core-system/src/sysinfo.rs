@@ -21,9 +21,9 @@ fn map_arch() -> &'static str {
 
 /// Resolve the cache directory for DreamUI.
 ///
-/// Priority: `AIONUI_CACHE_DIR` env → `dirs::cache_dir()/dream`.
+/// Priority: `ONE_CACHE_DIR` env → `dirs::cache_dir()/dream`.
 fn resolve_cache_dir() -> String {
-    if let Ok(v) = std::env::var("AIONUI_CACHE_DIR")
+    if let Ok(v) = std::env::var("ONE_CACHE_DIR")
         && !v.is_empty()
     {
         return v;
@@ -35,9 +35,9 @@ fn resolve_cache_dir() -> String {
 
 /// Resolve the work (data) directory for DreamUI.
 ///
-/// Priority: `AIONUI_WORK_DIR` env → `dirs::data_dir()/dream`.
+/// Priority: `ONE_WORK_DIR` env → `dirs::data_dir()/dream`.
 fn resolve_work_dir() -> String {
-    if let Ok(v) = std::env::var("AIONUI_WORK_DIR")
+    if let Ok(v) = std::env::var("ONE_WORK_DIR")
         && !v.is_empty()
     {
         return v;
@@ -49,12 +49,12 @@ fn resolve_work_dir() -> String {
 
 /// Resolve the log directory for DreamUI.
 ///
-/// Priority: `AIONUI_LOG_DIR` env →
+/// Priority: `ONE_LOG_DIR` env →
 ///   macOS: `~/Library/Logs/dream`
 ///   Linux: `dirs::state_dir()/dream/logs` (XDG_STATE_HOME)
 ///   Windows: `dirs::data_dir()/dream/logs`
 fn resolve_log_dir() -> String {
-    if let Ok(v) = std::env::var("AIONUI_LOG_DIR")
+    if let Ok(v) = std::env::var("ONE_LOG_DIR")
         && !v.is_empty()
     {
         return v;

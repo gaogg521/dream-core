@@ -70,7 +70,7 @@ async fn seed_legacy_assistant_identity(pool: &sqlx::SqlitePool) {
     }
 
     for (definition_id, assistant_key, agent_backend, source_ref) in [
-        ("def-aionrs", "aionui-assistant", "aionrs", "aionui-assistant"),
+        ("def-aionrs", "one-assistant", "aionrs", "one-assistant"),
         ("def-codex", "bare:agent-codex", "codex", "agent-codex"),
         ("def-claude", "bare:agent-claude", "claude", "agent-claude"),
     ] {
@@ -411,7 +411,7 @@ async fn migration_013_normalizes_legacy_cron_agent_identity() {
         "cron_aionrs",
         "conv_aionrs",
         "aionrs",
-        r#"{"backend":"provider-1","name":"Aion","assistant_id":"aionui-assistant","model_id":"gpt-5"}"#,
+        r#"{"backend":"provider-1","name":"Aion","assistant_id":"one-assistant","model_id":"gpt-5"}"#,
     )
     .await;
     insert_legacy_cron(
@@ -482,7 +482,7 @@ async fn migration_013_normalizes_legacy_cron_agent_identity() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(aionrs.get::<String, _>("assistant_id"), "aionui-assistant");
+    assert_eq!(aionrs.get::<String, _>("assistant_id"), "one-assistant");
     assert_eq!(aionrs.get::<String, _>("provider_id"), "provider-1");
     assert_eq!(aionrs.get::<String, _>("model"), "gpt-5");
     assert_eq!(aionrs.get::<i64, _>("enabled"), 1);

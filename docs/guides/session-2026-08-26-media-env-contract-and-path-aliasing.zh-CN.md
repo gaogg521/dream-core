@@ -84,3 +84,40 @@ cargo test -p dream-core-common -p dream-core-mcp -p dream-core-project -p dream
 HEAD 不是 fmt-clean —— `cargo fmt --all` 会连带重排上百个无关文件的 import 与换行。
 本次把格式化拆成了独立的 `style:` 提交，功能改动单独一个提交。
 注意 `just push` 的门禁本来就跑 `cargo fmt --all -- --check`。
+
+---
+
+## 7. 后续：内置管家/技能改名 + `AIONUI_*` env 家族（同日）
+
+### 迁移 053
+
+`aionui-assistant` → `one-assistant`，四个技能 `aionui-{config,troubleshooting,webui-public,webui-setup}`
+→ `one-*`。与 Electron 侧那些只在遗留库上跑的迁移不同，**本仓库的迁移在新库上全跑**，
+所以不改的话全新用户依然拿到旧品牌。
+
+`source_ref` 是最要命的一列：它是清单身份列（与 `source` 唯一），而清单每次启动按**新** id
+重新播种 —— 漏改的行不会匹配、会被再播种一遍，用户看到**两个管家**。
+JSON 列（`default_skill_ids` 等）的替换针对带引号 token，否则 `aionui-config-extra` 会被误伤。
+
+测试见 `tests/builtin_assistant_rebrand_migration.rs`（5 用例）。两个写测试的坑：
+手搓 `Migrator` 跑全链路会挂在 042；改用 `init_database_memory()` 后它已跑过 053，
+sqlx 版本账本会让 `Migrator` **跳过**，断言全部假通过 —— 最终改成 `include_str!` 迁移文件直接执行 SQL。
+
+### env 家族
+
+38 个 `AIONUI_*` → `ONE_*`。新增 `dream_core_common::legacy_env::adopt_legacy_env()`，
+在 `main()` / `admin.rs` 最开头把 `AIONUI_X` 采纳为未设的 `ONE_X`——
+一处解决 clap `#[arg(env=)]` 和所有 `std::env::var`，读取点全部只认新名。
+
+**安全回归警告**：`registry.rs::is_blocked_override_env_key` 靠 `AIONUI_` 前缀阻止用户
+env override 覆盖内部变量。改名时必须同步加 `ONE_` 前缀，否则用户能覆盖 `ONE_RUNTIME_TOKEN`。
+
+**批量改名的通用坑**：正则扫描会把「负责兼容旧值」的代码本身也改掉。本次中了两次
+（`legacy_env.rs` 的测试、`types.rs` 的 `LEGACY_*` 常量），都改用 `concat!("AIONUI", "_X")` 构造。
+改完批量改名，务必回头单独检查这类文件。
+
+### 测试执行
+
+见 `AGENTS.md` 新增的「NEVER run two builds against the same `target/` at once」。
+本次因为并发跑出过 LNK1104、计时测试超时等假故障。串行跑的干净结果：
+`cargo nextest run --workspace` **9636 测试全过**。

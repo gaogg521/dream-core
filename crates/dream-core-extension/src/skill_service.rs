@@ -18,14 +18,14 @@ use crate::error::ExtensionError;
 ///
 /// Mirrors the strategy used by `dream-assistant::builtin`: the corpus is
 /// authoritative at build time; an optional on-disk override
-/// (`AIONUI_BUILTIN_SKILLS_PATH`) is consulted at runtime for rapid
+/// (`ONE_BUILTIN_SKILLS_PATH`) is consulted at runtime for rapid
 /// iteration and E2E fixtures.
 static BUILTIN_SKILLS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../dream-core-app/assets/builtin-skills");
 
 /// Name of the environment variable that, when set, overrides the embedded
 /// corpus with an on-disk directory. Consumed by
 /// [`resolve_skill_paths`] when building [`SkillPaths`].
-pub const BUILTIN_SKILLS_ENV_VAR: &str = "AIONUI_BUILTIN_SKILLS_PATH";
+pub const BUILTIN_SKILLS_ENV_VAR: &str = "ONE_BUILTIN_SKILLS_PATH";
 const MAX_SKILL_IMPORT_FILE_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_SKILL_IMPORT_TOTAL_BYTES: u64 = 200 * 1024 * 1024;
 const IMPORT_STAGING_PREFIX: &str = ".import-staging-";

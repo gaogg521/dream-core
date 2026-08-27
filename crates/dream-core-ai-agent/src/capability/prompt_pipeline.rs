@@ -20,7 +20,7 @@ pub struct PromptCtx<'a> {
     pub runtime: &'a AgentRuntime,
     /// The resolved absolute paths of this message's attachments, in the
     /// same order they were inlined into the prompt under
-    /// `AIONUI_FILES_MARKER` (see `dream_core_project::chat_files::resolve_chat_message`).
+    /// `ONE_FILES_MARKER` (see `dream_core_project::chat_files::resolve_chat_message`).
     /// Lets a hook identify which lines of the flattened prompt text are
     /// attachment paths — and which of those are images — without having to
     /// re-derive that from the text itself.

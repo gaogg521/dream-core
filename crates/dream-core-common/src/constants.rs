@@ -1,7 +1,7 @@
 // --- File processing ---
 
-pub const AIONUI_TIMESTAMP_SEPARATOR: &str = "_aionui_";
-pub const AIONUI_FILES_MARKER: &str = "[[AION_FILES]]";
+pub const ONE_TIMESTAMP_SEPARATOR: &str = "_aionui_";
+pub const ONE_FILES_MARKER: &str = "[[AION_FILES]]";
 
 // --- WebSocket ---
 

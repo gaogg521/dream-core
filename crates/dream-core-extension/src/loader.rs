@@ -21,14 +21,14 @@ pub struct ScanPath {
 /// Resolve the default list of directories to scan for extensions.
 ///
 /// Priority (highest first):
-/// 1. `$AIONUI_EXTENSIONS_PATH`
+/// 1. `$ONE_EXTENSIONS_PATH`
 /// 2. `~/.dream/extensions/` — legacy user data directory
 /// 3. Platform AppData directory
 ///
 /// In E2E test mode (`AIONUI_E2E_TEST=1`), only the environment variable
 /// paths are returned to ensure test isolation.
 pub fn resolve_scan_paths() -> Vec<ScanPath> {
-    let env_path = std::env::var("AIONUI_EXTENSIONS_PATH").ok();
+    let env_path = std::env::var("ONE_EXTENSIONS_PATH").ok();
     let e2e_mode = is_e2e_test_mode();
     resolve_scan_paths_inner(env_path.as_deref(), e2e_mode, None)
 }
@@ -37,14 +37,14 @@ pub fn resolve_scan_paths() -> Vec<ScanPath> {
 /// provided `data_dir`.
 ///
 /// Priority (highest first):
-/// 1. `$AIONUI_EXTENSIONS_PATH`
+/// 1. `$ONE_EXTENSIONS_PATH`
 /// 2. `<data_dir>/extensions`
 /// 3. Legacy appData sibling directory derived from `<data_dir>`
 ///
 /// In E2E test mode (`AIONUI_E2E_TEST=1`), only the environment variable
 /// paths are returned to ensure test isolation.
 pub fn resolve_scan_paths_for_data_dir(data_dir: &Path) -> Vec<ScanPath> {
-    let env_path = std::env::var("AIONUI_EXTENSIONS_PATH").ok();
+    let env_path = std::env::var("ONE_EXTENSIONS_PATH").ok();
     let e2e_mode = is_e2e_test_mode();
     resolve_scan_paths_inner(env_path.as_deref(), e2e_mode, Some(data_dir))
 }

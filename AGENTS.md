@@ -165,10 +165,10 @@ cargo test -p <changed-crate>
 ### Add Endpoint to Existing Crate
 
 1. Request/response types → `dream-core-api-types/src/{domain}.rs`
-2. Handler function → `crates/aionui-{domain}/src/routes.rs`
-3. Business logic → `crates/aionui-{domain}/src/service.rs`
+2. Handler function → `crates/dream-core-{domain}/src/routes.rs`
+3. Business logic → `crates/dream-core-{domain}/src/service.rs`
 4. Register route in `domain_routes()` function
-5. Add test → `crates/aionui-{domain}/tests/` or `crates/dream-core-app/tests/`
+5. Add test → `crates/dream-core-{domain}/tests/` or `crates/dream-core-app/tests/`
 
 ### Add Migration
 
@@ -247,28 +247,66 @@ Prohibited:
 ## Verification Strategy
 
 > ⚠️ **When to run what:**
-> - During development: only test the crate you're working on → `cargo test -p aionui-<crate>`
+> - During development: only test the crate you're working on → `cargo nextest run -p dream-core-<crate>`
 > - After implementation complete: full verification → `cargo test --workspace`
 > - Do NOT run `cargo test --workspace` at the start of a task.
 >
 > ⚠️ **Performance:**
 > - `cargo clippy --workspace` takes several minutes — use `run_in_background: true`.
 > - `cargo test --workspace` takes 10+ minutes. MUST use `run_in_background: true` when calling via Bash tool, otherwise it will timeout.
-> - `cargo clippy -p aionui-<crate>` and `cargo test -p aionui-<crate>` typically complete in under 1 minute.
+> - `cargo clippy -p dream-core-<crate>` and `cargo test -p dream-core-<crate>` typically complete in under 1 minute.
+> - Prefer `cargo nextest run` over `cargo test` — roughly **10x faster** on this
+>   workspace. Install once: `cargo install cargo-nextest --locked`.
+
+### NEVER run two builds against the same `target/` at once
+
+**One build at a time.** `cargo build`, `cargo test`, `cargo nextest` and
+`cargo clippy` all write to the same `target/` directory and do not coordinate
+across separate invocations. Starting a second before the first finishes — or
+starting one while a `vitest` run competes for the same CPU — corrupts the run
+in ways that read as product bugs:
+
+- **`LINK : fatal error LNK1104: cannot open file '…-<hash>.exe'`** — another
+  run, or an orphaned test binary from a run that was killed, still holds the
+  output file. The build dies at link time, so the summary reads
+  `0 ok / 0 failed` and looks like nothing ran. Nothing did.
+- **Timing-sensitive tests fail with `Elapsed` / timeout** — observed on
+  `stderr_monitor::peek_stderr_tail_returns_last_n_lines` and
+  `shutdown_watchdog::duplicate_arm_does_not_extend_the_deadline`. Under CPU
+  starvation they miss their deadline and look like real regressions. Both pass
+  on an idle machine.
+- **`vitest` silently skips whole test files** — `Failed to start forks worker
+  … Timeout waiting for worker to respond` — while still **exiting 0** and
+  printing a passing summary for the files that did run. Observed: 546 files
+  collapsed to 525, ~316 tests never executed, exit code 0.
+
+Rules that follow:
+
+1. Stop any earlier workspace run before starting another. Starting a second
+   "to save time" costs more wall-clock, not less, and makes every result
+   untrustworthy.
+2. After killing a run, clear orphaned test binaries before rebuilding —
+   a killed `cargo` does not always take its spawned executables with it:
+   `tasklist | grep -iE "e2e|dream_core"` then `taskkill /PID <pid> /F`.
+3. Never run `cargo test`/`nextest` and `bun run vitest` concurrently.
+4. Editing source mid-run invalidates that run — it is a verdict on neither the
+   old nor the new code. Re-run after the edit.
+5. Judge a suite by its **counts**, not just its exit code. A green summary over
+   a smaller denominator than a known-good run means files were skipped.
 
 ### During Development (fast feedback loop)
 
 ```bash
-cargo test -p aionui-<crate>                          # Test the crate you changed
-cargo clippy -p aionui-<crate> -- -D warnings         # Lint the crate you changed
+cargo nextest run -p dream-core-<crate>                          # Test the crate you changed
+cargo clippy -p dream-core-<crate> -- -D warnings         # Lint the crate you changed
 ```
 
 ### Before Commit (affected crates)
 
 ```bash
 cargo fmt --all -- --check                                                      # Format gate (instant)
-cargo clippy -p aionui-<crate1> -p aionui-<crate2> -- -D warnings              # Lint affected crates
-cargo test -p aionui-<crate1> -p aionui-<crate2>                               # Test affected crates
+cargo clippy -p dream-core-<crate1> -p dream-core-<crate2> -- -D warnings              # Lint affected crates
+cargo nextest run -p dream-core-<crate1> -p dream-core-<crate2>                               # Test affected crates
 ```
 
 ### Before Push (full workspace)

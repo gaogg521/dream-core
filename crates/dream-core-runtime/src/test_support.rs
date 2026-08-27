@@ -2,7 +2,7 @@ pub(crate) fn run_in_env_child<F>(test_name: &str, configure: F) -> bool
 where
     F: FnOnce(&mut std::process::Command),
 {
-    const CHILD_ENV: &str = "AIONUI_RUNTIME_ENV_TEST_CHILD";
+    const CHILD_ENV: &str = "ONE_RUNTIME_ENV_TEST_CHILD";
 
     if std::env::var_os(CHILD_ENV).is_some() {
         return true;

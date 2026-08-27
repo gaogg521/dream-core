@@ -1514,9 +1514,9 @@ pub struct SessionBuildInputs<'a> {
     /// User-configured MCP server repository (feature ELECTRON-1JG). `None` on
     /// paths that never inject MCP (tests) ⇒ no injection.
     pub mcp_server_repo: Option<&'a Arc<dyn IMcpServerRepository>>,
-    /// The conversation runtime context env (`AIONUI_USER_ID` /
-    /// `AIONUI_CONVERSATION_ID` / `AIONUI_HELPER_BIN` / `AIONUI_BASE_URL` /
-    /// `AIONUI_RUNTIME_TOKEN`, filled by `apply_conversation_runtime_context`).
+    /// The conversation runtime context env (`ONE_USER_ID` /
+    /// `ONE_CONVERSATION_ID` / `ONE_HELPER_BIN` / `ONE_BASE_URL` /
+    /// `ONE_RUNTIME_TOKEN`, filled by `apply_conversation_runtime_context`).
     /// The legacy ACP path injects these into every agent spawn via
     /// `apply_acp_launch_policy`; the direct-CLI path forwards them through
     /// `SessionConfig.spawn_env` so team/helper tooling inside the agent process
@@ -2101,9 +2101,9 @@ fn resolve_session_cli_program(
 ///     path injected these via `resolve_agent_command_spec`; `AIONUI_*`/`PATH`/…
 ///     keys are already filtered at the registry (`is_blocked_override_env_key`),
 ///     so they cannot shadow the runtime context below.
-///  2. the `AIONUI_*` conversation runtime context (`AIONUI_USER_ID` /
-///     `AIONUI_CONVERSATION_ID` / `AIONUI_HELPER_BIN` / `AIONUI_BASE_URL` /
-///     `AIONUI_RUNTIME_TOKEN`) — the legacy path appended these via
+///  2. the `AIONUI_*` conversation runtime context (`ONE_USER_ID` /
+///     `ONE_CONVERSATION_ID` / `ONE_HELPER_BIN` / `ONE_BASE_URL` /
+///     `ONE_RUNTIME_TOKEN`) — the legacy path appended these via
 ///     `apply_acp_launch_policy` for every agent spawn.
 fn assemble_spawn_env(
     agent_env: &[dream_core_api_types::AgentEnvEntry],
@@ -4629,8 +4629,8 @@ mod build_mapping_tests {
             },
         ];
         let runtime_env = vec![
-            ("AIONUI_USER_ID".to_owned(), "user-1".to_owned()),
-            ("AIONUI_RUNTIME_TOKEN".to_owned(), "tok".to_owned()),
+            ("ONE_USER_ID".to_owned(), "user-1".to_owned()),
+            ("ONE_RUNTIME_TOKEN".to_owned(), "tok".to_owned()),
         ];
         let env = assemble_spawn_env(&agent_env, &runtime_env);
         let names: Vec<&str> = env.iter().map(|e| e.name.as_str()).collect();
@@ -4638,7 +4638,7 @@ mod build_mapping_tests {
         // ManagedProcess::spawn, so the runtime context can never be shadowed).
         assert_eq!(
             names,
-            ["AWS_PROFILE", "HTTPS_PROXY", "AIONUI_USER_ID", "AIONUI_RUNTIME_TOKEN"]
+            ["AWS_PROFILE", "HTTPS_PROXY", "ONE_USER_ID", "ONE_RUNTIME_TOKEN"]
         );
         assert_eq!(env[0].value, "pionex");
         assert_eq!(env[3].value, "tok");
@@ -6768,7 +6768,7 @@ mod pump_tests {
             backend.clone() as Arc<dyn SessionBackend>,
             None,
         );
-        let marker = dream_core_common::constants::AIONUI_FILES_MARKER;
+        let marker = dream_core_common::constants::ONE_FILES_MARKER;
         crate::agent_task::IAgentTask::send_message(
             task.as_ref(),
             SendMessageData {
@@ -6840,7 +6840,7 @@ mod pump_tests {
             backend.clone() as Arc<dyn SessionBackend>,
             None,
         );
-        let marker = dream_core_common::constants::AIONUI_FILES_MARKER;
+        let marker = dream_core_common::constants::ONE_FILES_MARKER;
         crate::agent_task::IAgentTask::send_message(
             task.as_ref(),
             SendMessageData {

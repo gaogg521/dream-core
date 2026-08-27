@@ -330,7 +330,7 @@ mod tests {
                 metadata: &metadata,
                 config: &config,
                 session_snapshot: None,
-                runtime_env: &[("AIONUI_CONVERSATION_ID".into(), "conv-1".into())],
+                runtime_env: &[("ONE_CONVERSATION_ID".into(), "conv-1".into())],
                 codex_bridge_config: None,
                 local_base_url: "http://127.0.0.1:0",
                 claude_bridge_env: None,
@@ -350,7 +350,7 @@ mod tests {
             command_spec
                 .env
                 .iter()
-                .any(|entry| entry.name == "AIONUI_CONVERSATION_ID" && entry.value == "conv-1")
+                .any(|entry| entry.name == "ONE_CONVERSATION_ID" && entry.value == "conv-1")
         );
     }
 

@@ -41,7 +41,7 @@ pub fn init_environment(cli: &Cli, merged_path: &str) -> Result<ServerEnvironmen
 
     // SAFETY: called before any service initialization; no concurrent reads.
     unsafe {
-        std::env::set_var("AIONUI_WORK_DIR", &work_dir);
+        std::env::set_var("ONE_WORK_DIR", &work_dir);
     }
 
     let mut identity_mode: IdentityMode = cli.identity_mode.into();

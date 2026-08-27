@@ -17,11 +17,11 @@ const DEFAULT_TEAM_IDLE_TIMEOUT_SECS: i64 = 30 * 60;
 const DEFAULT_SCAN_INTERVAL_SECS: u64 = 60;
 
 /// Environment variable overriding the solo (single-chat) idle timeout, in seconds.
-const ENV_SOLO_IDLE_TIMEOUT_SECS: &str = "AIONUI_IDLE_TIMEOUT_SECS";
+const ENV_SOLO_IDLE_TIMEOUT_SECS: &str = "ONE_IDLE_TIMEOUT_SECS";
 /// Environment variable overriding the team idle timeout, in seconds.
-const ENV_TEAM_IDLE_TIMEOUT_SECS: &str = "AIONUI_TEAM_IDLE_TIMEOUT_SECS";
+const ENV_TEAM_IDLE_TIMEOUT_SECS: &str = "ONE_TEAM_IDLE_TIMEOUT_SECS";
 /// Environment variable overriding the idle scan interval, in seconds.
-const ENV_IDLE_SCAN_INTERVAL_SECS: &str = "AIONUI_IDLE_SCAN_INTERVAL_SECS";
+const ENV_IDLE_SCAN_INTERVAL_SECS: &str = "ONE_IDLE_SCAN_INTERVAL_SECS";
 
 #[async_trait]
 pub trait IdleCleanupCoordinator: Send + Sync {

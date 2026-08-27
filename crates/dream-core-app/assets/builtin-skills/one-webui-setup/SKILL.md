@@ -1,5 +1,5 @@
 ---
-name: aionui-webui-setup
+name: one-webui-setup
 description: '1One Work WebUI configuration expert: Helps users configure 1One Work WebUI mode for remote access through the settings interface. Supports LAN connection, Tailscale VPN, and server deployment. Use when users need to set up 1One Work WebUI, configure remote access, troubleshoot WebUI issues, or deploy 1One Work on servers.'
 ---
 

@@ -14,7 +14,7 @@ agent-facing config CLI.
 2. Always query existing tasks before creating or updating.
 3. Do not ask for extra confirmation after the user has already requested the scheduling change.
 4. Never pass, inline, export, echo, or set any `AIONUI_...` environment variable.
-5. Commands must directly call `"$AIONUI_HELPER_BIN" config cron current ...`.
+5. Commands must directly call `"$ONE_HELPER_BIN" config cron current ...`.
 6. Pass create and update payloads through stdin heredocs attached to the command. Do not write payload JSON files to disk.
 7. Put `job_id` in the update JSON payload, not in a command flag.
 8. After a successful create or update, send one short final confirmation that a normal user can understand. Include the task name and schedule description. Do not show internal ids such as `cron_...`.
@@ -22,9 +22,9 @@ agent-facing config CLI.
 
 ## Workflow
 
-1. Run `"$AIONUI_HELPER_BIN" config cron current list`.
-2. If the returned `data` array is empty, create the task with `"$AIONUI_HELPER_BIN" config cron current create <<'JSON'`.
-3. If one task exists and the user wants to change it, update that task with `"$AIONUI_HELPER_BIN" config cron current update <<'JSON'`.
+1. Run `"$ONE_HELPER_BIN" config cron current list`.
+2. If the returned `data` array is empty, create the task with `"$ONE_HELPER_BIN" config cron current create <<'JSON'`.
+3. If one task exists and the user wants to change it, update that task with `"$ONE_HELPER_BIN" config cron current update <<'JSON'`.
 4. If a task already exists and the user is asking for a different additional task, ask how they want to handle the existing task.
 5. Report success or failure from the CLI output in normal prose, following the final confirmation rule above.
 
@@ -58,13 +58,13 @@ schedule description, and message in the user's language.
 Query:
 
 ```bash
-"$AIONUI_HELPER_BIN" config cron current list
+"$ONE_HELPER_BIN" config cron current list
 ```
 
 Create:
 
 ```bash
-"$AIONUI_HELPER_BIN" config cron current create <<'JSON'
+"$ONE_HELPER_BIN" config cron current create <<'JSON'
 {
   "name": "Weekly Meeting Reminder",
   "schedule": "0 9 * * MON",
@@ -77,7 +77,7 @@ JSON
 Update:
 
 ```bash
-"$AIONUI_HELPER_BIN" config cron current update <<'JSON'
+"$ONE_HELPER_BIN" config cron current update <<'JSON'
 {
   "job_id": "cron_123",
   "name": "Daily Summary",

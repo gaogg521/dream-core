@@ -1479,7 +1479,7 @@ fn idle_check_interval_ms(idle_ttl_ms: Option<i64>) -> u64 {
     }
 }
 
-/// DIAGNOSTIC (env-gated, default OFF): when `AIONUI_CLAUDE_WIRE_DUMP` is set, log
+/// DIAGNOSTIC (env-gated, default OFF): when `ONE_CLAUDE_WIRE_DUMP` is set, log
 /// the RAW stdin/stdout bytes claude exchanges. This is the only way to settle
 /// "send accepted but no output frames" — it shows whether the CLI returned ANY
 /// bytes after a prompt (CLI hang) vs returned bytes the parser dropped. OFF by
@@ -1487,7 +1487,7 @@ fn idle_check_interval_ms(idle_ttl_ms: Option<i64>) -> u64 {
 /// rule forbids that in normal production); it is a deliberate debugging switch a
 /// developer turns on to reproduce, never enabled by default.
 fn claude_wire_dump_enabled() -> bool {
-    std::env::var("AIONUI_CLAUDE_WIRE_DUMP").is_ok_and(|v| v != "0" && !v.is_empty())
+    std::env::var("ONE_CLAUDE_WIRE_DUMP").is_ok_and(|v| v != "0" && !v.is_empty())
 }
 
 /// Emit one raw-bytes wire line (direction + conv + turn_gen + byte count + a
@@ -3933,8 +3933,8 @@ mod tests {
         let fake = FakeAgentIo::never_exits(Vec::new()).with_gated_tail(b"unused".to_vec());
         // Short budget so the guard fires fast instead of waiting the real 30s.
         // SAFETY: restored below; the assertion is about the TERMINAL, not the value.
-        let saved = std::env::var("AIONUI_HANDSHAKE_TIMEOUT_SECS").ok();
-        unsafe { std::env::set_var("AIONUI_HANDSHAKE_TIMEOUT_SECS", "1") };
+        let saved = std::env::var("ONE_HANDSHAKE_TIMEOUT_SECS").ok();
+        unsafe { std::env::set_var("ONE_HANDSHAKE_TIMEOUT_SECS", "1") };
 
         let backend = ClaudeSessionBackend::build_with_io("hung-1", Box::new(fake)).await;
         let mut events = backend.events();
@@ -3966,8 +3966,8 @@ mod tests {
         }
 
         match saved {
-            Some(v) => unsafe { std::env::set_var("AIONUI_HANDSHAKE_TIMEOUT_SECS", v) },
-            None => unsafe { std::env::remove_var("AIONUI_HANDSHAKE_TIMEOUT_SECS") },
+            Some(v) => unsafe { std::env::set_var("ONE_HANDSHAKE_TIMEOUT_SECS", v) },
+            None => unsafe { std::env::remove_var("ONE_HANDSHAKE_TIMEOUT_SECS") },
         }
         assert!(
             saw_detached,
@@ -3995,8 +3995,8 @@ mod tests {
         // Prefix flows immediately (one frame → seen_frame latches); the gated tail is
         // NEVER released → the process then goes silent for longer than the budget.
         let fake = FakeAgentIo::never_exits(prefix).with_gated_tail(b"never-sent".to_vec());
-        let saved = std::env::var("AIONUI_HANDSHAKE_TIMEOUT_SECS").ok();
-        unsafe { std::env::set_var("AIONUI_HANDSHAKE_TIMEOUT_SECS", "1") };
+        let saved = std::env::var("ONE_HANDSHAKE_TIMEOUT_SECS").ok();
+        unsafe { std::env::set_var("ONE_HANDSHAKE_TIMEOUT_SECS", "1") };
 
         let backend = ClaudeSessionBackend::build_with_io("alive-1", Box::new(fake)).await;
         let mut events = backend.events();
@@ -4031,8 +4031,8 @@ mod tests {
         }
 
         match saved {
-            Some(v) => unsafe { std::env::set_var("AIONUI_HANDSHAKE_TIMEOUT_SECS", v) },
-            None => unsafe { std::env::remove_var("AIONUI_HANDSHAKE_TIMEOUT_SECS") },
+            Some(v) => unsafe { std::env::set_var("ONE_HANDSHAKE_TIMEOUT_SECS", v) },
+            None => unsafe { std::env::remove_var("ONE_HANDSHAKE_TIMEOUT_SECS") },
         }
         assert!(
             saw_message,

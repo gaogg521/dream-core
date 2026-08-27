@@ -1353,12 +1353,12 @@ async fn write_ndjson_line(stdin: &mut BoxedStdin, value: &Value) -> Result<(), 
     let mut bytes =
         serde_json::to_vec(value).map_err(|e| ProcessError::internal(format!("serialize stdin line: {e}")))?;
     bytes.push(b'\n');
-    // DIAGNOSTIC (env-gated, default OFF via AIONUI_CLAUDE_WIRE_DUMP): log the RAW
+    // DIAGNOSTIC (env-gated, default OFF via ONE_CLAUDE_WIRE_DUMP): log the RAW
     // stdin bytes we hand the CLI, so a "send accepted but no output" can be split
     // into "prompt was/wasn't actually written" vs "CLI received it but went silent".
     // OFF by default — it logs full prompt content (AGENTS.md sensitive-payload rule),
     // a deliberate debugging switch, never on in normal production.
-    if std::env::var("AIONUI_CLAUDE_WIRE_DUMP").is_ok_and(|v| v != "0" && !v.is_empty()) {
+    if std::env::var("ONE_CLAUDE_WIRE_DUMP").is_ok_and(|v| v != "0" && !v.is_empty()) {
         let preview = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]);
         tracing::info!(
             target: "dream_core_session::claude_wire",

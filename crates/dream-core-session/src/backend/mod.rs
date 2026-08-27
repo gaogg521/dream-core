@@ -57,12 +57,12 @@ use futures_util::stream::BoxStream;
 /// into a hardcoded `for _ in 0..40 { sleep(50ms) }` = 2s busy-poll on BOTH backends
 /// — a magic constant with no reference to the legacy value. 2s passes on a warm dev
 /// box but a cold start / untrusted project slows agent init past it → timeout → 500.
-/// Restore the legacy 30s budget (env-overridable via `AIONUI_HANDSHAKE_TIMEOUT_SECS`
+/// Restore the legacy 30s budget (env-overridable via `ONE_HANDSHAKE_TIMEOUT_SECS`
 /// for genuinely slow environments). Returned as a poll count at the existing 50ms
 /// tick so callers keep their loop shape; on exhaustion they return the RETRYABLE
 /// `BackendError::HandshakeTimeout` (not a bare Transport→500).
 pub(crate) fn handshake_budget() -> std::time::Duration {
-    let secs = std::env::var("AIONUI_HANDSHAKE_TIMEOUT_SECS")
+    let secs = std::env::var("ONE_HANDSHAKE_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|s| *s > 0)

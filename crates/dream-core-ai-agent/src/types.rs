@@ -60,46 +60,70 @@ impl BuildTaskOptions {
         base_url: Option<&str>,
         runtime_token: Option<&str>,
     ) {
-        self.context.runtime_env.retain(|(key, _)| {
-            !matches!(
-                key.as_str(),
-                AIONUI_USER_ID_ENV
-                    | AIONUI_CONVERSATION_ID_ENV
-                    | AIONUI_HELPER_BIN_ENV
-                    | AIONUI_BASE_URL_ENV
-                    | AIONUI_RUNTIME_TOKEN_ENV
-            )
-        });
         self.context
             .runtime_env
-            .push((AIONUI_USER_ID_ENV.to_owned(), user_id.to_owned()));
-        self.context
-            .runtime_env
-            .push((AIONUI_CONVERSATION_ID_ENV.to_owned(), conversation_id.to_owned()));
+            .retain(|(key, _)| !CONVERSATION_RUNTIME_ENV_NAMES.contains(&key.as_str()));
+
+        let mut set = |names: [&str; 2], value: &str| {
+            for name in names {
+                self.context.runtime_env.push((name.to_owned(), value.to_owned()));
+            }
+        };
+        set([USER_ID_ENV, LEGACY_USER_ID_ENV], user_id);
+        set([CONVERSATION_ID_ENV, LEGACY_CONVERSATION_ID_ENV], conversation_id);
         if let Some(helper_bin) = helper_bin {
-            self.context
-                .runtime_env
-                .push((AIONUI_HELPER_BIN_ENV.to_owned(), helper_bin.to_owned()));
+            set([HELPER_BIN_ENV, LEGACY_HELPER_BIN_ENV], helper_bin);
         }
         if let Some(base_url) = base_url {
-            self.context
-                .runtime_env
-                .push((AIONUI_BASE_URL_ENV.to_owned(), base_url.to_owned()));
+            set([BASE_URL_ENV, LEGACY_BASE_URL_ENV], base_url);
         }
         if let Some(runtime_token) = runtime_token {
-            self.context
-                .runtime_env
-                .push((AIONUI_RUNTIME_TOKEN_ENV.to_owned(), runtime_token.to_owned()));
+            set([RUNTIME_TOKEN_ENV, LEGACY_RUNTIME_TOKEN_ENV], runtime_token);
         }
         self.runtime_capabilities.conversation_runtime_context_version = Some(CONVERSATION_RUNTIME_CONTEXT_VERSION);
     }
 }
 
-pub const AIONUI_USER_ID_ENV: &str = "AIONUI_USER_ID";
-pub const AIONUI_CONVERSATION_ID_ENV: &str = "AIONUI_CONVERSATION_ID";
-pub const AIONUI_HELPER_BIN_ENV: &str = "AIONUI_HELPER_BIN";
-pub const AIONUI_BASE_URL_ENV: &str = "AIONUI_BASE_URL";
-pub const AIONUI_RUNTIME_TOKEN_ENV: &str = "AIONUI_RUNTIME_TOKEN";
+/// Conversation runtime context handed to every agent session.
+///
+/// The bundled skills and the helper CLI ship inside this same binary, so those
+/// move to the `ONE_*` names together. The legacy `AIONUI_*` names are still
+/// injected alongside them because skills are **user-authorable**: someone's own
+/// skill or MCP config may reference `$ONE_BASE_URL`, and dropping it would
+/// break their setup with nothing to point at — the command would just receive
+/// an empty string.
+pub const USER_ID_ENV: &str = "ONE_USER_ID";
+pub const CONVERSATION_ID_ENV: &str = "ONE_CONVERSATION_ID";
+pub const HELPER_BIN_ENV: &str = "ONE_HELPER_BIN";
+pub const BASE_URL_ENV: &str = "ONE_BASE_URL";
+pub const RUNTIME_TOKEN_ENV: &str = "ONE_RUNTIME_TOKEN";
+
+// Built with `concat!` rather than written as one literal: a sweep over quoted
+// `"AIONUI_*"` names already collapsed these onto the current spelling once,
+// which silently turned the dual injection into the same name written twice and
+// dropped the legacy fallback altogether.
+pub const LEGACY_USER_ID_ENV: &str = concat!("AIONUI", "_USER_ID");
+pub const LEGACY_CONVERSATION_ID_ENV: &str = concat!("AIONUI", "_CONVERSATION_ID");
+pub const LEGACY_HELPER_BIN_ENV: &str = concat!("AIONUI", "_HELPER_BIN");
+pub const LEGACY_BASE_URL_ENV: &str = concat!("AIONUI", "_BASE_URL");
+pub const LEGACY_RUNTIME_TOKEN_ENV: &str = concat!("AIONUI", "_RUNTIME_TOKEN");
+
+/// Every name `apply_conversation_runtime_context` owns, so a re-apply clears
+/// the previous conversation's values under both spellings before writing the
+/// new ones. Missing one here would leak a stale id into the next session.
+pub const CONVERSATION_RUNTIME_ENV_NAMES: &[&str] = &[
+    USER_ID_ENV,
+    CONVERSATION_ID_ENV,
+    HELPER_BIN_ENV,
+    BASE_URL_ENV,
+    RUNTIME_TOKEN_ENV,
+    LEGACY_USER_ID_ENV,
+    LEGACY_CONVERSATION_ID_ENV,
+    LEGACY_HELPER_BIN_ENV,
+    LEGACY_BASE_URL_ENV,
+    LEGACY_RUNTIME_TOKEN_ENV,
+];
+
 pub const CONVERSATION_RUNTIME_CONTEXT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -193,6 +217,25 @@ mod tests {
         assert!(parsed.skills.is_empty());
     }
 
+    /// The dual injection is only dual while the two constants differ. A sweep
+    /// over quoted env names collapsed them once already, which left the legacy
+    /// spelling uninjected — a user-authored skill referencing `$AIONUI_BASE_URL`
+    /// would then receive nothing, with no error anywhere.
+    #[test]
+    fn the_legacy_env_names_stay_distinct_from_the_current_ones() {
+        for (current, legacy) in [
+            (USER_ID_ENV, LEGACY_USER_ID_ENV),
+            (CONVERSATION_ID_ENV, LEGACY_CONVERSATION_ID_ENV),
+            (HELPER_BIN_ENV, LEGACY_HELPER_BIN_ENV),
+            (BASE_URL_ENV, LEGACY_BASE_URL_ENV),
+            (RUNTIME_TOKEN_ENV, LEGACY_RUNTIME_TOKEN_ENV),
+        ] {
+            assert_ne!(current, legacy, "{current} collapsed onto its legacy spelling");
+            assert!(current.starts_with("ONE_"), "{current}");
+            assert!(legacy.starts_with(concat!("AIONUI", "_")), "{legacy}");
+        }
+    }
+
     #[test]
     fn build_task_options_applies_conversation_runtime_context_once() {
         use crate::session_context::{
@@ -219,9 +262,9 @@ mod tests {
             },
             skills: vec![],
             runtime_env: vec![
-                (AIONUI_USER_ID_ENV.into(), "old-user".into()),
-                (AIONUI_CONVERSATION_ID_ENV.into(), "old-conv".into()),
-                (AIONUI_RUNTIME_TOKEN_ENV.into(), "old-token".into()),
+                (USER_ID_ENV.into(), "old-user".into()),
+                (CONVERSATION_ID_ENV.into(), "old-conv".into()),
+                (RUNTIME_TOKEN_ENV.into(), "old-token".into()),
                 ("EXISTING".into(), "1".into()),
             ],
             team: None,
@@ -248,7 +291,7 @@ mod tests {
                 .context
                 .runtime_env
                 .iter()
-                .filter(|(key, _)| key == AIONUI_USER_ID_ENV)
+                .filter(|(key, _)| key == USER_ID_ENV)
                 .count(),
             1
         );
@@ -256,36 +299,38 @@ mod tests {
             options
                 .context
                 .runtime_env
-                .contains(&(AIONUI_USER_ID_ENV.to_owned(), "user-1".to_owned()))
+                .contains(&(USER_ID_ENV.to_owned(), "user-1".to_owned()))
         );
         assert!(
             options
                 .context
                 .runtime_env
-                .contains(&(AIONUI_CONVERSATION_ID_ENV.to_owned(), "conv-1".to_owned()))
-        );
-        assert!(options.context.runtime_env.contains(&(
-            AIONUI_HELPER_BIN_ENV.to_owned(),
-            "/Applications/AionUi/aioncore".to_owned()
-        )));
-        assert!(
-            options
-                .context
-                .runtime_env
-                .contains(&(AIONUI_BASE_URL_ENV.to_owned(), "http://127.0.0.1:25808".to_owned()))
+                .contains(&(CONVERSATION_ID_ENV.to_owned(), "conv-1".to_owned()))
         );
         assert!(
             options
                 .context
                 .runtime_env
-                .contains(&(AIONUI_RUNTIME_TOKEN_ENV.to_owned(), "runtime-token-1".to_owned()))
+                .contains(&(HELPER_BIN_ENV.to_owned(), "/Applications/AionUi/aioncore".to_owned()))
+        );
+        assert!(
+            options
+                .context
+                .runtime_env
+                .contains(&(BASE_URL_ENV.to_owned(), "http://127.0.0.1:25808".to_owned()))
+        );
+        assert!(
+            options
+                .context
+                .runtime_env
+                .contains(&(RUNTIME_TOKEN_ENV.to_owned(), "runtime-token-1".to_owned()))
         );
         assert_eq!(
             options
                 .context
                 .runtime_env
                 .iter()
-                .filter(|(key, _)| key == AIONUI_RUNTIME_TOKEN_ENV)
+                .filter(|(key, _)| key == RUNTIME_TOKEN_ENV)
                 .count(),
             1
         );

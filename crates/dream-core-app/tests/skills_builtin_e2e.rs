@@ -42,7 +42,7 @@ async fn fixture_embedded() -> Fixture {
     // construction time, and each test calls `fixture_embedded` once at
     // the top, so the mutation is race-free in practice.
     unsafe {
-        std::env::remove_var("AIONUI_BUILTIN_SKILLS_PATH");
+        std::env::remove_var("ONE_BUILTIN_SKILLS_PATH");
     }
 
     let tmp = TempDir::new().unwrap();
@@ -137,8 +137,8 @@ async fn unified_skill_list_includes_auto_inject_entries_from_embedded_corpus() 
     );
     let names: Vec<&str> = auto_items.iter().filter_map(|item| item["name"].as_str()).collect();
     assert!(
-        names.contains(&"aionui-config"),
-        "aionui-config should be shipped as an auto-inject builtin skill: {names:?}",
+        names.contains(&"one-config"),
+        "one-config should be shipped as an auto-inject builtin skill: {names:?}",
     );
     assert!(
         !names.contains(&"aionui-skills"),

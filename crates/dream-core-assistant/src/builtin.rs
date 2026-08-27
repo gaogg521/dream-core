@@ -13,7 +13,7 @@
 //!    binary from GitHub releases — the `assets/` directory never shipped.
 //!
 //! Embedding avoids both. E2E tests that want to inject a custom fixture
-//! still can, via the `AIONUI_BUILTIN_ASSISTANTS_PATH` env var → disk
+//! still can, via the `ONE_BUILTIN_ASSISTANTS_PATH` env var → disk
 //! fallback path.
 
 use std::collections::HashMap;
@@ -92,7 +92,7 @@ pub struct AvatarAsset {
 /// Source of built-in asset content.
 ///
 /// The disk branch exists for E2E tests that point
-/// `AIONUI_BUILTIN_ASSISTANTS_PATH` at a fixture directory.
+/// `ONE_BUILTIN_ASSISTANTS_PATH` at a fixture directory.
 enum Source {
     Embedded,
     Disk(PathBuf),
@@ -107,17 +107,17 @@ pub struct BuiltinAssistantRegistry {
 impl BuiltinAssistantRegistry {
     /// Construct the registry.
     ///
-    /// If `AIONUI_BUILTIN_ASSISTANTS_PATH` is set and points to a readable
+    /// If `ONE_BUILTIN_ASSISTANTS_PATH` is set and points to a readable
     /// directory, read from disk (test-only override). Otherwise use the
     /// assets embedded at compile time.
     pub fn load() -> Self {
-        if let Ok(env) = std::env::var("AIONUI_BUILTIN_ASSISTANTS_PATH") {
+        if let Ok(env) = std::env::var("ONE_BUILTIN_ASSISTANTS_PATH") {
             let p = PathBuf::from(env);
             if p.exists() {
                 return Self::load_from_dir(p);
             }
             warn!(
-                "AIONUI_BUILTIN_ASSISTANTS_PATH points to missing directory; \
+                "ONE_BUILTIN_ASSISTANTS_PATH points to missing directory; \
                  falling back to embedded assets"
             );
         }
@@ -141,7 +141,7 @@ impl BuiltinAssistantRegistry {
     }
 
     /// Load from an explicit on-disk directory. Preserved for
-    /// `AIONUI_BUILTIN_ASSISTANTS_PATH` E2E fixtures — the three
+    /// `ONE_BUILTIN_ASSISTANTS_PATH` E2E fixtures — the three
     /// graceful-degradation branches below mirror the original filesystem
     /// behaviour.
     pub fn load_from_dir(assets_dir: PathBuf) -> Self {
@@ -321,7 +321,7 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // Disk-source fallback (used by E2E fixtures via
-    // AIONUI_BUILTIN_ASSISTANTS_PATH). Graceful-degradation semantics must
+    // ONE_BUILTIN_ASSISTANTS_PATH). Graceful-degradation semantics must
     // stay intact.
     // -----------------------------------------------------------------------
 
@@ -430,7 +430,7 @@ mod tests {
         // SAFETY: cargo test runs tests in parallel by default, so guard
         // against interference from other tests by using a unique env-var
         // value and checking via a dedicated loader call.
-        let key = "AIONUI_BUILTIN_ASSISTANTS_PATH";
+        let key = "ONE_BUILTIN_ASSISTANTS_PATH";
         let prev = std::env::var(key).ok();
         // SAFETY: set_var is sound when no other thread is concurrently
         // reading env. Tests within this module do not share mutation, and

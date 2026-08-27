@@ -42,7 +42,7 @@ fn write_runtime_layout(root: &Path, with_npm: bool) {
 #[cfg(unix)]
 fn bundled_root_from_parent() -> PathBuf {
     PathBuf::from(
-        std::env::var_os("AIONUI_BUNDLED_MANAGED_RESOURCES").expect("parent must pass the bundled resources root"),
+        std::env::var_os("ONE_BUNDLED_MANAGED_RESOURCES").expect("parent must pass the bundled resources root"),
     )
 }
 
@@ -118,7 +118,7 @@ async fn transient_npm_version_failure_is_absorbed_without_failed_report() {
     if !crate::test_support::run_in_env_child(
         "node_runtime::managed::tests::transient_npm_version_failure_is_absorbed_without_failed_report",
         |command| {
-            command.env("AIONUI_BUNDLED_MANAGED_RESOURCES", &bundled_root);
+            command.env("ONE_BUNDLED_MANAGED_RESOURCES", &bundled_root);
         },
     ) {
         return;
@@ -184,7 +184,7 @@ async fn persistent_npm_version_failure_still_reports_bundled_resource_invalid()
     if !crate::test_support::run_in_env_child(
         "node_runtime::managed::tests::persistent_npm_version_failure_still_reports_bundled_resource_invalid",
         |command| {
-            command.env("AIONUI_BUNDLED_MANAGED_RESOURCES", &bundled_root);
+            command.env("ONE_BUNDLED_MANAGED_RESOURCES", &bundled_root);
         },
     ) {
         return;
@@ -379,7 +379,7 @@ async fn bundled_runtime_missing_reports_bundled_resource_missing() {
     if !crate::test_support::run_in_env_child(
         "node_runtime::managed::tests::bundled_runtime_missing_reports_bundled_resource_missing",
         |command| {
-            command.env("AIONUI_BUNDLED_MANAGED_RESOURCES", &bundled_root);
+            command.env("ONE_BUNDLED_MANAGED_RESOURCES", &bundled_root);
         },
     ) {
         return;
@@ -526,12 +526,12 @@ async fn bundled_runtime_validation_failure_does_not_fallback_to_remote_download
     if !crate::test_support::run_in_env_child(
         "node_runtime::managed::tests::bundled_runtime_validation_failure_does_not_fallback_to_remote_download",
         |command| {
-            command.env("AIONUI_BUNDLED_MANAGED_RESOURCES", &bundled_root);
+            command.env("ONE_BUNDLED_MANAGED_RESOURCES", &bundled_root);
         },
     ) {
         return;
     }
-    let bundled_root = std::path::PathBuf::from(std::env::var_os("AIONUI_BUNDLED_MANAGED_RESOURCES").unwrap());
+    let bundled_root = std::path::PathBuf::from(std::env::var_os("ONE_BUNDLED_MANAGED_RESOURCES").unwrap());
     let runtime_root = bundled_root.join("node").join("node-v22.11.0-darwin-arm64");
     let bin = runtime_root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();

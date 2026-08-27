@@ -10,8 +10,8 @@ use dream_core_ai_agent::agent_task::{AgentInstance, IAgentTask, IMockAgent};
 use dream_core_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
 use dream_core_ai_agent::protocol::events::{AgentStreamEvent, ErrorEventData, FinishEventData, TextEventData};
 use dream_core_ai_agent::types::{
-    AIONUI_BASE_URL_ENV, AIONUI_HELPER_BIN_ENV, AIONUI_RUNTIME_TOKEN_ENV, BuildTaskOptions,
-    CONVERSATION_RUNTIME_CONTEXT_VERSION, SendMessageData,
+    BASE_URL_ENV, BuildTaskOptions, CONVERSATION_RUNTIME_CONTEXT_VERSION, HELPER_BIN_ENV, RUNTIME_TOKEN_ENV,
+    SendMessageData,
 };
 use dream_core_ai_agent::{
     AcpError, AgentAvailabilityFeedbackPort, AgentError, AgentSendError, AgentSessionKind, IWorkerTaskManager,
@@ -4078,15 +4078,15 @@ fn assert_conversation_runtime_context(options: &BuildTaskOptions, user_id: &str
         options
             .context
             .runtime_env
-            .contains(&("AIONUI_USER_ID".to_owned(), user_id.to_owned())),
-        "runtime env should include AIONUI_USER_ID"
+            .contains(&("ONE_USER_ID".to_owned(), user_id.to_owned())),
+        "runtime env should include ONE_USER_ID"
     );
     assert!(
         options
             .context
             .runtime_env
-            .contains(&("AIONUI_CONVERSATION_ID".to_owned(), conversation_id.to_owned())),
-        "runtime env should include AIONUI_CONVERSATION_ID"
+            .contains(&("ONE_CONVERSATION_ID".to_owned(), conversation_id.to_owned())),
+        "runtime env should include ONE_CONVERSATION_ID"
     );
     assert_eq!(
         options.runtime_capabilities.conversation_runtime_context_version,
@@ -4435,18 +4435,18 @@ async fn send_message_injects_configured_runtime_helper_context() {
     let options = task_mgr.captured_options();
     assert_eq!(options.len(), 1);
     assert!(
-        options[0].context.runtime_env.contains(&(
-            AIONUI_HELPER_BIN_ENV.to_owned(),
-            "/Applications/AionUi/aioncore".to_owned()
-        )),
-        "runtime env should include AIONUI_HELPER_BIN"
+        options[0]
+            .context
+            .runtime_env
+            .contains(&(HELPER_BIN_ENV.to_owned(), "/Applications/AionUi/aioncore".to_owned())),
+        "runtime env should include ONE_HELPER_BIN"
     );
     assert!(
         options[0]
             .context
             .runtime_env
-            .contains(&(AIONUI_BASE_URL_ENV.to_owned(), "http://127.0.0.1:51234".to_owned())),
-        "runtime env should include AIONUI_BASE_URL"
+            .contains(&(BASE_URL_ENV.to_owned(), "http://127.0.0.1:51234".to_owned())),
+        "runtime env should include ONE_BASE_URL"
     );
 }
 
@@ -7444,8 +7444,8 @@ async fn warmup_injects_runtime_token_for_mcp_team_conversation() {
             .context
             .runtime_env
             .iter()
-            .any(|(key, value)| key == AIONUI_RUNTIME_TOKEN_ENV && !value.is_empty()),
-        "MCP Team conversations should receive AIONUI_RUNTIME_TOKEN for CLI fallback"
+            .any(|(key, value)| key == RUNTIME_TOKEN_ENV && !value.is_empty()),
+        "MCP Team conversations should receive ONE_RUNTIME_TOKEN for CLI fallback"
     );
 }
 

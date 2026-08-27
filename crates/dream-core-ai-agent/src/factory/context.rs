@@ -53,7 +53,7 @@ mod tests {
                 use_model: None,
             },
             skills: vec![],
-            runtime_env: vec![("AIONUI_USER_ID".into(), "user-1".into())],
+            runtime_env: vec![("ONE_USER_ID".into(), "user-1".into())],
             team: None,
             kind: AgentSessionKind::Acp(Box::new(AcpSessionBuildContext {
                 config: Default::default(),
@@ -66,9 +66,6 @@ mod tests {
 
         let ctx = FactoryContext::resolve(&context).await.unwrap();
 
-        assert_eq!(
-            ctx.runtime_env,
-            vec![("AIONUI_USER_ID".to_owned(), "user-1".to_owned())]
-        );
+        assert_eq!(ctx.runtime_env, vec![("ONE_USER_ID".to_owned(), "user-1".to_owned())]);
     }
 }

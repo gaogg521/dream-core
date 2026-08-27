@@ -45,12 +45,12 @@ const AIONRS_TARGETS: &[&str] = &[
 
 const RAW_AIONRS_PAYLOAD_TARGETS: &[&str] = &["dream_engine_agent", "dream_engine_providers"];
 
-/// `AIONUI_LOG_JSON=1` (or `true`) switches the stdout console layer to the
+/// `ONE_LOG_JSON=1` (or `true`) switches the stdout console layer to the
 /// same JSON format the file layers already use — for container deployments
 /// whose log collector parses stdout, not the desktop dev terminal, which
 /// stays human-readable by default.
 fn console_wants_json() -> bool {
-    parse_log_json_env(std::env::var("AIONUI_LOG_JSON").ok().as_deref())
+    parse_log_json_env(std::env::var("ONE_LOG_JSON").ok().as_deref())
 }
 
 /// Split out from `console_wants_json()` so the parsing rule is testable

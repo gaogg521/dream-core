@@ -23,8 +23,8 @@ pub(crate) fn data() -> Value {
         "commands": {
             "capabilities": { "runtime_env_required": [] },
             "help": { "runtime_env_required": [] },
-            "context": { "runtime_env_required": ["AIONUI_BASE_URL", "AIONUI_USER_ID", "AIONUI_CONVERSATION_ID", "AIONUI_RUNTIME_TOKEN"] },
-            "tool_call": { "runtime_env_required": ["AIONUI_BASE_URL", "AIONUI_USER_ID", "AIONUI_CONVERSATION_ID", "AIONUI_RUNTIME_TOKEN"] }
+            "context": { "runtime_env_required": ["ONE_BASE_URL", "ONE_USER_ID", "ONE_CONVERSATION_ID", "ONE_RUNTIME_TOKEN"] },
+            "tool_call": { "runtime_env_required": ["ONE_BASE_URL", "ONE_USER_ID", "ONE_CONVERSATION_ID", "ONE_RUNTIME_TOKEN"] }
         },
         "output_envelope": {
             "success": "boolean",

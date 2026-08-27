@@ -1373,7 +1373,11 @@ fn guidance_for_unavailable_reason(reason: &UnavailableReason) -> String {
 /// agent's runtime environment or Dream UI-internal wiring. Case-insensitive.
 pub(crate) fn is_blocked_override_env_key(key: &str) -> bool {
     let upper = key.to_ascii_uppercase();
-    if upper.starts_with("AIONUI_") {
+    // Both spellings. The runtime context moved to `ONE_*`, and blocking only
+    // the old prefix would have handed users an override for `ONE_RUNTIME_TOKEN`
+    // and friends the moment the rename landed. The legacy prefix stays blocked
+    // because it is still injected alongside the current one.
+    if upper.starts_with("ONE_") || upper.starts_with("AIONUI_") {
         return true;
     }
     matches!(
@@ -1704,7 +1708,7 @@ mod tests {
         assert_eq!(pi.native_skills_dirs.as_deref(), Some(&[".pi/skills".to_owned()][..]));
         // Team-capable through the CLI transport. pi advertises no optional MCP
         // transport and LIVE-probed does not load a stdio MCP server, so Team
-        // gives it the `$AIONUI_HELPER_BIN team ...` command surface instead of
+        // gives it the `$ONE_HELPER_BIN team ...` command surface instead of
         // MCP tools — but that surface works, so the picker must not block it.
         // (This asserted `false` while builtin rows carried a hard veto flag; the
         // flag is gone, and blocking a CLI-coordinating agent was never right.)
@@ -2065,7 +2069,13 @@ mod tests {
             "SHELL",
             "TERM",
             "CODEX_HOME",
-            "AIONUI_FOO",
+            "ONE_FOO",
+            // Both prefixes, both casings: the runtime context is injected under
+            // each, so an override reaching either spelling could replace a
+            // conversation's own token or base URL.
+            "ONE_RUNTIME_TOKEN",
+            "one_base_url",
+            "AIONUI_RUNTIME_TOKEN",
             "aionui_bar",
             "path",
         ] {
