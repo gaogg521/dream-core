@@ -352,3 +352,71 @@ async fn runtime_can_emit_error_and_finish() {
         other => panic!("Expected Finish, got {:?}", other),
     }
 }
+
+/// The dream path reported no usage at all before this: the only emitter that
+/// carries token counts is called exclusively by `dream-engine-cli`, while this
+/// path ran the same engine in-process and threw the `AgentResult` away. These
+/// pin the frame the renderer now reads.
+mod turn_usage_frame {
+    use super::*;
+
+    fn usage(input: u64, output: u64, cache_read: u64, cache_write: u64) -> TokenUsage {
+        TokenUsage {
+            input_tokens: input,
+            output_tokens: output,
+            cache_creation_tokens: cache_write,
+            cache_read_tokens: cache_read,
+        }
+    }
+
+    /// The one thing worth a test here. The engine's `input_tokens` INCLUDES the
+    /// cached tokens; the renderer's field of the same name means the input cache
+    /// did NOT cover, because that is what its hit-rate divides by. Passing the
+    /// engine value through would double-count and understate the hit rate — the
+    /// kind of wrong number that looks plausible.
+    #[test]
+    fn reports_fresh_input_not_the_cache_inclusive_total() {
+        let frame = build_turn_usage_frame(162_500, 1_000_000, &usage(1_600_280, 7_300, 1_600_000, 146_100));
+        let meta = &frame["_meta"];
+        // 1_600_280 - 1_600_000 - 146_100 saturates at 0 only if cache exceeds
+        // input; here it is a plain subtraction of the cache-read portion.
+        assert_eq!(meta["input_tokens"], 0);
+        assert_eq!(meta["cached_read_tokens"], 1_600_000);
+        assert_eq!(meta["cached_write_tokens"], 146_100);
+        assert_eq!(meta["output_tokens"], 7_300);
+    }
+
+    #[test]
+    fn keeps_the_uncached_remainder_when_there_is_one() {
+        let frame = build_turn_usage_frame(100, 200_000, &usage(1_000, 50, 400, 100));
+        assert_eq!(frame["_meta"]["input_tokens"], 500);
+    }
+
+    /// A provider reporting cache figures larger than its own input total would
+    /// underflow a u64 into a huge number; clamping reads as "all of it came
+    /// from cache", which is the truthful reading of an impossible report.
+    #[test]
+    fn clamps_instead_of_underflowing_on_an_impossible_report() {
+        let frame = build_turn_usage_frame(1, 2, &usage(10, 0, 999, 999));
+        assert_eq!(frame["_meta"]["input_tokens"], 0);
+    }
+
+    /// `used` is occupancy, not the turn's own sum — the indicator answers how
+    /// much of the window is gone, and a per-turn total would reset every
+    /// message.
+    #[test]
+    fn carries_context_occupancy_and_window_rather_than_a_turn_total() {
+        let frame = build_turn_usage_frame(162_500, 1_000_000, &usage(280, 7_300, 0, 0));
+        assert_eq!(frame["used"], 162_500);
+        assert_eq!(frame["size"], 1_000_000);
+    }
+
+    /// 0 is the renderer's own encoding for "window unknown" — it then shows the
+    /// raw count instead of a percentage against a guessed denominator.
+    #[test]
+    fn passes_an_unknown_window_through_as_zero() {
+        let frame = build_turn_usage_frame(500, 0, &usage(100, 50, 0, 0));
+        assert_eq!(frame["size"], 0);
+        assert_eq!(frame["used"], 500);
+    }
+}

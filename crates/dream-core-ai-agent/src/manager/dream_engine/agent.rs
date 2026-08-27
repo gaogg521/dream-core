@@ -13,7 +13,7 @@ use dream_core_common::{
     AgentKillReason, AgentType, Confirmation, ConversationStatus, ErrorChain, TimestampMs, generate_short_id, now_ms,
 };
 use dream_engine_agent::bootstrap::AgentBootstrap;
-use dream_engine_agent::engine::AgentEngine;
+use dream_engine_agent::engine::{AgentEngine, AgentResult};
 use dream_engine_agent::output::OutputSink;
 use dream_engine_agent::session::Session;
 use dream_engine_config::compat::ProviderCompat;
@@ -21,6 +21,7 @@ use dream_engine_config::config::{CliArgs, Config, McpServerConfig, ProviderType
 use dream_engine_mcp::manager::McpManager;
 use dream_engine_protocol::commands::{ApprovalScope, SessionMode};
 use dream_engine_protocol::{ToolApprovalManager, ToolApprovalResult};
+use dream_engine_types::message::TokenUsage;
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify, broadcast};
 use tokio::time::timeout;
@@ -372,6 +373,43 @@ impl AionrsAgentManager {
     }
 }
 
+/// Build the usage frame for one finished dream turn. Pure (FCIS core).
+///
+/// ⚠️ **The two `input_tokens` mean opposite things.** The engine's
+/// `TokenUsage::input_tokens` is the FULL provider input — cache reads and cache
+/// writes included (see its doc comment). The renderer's breakdown field of the
+/// same name means the input that cache did NOT cover, because that is what
+/// makes its cache hit-rate (`cached_read / (cached_read + input)`) mean
+/// anything. Passing the engine's number through unchanged double-counts the
+/// cached tokens and reports a hit rate far below the truth, so the cached parts
+/// are subtracted here — the single reason this function is not a one-line
+/// `json!`.
+///
+/// `used` is context occupancy rather than the turn's own total: the indicator
+/// answers "how much of the window is gone", and a per-turn sum would reset with
+/// every message. `size` of 0 is the renderer's own encoding for "window
+/// unknown", which is exactly what a configuration without one resolves to.
+fn build_turn_usage_frame(context_usage: u64, context_window: u64, usage: &TokenUsage) -> Value {
+    // Saturating: a provider reporting cache figures larger than its own input
+    // total would otherwise underflow into a huge number. Clamping to zero reads
+    // as "all of it came from cache", the truthful reading of that report.
+    let fresh_input = usage
+        .input_tokens
+        .saturating_sub(usage.cache_read_tokens)
+        .saturating_sub(usage.cache_creation_tokens);
+
+    serde_json::json!({
+        "used": context_usage,
+        "size": context_window,
+        "_meta": {
+            "input_tokens": fresh_input,
+            "output_tokens": usage.output_tokens,
+            "cached_read_tokens": usage.cache_read_tokens,
+            "cached_write_tokens": usage.cache_creation_tokens,
+        },
+    })
+}
+
 #[async_trait::async_trait]
 impl IAgentTask for AionrsAgentManager {
     fn agent_type(&self) -> AgentType {
@@ -455,12 +493,15 @@ impl IAgentTask for AionrsAgentManager {
         self.runtime.bump_activity();
 
         let send_result = match result {
-            Some(Ok(_)) => {
+            Some(Ok(run_result)) => {
                 info!(
                     conversation_id = %self.runtime.conversation_id(),
                     elapsed_ms,
                     "DreamEngine engine.run() completed, emitting Finish"
                 );
+                // BEFORE the Finish: the relay stops forwarding a turn once it
+                // sees Finish, so a usage frame emitted after it is dropped.
+                self.emit_turn_usage(&engine, &run_result);
                 self.runtime.emit_finish(None);
                 Ok(())
             }
@@ -511,6 +552,50 @@ impl IAgentTask for AionrsAgentManager {
 }
 
 impl AionrsAgentManager {
+    /// Report the turn's token usage, so the context indicator has something to
+    /// show for a dream conversation.
+    ///
+    /// It had nothing: the only emitter that carries token counts
+    /// (`BackendOutputSink::emit_stream_end`) is called exclusively by
+    /// `dream-engine-cli` after its own `engine.run()` returns. This path runs
+    /// the same engine in-process and converged the turn with
+    /// `emit_finish(None)` alone, discarding the `AgentResult` — so the frontend
+    /// received a `finish` frame carrying nothing but `session_id` and left the
+    /// meter blank, while the engine had the numbers all along.
+    ///
+    /// Emitted as `AcpContextUsage` rather than as fields on `Finish`. The name
+    /// is historical (`broadcast_usage_frame` in `session_agent.rs` says it
+    /// "fires for every backend"); the shape `{used, size, _meta}` is the one
+    /// the renderer already reads, and unlike `Finish` it can carry a context
+    /// WINDOW — which is what turns a raw token count into the percentage the
+    /// indicator exists to show.
+    ///
+    /// ⚠️ `TokenUsage::input_tokens` from the engine is the **full** provider
+    /// input, cache reads and cache writes included (see its doc comment). The
+    /// renderer's `input_tokens` means the opposite — the fresh input that cache
+    /// did NOT cover — because that is what makes a cache hit-rate meaningful
+    /// (`cached_read / (cached_read + input)`). Passing the engine's value
+    /// through unchanged would double-count the cached tokens and report a hit
+    /// rate far below the truth, so the cached parts are subtracted here.
+    fn emit_turn_usage(&self, engine: &AgentEngine, result: &AgentResult) {
+        let status = engine.context_status();
+        let usage = &result.usage;
+        let frame = build_turn_usage_frame(status.context_usage, status.context_window, usage);
+
+        debug!(
+            conversation_id = %self.runtime.conversation_id(),
+            context_usage = status.context_usage,
+            context_window = status.context_window,
+            input_tokens = usage.input_tokens,
+            output_tokens = usage.output_tokens,
+            cache_read = usage.cache_read_tokens,
+            cache_write = usage.cache_creation_tokens,
+            "DreamEngine turn usage reported"
+        );
+
+        self.runtime.emit(AgentStreamEvent::AcpContextUsage(frame));
+    }
+
     pub fn kill_and_wait(&self, reason: Option<AgentKillReason>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         let was_running = self.request_stop(reason, "kill");
         let turn_finished_notify = Arc::clone(&self.turn_finished_notify);
