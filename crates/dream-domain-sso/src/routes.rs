@@ -125,12 +125,21 @@ struct AuthorizeQuery {
 /// string literal and an href attribute — see `desktop_callback_page`).
 /// Unlike the rest of the deep-link params, this one is NOT run through
 /// `urlencode` first, so it must never pass through anything other than one
-/// of these two known-safe literals (e.g. a `javascript:` or quote-breaking
-/// value). Anything unrecognized silently falls back to the production
-/// scheme, matching the pre-existing hardcoded behavior for older clients
-/// that don't send `scheme` at all.
+/// of these known-safe literals (e.g. a `javascript:` or quote-breaking
+/// value). Anything unrecognized silently falls back to the pre-rebrand
+/// production scheme, matching the hardcoded behavior for older clients that
+/// don't send `scheme` at all — those only ever registered `aionui://` with the
+/// OS, so handing them `dream://` would drop the callback on the floor.
+///
+/// `dream` / `dream-dev` must be allowed here BEFORE the desktop app starts
+/// asking for them. The app pairs with a pinned aioncore release, so a client
+/// requesting a scheme this build does not know falls through to `aionui` and
+/// the callback reaches an app that stopped listening for it: login succeeds in
+/// the browser and never arrives.
 fn sanitize_deep_link_scheme(raw: Option<&str>) -> &'static str {
     match raw {
+        Some("dream") => "dream",
+        Some("dream-dev") => "dream-dev",
         Some("aionui-dev") => "aionui-dev",
         _ => "aionui",
     }
@@ -644,9 +653,13 @@ mod tests {
 
     #[test]
     fn sanitize_deep_link_scheme_allows_only_the_known_schemes() {
+        assert_eq!(sanitize_deep_link_scheme(Some("dream")), "dream");
+        assert_eq!(sanitize_deep_link_scheme(Some("dream-dev")), "dream-dev");
         assert_eq!(sanitize_deep_link_scheme(Some("aionui-dev")), "aionui-dev");
         // Anything else — including no param at all — falls back to the
-        // production scheme, matching the old hardcoded behavior.
+        // pre-rebrand production scheme. A client that sends nothing is an old
+        // build that only registered `aionui://`, so this fallback is what keeps
+        // its callback arriving.
         assert_eq!(sanitize_deep_link_scheme(Some("aionui")), "aionui");
         assert_eq!(sanitize_deep_link_scheme(None), "aionui");
         assert_eq!(sanitize_deep_link_scheme(Some("")), "aionui");
