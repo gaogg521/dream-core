@@ -48,3 +48,15 @@ dream-ui 直接调用已有的普通 `POST /api/providers`，生成一条用户�
   dream-core 这一侧只测到"broker 返回什么状态码，我们映射成什么错误"这一层
 - `DREAM_TRIAL_BROKER_URL` 环境变量目前未在任何地方配置，本地/生产环境这个端点会直接返回
   "trial key issuance is not configured on this deployment"（400），这是预期行为，不是 bug
+
+## 2026-08-28 补充：已部署 + 已接线
+
+- **broker 已部署**：`43.163.105.71`，systemd（非 Docker），公网入口
+  `https://work.1oneclaw.com/trial-broker`。完整细节见 dream-ui 仓库同名文档的
+  "2026-08-28 补充"一节，以及 `dream-trial-broker` 仓库的 `deploy/DEPLOY.md`。
+- **`DREAM_TRIAL_BROKER_URL` 已接线**：由 dream-ui `packages/web-host` 在 spawn aioncore 时
+  注入默认值 `https://work.1oneclaw.com/trial-broker`。dream-core 这一侧代码**未改动**，
+  仍然是"env 有值就用、没值就报未配置"的原有逻辑。
+- **真实链路已验证**：当天用真实 Management Key + 打包用的 bundled aioncore 二进制跑通
+  `POST /api/providers/trial-key` → 真实签发 → 二次 409；测试 key 已清理。
+- dream-core 侧后续无待办；剩下的是 dream-ui 发版 + 真实 UI 冒烟。
