@@ -60,3 +60,45 @@ dream-ui 直接调用已有的普通 `POST /api/providers`，生成一条用户�
 - **真实链路已验证**：当天用真实 Management Key + 打包用的 bundled aioncore 二进制跑通
   `POST /api/providers/trial-key` → 真实签发 → 二次 409；测试 key 已清理。
 - dream-core 侧后续无待办；剩下的是 dream-ui 发版 + 真实 UI 冒烟。
+
+## 2026-08-28 补充二：额度耗尽的分类与本地化
+
+体验档改成**每月 $1 硬顶**（`limit_reset: "monthly"`，此前误设成 `daily`，等于每人每月
+可花到 $30）。随之要处理"额度用完之后用户看到什么"。
+
+### 修了两个真实缺陷
+
+1. **误判**：耗尽在 OpenRouter 是 403，被通用的"含 403"分支判成
+   `USER_LLM_PROVIDER_PERMISSION_DENIED`，提示"请检查账号凭证"——把凭证完全正常的用户
+   引向错误的排查方向。
+2. **泄露**：`bound_error_detail` 只做截断和去标签，注释明确写着 "Readability, **NOT
+   redaction**"。所以上游原文
+   `Key limit exceeded ... https://openrouter.ai/workspaces/<org>/keys/<hash>`
+   会**原样显示在聊天气泡里、写进消息库、并随反馈附件上传**，暴露公司 workspace 与
+   key 的管理句柄。
+
+新增 `AgentErrorCode::UserLlmProviderQuotaExhausted`，在按状态码分类**之前**先匹配措辞；
+该错误码通过 `AgentErrorCode::hides_upstream_detail()` 不透传上游原文。13 语种文案齐全。
+
+### ⚠️ 这次最值得记住的教训：错误分类不止一处
+
+第一版只改了 `protocol::send_error`（按文本分类），**1034 个单测全绿**——但真机一测，
+界面上一点没变，仍然是 PERMISSION_DENIED 加完整原文。
+
+因为 **1ONE CLI 会话走的是另一条路**：`manager::dream_engine::error` 里的
+`aionrs_provider_status_to_send_error` **只按 HTTP 状态码分类**，并且直接构造
+`AgentSendError`，绕过了我加抑制的那个函数。
+
+现在的结构避免了再次分叉：
+
+- 判定逻辑抽成 `looks_like_spent_allowance()`，两个分类器共用同一个函数
+- 抑制逻辑移到 `AgentSendError::new()` —— **每条构造路径唯一的收口**，而不是某一个分类器
+
+**改这类跨层错误处理时，先 grep 清楚有几条分类路径，别假设只有一条。**
+
+### 另一个影响转化设计的事实
+
+`openrouter/free` 走免费池，**成本 $0，完全不消耗 key 的美元额度**。按现在"免费优先"的
+模型排序，普通用户**永远碰不到 $1/月上限**，也就永远看不到充值提示。真正约束他们的是
+OpenRouter 账号级、**全局共享**的免费池请求配额。详见 broker 仓库的
+`docs/vendor-abstraction-and-paid-tier.zh-CN.md` §3.3。
