@@ -17,6 +17,13 @@ pub enum AgentErrorCode {
     DreamStateInconsistent,
     DreamPermissionError,
     DreamInternalError,
+    /// We stopped a turn that was not converging — it exhausted its budget of
+    /// agentic turns, or ran past the wall-clock ceiling for one message.
+    ///
+    /// One code for both because the user's situation is identical either way:
+    /// the request ran away, nothing came back, and the next step is to retry
+    /// or rephrase. The `detail` says which limit it was.
+    DreamTurnLimitReached,
     #[serde(alias = "WORKSPACE_PATH_CONTAINS_WHITESPACE_RUNTIME_UNSUPPORTED")]
     WorkspacePathRuntimeUnavailable,
     UserAgentHandshakeFailed,

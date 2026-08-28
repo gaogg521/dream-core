@@ -434,3 +434,178 @@ mod turn_usage_frame {
         assert_eq!(frame["used"], 500);
     }
 }
+
+/// The engine treats an absent turn budget as "iterate forever", and the
+/// desktop never sets one — the conversation config has a `maxTurns` field
+/// that nothing writes. So the default has to come from here; if this ever
+/// resolves to `None` again, every ordinary conversation goes unbounded and
+/// the only way out is the user pressing stop.
+#[test]
+fn a_conversation_without_its_own_budget_still_gets_one() {
+    assert_eq!(
+        Some(None::<usize>.unwrap_or(DEFAULT_MAX_TURNS_PER_TURN)),
+        Some(DEFAULT_MAX_TURNS_PER_TURN),
+        "an unset per-conversation budget must fall back to the default"
+    );
+    assert!(
+        DEFAULT_MAX_TURNS_PER_TURN >= 100,
+        "the budget is a runaway backstop, not a working limit — a hard task \
+         can legitimately spend 50-100 turns, so it must sit well clear of that"
+    );
+}
+
+/// A conversation that sets its own budget keeps it. The fallback must not
+/// quietly override an explicit choice.
+#[test]
+fn an_explicit_budget_is_not_overridden_by_the_default() {
+    let explicit = Some(7usize);
+    assert_eq!(explicit.unwrap_or(DEFAULT_MAX_TURNS_PER_TURN), 7);
+}
+
+/// The idle limit bounds how long a single attempt may hang, which the turn
+/// budget cannot: a stalled provider read never advances the turn counter.
+/// Observed at 183 minutes before this existed.
+#[test]
+fn the_idle_limit_is_generous_but_finite() {
+    let minutes = TURN_IDLE_LIMIT.as_secs() / 60;
+    assert!(
+        (20..=120).contains(&minutes),
+        "want a window far past any real gap with nothing executing, while \
+         still being noticed the same sitting; got {minutes} minutes"
+    );
+}
+
+fn running_tool(call_id: &str) -> AgentStreamEvent {
+    AgentStreamEvent::ToolCall(crate::protocol::events::ToolCallEventData {
+        call_id: call_id.to_owned(),
+        name: "build".to_owned(),
+        args: serde_json::Value::Null,
+        status: ToolCallStatus::Running,
+        input: None,
+        output: None,
+        description: None,
+        parent_call_id: None,
+    })
+}
+
+fn finished_tool(call_id: &str) -> AgentStreamEvent {
+    AgentStreamEvent::ToolCall(crate::protocol::events::ToolCallEventData {
+        status: ToolCallStatus::Completed,
+        ..match running_tool(call_id) {
+            AgentStreamEvent::ToolCall(d) => d,
+            _ => unreachable!(),
+        }
+    })
+}
+
+/// The case that motivated the whole design: a Team Mode member runs a build
+/// or test suite that is silent for far longer than the idle window. Nothing
+/// in the event stream distinguishes that from a hung tool, so an open tool
+/// call must suspend the window outright — otherwise this fix would kill real
+/// work, which is worse than the bug it fixes.
+#[tokio::test]
+async fn a_long_silent_tool_call_is_never_called_stalled() {
+    let (tx, rx) = tokio::sync::broadcast::channel(16);
+    let idle = Duration::from_millis(200);
+
+    let _ = tx.send(running_tool("c1"));
+    let watcher = tokio::spawn(stalled_for(rx, idle));
+
+    // Silence for many times the window, with the call still open.
+    tokio::time::sleep(idle * 6).await;
+    assert!(
+        !watcher.is_finished(),
+        "an open tool call must suspend the idle window entirely"
+    );
+
+    // Once it closes, the window applies again.
+    let _ = tx.send(finished_tool("c1"));
+    tokio::time::timeout(idle * 6, watcher)
+        .await
+        .expect("with nothing running, silence must eventually be called a stall")
+        .expect("watcher task panicked");
+}
+
+/// Overlapping calls: the window stays suspended until the *last* one closes,
+/// not the first.
+#[tokio::test]
+async fn the_window_stays_suspended_until_every_call_closes() {
+    let (tx, rx) = tokio::sync::broadcast::channel(16);
+    let idle = Duration::from_millis(200);
+
+    let _ = tx.send(running_tool("a"));
+    let _ = tx.send(running_tool("b"));
+    let watcher = tokio::spawn(stalled_for(rx, idle));
+
+    let _ = tx.send(finished_tool("a"));
+    tokio::time::sleep(idle * 5).await;
+    assert!(
+        !watcher.is_finished(),
+        "one call closing must not resume the window while another is open"
+    );
+
+    let _ = tx.send(finished_tool("b"));
+    tokio::time::timeout(idle * 6, watcher)
+        .await
+        .expect("the window must resume once the last call closes")
+        .expect("watcher task panicked");
+}
+
+/// The stall watcher must treat any event as progress, so a turn that keeps
+/// emitting never trips it however long it runs. This is what makes the limit
+/// safe for a Team Mode member that legitimately works for hours; a total
+/// wall-clock cap would kill exactly that case.
+#[tokio::test]
+async fn a_turn_that_keeps_emitting_is_never_called_stalled() {
+    let (tx, rx) = tokio::sync::broadcast::channel(16);
+    let idle = Duration::from_millis(300);
+
+    let watcher = tokio::spawn(stalled_for(rx, idle));
+
+    // Emit steadily for well past the idle window.
+    for _ in 0..8 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _ = tx.send(AgentStreamEvent::BackendTurnBound("t".to_owned()));
+    }
+    assert!(
+        !watcher.is_finished(),
+        "a turn still producing output must not be called stalled"
+    );
+
+    // Now go quiet; it should fire.
+    tokio::time::timeout(idle * 4, watcher)
+        .await
+        .expect("the watcher must fire once output stops")
+        .expect("watcher task panicked");
+}
+
+/// A closed channel means no event can ever arrive, so "idle" stops carrying
+/// information. Firing there would report a stall on a turn that had already
+/// finished.
+#[tokio::test]
+async fn a_finished_turn_is_not_reported_as_stalled() {
+    let (tx, rx) = tokio::sync::broadcast::channel(4);
+    drop(tx);
+
+    let fired = tokio::time::timeout(Duration::from_millis(400), stalled_for(rx, Duration::from_millis(50)))
+        .await
+        .is_ok();
+    assert!(!fired, "a closed event stream must park, not report a stall");
+}
+
+/// Both self-imposed stops must reach the user as the same structured,
+/// localized error — not as untranslated prose on the output stream, which is
+/// how the engine reports an exhausted turn budget on its own.
+#[test]
+fn a_self_imposed_stop_is_a_localizable_structured_error() {
+    let err = turn_limit_send_error("Stopped after 150 agentic turns without converging.".to_owned());
+    let data = err.stream_error();
+
+    assert_eq!(data.code, Some(AgentErrorCode::DreamTurnLimitReached));
+    assert_eq!(data.ownership, Some(AgentErrorOwnership::Dream));
+    assert_eq!(data.retryable, Some(true));
+    assert!(
+        data.detail.as_deref().is_some_and(|d| d.contains("150")),
+        "the detail has to say which limit was hit"
+    );
+}

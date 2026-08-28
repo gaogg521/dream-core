@@ -6,8 +6,9 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use dream_core_api_types::{
-    AcpConfigOptionDto, AcpConfigSelectOptionDto, AgentModeResponse, ConfigOptionConfirmation,
-    GetConfigOptionsResponse, SetConfigOptionResponse, SlashCommandItem,
+    AcpConfigOptionDto, AcpConfigSelectOptionDto, AgentErrorCode, AgentErrorOwnership, AgentErrorResolution,
+    AgentErrorResolutionKind, AgentModeResponse, ConfigOptionConfirmation, GetConfigOptionsResponse,
+    SetConfigOptionResponse, SlashCommandItem,
 };
 use dream_core_common::{
     AgentKillReason, AgentType, Confirmation, ConversationStatus, ErrorChain, TimestampMs, generate_short_id, now_ms,
@@ -21,7 +22,7 @@ use dream_engine_config::config::{CliArgs, Config, McpServerConfig, ProviderType
 use dream_engine_mcp::manager::McpManager;
 use dream_engine_protocol::commands::{ApprovalScope, SessionMode};
 use dream_engine_protocol::{ToolApprovalManager, ToolApprovalResult};
-use dream_engine_types::message::TokenUsage;
+use dream_engine_types::message::{StopReason, TokenUsage};
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify, broadcast};
 use tokio::time::timeout;
@@ -34,12 +35,125 @@ use crate::capability::backend_protocol_sink::BackendProtocolSink;
 use crate::capability::image_input::resolve_image_input_capability;
 use crate::dev_prompt_dump::{AgentFinalInputDump, dump_agent_final_input};
 use crate::error::AgentError;
-use crate::protocol::events::AgentStreamEvent;
+use crate::protocol::events::{AgentStreamEvent, ToolCallStatus};
 use crate::protocol::send_error::AgentSendError;
 use crate::types::{AionrsResolvedConfig, SendMessageData};
 
 use super::content::build_content_blocks;
 use super::error::{aionrs_engine_error_to_send_error, aionrs_runtime_error_summary};
+
+/// Ceiling on agentic turns within one user message, when the conversation
+/// does not set its own.
+///
+/// A backstop, not a working limit: a genuinely hard task can legitimately
+/// spend 50-100 turns, so this sits well clear of normal work and only catches
+/// a run that is never going to converge. Without it the loop is unbounded —
+/// one report had a single turn still running after 183 minutes, producing
+/// nothing and spending tokens the whole time, because the only way out was
+/// the user pressing stop.
+const DEFAULT_MAX_TURNS_PER_TURN: usize = 150;
+
+/// How long a turn may emit nothing, *with no tool running*, before we call it
+/// stalled.
+///
+/// Deliberately an idle limit and not a total one. The failure being fixed is
+/// a turn that is not doing anything, and a total cap cannot tell that apart
+/// from a turn that is simply long: Team Mode members routinely work well past
+/// any wall-clock number worth setting, and killing one mid-flight for being
+/// productive too long would be a worse bug than the one being fixed.
+///
+/// The clock is also suspended entirely while a tool call is in flight — see
+/// [`stalled_for`]. A build or test run can legitimately be silent for hours,
+/// and from the event stream that is indistinguishable from a tool that has
+/// hung, so the benefit of the doubt goes to the long one. What is left for
+/// this window to catch is silence with *nothing executing*: a provider that
+/// accepted the request and stopped answering, or an engine that lost its way
+/// between steps. Thirty minutes is far past any real gap of that kind, while
+/// still being noticed in the same sitting rather than after three hours.
+const TURN_IDLE_LIMIT: Duration = Duration::from_secs(30 * 60);
+
+/// How one turn ended. Named rather than `Option<Result<_>>` because there are
+/// now three outcomes, and "timed out" must not be mistaken for "cancelled" —
+/// a cancel is the user's own doing and finishes quietly, a timeout is ours
+/// and has to say so.
+enum TurnOutcome<T> {
+    Completed(T),
+    Cancelled,
+    TimedOut,
+}
+
+/// Resolves once the turn has emitted nothing for `idle` *and* no tool call is
+/// in flight.
+///
+/// Watches the same event stream the UI renders, so "made progress" means
+/// exactly what the user sees: any text, tool call, or thinking frame resets
+/// the clock.
+///
+/// Tool calls additionally suspend it. A `ToolCall` frame with status
+/// `Running` opens a call and a terminal status closes it; while any call is
+/// open the window cannot expire. This is what makes the limit safe for the
+/// case that motivated it — a team member running a long build or test suite
+/// is silent for as long as that takes, and nothing in the stream
+/// distinguishes that from a tool that has hung. The trade-off is explicit: a
+/// genuinely hung *tool* is not caught here and the user must stop it. Silence
+/// with nothing executing — a provider that stopped answering, an engine lost
+/// between steps — is what this catches, and for that no legitimate gap comes
+/// anywhere near the window.
+async fn stalled_for(mut events: broadcast::Receiver<AgentStreamEvent>, idle: Duration) {
+    let mut running_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    loop {
+        // With a tool executing there is no deadline at all; just wait for the
+        // next frame so the in-flight set stays current.
+        let next = if running_calls.is_empty() {
+            match tokio::time::timeout(idle, events.recv()).await {
+                Err(_elapsed) => return, // silent for the whole window, nothing running
+                Ok(next) => next,
+            }
+        } else {
+            events.recv().await
+        };
+
+        match next {
+            Ok(AgentStreamEvent::ToolCall(data)) => match data.status {
+                ToolCallStatus::Running => {
+                    running_calls.insert(data.call_id);
+                }
+                ToolCallStatus::Completed | ToolCallStatus::Error | ToolCallStatus::Canceled => {
+                    running_calls.remove(&data.call_id);
+                }
+            },
+            // Any other event is progress; the timeout above already reset.
+            Ok(_) => {}
+            // Events arrived faster than this watcher drained them —
+            // emphatically progress, but the in-flight set is now unreliable,
+            // so clear it rather than hold the window open on a call whose
+            // terminal frame may have been the one dropped.
+            Err(broadcast::error::RecvError::Lagged(_)) => running_calls.clear(),
+            // The sender is gone, so no event can ever arrive and "idle" stops
+            // meaning anything. Park instead of firing: the run future is
+            // about to resolve on its own, and reporting a stall on a turn
+            // that already finished would be a lie.
+            Err(broadcast::error::RecvError::Closed) => std::future::pending().await,
+        }
+    }
+}
+
+/// The user-facing error for a turn we stopped ourselves. `detail` names which
+/// limit was hit; the localized title and body come from the code.
+fn turn_limit_send_error(detail: String) -> AgentSendError {
+    AgentSendError::new(
+        "The request was stopped because it was not converging",
+        AgentErrorCode::DreamTurnLimitReached,
+        AgentErrorOwnership::Dream,
+        Some(detail),
+        // Retryable: an unproductive loop often does not repeat, and the user
+        // has nothing to fix on their side first.
+        true,
+        false,
+        Some(AgentErrorResolution::new(AgentErrorResolutionKind::Retry, None)),
+    )
+}
 
 fn resolve_aionui_config(cli_args: &CliArgs) -> Result<Config, AgentError> {
     let mut config =
@@ -187,7 +301,16 @@ impl AionrsAgentManager {
             base_url: config_extra.base_url.clone(),
             model: Some(config_extra.model.clone()),
             max_tokens: None,
-            max_turns: config_extra.max_turns,
+            // Never `None` here. The engine treats an absent budget as
+            // "iterate forever" (`TurnTracker::limit_reached` can only fire on
+            // `Some`), and the desktop never sets one — the `maxTurns` field
+            // exists in the conversation config type but nothing writes it — so
+            // every ordinary conversation ran unbounded. The tool-loop breakers
+            // do not cover this: all of them, the cycle detector included, key
+            // off *failing* tool calls, so a model that keeps making
+            // successful-but-unproductive calls trips none of them and burns
+            // tokens until the user notices and presses stop.
+            max_turns: Some(config_extra.max_turns.unwrap_or(DEFAULT_MAX_TURNS_PER_TURN)),
             max_tool_call_malformed_turns: config_extra.max_tool_call_malformed_turns,
             max_tool_call_failure_turns: config_extra.max_tool_call_failure_turns,
             system_prompt: config_extra.system_prompt.clone(),
@@ -491,14 +614,27 @@ impl IAgentTask for AionrsAgentManager {
         engine.set_next_turn_id(Some(turn_anchor));
 
         let result = tokio::select! {
-            res = engine.run_with_blocks(content_blocks, &data.msg_id) => Some(res),
+            res = engine.run_with_blocks(content_blocks, &data.msg_id) => TurnOutcome::Completed(res),
             _ = self.cancel_notify.notified() => {
                 info!(
                     conversation_id = %self.runtime.conversation_id(),
                     "DreamEngine engine.run() cancelled by stop signal"
                 );
                 engine.abort_current_turn("Tool execution canceled by user");
-                None
+                TurnOutcome::Cancelled
+            }
+            // Last line of defence. The turn budget bounds how many times the
+            // model may act; nothing bounded how long one attempt may hang, so
+            // a stalled provider read left the turn running with the user
+            // watching a spinner — observed at 183 minutes.
+            _ = stalled_for(self.runtime.subscribe(), TURN_IDLE_LIMIT) => {
+                warn!(
+                    conversation_id = %self.runtime.conversation_id(),
+                    idle_secs = TURN_IDLE_LIMIT.as_secs(),
+                    "DreamEngine turn produced nothing for the idle limit; aborting"
+                );
+                engine.abort_current_turn("Turn stalled with no output");
+                TurnOutcome::TimedOut
             }
         };
 
@@ -506,7 +642,27 @@ impl IAgentTask for AionrsAgentManager {
         self.runtime.bump_activity();
 
         let send_result = match result {
-            Some(Ok(run_result)) => {
+            // The engine reports an exhausted turn budget as a *successful*
+            // run with `StopReason::MaxTurns` and an English line on the
+            // output stream. Surface it as the structured, localized error it
+            // actually is, so it reads the same as the wall-clock stop below
+            // instead of arriving as untranslated prose.
+            TurnOutcome::Completed(Ok(run_result)) if run_result.stop_reason == StopReason::MaxTurns => {
+                warn!(
+                    conversation_id = %self.runtime.conversation_id(),
+                    elapsed_ms,
+                    turns = run_result.turns,
+                    "DreamEngine turn stopped at the turn budget"
+                );
+                self.emit_turn_usage(&engine, Some(&run_result));
+                let send_error = turn_limit_send_error(format!(
+                    "Stopped after {} agentic turns without converging.",
+                    run_result.turns
+                ));
+                self.runtime.emit_error_data(send_error.stream_error().clone());
+                Err(send_error)
+            }
+            TurnOutcome::Completed(Ok(run_result)) => {
                 info!(
                     conversation_id = %self.runtime.conversation_id(),
                     elapsed_ms,
@@ -518,7 +674,18 @@ impl IAgentTask for AionrsAgentManager {
                 self.runtime.emit_finish(None);
                 Ok(())
             }
-            Some(Err(e)) => {
+            TurnOutcome::TimedOut => {
+                // Same accounting as the cancel and error branches: whatever
+                // the stalled turn already spent is spent.
+                self.emit_turn_usage(&engine, None);
+                let send_error = turn_limit_send_error(format!(
+                    "Stopped after producing nothing for {} minutes.",
+                    TURN_IDLE_LIMIT.as_secs() / 60
+                ));
+                self.runtime.emit_error_data(send_error.stream_error().clone());
+                Err(send_error)
+            }
+            TurnOutcome::Completed(Err(e)) => {
                 let summary = aionrs_runtime_error_summary(&e);
                 error!(
                     conversation_id = %self.runtime.conversation_id(),
@@ -549,7 +716,7 @@ impl IAgentTask for AionrsAgentManager {
                 self.runtime.emit_error_data(send_error.stream_error().clone());
                 Err(send_error)
             }
-            None => {
+            TurnOutcome::Cancelled => {
                 // Cancelled mid-turn. Same reasoning as the error branch: the
                 // work already sent to the provider was paid for.
                 self.emit_turn_usage(&engine, None);
