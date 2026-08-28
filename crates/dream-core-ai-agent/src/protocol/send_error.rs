@@ -31,15 +31,11 @@ struct ClassifiedError {
 
 impl ClassifiedError {
     fn into_send_error(self, detail: String) -> AgentSendError {
-        // A few codes must not carry the provider's own words through — see
-        // `AgentErrorCode::hides_upstream_detail`. Everything else keeps the
-        // upstream text, which is usually the most useful line on screen.
-        let detail = (!self.code.hides_upstream_detail()).then_some(detail);
         AgentSendError::new(
             self.message,
             self.code,
             self.ownership,
-            detail,
+            Some(detail),
             self.retryable,
             self.feedback_recommended,
             self.resolution_kind
@@ -58,6 +54,13 @@ impl AgentSendError {
         feedback_recommended: bool,
         resolution: Option<AgentErrorResolution>,
     ) -> Self {
+        // Suppression lives here, at the single point every construction path
+        // funnels through, rather than in one classifier: the first attempt at
+        // this fix guarded `ClassifiedError::into_send_error` only, and
+        // 1ONE CLI errors — which build an `AgentSendError` directly from
+        // `manager::dream_engine::error` — kept leaking. See
+        // `AgentErrorCode::hides_upstream_detail`.
+        let detail = detail.filter(|_| !code.hides_upstream_detail());
         Self {
             stream_error: AgentStreamErrorData::classified(
                 message,
@@ -688,6 +691,29 @@ fn classify_agent_lifecycle(lower: &str) -> Option<ClassifiedError> {
     None
 }
 
+/// Does this provider error say "the key is fine, its allowance is spent"?
+///
+/// Shared with the dream-engine status-code classifier
+/// (`manager::dream_engine::error`) on purpose. Both paths reach the user, and
+/// the first version of this fix only patched one of them — the app kept
+/// showing PERMISSION_DENIED because 1ONE CLI errors take the other route.
+/// One predicate, so the two cannot drift apart again.
+///
+/// `lower` must already be lowercased.
+pub(crate) fn looks_like_spent_allowance(lower: &str) -> bool {
+    contains_any(
+        lower,
+        &[
+            "key limit exceeded",
+            "quota exceeded",
+            "quota exhausted",
+            "exceeded your current quota",
+            "usage limit reached",
+            "spending limit",
+        ],
+    )
+}
+
 fn classify_provider_text(lower: &str) -> Option<ClassifiedError> {
     if contains_sso_expired_auth_signature(lower) {
         return Some(provider_error(
@@ -725,17 +751,7 @@ fn classify_provider_text(lower: &str) -> Option<ClassifiedError> {
     // exhausted key as a 403, so matching on the status alone sends a user
     // whose credentials are perfectly fine off to re-check them. The
     // distinguishing signal is the phrasing, not the code.
-    if contains_any(
-        lower,
-        &[
-            "key limit exceeded",
-            "quota exceeded",
-            "quota exhausted",
-            "exceeded your current quota",
-            "usage limit reached",
-            "spending limit",
-        ],
-    ) {
+    if looks_like_spent_allowance(lower) {
         return Some(provider_error(
             "The model key's spending allowance is used up",
             AgentErrorCode::UserLlmProviderQuotaExhausted,
@@ -1937,7 +1953,10 @@ mod tests {
         assert_eq!(data.detail, None, "upstream text must not reach the user");
 
         let rendered = format!("{:?}", data);
-        assert!(!rendered.contains("openrouter.ai/workspaces"), "workspace URL leaked: {rendered}");
+        assert!(
+            !rendered.contains("openrouter.ai/workspaces"),
+            "workspace URL leaked: {rendered}"
+        );
         assert!(!rendered.contains("abc123"), "key handle leaked: {rendered}");
     }
 

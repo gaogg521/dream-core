@@ -167,3 +167,65 @@ fn aionrs_tool_call_failures_are_agent_tool_call_loop_error() {
     assert_eq!(send_error.ownership(), Some(AgentErrorOwnership::UserAgent));
     assert_eq!(send_error.stream_error().retryable, Some(true));
 }
+
+/// A key whose allowance is spent comes back as a 403, and this path maps on
+/// the status alone — so it read as PERMISSION_DENIED and told the user to go
+/// re-check credentials that are perfectly fine.
+///
+/// This is the path 1ONE CLI conversations actually take. The first version of
+/// the fix only guarded the text classifier in `protocol::send_error`, and the
+/// running app kept showing the wrong code because errors arrive here instead.
+#[test]
+fn spent_allowance_is_not_reported_as_permission_denied() {
+    let error = AionrsAgentError::Provider(ProviderError::Api {
+        status: 403,
+        message: r#"{"error":{"message":"Key limit exceeded (monthly limit). Manage it using https://openrouter.ai/workspaces/default/keys/abc123","code":403}}"#
+            .to_owned(),
+    });
+    let send_error = aionrs_engine_error_to_send_error(&error);
+
+    assert_eq!(send_error.code(), Some(AgentErrorCode::UserLlmProviderQuotaExhausted));
+}
+
+/// The upstream text names our OpenRouter workspace and the key's management
+/// handle. It was rendered in the chat bubble, persisted to the message store,
+/// and shipped in feedback attachments.
+#[test]
+fn spent_allowance_does_not_leak_the_upstream_text() {
+    let error = AionrsAgentError::Provider(ProviderError::Api {
+        status: 403,
+        message: r#"{"error":{"message":"Key limit exceeded (monthly limit). Manage it using https://openrouter.ai/workspaces/default/keys/abc123","code":403}}"#
+            .to_owned(),
+    });
+    let send_error = aionrs_engine_error_to_send_error(&error);
+
+    assert_eq!(
+        send_error.stream_error().detail,
+        None,
+        "upstream text must not reach the user for a spent allowance"
+    );
+    let rendered = format!("{:?}", send_error.stream_error());
+    assert!(!rendered.contains("openrouter.ai/workspaces"), "workspace URL leaked");
+    assert!(!rendered.contains("abc123"), "key handle leaked");
+}
+
+/// The suppression is deliberately narrow — a genuine 403 still shows the
+/// provider's own words, which is usually the most useful line on screen.
+#[test]
+fn a_real_permission_denial_still_carries_its_upstream_text() {
+    let error = AionrsAgentError::Provider(ProviderError::Api {
+        status: 403,
+        message: r#"{"error":{"message":"You do not have access to this model"}}"#.to_owned(),
+    });
+    let send_error = aionrs_engine_error_to_send_error(&error);
+
+    assert_eq!(send_error.code(), Some(AgentErrorCode::UserLlmProviderPermissionDenied));
+    assert!(
+        send_error
+            .stream_error()
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("do not have access")),
+        "non-suppressed codes must keep their detail"
+    );
+}

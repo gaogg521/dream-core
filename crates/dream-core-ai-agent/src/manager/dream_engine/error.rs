@@ -4,7 +4,7 @@ use dream_core_api_types::{
 use dream_engine_agent::error::AgentError as AionrsAgentError;
 use dream_engine_providers::ProviderError;
 
-use crate::protocol::send_error::AgentSendError;
+use crate::protocol::send_error::{AgentSendError, looks_like_spent_allowance};
 
 pub(super) fn aionrs_engine_error_to_send_error(error: &AionrsAgentError) -> AgentSendError {
     // "DreamEngine" is the internal engine crate name, not a brand the user has
@@ -138,6 +138,21 @@ fn aionrs_provider_error_to_send_error(error: &ProviderError, detail: String) ->
 }
 
 fn aionrs_provider_status_to_send_error(status: u16, detail: String) -> AgentSendError {
+    // Status alone cannot tell "your key is not allowed to do this" from "your
+    // key's allowance is spent" — OpenRouter reports both as 403 — and the two
+    // send the user somewhere completely different. Check the wording first,
+    // for any status, so a provider that answers 429 or 402 for the same
+    // condition lands in the same place.
+    if looks_like_spent_allowance(&detail.to_ascii_lowercase()) {
+        return provider_send_error(
+            "The model key's spending allowance is used up",
+            AgentErrorCode::UserLlmProviderQuotaExhausted,
+            detail,
+            false,
+            AgentErrorResolutionKind::CheckProviderBilling,
+            Some(AgentErrorResolutionTarget::ProviderSettings),
+        );
+    }
     match status {
         400 => provider_send_error(
             "The model provider rejected the request",
