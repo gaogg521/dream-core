@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::license_key::LicenseModuleGrant;
+use crate::license_key::{LicenseModuleGrant, ModuleAccess, classify_module_access};
 
 /// Whether a feature is included in the current plan.
 #[derive(Debug, Clone, Serialize)]
@@ -67,6 +67,16 @@ pub struct LicenseInfoDto {
     pub serial: Option<String>,
     pub app_id: Option<String>,
     pub file_name: Option<String>,
+}
+
+impl LicenseInfoDto {
+    /// Mirrors `LicensePayload::module_authorized` — same shared
+    /// `classify_module_access`, applied to the `modules` list as read back
+    /// from `one_license_activation` rather than off a freshly verified
+    /// `LicensePayload`.
+    pub fn classify_module_access(&self, module: &str, now_ms: i64) -> ModuleAccess {
+        classify_module_access(&self.modules, module, now_ms)
+    }
 }
 
 /// One aggregation bucket (by user, by model, or by day).

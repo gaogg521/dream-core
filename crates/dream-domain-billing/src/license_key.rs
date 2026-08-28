@@ -139,23 +139,61 @@ pub struct LicenseModuleGrant {
     pub expires_at: Option<i64>,
 }
 
+/// Outcome of checking one module's authorization — distinguishes "this
+/// license never granted the module" from "it granted it, but that grant's
+/// window doesn't cover `now_ms`" so a denial can say which, instead of one
+/// opaque "not authorized" for both. See [`classify_module_access`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleAccess {
+    Authorized,
+    /// Not named in `modules` at all, or named but not yet `starts_at`.
+    NotAuthorized,
+    /// Named in `modules`, but `now_ms` is at or past its `expires_at`.
+    Expired,
+}
+
+/// Core check shared by [`LicensePayload::module_authorized`] and
+/// `LicenseInfoDto::classify_module_access` (`models.rs`, which reads this
+/// same `modules` list back out of storage rather than off a freshly
+/// verified `LicensePayload`) — one implementation so the two can never
+/// drift apart on the empty-list-means-unrestricted rule.
+///
+/// An empty `modules` list means this license has no per-module restriction
+/// configured at all — every module the license's `tier` would otherwise
+/// grant stays available. That is deliberate: it is what makes `modules`
+/// additive for every license issued before this field existed, per
+/// [`LicensePayload::modules`]'s doc comment. Once `modules` is non-empty, it
+/// becomes an explicit allowlist: a module not named in it is not
+/// authorized, even if the whole license is otherwise valid.
+pub fn classify_module_access(modules: &[LicenseModuleGrant], module: &str, now_ms: i64) -> ModuleAccess {
+    if modules.is_empty() {
+        return ModuleAccess::Authorized;
+    }
+    // Preserves `.any()` semantics for the Authorized determination itself
+    // (unchanged from before this function existed) even if `modules`
+    // happens to carry more than one grant for the same name — only the
+    // *denial* message below needs a closer look at which grant matched.
+    let authorized = modules.iter().any(|m| {
+        m.module == module && m.starts_at.is_none_or(|s| now_ms >= s) && m.expires_at.is_none_or(|e| now_ms < e)
+    });
+    if authorized {
+        return ModuleAccess::Authorized;
+    }
+    let expired = modules
+        .iter()
+        .any(|m| m.module == module && m.expires_at.is_some_and(|e| now_ms >= e));
+    if expired {
+        ModuleAccess::Expired
+    } else {
+        ModuleAccess::NotAuthorized
+    }
+}
+
 impl LicensePayload {
-    /// Whether `module` is authorized at `now_ms`.
-    ///
-    /// An empty `modules` list means this license has no per-module
-    /// restriction configured at all — every module the license's `tier`
-    /// would otherwise grant stays available. That is deliberate: it is what
-    /// makes `modules` additive for every license issued before this field
-    /// existed, per the struct's own doc comment. Once `modules` is
-    /// non-empty, it becomes an explicit allowlist: a module not named in it
-    /// is not authorized, even if the whole license is otherwise valid.
+    /// Whether `module` is authorized at `now_ms`. See [`classify_module_access`]
+    /// for the full semantics (this is just its boolean collapse).
     pub fn module_authorized(&self, module: &str, now_ms: i64) -> bool {
-        if self.modules.is_empty() {
-            return true;
-        }
-        self.modules.iter().any(|m| {
-            m.module == module && m.starts_at.is_none_or(|s| now_ms >= s) && m.expires_at.is_none_or(|e| now_ms < e)
-        })
+        classify_module_access(&self.modules, module, now_ms) == ModuleAccess::Authorized
     }
 }
 

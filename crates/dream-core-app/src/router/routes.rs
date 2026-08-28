@@ -6,6 +6,8 @@ use std::time::Instant;
 use axum::Json;
 use axum::extract::DefaultBodyLimit;
 use axum::extract::Request;
+#[cfg(feature = "enterprise")]
+use axum::extract::State;
 use axum::http::{HeaderName, Method, StatusCode, header};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
@@ -19,6 +21,8 @@ use dream_core_ai_agent::{
 use dream_core_api_types::{ErrorResponse, WebSocketMessage};
 use dream_core_assets::{AssetRouterState, asset_routes};
 use dream_core_assistant::assistant_routes;
+#[cfg(feature = "enterprise")]
+use dream_core_auth::CurrentUser;
 use dream_core_auth::{
     AuthIdentityMode, AuthRouterState, AuthState, IRuntimeTokenVerifier, SystemDefaultFilesystemAdopter,
     auth_middleware, auth_routes, csrf_middleware, security_headers_middleware,
@@ -28,6 +32,8 @@ use dream_core_channel::channel_routes;
 use dream_core_channel::weixin_login_route;
 use dream_core_claude_bridge::claude_bridge_config_routes;
 use dream_core_codex_bridge::{codex_bridge_config_routes, codex_bridge_public_routes};
+#[cfg(feature = "enterprise")]
+use dream_core_common::ApiError;
 use dream_core_common::ApiErrorLogContext;
 use dream_core_conversation::{conversation_ops_routes, conversation_routes};
 use dream_core_cron::cron_routes;
@@ -1451,6 +1457,82 @@ pub(crate) struct GovernancePlane {
     /// Same reason: the matrix needs both the platform service and the org
     /// service, and this is the only place that holds both.
     pub grant_source: std::sync::Arc<dyn dream_domain_devops::grants::ResourceGrantSource>,
+    /// Handed back so `create_admin_router` can apply the same E4 module gate
+    /// to `admin_devops_routes` (built outside this function, since it isn't
+    /// part of the personal-plane-shared devops surface) without constructing
+    /// a second `Arc<BillingService>` clone of its own.
+    pub license_gate: LicenseModuleGateState,
+}
+
+/// Route-path-independent module identifier for the whole governance plane.
+/// The license's `modules` field lets a vendor sell a module on a different
+/// clock than the base subscription — [`LicensePayload::modules`]'s doc
+/// comment gives "sell `/admin/*` on a different clock" as the worked
+/// example — and this plane (one-org/enterprise/billing/platform/sso-admin
+/// plus, in `create_admin_router`, the admin-only devops routes) IS that
+/// module: there is no finer-grained sub-route licensing here, so one
+/// constant covers every route [`license_module_gate_middleware`] guards.
+#[cfg(feature = "enterprise")]
+const ADMIN_MODULE: &str = "/admin/*";
+
+#[cfg(feature = "enterprise")]
+#[derive(Clone)]
+pub(crate) struct LicenseModuleGateState {
+    billing: std::sync::Arc<dream_domain_billing::BillingService>,
+}
+
+/// Enforces E4 per-module license authorization. Wired via `.route_layer`
+/// placed BEFORE (earlier in the chain than) the `.route_layer(auth_middleware)`
+/// call on the same router, so — per this codebase's own layering convention,
+/// see `authenticated_action_rate_limit_middleware` in `dream-core-auth` for
+/// the same pattern — it runs AFTER `auth_middleware` has already populated
+/// `CurrentUser` (a later `.route_layer` call becomes the outer, first-run
+/// layer; an earlier one runs closer to the handler).
+///
+/// Fails OPEN, not closed, at every step before an actual license is read: no
+/// `CurrentUser` (shouldn't happen behind auth_middleware, but this gate has
+/// no business 500ing if it does), no enterprise for this caller (a personal
+/// / standalone user — `resolve_enterprise_id`'s own contract is "`None`
+/// means skip every check", and it collapses a lookup error to the same
+/// `None`), or no license activated at all. Only an ACTUAL activated license
+/// whose non-empty `modules` list does not authorize [`ADMIN_MODULE`] can
+/// produce a 403 — matching the "additive only, never a new restriction where
+/// none existed" rule the rest of E4/E5 follows in this codebase.
+#[cfg(feature = "enterprise")]
+async fn license_module_gate_middleware(
+    State(state): State<LicenseModuleGateState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let Some(user) = request.extensions().get::<CurrentUser>().cloned() else {
+        return Ok(next.run(request).await);
+    };
+
+    let enterprise_id = match state.billing.resolve_enterprise_id(&user.id).await {
+        Ok(Some(id)) => id,
+        Ok(None) | Err(_) => return Ok(next.run(request).await),
+    };
+
+    let license = match state.billing.active_license(&enterprise_id).await {
+        Ok(Some(license)) => license,
+        Ok(None) | Err(_) => return Ok(next.run(request).await),
+    };
+
+    match license.classify_module_access(ADMIN_MODULE, dream_core_common::now_ms()) {
+        dream_domain_billing::ModuleAccess::Authorized => Ok(next.run(request).await),
+        dream_domain_billing::ModuleAccess::NotAuthorized => Err(ApiError::coded(
+            StatusCode::FORBIDDEN,
+            "LICENSE_MODULE_NOT_AUTHORIZED",
+            "this license does not authorize the admin module",
+            None,
+        )),
+        dream_domain_billing::ModuleAccess::Expired => Err(ApiError::coded(
+            StatusCode::FORBIDDEN,
+            "LICENSE_MODULE_EXPIRED",
+            "the admin module authorization on this license has expired",
+            None,
+        )),
+    }
 }
 
 /// The three services are built by the caller because they are needed earlier:
@@ -1465,6 +1547,14 @@ pub(crate) fn build_governance_plane(
     one_platform_service: std::sync::Arc<dream_domain_platform::PlatformService>,
     one_billing_service: std::sync::Arc<dream_domain_billing::BillingService>,
 ) -> GovernancePlane {
+    // Built first: every `_authenticated` router below layers this in ahead
+    // of `auth_middleware` (see `license_module_gate_middleware`'s doc
+    // comment for why that ordering, not the reverse, is what makes
+    // `CurrentUser` visible to it).
+    let license_gate = LicenseModuleGateState {
+        billing: one_billing_service.clone(),
+    };
+
     // one-org enterprise routes (/api/one/*) — RBAC extractors depend on the
     // upstream auth middleware injecting CurrentUser.
     let one_org_service = std::sync::Arc::new(
@@ -1515,6 +1605,7 @@ pub(crate) fn build_governance_plane(
             one_enterprise_service.clone(),
         )));
     let one_org_authenticated = dream_domain_org::one_org_routes(one_org_state)
+        .route_layer(from_fn_with_state(license_gate.clone(), license_module_gate_middleware))
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // one-enterprise routes (/api/one/enterprise/*) — the SSO-company
@@ -1522,6 +1613,7 @@ pub(crate) fn build_governance_plane(
     // was constructed above so the company-admin bridges could be wired.
     let one_enterprise_state = dream_domain_enterprise::OneEnterpriseRouterState::new(one_enterprise_service.clone());
     let one_enterprise_authenticated = dream_domain_enterprise::one_enterprise_routes(one_enterprise_state)
+        .route_layer(from_fn_with_state(license_gate.clone(), license_module_gate_middleware))
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // one-billing routes (/api/one/billing/*) — subscription tier, seats, and
@@ -1529,6 +1621,11 @@ pub(crate) fn build_governance_plane(
     // `PUT /tier`. The service was built above (before the conversation routes)
     // so its usage recorder could be injected there.
     let one_billing_state = dream_domain_billing::OneBillingRouterState::new(one_billing_service.clone());
+    // Deliberately NOT wrapped in `license_module_gate_middleware`: this is
+    // where `GET/POST /api/one/billing/license` live (view + activate a
+    // license). Gating license management behind the very license it manages
+    // would be a lockout with no escape hatch — a company whose license
+    // doesn't cover the admin module could never activate a corrective one.
     let one_billing_authenticated = dream_domain_billing::one_billing_routes(one_billing_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -1540,6 +1637,7 @@ pub(crate) fn build_governance_plane(
     // allowlist could be wired into the auth middleware.
     let one_platform_state = dream_domain_platform::OnePlatformRouterState::new(one_platform_service.clone());
     let one_platform_authenticated = dream_domain_platform::one_platform_routes(one_platform_state)
+        .route_layer(from_fn_with_state(license_gate.clone(), license_module_gate_middleware))
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // one-sso routes. Public half (providers/authorize/callback) is
@@ -1577,6 +1675,7 @@ pub(crate) fn build_governance_plane(
         )));
     let one_sso_public = dream_domain_sso::one_sso_public_routes(one_sso_state.clone());
     let one_sso_admin = dream_domain_sso::one_sso_admin_routes(one_sso_state)
+        .route_layer(from_fn_with_state(license_gate.clone(), license_module_gate_middleware))
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
     let grant_source: std::sync::Arc<dyn dream_domain_devops::grants::ResourceGrantSource> =
         std::sync::Arc::new(MatrixGrantSource {
@@ -1593,6 +1692,7 @@ pub(crate) fn build_governance_plane(
         sso_admin: one_sso_admin,
         tenant_resolver,
         grant_source,
+        license_gate,
     }
 }
 
@@ -1709,7 +1809,17 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
 
     let one_devops_state = dream_domain_devops::OneDevopsRouterState::new(one_devops_service)
         .with_tenant_resolver(governance.tenant_resolver.clone());
+    // Admin-only devops routes (DLP rule authoring, model-channel deletion,
+    // offboarding ownership transfer) — gated same as the rest of the
+    // governance plane. Unlike `build_governance_plane`'s five routers, this
+    // one isn't shared with the personal-plane's own `one_devops_routes`
+    // (registry reads any member can make), so it's wired here rather than
+    // there.
     let admin_devops_authenticated = dream_domain_devops::admin_devops_routes(one_devops_state)
+        .route_layer(from_fn_with_state(
+            governance.license_gate.clone(),
+            license_module_gate_middleware,
+        ))
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     let router = Router::new()
@@ -2487,6 +2597,195 @@ mod tests {
     fn extension_enablement_events_are_user_scoped() {
         assert!(!is_global_websocket_event("extensions.state-changed"));
         assert!(is_global_websocket_event("extensions.lifecycle"));
+    }
+
+    #[cfg(feature = "enterprise")]
+    mod license_module_gate {
+        use axum::body::Body;
+        use axum::http::Request;
+        use axum::routing::get;
+        use tower::ServiceExt;
+
+        use super::super::{ADMIN_MODULE, LicenseModuleGateState, license_module_gate_middleware};
+        use super::StatusCode;
+
+        /// A migrated in-memory DB plus a `BillingService` over it — everything
+        /// the gate itself touches (`resolve_enterprise_id`, `active_license`).
+        /// `db` must stay alive for the pool to keep working; callers hold it
+        /// in a `let` binding for the test's lifetime even though its fields
+        /// are never read again.
+        async fn billing_service_for_test() -> (
+            dream_core_db::Database,
+            std::sync::Arc<dream_domain_billing::BillingService>,
+        ) {
+            let db = dream_core_db::init_database_memory().await.unwrap();
+            dream_domain_enterprise::run_one_enterprise_migrations(db.pool())
+                .await
+                .unwrap();
+            dream_domain_billing::run_one_billing_migrations(db.pool())
+                .await
+                .unwrap();
+            let billing = std::sync::Arc::new(dream_domain_billing::BillingService::new(
+                db.pool().clone(),
+                std::sync::Arc::new(dream_domain_billing::ManualBillingProvider),
+            ));
+            (db, billing)
+        }
+
+        fn current_user(id: &str) -> dream_core_auth::CurrentUser {
+            dream_core_auth::CurrentUser {
+                id: id.to_owned(),
+                username: "tester".to_owned(),
+                user_type: dream_core_db::UserType::Local,
+                status: dream_core_db::UserStatus::Active,
+            }
+        }
+
+        async fn seed_enterprise_member(pool: &sqlx::SqlitePool, user_id: &str, enterprise_id: &str) {
+            sqlx::query(
+                "INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) \
+                 VALUES (?, ?, 'member', 0, 0)",
+            )
+            .bind(user_id)
+            .bind(enterprise_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        async fn seed_license(pool: &sqlx::SqlitePool, enterprise_id: &str, modules_json: &str) {
+            sqlx::query(
+                "INSERT INTO one_license_activation \
+                     (license_id, enterprise_id, customer, tier, issued_at, activated_at, activated_by, modules) \
+                 VALUES ('lic1', ?, 'Acme', 'enterprise', 0, 0, 'admin1', ?)",
+            )
+            .bind(enterprise_id)
+            .bind(modules_json)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        fn gate_app(billing: std::sync::Arc<dream_domain_billing::BillingService>) -> axum::Router {
+            axum::Router::new()
+                .route("/probe", get(|| async { StatusCode::OK }))
+                .route_layer(axum::middleware::from_fn_with_state(
+                    LicenseModuleGateState { billing },
+                    license_module_gate_middleware,
+                ))
+        }
+
+        async fn request_as(app: axum::Router, user: Option<dream_core_auth::CurrentUser>) -> axum::response::Response {
+            let mut request = Request::builder().uri("/probe");
+            if let Some(user) = user {
+                request = request.extension(user);
+            }
+            app.oneshot(request.body(Body::empty()).unwrap()).await.unwrap()
+        }
+
+        async fn error_code(response: axum::response::Response) -> String {
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            body["code"].as_str().unwrap().to_owned()
+        }
+
+        #[tokio::test]
+        async fn no_current_user_passes_through() {
+            let (_db, billing) = billing_service_for_test().await;
+            let response = request_as(gate_app(billing), None).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "this gate has no business 500ing on a missing extension"
+            );
+        }
+
+        #[tokio::test]
+        async fn personal_user_with_no_enterprise_passes_through() {
+            let (_db, billing) = billing_service_for_test().await;
+            let response = request_as(gate_app(billing), Some(current_user("standalone-user"))).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "resolve_enterprise_id: None means skip every check"
+            );
+        }
+
+        #[tokio::test]
+        async fn enterprise_with_no_activated_license_passes_through() {
+            let (db, billing) = billing_service_for_test().await;
+            seed_enterprise_member(db.pool(), "u1", "ent1").await;
+            let response = request_as(gate_app(billing), Some(current_user("u1"))).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "no license activated = nothing to restrict against yet"
+            );
+        }
+
+        /// The one invariant that must never invert: an empty `modules` list is
+        /// "this license never configured per-module restriction", not "nothing
+        /// authorized". Getting this backwards locks every existing deployment
+        /// out of its own admin plane on upgrade.
+        #[tokio::test]
+        async fn empty_modules_license_allows_everything() {
+            let (db, billing) = billing_service_for_test().await;
+            seed_enterprise_member(db.pool(), "u1", "ent1").await;
+            seed_license(db.pool(), "ent1", "[]").await;
+            let response = request_as(gate_app(billing), Some(current_user("u1"))).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "empty modules must mean unrestricted, not locked out"
+            );
+        }
+
+        #[tokio::test]
+        async fn license_naming_the_admin_module_is_authorized() {
+            let (db, billing) = billing_service_for_test().await;
+            seed_enterprise_member(db.pool(), "u1", "ent1").await;
+            seed_license(
+                db.pool(),
+                "ent1",
+                r#"[{"module":"/admin/*","startsAt":null,"expiresAt":null}]"#,
+            )
+            .await;
+            let response = request_as(gate_app(billing), Some(current_user("u1"))).await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        #[tokio::test]
+        async fn license_naming_only_a_different_module_is_forbidden_as_not_authorized() {
+            let (db, billing) = billing_service_for_test().await;
+            seed_enterprise_member(db.pool(), "u1", "ent1").await;
+            seed_license(
+                db.pool(),
+                "ent1",
+                r#"[{"module":"/some-other-addon/*","startsAt":null,"expiresAt":null}]"#,
+            )
+            .await;
+            let response = request_as(gate_app(billing), Some(current_user("u1"))).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            assert_eq!(error_code(response).await, "LICENSE_MODULE_NOT_AUTHORIZED");
+        }
+
+        /// Denial reasons must be distinguishable: "never granted" and
+        /// "granted, but lapsed" are different problems an operator would fix
+        /// differently (buy the addon vs. renew it).
+        #[tokio::test]
+        async fn expired_admin_module_grant_is_forbidden_as_expired_not_not_authorized() {
+            let (db, billing) = billing_service_for_test().await;
+            seed_enterprise_member(db.pool(), "u1", "ent1").await;
+            seed_license(
+                db.pool(),
+                "ent1",
+                &format!(r#"[{{"module":{ADMIN_MODULE:?},"startsAt":null,"expiresAt":1}}]"#),
+            )
+            .await;
+            let response = request_as(gate_app(billing), Some(current_user("u1"))).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            assert_eq!(error_code(response).await, "LICENSE_MODULE_EXPIRED");
+        }
     }
 
     #[tokio::test]

@@ -22,9 +22,9 @@ pub mod service;
 pub mod state;
 
 pub use error::BillingError;
-pub use license_key::{LicenseKeyError, LicensePayload, verify_license_key};
+pub use license_key::{LicenseKeyError, LicensePayload, ModuleAccess, verify_license_key};
 pub use migrate::run_one_billing_migrations;
-pub use models::{CheckoutResultDto, PlanDto, UsageSummaryDto};
+pub use models::{CheckoutResultDto, LicenseInfoDto, PlanDto, UsageSummaryDto};
 pub use routes::one_billing_routes;
 pub use service::{BillingProvider, BillingService, ManualBillingProvider};
 pub use state::OneBillingRouterState;
