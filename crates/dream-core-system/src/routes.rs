@@ -10,8 +10,8 @@ use dream_core_api_types::{
     ApiResponse, ClientPreferencesResponse, CreateProviderRequest, DetectProtocolRequest, EnsureNodeRuntimeRequest,
     EnsureNodeRuntimeResponse, FeedbackDiagnosticsQuery, FeedbackDiagnosticsResponse, FetchModelsAnonymousRequest,
     FetchModelsRequest, FetchModelsResponse, ProtocolDetectionResponse, ProviderResponse, SystemInfoResponse,
-    SystemSettingsResponse, TrialKeyResponse, UpdateCheckRequest, UpdateCheckResult, UpdateClientPreferencesRequest,
-    UpdateProviderRequest, UpdateSettingsRequest,
+    SystemSettingsResponse, TrialKeyResponse, TrialQuotaStatusResponse, UpdateCheckRequest, UpdateCheckResult,
+    UpdateClientPreferencesRequest, UpdateProviderRequest, UpdateSettingsRequest,
 };
 use dream_core_auth::{CurrentUser, is_webui_proxied};
 use dream_core_common::ApiError;
@@ -89,6 +89,7 @@ impl From<SystemError> for ApiError {
 /// - `POST /api/providers/:id/models`        — fetch models from remote API
 /// - `POST /api/providers/fetch-models`      — fetch models anonymously (pre-create preview)
 /// - `POST /api/providers/trial-key`         — issue a capped-spend trial model key for first-time users
+/// - `GET  /api/providers/trial-key/quota`   — where this install's trial allowance stands
 /// - `POST /api/providers/detect-protocol`   — detect API protocol
 /// - `GET  /api/system/info`                 — system directory & platform info
 /// - `POST /api/system/check-update`         — check GitHub for new versions
@@ -108,6 +109,7 @@ pub fn system_routes(state: SystemRouterState) -> Router {
         .route("/api/providers/detect-protocol", post(detect_protocol))
         .route("/api/providers/fetch-models", post(fetch_models_anonymous))
         .route("/api/providers/trial-key", post(request_trial_key))
+        .route("/api/providers/trial-key/quota", get(trial_key_quota))
         .route("/api/providers/{id}", delete(delete_provider).put(update_provider))
         .route("/api/providers/{id}/models", post(fetch_models))
         .route("/api/providers/sync-model-channels", post(sync_model_channels))
@@ -478,6 +480,19 @@ async fn request_trial_key(
     let result = state
         .trial_key_service
         .request_trial_key()
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+/// GET, not POST: this reads a status and takes no input — the install id is
+/// resolved locally, never supplied by the caller.
+async fn trial_key_quota(
+    State(state): State<SystemRouterState>,
+) -> Result<Json<ApiResponse<TrialQuotaStatusResponse>>, ApiError> {
+    let result = state
+        .trial_key_service
+        .read_quota_status()
         .await
         .map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(result)))

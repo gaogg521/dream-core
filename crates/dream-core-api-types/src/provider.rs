@@ -351,6 +351,41 @@ pub struct TrialKeyResponse {
     /// A small curated starter model list, picked by the broker so it can be
     /// tuned without a client release.
     pub models: Vec<String>,
+    /// Which provider platform to create this key as.
+    ///
+    /// Comes from the broker so the client does not name the upstream itself
+    /// — the broker can be pointed at a different token platform without a
+    /// client release, and a hardcoded platform would silently mis-create the
+    /// provider on the day that happens.
+    ///
+    /// Defaulted for compatibility with a broker that predates the field.
+    #[serde(default = "default_trial_platform")]
+    pub platform: String,
+    /// Stable identifier of the platform that issued the key, for anything
+    /// that needs to tell issuers apart without parsing the display label.
+    #[serde(default)]
+    pub vendor: String,
+}
+
+fn default_trial_platform() -> String {
+    "OpenRouter".to_owned()
+}
+
+/// Where a trial key's spend allowance stands, as the broker reports it.
+///
+/// The desktop otherwise only finds out an allowance is spent by being
+/// refused mid-request; this lets it ask first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrialQuotaStatusResponse {
+    pub vendor: String,
+    /// `None` when the upstream reports no cap at all — which is not the same
+    /// as a cap of zero.
+    pub limit_usd: Option<f64>,
+    pub used_usd: f64,
+    pub remaining_usd: Option<f64>,
+    /// How the allowance renews: `monthly`, `daily`, or `cumulative` (never).
+    pub reset: Option<String>,
+    pub exhausted: bool,
 }
 
 /// Request body for `POST /api/providers/detect-protocol`.
