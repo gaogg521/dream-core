@@ -48,6 +48,13 @@ pub enum AgentErrorCode {
     UserLlmProviderPermissionDenied,
     UserLlmProviderBillingRequired,
     UserLlmProviderConfigError,
+    /// The key itself is valid, but its spend allowance is used up — the
+    /// trial tier's monthly cap, or any key the user capped themselves.
+    /// Distinct from `UserLlmProviderBillingRequired` (the *account* needs
+    /// money) and from `UserLlmProviderPermissionDenied`, which is where this
+    /// used to land purely because the upstream text contains "403" — and
+    /// which sends the user off to check credentials that are perfectly fine.
+    UserLlmProviderQuotaExhausted,
     UserLlmProviderModelNotFound,
     /// The provider config a conversation was built with has been deleted or
     /// replaced since. Distinct from `UserLlmProviderModelNotFound` (provider
@@ -92,6 +99,26 @@ pub enum AgentErrorResolutionTarget {
     AgentSettings,
     NewConversation,
     Feedback,
+}
+
+impl AgentErrorCode {
+    /// Whether the upstream provider's own error text must be withheld from
+    /// the end user for this code.
+    ///
+    /// `bound_error_detail` truncates and de-tags but explicitly does not
+    /// redact, so whatever the provider wrote is persisted in the message
+    /// store, rendered in the chat bubble, and attached to feedback reports.
+    /// That is the right default — provider errors are usually the most
+    /// useful thing on screen. It is wrong for quota exhaustion on a
+    /// company-issued key: OpenRouter answers with
+    /// `"Key limit exceeded (total limit). Manage it using
+    /// https://openrouter.ai/workspaces/<org>/keys/<hash>"`, which names our
+    /// workspace and the key's management handle, and tells the user nothing
+    /// they can act on. The localized title/body for the code says everything
+    /// that matters.
+    pub fn hides_upstream_detail(self) -> bool {
+        matches!(self, Self::UserLlmProviderQuotaExhausted)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

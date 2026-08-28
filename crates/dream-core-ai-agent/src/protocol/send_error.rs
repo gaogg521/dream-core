@@ -31,11 +31,15 @@ struct ClassifiedError {
 
 impl ClassifiedError {
     fn into_send_error(self, detail: String) -> AgentSendError {
+        // A few codes must not carry the provider's own words through — see
+        // `AgentErrorCode::hides_upstream_detail`. Everything else keeps the
+        // upstream text, which is usually the most useful line on screen.
+        let detail = (!self.code.hides_upstream_detail()).then_some(detail);
         AgentSendError::new(
             self.message,
             self.code,
             self.ownership,
-            Some(detail),
+            detail,
             self.retryable,
             self.feedback_recommended,
             self.resolution_kind
@@ -712,6 +716,29 @@ fn classify_provider_text(lower: &str) -> Option<ClassifiedError> {
         return Some(provider_error(
             "The model provider account requires billing attention",
             AgentErrorCode::UserLlmProviderBillingRequired,
+            false,
+            AgentErrorResolutionKind::CheckProviderBilling,
+            Some(AgentErrorResolutionTarget::ProviderSettings),
+        ));
+    }
+    // Must stay ahead of the generic 403 branch below: OpenRouter reports an
+    // exhausted key as a 403, so matching on the status alone sends a user
+    // whose credentials are perfectly fine off to re-check them. The
+    // distinguishing signal is the phrasing, not the code.
+    if contains_any(
+        lower,
+        &[
+            "key limit exceeded",
+            "quota exceeded",
+            "quota exhausted",
+            "exceeded your current quota",
+            "usage limit reached",
+            "spending limit",
+        ],
+    ) {
+        return Some(provider_error(
+            "The model key's spending allowance is used up",
+            AgentErrorCode::UserLlmProviderQuotaExhausted,
             false,
             AgentErrorResolutionKind::CheckProviderBilling,
             Some(AgentErrorResolutionTarget::ProviderSettings),
@@ -1872,6 +1899,63 @@ mod tests {
             AgentErrorCode::UserLlmProviderAuthFailed,
             AgentErrorOwnership::UserLlmProvider,
             AgentErrorResolutionKind::CheckProviderCredentials,
+        );
+    }
+
+    /// An exhausted key arrives as a 403, so the generic "contains 403" branch
+    /// would claim it first and tell the user to go re-check credentials that
+    /// are fine. Order matters here, and nothing else would catch a regression.
+    #[test]
+    fn classifies_spent_quota_ahead_of_the_generic_403_branch() {
+        for detail in [
+            "Provider returned error 403: Key limit exceeded (total limit). Manage it using https://openrouter.ai/workspaces/default/keys/abc123",
+            "API error 429: You exceeded your current quota, please check your plan and billing details",
+            "Provider error: usage limit reached for this key",
+        ] {
+            assert_classification(
+                detail,
+                AgentErrorCode::UserLlmProviderQuotaExhausted,
+                AgentErrorOwnership::UserLlmProvider,
+                AgentErrorResolutionKind::CheckProviderBilling,
+            );
+        }
+    }
+
+    /// The upstream text for an exhausted company-issued key names our
+    /// OpenRouter workspace and the key's management hash. `bound_error_detail`
+    /// is explicitly not a redactor, so without this the string is persisted to
+    /// the message store, rendered in the chat bubble, and shipped in feedback
+    /// attachments.
+    #[test]
+    fn spent_quota_does_not_leak_the_upstream_text_to_the_user() {
+        let raw = "Provider returned error 403: Key limit exceeded (total limit). \
+                   Manage it using https://openrouter.ai/workspaces/default/keys/abc123";
+        let err = classify_upstream_detail(raw);
+        let data = &err.stream_error;
+
+        assert_eq!(data.code, Some(AgentErrorCode::UserLlmProviderQuotaExhausted));
+        assert_eq!(data.detail, None, "upstream text must not reach the user");
+
+        let rendered = format!("{:?}", data);
+        assert!(!rendered.contains("openrouter.ai/workspaces"), "workspace URL leaked: {rendered}");
+        assert!(!rendered.contains("abc123"), "key handle leaked: {rendered}");
+    }
+
+    /// The suppression above is deliberately narrow: every other provider error
+    /// keeps its upstream text, which is usually the most useful line on screen.
+    #[test]
+    fn other_provider_errors_still_carry_their_upstream_text() {
+        let err = classify_upstream_detail("API error 403: forbidden");
+        assert_eq!(
+            err.stream_error.code,
+            Some(AgentErrorCode::UserLlmProviderPermissionDenied)
+        );
+        assert!(
+            err.stream_error
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("forbidden")),
+            "detail should still be present for non-suppressed codes"
         );
     }
 
