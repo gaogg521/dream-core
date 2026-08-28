@@ -53,6 +53,7 @@ jobs:
             type=raw,value=latest
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -61,3 +62,17 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Pull by digest (not a tag — avoids any registry propagation race) and
+      # run each binary's --help so a build that "succeeded" but produced a
+      # broken/non-executable image fails the workflow instead of silently
+      # publishing.
+      - name: Smoke-test the pushed image
+        run: |
+          image="${REGISTRY}/${IMAGE_NAME}@${{ steps.build.outputs.digest }}"
+          docker pull "$image"
+          docker run --rm --entrypoint ./dreamcore-admin "$image" --help
+          docker run --rm --entrypoint ./dreamcore "$image" --help
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
