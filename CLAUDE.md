@@ -17,6 +17,11 @@
 > 跨仓完整叙述（含前端 bug 与 CodeMirror 排查）见 dream-ui 同名文档。本 CLAUDE.md 只保留
 > 长期有效的规则，过程性细节请去读那份文档。
 
+> **2026-08-27**：`dream`（1ONE CLI）类型会话的上下文/token 指示器**从来没显示过**——唯一携带 token 计数的发射点只被独立 `dream-engine-cli` 调用，而进程内这条路把 `engine.run_with_blocks()` 的
+> 返回值直接丢掉了。已修：在 `Finish` **之前**发一帧 `AcpContextUsage`。
+> ❗ 引擎的 `input_tokens` **含**缓存读写，而渲染层同名字段指的是缓存**没**覆盖的新输入（缓存命中率拿它当分母），直接透传会双算。详见
+> [session-2026-08-27-dream-turn-usage-reporting.zh-CN.md](./docs/guides/session-2026-08-27-dream-turn-usage-reporting.zh-CN.md)。
+
 > **2026-08-26**：媒体 MCP 的跨语言 env 契约在品牌迁移中被单边改名，导致生成的图片/视频
 > 落到 app 数据目录而不是会话工作区（前端媒体卡片因此整个不渲染）。同批把上传根目录与数据
 > 目录改成「读取回退别名」而非改名迁移。详见
