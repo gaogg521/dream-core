@@ -1462,6 +1462,10 @@ pub(crate) struct GovernancePlane {
     /// part of the personal-plane-shared devops surface) without constructing
     /// a second `Arc<BillingService>` clone of its own.
     pub license_gate: LicenseModuleGateState,
+    /// Handed back for the same reason as `license_gate`: `create_admin_router`
+    /// applies this to `admin_devops_routes` too, and constructing a second
+    /// one would just be a second `Arc` clone of the same `user_repo`.
+    pub password_gate: PasswordChangeGateState,
 }
 
 /// Route-path-independent module identifier for the whole governance plane.
@@ -1535,6 +1539,60 @@ async fn license_module_gate_middleware(
     }
 }
 
+#[cfg(feature = "enterprise")]
+#[derive(Clone)]
+pub(crate) struct PasswordChangeGateState {
+    user_repo: std::sync::Arc<dyn dream_core_db::IUserRepository>,
+}
+
+/// Blocks the enterprise governance surface for an account whose password
+/// still needs to be changed — in practice, only the seeded
+/// `system_default_user` on a deployment that has never logged in and set
+/// its own password (see `AppServices::from_config`'s first-boot bootstrap,
+/// which generates and flags this account, and the same doc comment on
+/// `dream_core_db::models::User::must_change_password`).
+///
+/// Wired the same way as [`license_module_gate_middleware`] — `.route_layer`
+/// placed BEFORE `.route_layer(auth_middleware)` so it runs AFTER
+/// `auth_middleware` has populated `CurrentUser` — and for the same reason
+/// does its own `user_repo` lookup rather than trusting a flag on
+/// `CurrentUser`: that struct is shared by every authenticated route in the
+/// app and deliberately does not carry this field (see
+/// `dream_core_auth::routes::user_handler`'s doc comment for why extending
+/// it was rejected as too broad a blast radius for this one gate).
+///
+/// Fails OPEN when there is no `CurrentUser` (shouldn't happen behind
+/// `auth_middleware`, but this gate has no business 500ing if it does) or
+/// when the lookup errors — the same "never manufacture a new failure mode
+/// out of a gate that wasn't there before" posture `license_module_gate_middleware`
+/// documents for itself.
+#[cfg(feature = "enterprise")]
+async fn require_password_changed_gate(
+    State(state): State<PasswordChangeGateState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let Some(user) = request.extensions().get::<CurrentUser>().cloned() else {
+        return Ok(next.run(request).await);
+    };
+
+    let must_change_password = match state.user_repo.find_by_id(&user.id).await {
+        Ok(Some(user)) => user.must_change_password,
+        Ok(None) | Err(_) => false,
+    };
+
+    if must_change_password {
+        return Err(ApiError::coded(
+            StatusCode::FORBIDDEN,
+            "PASSWORD_CHANGE_REQUIRED",
+            "this account must change its password before continuing",
+            None,
+        ));
+    }
+
+    Ok(next.run(request).await)
+}
+
 /// The three services are built by the caller because they are needed earlier:
 /// platform wires the IP allowlist into the auth middleware, billing is owned
 /// by `AppServices` (the agent factory takes its model allowlist), and devops
@@ -1553,6 +1611,9 @@ pub(crate) fn build_governance_plane(
     // `CurrentUser` visible to it).
     let license_gate = LicenseModuleGateState {
         billing: one_billing_service.clone(),
+    };
+    let password_gate = PasswordChangeGateState {
+        user_repo: services.user_repo.clone(),
     };
 
     // one-org enterprise routes (/api/one/*) — RBAC extractors depend on the
@@ -1606,6 +1667,7 @@ pub(crate) fn build_governance_plane(
         )));
     let one_org_authenticated = dream_domain_org::one_org_routes(one_org_state)
         .route_layer(from_fn_with_state(license_gate.clone(), license_module_gate_middleware))
+        .route_layer(from_fn_with_state(password_gate.clone(), require_password_changed_gate))
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // one-enterprise routes (/api/one/enterprise/*) — the SSO-company
@@ -1614,6 +1676,7 @@ pub(crate) fn build_governance_plane(
     let one_enterprise_state = dream_domain_enterprise::OneEnterpriseRouterState::new(one_enterprise_service.clone());
     let one_enterprise_authenticated = dream_domain_enterprise::one_enterprise_routes(one_enterprise_state)
         .route_layer(from_fn_with_state(license_gate.clone(), license_module_gate_middleware))
+        .route_layer(from_fn_with_state(password_gate.clone(), require_password_changed_gate))
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // one-billing routes (/api/one/billing/*) — subscription tier, seats, and
@@ -1627,6 +1690,7 @@ pub(crate) fn build_governance_plane(
     // would be a lockout with no escape hatch — a company whose license
     // doesn't cover the admin module could never activate a corrective one.
     let one_billing_authenticated = dream_domain_billing::one_billing_routes(one_billing_state)
+        .route_layer(from_fn_with_state(password_gate.clone(), require_password_changed_gate))
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // one-platform routes (/api/one/admin/platform/*) — deployment infra config
@@ -1638,6 +1702,7 @@ pub(crate) fn build_governance_plane(
     let one_platform_state = dream_domain_platform::OnePlatformRouterState::new(one_platform_service.clone());
     let one_platform_authenticated = dream_domain_platform::one_platform_routes(one_platform_state)
         .route_layer(from_fn_with_state(license_gate.clone(), license_module_gate_middleware))
+        .route_layer(from_fn_with_state(password_gate.clone(), require_password_changed_gate))
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // one-sso routes. Public half (providers/authorize/callback) is
@@ -1676,6 +1741,7 @@ pub(crate) fn build_governance_plane(
     let one_sso_public = dream_domain_sso::one_sso_public_routes(one_sso_state.clone());
     let one_sso_admin = dream_domain_sso::one_sso_admin_routes(one_sso_state)
         .route_layer(from_fn_with_state(license_gate.clone(), license_module_gate_middleware))
+        .route_layer(from_fn_with_state(password_gate.clone(), require_password_changed_gate))
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
     let grant_source: std::sync::Arc<dyn dream_domain_devops::grants::ResourceGrantSource> =
         std::sync::Arc::new(MatrixGrantSource {
@@ -1693,6 +1759,7 @@ pub(crate) fn build_governance_plane(
         tenant_resolver,
         grant_source,
         license_gate,
+        password_gate,
     }
 }
 
@@ -1819,6 +1886,10 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
         .route_layer(from_fn_with_state(
             governance.license_gate.clone(),
             license_module_gate_middleware,
+        ))
+        .route_layer(from_fn_with_state(
+            governance.password_gate.clone(),
+            require_password_changed_gate,
         ))
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -2785,6 +2856,97 @@ mod tests {
             let response = request_as(gate_app(billing), Some(current_user("u1"))).await;
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
             assert_eq!(error_code(response).await, "LICENSE_MODULE_EXPIRED");
+        }
+    }
+
+    #[cfg(feature = "enterprise")]
+    mod password_change_gate {
+        use axum::body::Body;
+        use axum::http::Request;
+        use axum::routing::get;
+        use tower::ServiceExt;
+
+        use super::super::{PasswordChangeGateState, require_password_changed_gate};
+        use super::StatusCode;
+
+        fn current_user(id: &str) -> dream_core_auth::CurrentUser {
+            dream_core_auth::CurrentUser {
+                id: id.to_owned(),
+                username: "tester".to_owned(),
+                user_type: dream_core_db::UserType::Local,
+                status: dream_core_db::UserStatus::Active,
+            }
+        }
+
+        fn gate_app(user_repo: std::sync::Arc<dyn dream_core_db::IUserRepository>) -> axum::Router {
+            axum::Router::new()
+                .route("/probe", get(|| async { StatusCode::OK }))
+                .route_layer(axum::middleware::from_fn_with_state(
+                    PasswordChangeGateState { user_repo },
+                    require_password_changed_gate,
+                ))
+        }
+
+        async fn request_as(app: axum::Router, user: Option<dream_core_auth::CurrentUser>) -> axum::response::Response {
+            let mut request = Request::builder().uri("/probe");
+            if let Some(user) = user {
+                request = request.extension(user);
+            }
+            app.oneshot(request.body(Body::empty()).unwrap()).await.unwrap()
+        }
+
+        async fn error_code(response: axum::response::Response) -> String {
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            body["code"].as_str().unwrap().to_owned()
+        }
+
+        #[tokio::test]
+        async fn no_current_user_passes_through() {
+            let db = dream_core_db::init_database_memory().await.unwrap();
+            let user_repo: std::sync::Arc<dyn dream_core_db::IUserRepository> =
+                std::sync::Arc::new(dream_core_db::SqliteUserRepository::new(db.pool().clone()));
+            let response = request_as(gate_app(user_repo), None).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "this gate has no business 500ing on a missing extension"
+            );
+        }
+
+        #[tokio::test]
+        async fn user_without_the_flag_passes_through() {
+            let db = dream_core_db::init_database_memory().await.unwrap();
+            let user_repo: std::sync::Arc<dyn dream_core_db::IUserRepository> =
+                std::sync::Arc::new(dream_core_db::SqliteUserRepository::new(db.pool().clone()));
+            let user = user_repo.create_user("regular", "hash").await.unwrap();
+            let response = request_as(gate_app(user_repo), Some(current_user(&user.id))).await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        #[tokio::test]
+        async fn flagged_user_is_forbidden_with_password_change_required() {
+            let db = dream_core_db::init_database_memory().await.unwrap();
+            let user_repo: std::sync::Arc<dyn dream_core_db::IUserRepository> =
+                std::sync::Arc::new(dream_core_db::SqliteUserRepository::new(db.pool().clone()));
+            let user = user_repo.create_user("bootstrapped", "hash").await.unwrap();
+            user_repo.set_must_change_password(&user.id, true).await.unwrap();
+            let response = request_as(gate_app(user_repo), Some(current_user(&user.id))).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            assert_eq!(error_code(response).await, "PASSWORD_CHANGE_REQUIRED");
+        }
+
+        #[tokio::test]
+        async fn nonexistent_user_passes_through() {
+            let db = dream_core_db::init_database_memory().await.unwrap();
+            let user_repo: std::sync::Arc<dyn dream_core_db::IUserRepository> =
+                std::sync::Arc::new(dream_core_db::SqliteUserRepository::new(db.pool().clone()));
+            let response = request_as(gate_app(user_repo), Some(current_user("no-such-id"))).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "fail open on a lookup miss rather than manufacture a new failure mode"
+            );
         }
     }
 

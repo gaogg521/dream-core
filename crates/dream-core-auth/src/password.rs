@@ -88,6 +88,13 @@ pub fn generate_user_credentials() -> (String, String) {
     (username, password)
 }
 
+/// Length used for every system-generated admin password: the WebUI reset
+/// flow (`POST /api/webui/reset-password`) and the enterprise first-boot
+/// bootstrap (`AppServices::from_config`) both call `generate_password` with
+/// this, so there is one length to reason about instead of two magic numbers
+/// that happen to agree.
+pub const GENERATED_PASSWORD_LEN: usize = 16;
+
 /// Generate a strong random password suitable for WebUI admin reset.
 ///
 /// Guarantees ≥1 character from each category (upper, lower, digit, special)

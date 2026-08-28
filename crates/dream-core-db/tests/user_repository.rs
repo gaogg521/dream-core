@@ -185,6 +185,28 @@ async fn t2_10_update_password_changes_hash_and_updated_at() {
     assert!(updated.updated_at >= user.updated_at);
 }
 
+#[tokio::test]
+async fn t2_10_set_must_change_password_round_trips() {
+    let r = repo().await;
+    let user = r.create_user("mustchangeuser", "hash").await.unwrap();
+    assert!(!user.must_change_password, "new accounts don't start flagged");
+
+    r.set_must_change_password(&user.id, true).await.unwrap();
+    let flagged = r.find_by_id(&user.id).await.unwrap().unwrap();
+    assert!(flagged.must_change_password);
+
+    r.set_must_change_password(&user.id, false).await.unwrap();
+    let cleared = r.find_by_id(&user.id).await.unwrap().unwrap();
+    assert!(!cleared.must_change_password);
+}
+
+#[tokio::test]
+async fn t2_10_set_must_change_password_nonexistent_user() {
+    let r = repo().await;
+    let err = r.set_must_change_password("no_such_id", true).await.unwrap_err();
+    assert!(matches!(err, dream_core_db::DbError::NotFound(_)));
+}
+
 // -- T2.11 Update username --
 
 #[tokio::test]

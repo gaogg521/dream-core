@@ -131,7 +131,11 @@ impl AuthProvisionService {
 
         Ok(ExternalSessionExchange {
             response: EnsureExternalSessionResponse {
-                user: PublicUser { id: user.id, username },
+                user: PublicUser {
+                    id: user.id,
+                    username,
+                    must_change_password: user.must_change_password,
+                },
                 session_generation: user.session_generation,
             },
             token,

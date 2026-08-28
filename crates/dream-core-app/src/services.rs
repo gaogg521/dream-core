@@ -8,7 +8,10 @@ use dream_core_ai_agent::{
     AcpSessionSyncService, AcpSkillManager, ActiveLeaseRegistry, AgentFactoryDeps, AgentRegistry, IWorkerTaskManager,
     RuntimeTokenService, WorkerTaskManagerImpl, build_agent_factory,
 };
-use dream_core_auth::{CookieConfig, JwtService, QrTokenStore, resolve_jwt_secret};
+use dream_core_auth::{
+    CookieConfig, GENERATED_PASSWORD_LEN, JwtService, QrTokenStore, generate_password, hash_password,
+    resolve_jwt_secret,
+};
 use dream_core_common::OnConversationDelete;
 use dream_core_conversation::{ConversationService, runtime_state::ConversationRuntimeStateService};
 use dream_core_db::{
@@ -220,6 +223,98 @@ impl AppServices {
                 secret.clone()
             }
         };
+
+        // Enterprise first-boot bootstrap: a fresh non-local (Webui/AionPro)
+        // deployment's seed admin account (`system_default_user`) has an empty
+        // `password_hash` — `login_handler` treats that as "invalid
+        // credentials", so with nothing else to set a password there is no
+        // way to ever log in. `--local` desktop mode is unaffected (it never
+        // needs a password: `auth_middleware` resolves the operator without
+        // one) and already has its own in-app password reset
+        // (`POST /api/webui/reset-password`).
+        //
+        // Runs at most once per install: after this, `password_hash` is no
+        // longer empty, so a restart takes the `db_secret`-populated path
+        // above and skips straight past this block without regenerating or
+        // overwriting whatever password is there (including one the operator
+        // has since chosen via change-password).
+        if !local
+            && let Some(user) = &system_user
+            && user.password_hash.as_deref().unwrap_or("").is_empty()
+        {
+            let plaintext = generate_password(GENERATED_PASSWORD_LEN);
+            let new_hash = {
+                let p = plaintext.clone();
+                tokio::task::spawn_blocking(move || hash_password(&p))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Task join error: {e}"))?
+                    .map_err(|e| anyhow::anyhow!("Failed to hash initial admin password: {e}"))?
+            };
+            user_repo
+                .update_password(&user.id, &new_hash)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to persist initial admin password: {e}"))?;
+            user_repo
+                .set_must_change_password(&user.id, true)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to flag initial admin password for change: {e}"))?;
+
+            let username = user.username.clone().unwrap_or_default();
+
+            // The structured `tracing::warn!` below is one line among the
+            // dozen other startup log lines this function already emits —
+            // fine for an operator who knows to `grep` their logs, a real
+            // barrier for one who does not. Two more channels, aimed at that
+            // person specifically:
+            //
+            // 1. A plain-text file in the data directory. Whoever configured
+            //    that volume mount can browse to it with an ordinary file
+            //    manager — no log-reading or Docker CLI knowledge required.
+            //    Best-effort: a write failure here must not block startup,
+            //    the tracing line below is still emitted regardless.
+            let password_file = data_dir.join("INITIAL_ADMIN_PASSWORD.txt");
+            let file_contents = format!(
+                "This file was generated once, the first time this server started with no \
+                 admin password set.\n\n\
+                 Username: {username}\n\
+                 Password: {plaintext}\n\n\
+                 Log in with this password, then change it immediately — you will be required \
+                 to before you can do anything else. This file is not updated again after that; \
+                 it is safe to delete once you have changed your password.\n"
+            );
+            if let Err(e) = std::fs::write(&password_file, file_contents) {
+                tracing::warn!(
+                    path = %password_file.display(),
+                    error = %e,
+                    "could not write the initial admin password file — it was still logged below"
+                );
+            }
+
+            // 2. A banner on stdout, deliberately NOT going through the
+            // structured `key=value` tracing format so it reads as plain
+            // text at a glance instead of one more line to parse.
+            println!(
+                "\n\
+                 ================================================================\n\
+                   Generated an initial admin password for this deployment.\n\
+                 \n\
+                   Username: {username}\n\
+                   Password: {plaintext}\n\
+                 \n\
+                   Log in with this password, then change it immediately — you\n\
+                   will be required to before doing anything else. It will not\n\
+                   be shown again (also saved to {path}).\n\
+                 ================================================================\n",
+                path = password_file.display()
+            );
+
+            tracing::warn!(
+                username = %username,
+                password = %plaintext,
+                "generated an initial admin password for this deployment — log in and change it \
+                 immediately; it will not be shown again"
+            );
+        }
 
         let encryption_key = derive_encryption_key(&data_secret);
 
@@ -511,9 +606,12 @@ mod tests {
         let payload = services.jwt_service.verify(&token).unwrap();
         assert_eq!(payload.user_id, "test_user");
 
-        // User repo should have system user
+        // User repo should have system user. `AppConfig::default()` is
+        // non-local, so the first-boot bootstrap above already gave it a real
+        // (system-generated) password — `has_users()` no longer excludes it
+        // the way it would for a genuinely empty-password seed account.
         let has_users = services.user_repo.has_users().await.unwrap();
-        assert!(!has_users); // system user has empty password → not counted
+        assert!(has_users);
 
         services.database.close().await;
     }

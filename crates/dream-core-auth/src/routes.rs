@@ -26,7 +26,9 @@ use dream_core_db::{DbError, IUserRepository, UserStatus, UserType, models::User
 use crate::error::AuthError;
 use crate::extract::extract_token_from_headers;
 use crate::middleware::{AuthIdentityMode, AuthState, CurrentUser, auth_middleware, is_webui_proxied};
-use crate::password::{dummy_password_hash, generate_password, hash_password, verify_password_timed};
+use crate::password::{
+    GENERATED_PASSWORD_LEN, dummy_password_hash, generate_password, hash_password, verify_password_timed,
+};
 use crate::qr_token::QrTokenStore;
 use crate::rate_limit::{
     RateLimiter, api_rate_limit_middleware, auth_rate_limit_middleware, authenticated_action_rate_limit_middleware,
@@ -543,6 +545,7 @@ async fn login_handler(
         PublicUser {
             id: user.id,
             username: user.username.unwrap_or_else(|| "external_user".to_string()),
+            must_change_password: user.must_change_password,
         },
         token,
     );
@@ -732,14 +735,31 @@ async fn update_user_last_login_handler(
 // GET /api/auth/user
 // ---------------------------------------------------------------------------
 
-async fn user_handler(Extension(user): Extension<CurrentUser>) -> Json<UserInfoResponse> {
-    Json(UserInfoResponse {
+async fn user_handler(
+    State(state): State<AuthRouterState>,
+    Extension(current_user): Extension<CurrentUser>,
+) -> Result<Json<UserInfoResponse>, ApiError> {
+    // `CurrentUser` (the auth-middleware-injected identity) is deliberately
+    // minimal and shared by every authenticated route in the app — it does
+    // NOT carry `must_change_password`, so this re-fetches the row rather
+    // than adding that field there. A stale value here would leave the forced
+    // change-password redirect (which reads exactly this response) unable to
+    // ever clear itself after the caller does change their password.
+    let user = state
+        .user_repo
+        .find_by_id(&current_user.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("User not found".into()))?;
+
+    Ok(Json(UserInfoResponse {
         success: true,
         user: PublicUser {
             id: user.id,
-            username: user.username,
+            username: user.username.unwrap_or_else(|| "external_user".to_string()),
+            must_change_password: user.must_change_password,
         },
-    })
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -796,6 +816,15 @@ async fn change_password_handler(
     state
         .user_repo
         .update_jwt_secret(&current_user.id, &new_secret)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?;
+
+    // Whatever password this was before (system-generated bootstrap or a
+    // prior real one), the caller just proved they know it and chose a new
+    // one — always clear the flag, not just on the bootstrap path.
+    state
+        .user_repo
+        .set_must_change_password(&current_user.id, false)
         .await
         .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?;
 
@@ -924,6 +953,7 @@ async fn qr_login_handler(
         PublicUser {
             id: user.id,
             username: user.username.unwrap_or_else(|| "external_user".to_string()),
+            must_change_password: user.must_change_password,
         },
         token,
     );
@@ -998,9 +1028,6 @@ const QR_LOGIN_HTML: &str = r#"<!DOCTYPE html>
 // ---------------------------------------------------------------------------
 // WebUI admin credential endpoints (local-only)
 // ---------------------------------------------------------------------------
-
-/// Random password length for `/api/webui/reset-password`.
-const RESET_PASSWORD_LEN: usize = 16;
 
 /// Resolve the WebUI admin user, falling back to NotFound when absent.
 async fn resolve_webui_admin(user_repo: &dyn IUserRepository) -> Result<User, ApiError> {
@@ -1078,7 +1105,7 @@ async fn webui_reset_password_handler(
 
     let user = resolve_webui_admin(&*state.user_repo).await?;
 
-    let new_password = generate_password(RESET_PASSWORD_LEN);
+    let new_password = generate_password(GENERATED_PASSWORD_LEN);
     let password_for_hash = new_password.clone();
     let new_hash = tokio::task::spawn_blocking(move || hash_password(&password_for_hash))
         .await

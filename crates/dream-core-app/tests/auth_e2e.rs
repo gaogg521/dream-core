@@ -325,28 +325,52 @@ async fn t13_3_no_token_fails() {
 // T14. Initial Bootstrap Flow
 // ===========================================================================
 
+// `build_app()` uses `AppConfig::default()`, i.e. `local: false` — the same
+// non-local (`Webui` identity mode) shape a real enterprise deployment uses.
+// Since `AppServices::from_config`'s first-boot bootstrap (see
+// `dream-core-app::services`) now runs in exactly that shape, a fresh
+// non-local system no longer sits with an empty seed password waiting for
+// legacy `needs_setup` provisioning — it already has a real (system-generated,
+// forced-change) one by the time `build_app()` returns. `needs_setup` /
+// `set_system_user_credentials` remain fully functional (still exercised
+// below and by `dream-ui`'s own `--local`-only legacy-migration path), just no
+// longer reachable in their "empty password" precondition for this shape.
+
 #[tokio::test]
-async fn t14_1_fresh_system_needs_setup() {
-    let (app, _services) = build_app().await;
+async fn t14_1_fresh_non_local_system_is_already_bootstrapped() {
+    let (app, services) = build_app().await;
 
     let resp = app.oneshot(get_request("/api/auth/status")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
     let json = body_json(resp).await;
     assert_eq!(json["success"], true);
-    assert_eq!(json["needs_setup"], true);
+    assert_eq!(
+        json["needs_setup"], false,
+        "the first-boot bootstrap already seeded a password"
+    );
+    assert_eq!(json["user_count"], 1);
+
+    // The seeded password is system-generated, not chosen by anyone — the
+    // account must be flagged to change it before it can do anything else.
+    let system_user = services.user_repo.get_system_user().await.unwrap().unwrap();
+    assert!(!system_user.password_hash.unwrap_or_default().is_empty());
+    assert!(system_user.must_change_password);
 }
 
 #[tokio::test]
 async fn t14_2_setup_then_login() {
     let (app, services) = build_app().await;
 
-    // Fresh system: needsSetup=true
+    // Bootstrap already ran (see the module-level comment above) — this is no
+    // longer the legacy "needs_setup" scenario.
     let resp = app.clone().oneshot(get_request("/api/auth/status")).await.unwrap();
     let json = body_json(resp).await;
-    assert_eq!(json["needs_setup"], true);
+    assert_eq!(json["needs_setup"], false);
 
-    // Set system user credentials (simulating initial setup)
+    // `set_system_user_credentials` (dream-ui's own `--local`-only
+    // legacy-migration path) can still directly overwrite whatever password is
+    // there, bootstrap-generated or not.
     let hash = dream_core_auth::hash_password("Admin@Pass1").unwrap();
     services
         .user_repo
@@ -354,7 +378,7 @@ async fn t14_2_setup_then_login() {
         .await
         .unwrap();
 
-    // Now needsSetup=false
+    // Still needsSetup=false
     let resp = app.clone().oneshot(get_request("/api/auth/status")).await.unwrap();
     let json = body_json(resp).await;
     assert_eq!(json["needs_setup"], false);
@@ -385,13 +409,17 @@ async fn t14_2_setup_then_login() {
 async fn full_auth_flow_e2e() {
     let (app, services) = build_app().await;
 
-    // 1. Check initial status
+    // 1. Check initial status — bootstrap already ran (see the module-level
+    // comment above `t14_1_fresh_non_local_system_is_already_bootstrapped`),
+    // so this is no longer the legacy "needs_setup" scenario.
     let resp = app.clone().oneshot(get_request("/api/auth/status")).await.unwrap();
     let csrf = extract_csrf_token(&resp).expect("CSRF cookie on first request");
     let json = body_json(resp).await;
-    assert_eq!(json["needs_setup"], true);
+    assert_eq!(json["needs_setup"], false);
 
-    // 2. Setup user
+    // 2. Overwrite with a known password for the rest of this flow to log in
+    // with (`set_system_user_credentials` still works regardless of prior
+    // state — see t14_2).
     let hash = dream_core_auth::hash_password("Initial@Pass1").unwrap();
     services
         .user_repo

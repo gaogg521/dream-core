@@ -48,6 +48,7 @@ fn login_response_serialization_matches_spec() {
         PublicUser {
             id: "auth_1712345678_abc".into(),
             username: "admin".into(),
+            must_change_password: false,
         },
         "eyJhbGciOiJIUzI1NiJ9".into(),
     );
@@ -57,6 +58,7 @@ fn login_response_serialization_matches_spec() {
     assert_eq!(json["message"], "Login successful");
     assert_eq!(json["user"]["id"], "auth_1712345678_abc");
     assert_eq!(json["user"]["username"], "admin");
+    assert_eq!(json["user"]["mustChangePassword"], false);
     assert_eq!(json["token"], "eyJhbGciOiJIUzI1NiJ9");
 }
 

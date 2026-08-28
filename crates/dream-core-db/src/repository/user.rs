@@ -87,6 +87,13 @@ pub trait IUserRepository: Send + Sync {
     /// Updates a user's password hash.
     async fn update_password(&self, user_id: &str, password_hash: &str) -> Result<(), DbError>;
 
+    /// Sets or clears the "must change password before continuing" flag.
+    ///
+    /// Set by the enterprise first-boot bootstrap (a system-generated
+    /// password, not one the account owner chose) and cleared by a
+    /// successful `POST /api/auth/change-password`.
+    async fn set_must_change_password(&self, user_id: &str, required: bool) -> Result<(), DbError>;
+
     /// Updates a user's username.
     ///
     /// Returns `DbError::Conflict` if the new username already exists.

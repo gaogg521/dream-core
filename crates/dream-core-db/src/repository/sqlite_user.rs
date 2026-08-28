@@ -113,6 +113,7 @@ impl IUserRepository for SqliteUserRepository {
             created_at: now,
             updated_at: now,
             last_login: None,
+            must_change_password: false,
         })
     }
 
@@ -334,6 +335,22 @@ impl IUserRepository for SqliteUserRepository {
         .bind(user_id)
         .execute(&self.pool)
         .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(DbError::NotFound(format!("User '{user_id}' not found")));
+        }
+
+        Ok(())
+    }
+
+    async fn set_must_change_password(&self, user_id: &str, required: bool) -> Result<(), DbError> {
+        let now = dream_core_common::now_ms();
+        let result = sqlx::query("UPDATE users SET must_change_password = ?, updated_at = ? WHERE id = ?")
+            .bind(required)
+            .bind(now)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
 
         if result.rows_affected() == 0 {
             return Err(DbError::NotFound(format!("User '{user_id}' not found")));
