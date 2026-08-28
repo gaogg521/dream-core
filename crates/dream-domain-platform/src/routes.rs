@@ -12,16 +12,17 @@
 //! Mounted behind the upstream `auth_middleware` (relies on `CurrentUser` in
 //! request extensions). All routes are gated by `RequirePlatformAdmin`.
 //!
-//! ⚠️ The resource-grants endpoints are **partially enforced**, so check
+//! ⚠️ The resource-grants endpoints only cover four resource types, so check
 //! before assuming a change here is inert:
 //!
 //! - **Enforced** (`dream-domain-devops` widens its read predicate with
 //!   `effective_resource_ids` via the `ResourceGrantSource` seam): `skill`,
 //!   `mcp`, `knowledge`, `model_channel`. Changing grant semantics changes
 //!   what members actually see on those four read paths.
-//! - **Not enforced**: `employee` — `dream-domain-employee` has no
-//!   `ResourceGrantSource` hook, so a grant of that type is recorded and
-//!   reported as effective while nothing consults it.
+//! - **Rejected outright**: `employee` — digital employees are an
+//!   owner-centric asset (private/shared, not a per-subject grant registry),
+//!   so `grant_resource` returns 400 instead of recording a grant that
+//!   nothing would ever consult. See `PlatformService::GRANT_RESOURCE_TYPES`.
 //!
 //! A grant only ever *adds* reachability on the enforced paths, and never
 //! widens tenancy (see `DevopsService::widen_with_grants`).

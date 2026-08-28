@@ -35,21 +35,35 @@ use crate::siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
 /// are resolved together by `PlatformService::effective_resource_ids`.
 pub const GRANT_SUBJECT_TYPES: [&str; 3] = ["member", "department", "scene"];
 
-/// Valid `resource_type` values. Mirrors the five registries
+/// Valid `resource_type` values. Mirrors the four registries
 /// `dream-domain-devops` already has a `scope`/`visibility` column on
-/// (skills, MCP servers, model channels, RAG knowledge documents) plus
-/// digital employees (`dream-domain-employee`, no admin-facing registry
-/// yet). `model` and `channel` are one dimension here (`model_channel`)
-/// because they are one table upstream — a channel offers a set of models
-/// as a unit. `knowledge` is the "知识库" half of E5's "知识与记忆治理" item
-/// — RAG documents (`dream_domain_devops::RagDocumentDto`) already exist and
+/// (skills, MCP servers, model channels, RAG knowledge documents). `model`
+/// and `channel` are one dimension here (`model_channel`) because they are
+/// one table upstream — a channel offers a set of models as a unit.
+/// `knowledge` is the "知识库" half of E5's "知识与记忆治理" item — RAG
+/// documents (`dream_domain_devops::RagDocumentDto`) already exist and
 /// already carry `scope`/`visibility`, so this only needed a new
 /// `resource_type` value, not a new registry. There is no `resource_type`
 /// for "记忆集合" (memory collections): unlike knowledge documents, no
 /// memory-collection feature exists anywhere in this codebase to grant
 /// access to — governing a feature that isn't built would be fabricating
 /// both, not just the governance layer.
-pub const GRANT_RESOURCE_TYPES: [&str; 5] = ["skill", "mcp", "employee", "model_channel", "knowledge"];
+///
+/// `employee` is deliberately NOT in this list. Digital employees
+/// (`dream-domain-employee`) are an owner-centric asset (only `private` or
+/// tenant-wide `shared`, see `EmployeeService::set_visibility`), not a
+/// registry with per-subject grants like the other four — bolting the
+/// authorization matrix onto it is a product decision that hasn't been
+/// made, not a wiring gap. `grant_resource` rejects it explicitly (see
+/// `EMPLOYEE_NOT_SUPPORTED_MESSAGE`) instead of silently accepting and
+/// doing nothing.
+pub const GRANT_RESOURCE_TYPES: [&str; 4] = ["skill", "mcp", "model_channel", "knowledge"];
+
+/// Returned by `grant_resource`/`validate_grant_kinds` for `resource_type ==
+/// "employee"` — distinguishable from the generic "unknown resource type"
+/// message so callers (and admins reading the error) can tell "this type
+/// doesn't exist" apart from "this type exists but isn't supported yet".
+const EMPLOYEE_NOT_SUPPORTED_MESSAGE: &str = "resource type 'employee' is not supported yet";
 
 /// `resource_id` sentinel meaning "every resource of this type, now and
 /// whenever a new one is added" — the escape hatch for "give this department
@@ -514,6 +528,9 @@ impl PlatformService {
             return Err(PlatformError::BadRequest(format!(
                 "unknown subject type '{subject_type}'"
             )));
+        }
+        if resource_type == "employee" {
+            return Err(PlatformError::BadRequest(EMPLOYEE_NOT_SUPPORTED_MESSAGE.into()));
         }
         if !GRANT_RESOURCE_TYPES.contains(&resource_type) {
             return Err(PlatformError::BadRequest(format!(
@@ -1783,6 +1800,39 @@ mod tests {
                 .code(),
             "BAD_REQUEST"
         );
+    }
+
+    /// `employee` used to silently pass validation, write a row, and return
+    /// 200 while nothing ever consulted it — worse than not having the
+    /// feature. It must now be rejected with a message distinguishable from
+    /// the generic "unknown resource type" (the type isn't unknown, it's
+    /// deliberately unsupported), and the remaining four types must keep
+    /// working exactly as before.
+    #[tokio::test]
+    async fn grant_resource_rejects_employee_with_a_distinct_message() {
+        let (_db, service) = setup().await;
+        let err = service
+            .grant_resource("t1", "member", "alice", "employee", "emp_1", "admin1")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "BAD_REQUEST");
+        assert_eq!(
+            err.to_string(),
+            "Bad request: resource type 'employee' is not supported yet"
+        );
+        assert_ne!(
+            err.to_string(),
+            "Bad request: unknown resource type 'employee'",
+            "employee must not be reported as merely unknown"
+        );
+        assert!(service.list_grants("t1", None, None, None).await.unwrap().is_empty());
+
+        for resource_type in ["skill", "mcp", "knowledge", "model_channel"] {
+            service
+                .grant_resource("t1", "member", "alice", resource_type, "res_1", "admin1")
+                .await
+                .unwrap_or_else(|e| panic!("{resource_type} must still be grantable: {e}"));
+        }
     }
 
     #[tokio::test]
