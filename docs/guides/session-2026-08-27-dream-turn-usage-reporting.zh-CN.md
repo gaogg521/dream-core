@@ -110,7 +110,7 @@ Finish 上，而是由 pump 把每个 `UsageDelta` 持久化到 `context_usage` 
 ```rust
 Some(Ok(run_result)) => {
     // BEFORE the Finish: relay 一看到 Finish 就停止转发这一轮
-    self.emit_turn_usage(&engine, &run_result);
+    self.emit_turn_usage(&engine, Some(&run_result));
     self.runtime.emit_finish(None);
     Ok(())
 }
@@ -153,7 +153,8 @@ let fresh_input = usage.input_tokens
 诚实读法。
 
 这一条是把帧构造抽成纯函数 `build_turn_usage_frame(context_usage,
-context_window, usage)` 的**唯一理由**——否则它就是一行 `json!`。
+context_window, usage: Option<&TokenUsage>)` 的**唯一理由**——否则它就是一行
+`json!`。（`usage` 是 `Option` 的原因见 §6 那条"取消/失败的轮次"。）
 
 ### 4.4 `used` 是占用而不是本轮总和
 
@@ -165,15 +166,17 @@ context_window, usage)` 的**唯一理由**——否则它就是一行 `json!`�
 
 ## 五、验证
 
-### 5.1 单测（5 条，`manager/dream_engine/agent_test.rs::turn_usage_frame`）
+### 5.1 单测（6 条，`manager/dream_engine/agent_test.rs::turn_usage_frame`）
 
 - `reports_fresh_input_not_the_cache_inclusive_total`——4.3 那条语义反转
 - `keeps_the_uncached_remainder_when_there_is_one`——有余量时正常相减
 - `clamps_instead_of_underflowing_on_an_impossible_report`——饱和减
 - `carries_context_occupancy_and_window_rather_than_a_turn_total`——4.4
 - `passes_an_unknown_window_through_as_zero`——`size: 0` 的约定
+- `reports_occupancy_alone_when_there_is_no_turn_result`——取消/失败的轮次只发
+  占用、`_meta` 省略而非置零
 
-`cargo test -p dream-core-ai-agent turn_usage_frame` → 5 passed。
+`cargo test -p dream-core-ai-agent turn_usage_frame` → 6 passed。
 
 ### 5.2 真机（必须先重编内嵌二进制）
 
@@ -231,13 +234,70 @@ start · thinking · content · acp_context_usage · finish
   transport errors"）。**不是缺陷，别去"修"它**——企业版挂了 billing 域才有数。
 - **`thought_tokens` 没有**。引擎的 `TokenUsage` 只有四个字段，没有单独的思考
   token；渲染层那一行对 dream 会话不显示，是"没有"而不是"漏了"。
-- **取消/失败的轮次不发用量帧**。`Some(Err(_))` 和 `None`（被 stop 打断）两条
-  分支保持原样：一轮没有正常完成时，`AgentResult` 不存在。代价是用户取消的那轮
-  不计入显示。
-- **未持久化到 `context_usage` 存储**。本轮只做了实时广播；`GET /usage` 对 dream
-  会话仍然返回空。dream-ui 侧改为在收到帧时写 `extra.last_token_usage` +
-  `last_context_limit`，重开会话靠那个恢复。要让 `GET /usage` 也有数，需要在本仓
-  加一条持久化，本轮未做。
+- **企业「公司模型渠道」的协议写回会被渠道同步抹掉**（媒体侧的已知项，见 dream-ui
+  文档 §6）。与本节其余条目不同，那一条**是真实缺陷但刻意不修**：真修要么对抗
+  `write_channel` 的"服务端是这些行的全部真相"设计，要么把「接口协议」做成
+  `dream-en` 那边的渠道字段。而生成始终成功（fallback 每次兜住），代价只是每次多
+  一个毫秒级探测请求。
+
+> **以下两条最初记为"未做"，随后在同一批里补掉了（`74c7135` 之后）。保留原文与
+> 修法，因为其中一条的难度是我最初估错的。**
+
+- ~~**取消/失败的轮次不发用量帧**~~ → **已修**。`Some(Err(_))` 和 `None`（被 stop
+  打断）两条分支拿不到 `AgentResult`，但 `engine.context_status()` 仍在作用域内
+  ——占用数是发得出来的。现在两条分支都发一帧**只带占用、不带 `_meta`** 的用量。
+  理由：一轮没跑完，但发给厂商的那部分请求是真花了钱的，指示器停在旧数字等于告诉
+  用户"那次尝试是免费的"。`_meta` 是**省略而不是置零**——渲染层会保留上一次的明细，
+  置零会把它擦掉。
+- ~~**未持久化到 `context_usage` 存储**~~ → **已修，而且我最初把难度说重了。**
+  原文说"需要在本仓加一条持久化"，实际根因是 `agent_task.rs` 的一行：
+
+  ```rust
+  Self::DreamEngine(_) => Ok(None),   // ← 就是这里
+  ```
+
+  不是缺持久化层，是这个 match arm 没写。现在返回
+  `AionrsAgentManager::context_usage_snapshot()`——锁住引擎取 `context_status()`。
+  两个细节：① 用 `try_lock` 而不是 `lock`，因为引擎的锁在整轮期间被持有（可能几
+  分钟），让一个 HTTP handler 阻塞在后面去取一个实时流已经在送的数字，是拿"缺个
+  数字"换"请求挂住"；② `context_usage == 0` 时返回 `None` 而不是"窗口有值、已用
+  0"，否则会被渲染成一个真实的 0% 读数。
+
+  ⚠️ 这条同时说明：dream-ui 侧新加的 hydrate-from-`getUsage` 路径在修掉它之前
+  **对 dream 会话是死代码**（端点恒返回空）。加了一条当时还不能触发的路径，这点
+  最初的文档没写清。
+
+### 6.1 ②③ 的真机验证与一个残留边界
+
+重编内嵌后实测：
+
+**② `GET /usage`**——同一个会话打开后查到 `{used: 7495, size: 200000}`，跑完一轮
+变 `7531`（占用在涨）；未打开过的会话仍返回 `null`。
+
+⚠️ **残留边界**：`service_ops.rs::get_usage` 先试 `self.task(id)`，**没有活任务就
+回落去读仓库里的 `context_usage_json`**——而 dream 这条路仍然不写那个字段。所以本
+修复覆盖的是"任务存活"的会话（打开会话会 `ensureRuntime` 把任务拉起来，所以正常
+使用路径是覆盖到的）；真正没覆盖的是"没有任何客户端打开过它、也没有活任务"时的
+纯服务端查询。要彻底覆盖需要在本仓把占用写进 `acp_session.runtime.context_usage_json`，
+本轮未做。
+
+⚠️ **这条边界暴露了 dream-ui 侧我自己引入的一个时序缺陷，已修**：新加的
+hydrate-from-`getUsage` 效应原本是**挂载即查**，而后端要有活任务才答得出来——冷会话
+上查到 `null` 就什么都不恢复，而那恰恰是这条路径存在的理由（新装 / 换台机器时没有
+`extra.last_token_usage` 可回落）。已改成 `ensureConversationRuntime(id).then(...)`，
+与 ACP hook 同一顺序。
+
+**③ 取消的轮次**——中途点停止后抓到的帧：
+
+```
+acp_context_usage → { "used": 8829, "size": 200000 }   ← 无 _meta
+finish
+```
+
+正是设计意图：占用照报、`_meta` **省略而非置零**、且在 `finish` 之前到达。
+
+（第一次验证时轮次已经自己跑完了，点击落在已变回发送箭头的按钮上，什么都没测到——
+要测取消必须把"发送→等几秒→点停止"放在同一个原子序列里。）
 
 ---
 

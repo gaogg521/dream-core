@@ -376,7 +376,7 @@ mod turn_usage_frame {
     /// kind of wrong number that looks plausible.
     #[test]
     fn reports_fresh_input_not_the_cache_inclusive_total() {
-        let frame = build_turn_usage_frame(162_500, 1_000_000, &usage(1_600_280, 7_300, 1_600_000, 146_100));
+        let frame = build_turn_usage_frame(162_500, 1_000_000, Some(&usage(1_600_280, 7_300, 1_600_000, 146_100)));
         let meta = &frame["_meta"];
         // 1_600_280 - 1_600_000 - 146_100 saturates at 0 only if cache exceeds
         // input; here it is a plain subtraction of the cache-read portion.
@@ -386,9 +386,23 @@ mod turn_usage_frame {
         assert_eq!(meta["output_tokens"], 7_300);
     }
 
+    /// A cancelled or failed turn has no `AgentResult`, but the tokens it burned
+    /// before stopping are gone all the same — an indicator frozen at the
+    /// previous number reads as "that attempt was free". Occupancy goes out
+    /// without a breakdown.
+    #[test]
+    fn reports_occupancy_alone_when_there_is_no_turn_result() {
+        let frame = build_turn_usage_frame(9_000, 200_000, None);
+        assert_eq!(frame["used"], 9_000);
+        assert_eq!(frame["size"], 200_000);
+        // Omitted rather than zeroed: the renderer keeps the last breakdown it
+        // had, and zeros would erase it.
+        assert!(frame.get("_meta").is_none(), "no per-turn figures exist to report");
+    }
+
     #[test]
     fn keeps_the_uncached_remainder_when_there_is_one() {
-        let frame = build_turn_usage_frame(100, 200_000, &usage(1_000, 50, 400, 100));
+        let frame = build_turn_usage_frame(100, 200_000, Some(&usage(1_000, 50, 400, 100)));
         assert_eq!(frame["_meta"]["input_tokens"], 500);
     }
 
@@ -397,7 +411,7 @@ mod turn_usage_frame {
     /// from cache", which is the truthful reading of an impossible report.
     #[test]
     fn clamps_instead_of_underflowing_on_an_impossible_report() {
-        let frame = build_turn_usage_frame(1, 2, &usage(10, 0, 999, 999));
+        let frame = build_turn_usage_frame(1, 2, Some(&usage(10, 0, 999, 999)));
         assert_eq!(frame["_meta"]["input_tokens"], 0);
     }
 
@@ -406,7 +420,7 @@ mod turn_usage_frame {
     /// message.
     #[test]
     fn carries_context_occupancy_and_window_rather_than_a_turn_total() {
-        let frame = build_turn_usage_frame(162_500, 1_000_000, &usage(280, 7_300, 0, 0));
+        let frame = build_turn_usage_frame(162_500, 1_000_000, Some(&usage(280, 7_300, 0, 0)));
         assert_eq!(frame["used"], 162_500);
         assert_eq!(frame["size"], 1_000_000);
     }
@@ -415,7 +429,7 @@ mod turn_usage_frame {
     /// raw count instead of a percentage against a guessed denominator.
     #[test]
     fn passes_an_unknown_window_through_as_zero() {
-        let frame = build_turn_usage_frame(500, 0, &usage(100, 50, 0, 0));
+        let frame = build_turn_usage_frame(500, 0, Some(&usage(100, 50, 0, 0)));
         assert_eq!(frame["size"], 0);
         assert_eq!(frame["used"], 500);
     }

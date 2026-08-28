@@ -389,7 +389,20 @@ impl AionrsAgentManager {
 /// answers "how much of the window is gone", and a per-turn sum would reset with
 /// every message. `size` of 0 is the renderer's own encoding for "window
 /// unknown", which is exactly what a configuration without one resolves to.
-fn build_turn_usage_frame(context_usage: u64, context_window: u64, usage: &TokenUsage) -> Value {
+fn build_turn_usage_frame(context_usage: u64, context_window: u64, usage: Option<&TokenUsage>) -> Value {
+    let Some(usage) = usage else {
+        // No per-turn figures to report: a cancelled or failed turn produced no
+        // `AgentResult`, and a between-turns snapshot has none either. Occupancy
+        // still moved — the tokens were spent — so the headline is sent without
+        // a breakdown rather than withheld entirely. `_meta` is omitted, not
+        // zeroed: the renderer keeps the last breakdown it had, and zeros would
+        // erase it.
+        return serde_json::json!({
+            "used": context_usage,
+            "size": context_window,
+        });
+    };
+
     // Saturating: a provider reporting cache figures larger than its own input
     // total would otherwise underflow into a huge number. Clamping to zero reads
     // as "all of it came from cache", the truthful reading of that report.
@@ -501,7 +514,7 @@ impl IAgentTask for AionrsAgentManager {
                 );
                 // BEFORE the Finish: the relay stops forwarding a turn once it
                 // sees Finish, so a usage frame emitted after it is dropped.
-                self.emit_turn_usage(&engine, &run_result);
+                self.emit_turn_usage(&engine, Some(&run_result));
                 self.runtime.emit_finish(None);
                 Ok(())
             }
@@ -527,11 +540,19 @@ impl IAgentTask for AionrsAgentManager {
                     failure_limit = summary.failure_limit,
                     "feedback.runtime.aionrs_error"
                 );
+                // Occupancy without a breakdown: the turn produced no
+                // `AgentResult`, but the tokens it burned before failing are
+                // gone all the same, and an indicator frozen at the previous
+                // number reads as "that attempt was free".
+                self.emit_turn_usage(&engine, None);
                 let send_error = aionrs_engine_error_to_send_error(&e);
                 self.runtime.emit_error_data(send_error.stream_error().clone());
                 Err(send_error)
             }
             None => {
+                // Cancelled mid-turn. Same reasoning as the error branch: the
+                // work already sent to the provider was paid for.
+                self.emit_turn_usage(&engine, None);
                 self.runtime.emit_finish(None);
                 Ok(())
             }
@@ -577,19 +598,52 @@ impl AionrsAgentManager {
     /// (`cached_read / (cached_read + input)`). Passing the engine's value
     /// through unchanged would double-count the cached tokens and report a hit
     /// rate far below the truth, so the cached parts are subtracted here.
-    fn emit_turn_usage(&self, engine: &AgentEngine, result: &AgentResult) {
+    /// The context snapshot for `GET /api/conversations/:id/usage`.
+    ///
+    /// Without this the dispatch in `agent_task.rs` returned `None` for this
+    /// variant, so the endpoint answered `used: null` for every dream
+    /// conversation — and the renderer's hydrate-from-snapshot path (the one
+    /// that covers a fresh install, a second machine, or a failed write-back)
+    /// had nothing to read. It was one unwritten match arm, not a missing
+    /// persistence layer.
+    ///
+    /// No `_meta`: a snapshot is not a turn, and the last turn's breakdown is
+    /// not retained. The live frame carries the breakdown; this carries the
+    /// headline the indicator needs to render at all.
+    ///
+    /// `try_lock` rather than `lock`: the engine mutex is held for the whole
+    /// duration of a turn, which can be minutes. Blocking an HTTP handler behind
+    /// that to fetch a number the live stream is already delivering would trade
+    /// a missing figure for a hung request.
+    pub fn context_usage_snapshot(&self) -> Option<Value> {
+        let engine = self.engine.try_lock().ok()?;
         let status = engine.context_status();
-        let usage = &result.usage;
+        // Nothing has been counted yet — the conversation has not run a turn.
+        // `None` keeps the endpoint's "no usage" answer rather than reporting a
+        // window with zero used, which would render as a real 0% reading.
+        if status.context_usage == 0 {
+            return None;
+        }
+        Some(build_turn_usage_frame(
+            status.context_usage,
+            status.context_window,
+            None,
+        ))
+    }
+
+    fn emit_turn_usage(&self, engine: &AgentEngine, result: Option<&AgentResult>) {
+        let status = engine.context_status();
+        let usage = result.map(|r| &r.usage);
         let frame = build_turn_usage_frame(status.context_usage, status.context_window, usage);
 
         debug!(
             conversation_id = %self.runtime.conversation_id(),
             context_usage = status.context_usage,
             context_window = status.context_window,
-            input_tokens = usage.input_tokens,
-            output_tokens = usage.output_tokens,
-            cache_read = usage.cache_read_tokens,
-            cache_write = usage.cache_creation_tokens,
+            input_tokens = usage.map(|u| u.input_tokens),
+            output_tokens = usage.map(|u| u.output_tokens),
+            cache_read = usage.map(|u| u.cache_read_tokens),
+            cache_write = usage.map(|u| u.cache_creation_tokens),
             "DreamEngine turn usage reported"
         );
 

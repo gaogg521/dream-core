@@ -485,7 +485,8 @@ impl AgentInstance {
     /// `used` / `size` / `cost` to match the DreamUI wire convention —
     /// `_meta` passes through verbatim.
     ///
-    /// Non-ACP agents return `None`.
+    /// The dream engine reports its context occupancy (no `_meta` — a snapshot
+    /// is not a turn). Remaining variants return `None`.
     pub async fn get_usage(&self) -> Result<Option<serde_json::Value>, AgentError> {
         match self {
             Self::Acp(m) => {
@@ -495,7 +496,7 @@ impl AgentInstance {
                 dream_core_common::normalize_keys_to_snake_case(&mut value);
                 Ok(Some(value))
             }
-            Self::DreamEngine(_) => Ok(None),
+            Self::DreamEngine(m) => Ok(m.context_usage_snapshot()),
             Self::Session(m) => m.get_usage().await,
             #[cfg(any(test, feature = "test-support"))]
             Self::Mock(m) => m.get_usage().await,
