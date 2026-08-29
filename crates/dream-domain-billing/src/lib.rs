@@ -26,5 +26,5 @@ pub use license_key::{LicenseKeyError, LicensePayload, ModuleAccess, verify_lice
 pub use migrate::run_one_billing_migrations;
 pub use models::{CheckoutResultDto, LicenseInfoDto, PlanDto, UsageSummaryDto};
 pub use routes::one_billing_routes;
-pub use service::{BillingProvider, BillingService, ManualBillingProvider};
+pub use service::{BillingProvider, BillingService, ManualBillingProvider, NewLlmCall};
 pub use state::OneBillingRouterState;

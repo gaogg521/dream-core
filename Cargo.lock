@@ -1843,6 +1843,7 @@ dependencies = [
  "dream-domain-devops",
  "dream-domain-employee",
  "dream-domain-enterprise",
+ "dream-domain-memory",
  "dream-domain-org",
  "dream-domain-platform",
  "dream-domain-sso",

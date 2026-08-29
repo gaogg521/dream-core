@@ -157,6 +157,48 @@ pub struct UsageEventPageDto {
     pub total: i64,
 }
 
+/// One `one_llm_calls` row (P2-5 "逐次 LLM Trace") — one MODEL CALL, finer
+/// than the one-row-per-turn `UsageEventDto`: a single turn can contain
+/// several model calls (tool rounds, vision delegates, retries), each with its
+/// own tokens, duration, and possibly its own failure. Like `UsageEventDto`,
+/// this carries no prompt/response content — only counts, timing, and a
+/// failure reason.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmCallDto {
+    pub id: String,
+    pub user_id: String,
+    pub conversation_id: Option<String>,
+    pub model: Option<String>,
+    /// Where the call's shape came from: `acp`, `dream_engine`, `direct_cli`.
+    pub provider: Option<String>,
+    /// The tool round this call belonged to, when it was one.
+    pub tool_name: Option<String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub duration_ms: Option<i64>,
+    /// `null` = the call succeeded; otherwise why it failed.
+    pub error: Option<String>,
+    pub created_at: i64,
+}
+
+/// A page of `LlmCallDto` plus the total row count matching the filter — same
+/// pagination shape as `UsageEventPageDto` so the admin UI reuses one page
+/// component for both granularities.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmCallPageDto {
+    pub calls: Vec<LlmCallDto>,
+    pub total: i64,
+}
+
+/// Confirmation of a retention purge: how many rows the delete removed.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmCallPurgeResultDto {
+    pub deleted: u64,
+}
+
 /// One agent session (E5 "可观测" / 智能体会话), derived purely from
 /// `one_usage_events` grouped by `conversation_id` — no new capture
 /// mechanism, and (same reasoning as `UsageEventDto`) no message content:

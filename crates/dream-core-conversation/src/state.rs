@@ -24,6 +24,27 @@ pub trait UsageRecorder: Send + Sync {
     );
 }
 
+/// One completed model call, as the per-call LLM trace (P2-5) records it.
+/// Where [`UsageRecorder`] folds an attempt into one billed row, the trace
+/// keeps EVERY call — including failed attempts and a tool's delegated
+/// vision calls — because "what did the agent actually do, call by call" is
+/// the question an administrator is asking when they open it.
+pub struct LlmCallTrace {
+    pub model: Option<String>,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    /// `None` = the call succeeded; otherwise the terminal error message.
+    pub error: Option<String>,
+}
+
+/// Hot-path seam for the per-call trace. Same fire-and-forget contract as
+/// [`UsageRecorder`]: implementations spawn their own async work and MUST
+/// NOT block or fail the send path. Wired to one-billing in dream-app;
+/// `None` in personal builds (no trace rows at all).
+pub trait LlmCallTraceRecorder: Send + Sync {
+    fn record_call(&self, user_id: String, conversation_id: String, trace: LlmCallTrace);
+}
+
 /// Why the product refused an action, in a shape the HTTP layer can hand to a
 /// client that wants to say it in the reader's own language.
 ///

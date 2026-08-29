@@ -430,6 +430,15 @@ impl ConversationTurnOrchestrator {
                 meter_attempt(recorder.as_ref(), &input.user_id, &input.conv_id, &outcome);
             }
 
+            // P2-5 per-call trace: same boundary, finer grain — every
+            // attempt (succeeded or not) and every tool delegate lands as
+            // its own row, so an administrator can see retries and failures
+            // the per-turn aggregate folds away.
+            let trace_recorder = self.service.llm_trace_recorder.read().ok().and_then(|g| g.clone());
+            if let Some(recorder) = trace_recorder {
+                trace_attempt(recorder.as_ref(), &input.user_id, &input.conv_id, &outcome);
+            }
+
             if let Some(session_key) = agent.get_session_key() {
                 persist_session_key(
                     self.service.conversation_repo(),
@@ -902,12 +911,70 @@ fn meter_attempt(recorder: &dyn crate::state::UsageRecorder, user_id: &str, conv
     }
 }
 
+/// One trace row for the attempt itself plus one per tool delegate — the
+/// per-call counterpart of [`meter_attempt`]. A failed attempt is still a
+/// row (`error` set): a retry storm is exactly what this trace exists to
+/// expose, and folding failures away would hide it.
+fn trace_attempt(
+    recorder: &dyn crate::state::LlmCallTraceRecorder,
+    user_id: &str,
+    conv_id: &str,
+    outcome: &RelayOutcome,
+) {
+    recorder.record_call(
+        user_id.to_owned(),
+        conv_id.to_owned(),
+        crate::state::LlmCallTrace {
+            model: outcome.model.clone(),
+            input_tokens: outcome.input_tokens,
+            output_tokens: outcome.output_tokens,
+            error: outcome.attempt.terminal_error.as_ref().map(|e| {
+                if e.message.is_empty() {
+                    "agent stream ended with an error".to_owned()
+                } else {
+                    e.message.clone()
+                }
+            }),
+        },
+    );
+    for delegate in &outcome.delegate_usage {
+        recorder.record_call(
+            user_id.to_owned(),
+            conv_id.to_owned(),
+            crate::state::LlmCallTrace {
+                model: Some(delegate.model.clone()),
+                input_tokens: Some(delegate.input_tokens),
+                output_tokens: Some(delegate.output_tokens),
+                error: None,
+            },
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use dream_core_ai_agent::protocol::events::DelegateUsageEventData;
 
     use crate::stream_relay::RelayTerminal;
+
+    /// Captures what the per-call trace plane would have been told (P2-5).
+    #[derive(Default)]
+    struct RecordingLlmTraceRecorder(
+        std::sync::Mutex<Vec<(String, Option<String>, Option<i64>, Option<i64>, Option<String>)>>,
+    );
+
+    impl crate::state::LlmCallTraceRecorder for RecordingLlmTraceRecorder {
+        fn record_call(&self, user_id: String, _conversation_id: String, trace: crate::state::LlmCallTrace) {
+            self.0.lock().unwrap().push((
+                user_id,
+                trace.model,
+                trace.input_tokens,
+                trace.output_tokens,
+                trace.error,
+            ));
+        }
+    }
 
     /// Captures what the billing plane would have been told.
     #[derive(Default)]
@@ -1125,5 +1192,48 @@ mod tests {
         assert!(!terminal_is_auth_failure(&error_outcome(
             AgentErrorCode::UserLlmProviderBillingRequired
         )));
+    }
+    #[test]
+    fn a_failed_attempt_is_traced_with_its_error_not_folded_away() {
+        let recorder = RecordingLlmTraceRecorder::default();
+        let mut outcome = finish_outcome(true);
+        outcome.attempt.terminal_error = Some(dream_core_ai_agent::protocol::events::ErrorEventData::legacy(
+            "upstream 429",
+            None,
+        ));
+        outcome.model = Some("deepseek-v4-flash".into());
+        outcome.input_tokens = Some(50);
+        outcome.output_tokens = Some(0);
+
+        trace_attempt(&recorder, "user-1", "conv-1", &outcome);
+
+        let rows = recorder.0.lock().unwrap().clone();
+        assert_eq!(rows.len(), 1, "the failure is one trace row, not zero: {rows:?}");
+        assert_eq!(rows[0].1.as_deref(), Some("deepseek-v4-flash"));
+        assert_eq!(rows[0].4.as_deref(), Some("upstream 429"));
+    }
+
+    #[test]
+    fn a_delegated_model_call_is_traced_as_its_own_row_too() {
+        let recorder = RecordingLlmTraceRecorder::default();
+        let outcome = RelayOutcome {
+            model: Some("deepseek-v4-flash".into()),
+            input_tokens: Some(900),
+            output_tokens: Some(80),
+            delegate_usage: vec![DelegateUsageEventData {
+                model: "kimi-k2-6".into(),
+                input_tokens: 1200,
+                output_tokens: 40,
+            }],
+            ..finish_outcome(true)
+        };
+
+        trace_attempt(&recorder, "user-1", "conv-1", &outcome);
+
+        let rows = recorder.0.lock().unwrap().clone();
+        assert_eq!(rows.len(), 2, "attempt + delegate: {rows:?}");
+        assert_eq!(rows[0].1.as_deref(), Some("deepseek-v4-flash"));
+        assert_eq!(rows[1].1.as_deref(), Some("kimi-k2-6"));
+        assert_eq!(rows[1].2, Some(1200));
     }
 }

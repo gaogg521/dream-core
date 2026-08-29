@@ -15,10 +15,10 @@ use dream_core_common::now_ms;
 
 use crate::error::BillingError;
 use crate::models::{
-    AgentSessionPageDto, CheckoutResultDto, ConversationCostDto, DepartmentBudgetDto, LicenseInfoDto, MediaAssetDto,
-    MediaLedgerSettingsDto, PlanDto, UsageEventPageDto, UsageSummaryDto,
+    AgentSessionPageDto, CheckoutResultDto, ConversationCostDto, DepartmentBudgetDto, LicenseInfoDto, LlmCallPageDto,
+    LlmCallPurgeResultDto, MediaAssetDto, MediaLedgerSettingsDto, PlanDto, UsageEventPageDto, UsageSummaryDto,
 };
-use crate::service::{MediaAssetFilters, MediaUsage};
+use crate::service::{LLM_CALL_RETENTION_DAYS, MediaAssetFilters, MediaUsage};
 use crate::state::OneBillingRouterState;
 
 pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
@@ -26,6 +26,8 @@ pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
         .route("/api/one/billing/plan", get(billing_plan))
         .route("/api/one/billing/usage", get(billing_usage))
         .route("/api/one/billing/usage-events", get(billing_usage_events))
+        .route("/api/one/billing/llm-calls", get(billing_llm_calls))
+        .route("/api/one/billing/llm-calls/purge", post(billing_purge_llm_calls))
         .route("/api/one/billing/sessions", get(billing_sessions))
         .route("/api/one/billing/conversation-cost", get(billing_conversation_cost))
         .route("/api/one/billing/tier", put(billing_set_tier))
@@ -272,6 +274,84 @@ async fn billing_usage_events(
             .list_usage_events(&eid, since, q.user_id.as_deref(), q.model.as_deref(), q.limit, q.offset)
             .await?,
     )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LlmCallsQuery {
+    #[serde(default)]
+    since: Option<i64>,
+    #[serde(default)]
+    user_id: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default = "default_page_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+}
+
+/// P2-5 "逐次 LLM Trace": one row per MODEL CALL (`one_llm_calls`) — finer
+/// than the per-turn `usage-events` view above, because a single turn can
+/// contain several model calls (tool rounds, vision delegates, retries), each
+/// with its own tokens, duration, and possibly its own failure. Admin-only,
+/// same gate as `billing_usage_events`.
+async fn billing_llm_calls(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(q): Query<LlmCallsQuery>,
+) -> Result<Json<ApiResponse<LlmCallPageDto>>, BillingError> {
+    if !state.service.is_billing_admin(&user.id).await? {
+        return Err(BillingError::Forbidden("llm call traces are admin-only".into()));
+    }
+    let eid = state
+        .service
+        .resolve_enterprise_id(&user.id)
+        .await?
+        .ok_or(BillingError::EnterpriseNotFound)?;
+    const THIRTY_DAYS_MS: i64 = 30 * 24 * 3600 * 1000;
+    let since = q.since.unwrap_or_else(|| now_ms() - THIRTY_DAYS_MS);
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .list_llm_calls(&eid, since, q.user_id.as_deref(), q.model.as_deref(), q.limit, q.offset)
+            .await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PurgeLlmCallsBody {
+    /// Delete every trace row created before this epoch-ms timestamp. Omitted
+    /// → the default retention window (`LLM_CALL_RETENTION_DAYS`, 30 days).
+    /// An explicit older cutoff is how a scheduled job or an admin reclaiming
+    /// disk after a burst reuses the same endpoint.
+    #[serde(default)]
+    before_ms: Option<i64>,
+}
+
+/// P2-5 retention: delete this company's per-call trace rows older than the
+/// window. Admin-only — a purge destroys diagnostic history, which is exactly
+/// the kind of action that must not be invocable by a plain member.
+async fn billing_purge_llm_calls(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<PurgeLlmCallsBody>,
+) -> Result<Json<ApiResponse<LlmCallPurgeResultDto>>, BillingError> {
+    if !state.service.is_billing_admin(&user.id).await? {
+        return Err(BillingError::Forbidden("llm call traces are admin-only".into()));
+    }
+    let eid = state
+        .service
+        .resolve_enterprise_id(&user.id)
+        .await?
+        .ok_or(BillingError::EnterpriseNotFound)?;
+    let before = body
+        .before_ms
+        .unwrap_or_else(|| now_ms() - LLM_CALL_RETENTION_DAYS * 24 * 3600 * 1000);
+    let deleted = state.service.purge_llm_calls_older_than(&eid, before).await?;
+    tracing::info!(enterprise_id = %eid, deleted, "llm call trace purged");
+    Ok(Json(ApiResponse::ok(LlmCallPurgeResultDto { deleted })))
 }
 
 #[derive(Deserialize)]

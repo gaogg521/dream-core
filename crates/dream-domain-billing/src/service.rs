@@ -17,7 +17,8 @@ use sqlx::SqlitePool;
 use crate::error::BillingError;
 use crate::models::{
     AgentSessionDto, AgentSessionPageDto, CheckoutResultDto, DepartmentBudgetDto, EntitlementDto, LicenseInfoDto,
-    MediaAssetDto, PlanDto, UsageBucketDto, UsageEventDto, UsageEventPageDto, UsageSummaryDto,
+    LlmCallDto, LlmCallPageDto, MediaAssetDto, PlanDto, UsageBucketDto, UsageEventDto, UsageEventPageDto,
+    UsageSummaryDto,
 };
 
 /// Pluggable payment backend. The default `ManualBillingProvider` is a stub
@@ -46,6 +47,49 @@ impl BillingProvider for ManualBillingProvider {
         "manual"
     }
 }
+
+/// One completed MODEL CALL, as reported for the per-call LLM trace (P2-5).
+/// Finer than one agent turn: a single turn can contain several model calls
+/// (tool rounds, vision delegates, error retries), each billed and timed on
+/// its own.
+///
+/// A struct rather than a positional argument list, same reason as
+/// [`MediaUsage`]: nine mostly-primitive values, several of them `Option`al,
+/// so a mis-ordered call site would compile and silently mis-attribute the
+/// trace.
+///
+/// Tenancy is deliberately NOT a field: the hot path (ai-agent) knows only the
+/// `user_id` — resolving the enterprise (and dropping personal users) is
+/// billing's job, done inside [`BillingService::record_llm_call`]. Same split
+/// as `record_media_asset`. `id` and `created_at` are stamped here too.
+#[derive(Debug, Clone)]
+pub struct NewLlmCall {
+    pub user_id: String,
+    pub conversation_id: Option<String>,
+    pub model: Option<String>,
+    /// Where the call's shape came from: `acp` / `dream_engine` / `direct_cli`.
+    pub provider: Option<String>,
+    /// The tool round this call belonged to, when it was one.
+    pub tool_name: Option<String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub duration_ms: Option<i64>,
+    /// `None` = the call succeeded; otherwise the failure reason. Failed calls
+    /// are recorded like successful ones — a retry storm is exactly what this
+    /// trace exists to expose.
+    pub error: Option<String>,
+}
+
+/// How long per-call trace rows are kept, in days. Matches the 30-day default
+/// window every other billing dashboard query uses (`THIRTY_DAYS_MS` in the
+/// routes, `BUDGET_WINDOW_MS` here): an admin debugging "what happened last
+/// week" is the use case, and anything older is recoverable neither from the
+/// per-turn aggregate nor from the provider console, but the raw rows are
+/// high-volume enough that an unbounded table would grow into the deployment's
+/// largest table for no operational benefit. Purge is explicit
+/// (`purge_llm_calls_older_than` / the admin endpoint), not a background
+/// sweeper — scheduling is the wiring layer's decision.
+pub const LLM_CALL_RETENTION_DAYS: i64 = 30;
 
 #[derive(Clone)]
 pub struct BillingService {
@@ -1023,6 +1067,10 @@ impl BillingService {
             .bind(enterprise_id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("DELETE FROM one_llm_calls WHERE enterprise_id = ?")
+            .bind(enterprise_id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM one_department_budgets WHERE enterprise_id = ?")
             .bind(enterprise_id)
             .execute(&mut *tx)
@@ -1217,6 +1265,175 @@ impl BillingService {
             .collect();
 
         Ok(UsageEventPageDto { events, total })
+    }
+
+    /// P2-5: record one completed MODEL CALL in the per-call trace
+    /// (`one_llm_calls`). See [`NewLlmCall`] for what one row means; the hot
+    /// path reaches this through dream-core-conversation's
+    /// `LlmCallTraceRecorder` seam (same layering as `UsageRecorder`, which
+    /// this crate never saw directly either — dream-app adapts between
+    /// them).
+    ///
+    /// Enterprise is resolved from the user, NOT passed in — same split as
+    /// `record_media_asset`, so the hot path never has to know about tenancy.
+    /// A personal / no-company user records NOTHING (no NULL-enterprise rows
+    /// either, unlike `record_turn`): this is a high-volume diagnostic surface
+    /// that only exists for the governed/admin-view plane, and `None` = don't
+    /// record is the standing red line. No cost is estimated here — pricing
+    /// and spend caps stay on `one_usage_events`; this table is observability
+    /// only.
+    pub async fn record_llm_call(&self, call: NewLlmCall) -> Result<(), BillingError> {
+        let NewLlmCall {
+            user_id,
+            conversation_id,
+            model,
+            provider,
+            tool_name,
+            input_tokens,
+            output_tokens,
+            duration_ms,
+            error,
+        } = call;
+        let Some(enterprise_id) = self.resolve_enterprise_id(&user_id).await? else {
+            return Ok(());
+        };
+        sqlx::query(
+            "INSERT INTO one_llm_calls \
+                (id, enterprise_id, user_id, conversation_id, model, provider, tool_name, \
+                 input_tokens, output_tokens, duration_ms, error, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(generate_prefixed_id("llmcall"))
+        .bind(&enterprise_id)
+        .bind(&user_id)
+        .bind(conversation_id)
+        .bind(model)
+        .bind(provider)
+        .bind(tool_name)
+        .bind(input_tokens)
+        .bind(output_tokens)
+        .bind(duration_ms)
+        .bind(error)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// P2-5: one page of raw `one_llm_calls` rows — the per-MODEL-CALL view
+    /// one level finer than `list_usage_events`. Filter, pagination, and
+    /// clamping mirror `list_usage_events` exactly (limit clamped to [1, 200],
+    /// `total` covers the whole filtered set) so the admin UI reuses the same
+    /// page shape for both granularities. Admin-only at the route; failed
+    /// calls (`error IS NOT NULL`) are listed exactly like successful ones.
+    pub async fn list_llm_calls(
+        &self,
+        enterprise_id: &str,
+        since_ms: i64,
+        user_id: Option<&str>,
+        model: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<LlmCallPageDto, BillingError> {
+        let limit = limit.clamp(1, 200);
+        let offset = offset.max(0);
+
+        let mut where_sql = "WHERE enterprise_id = ? AND created_at >= ?".to_owned();
+        if user_id.is_some() {
+            where_sql.push_str(" AND user_id = ?");
+        }
+        if model.is_some() {
+            where_sql.push_str(" AND model = ?");
+        }
+
+        let count_sql = format!("SELECT COUNT(*) FROM one_llm_calls {where_sql}");
+        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql)
+            .bind(enterprise_id)
+            .bind(since_ms);
+        if let Some(u) = user_id {
+            count_query = count_query.bind(u);
+        }
+        if let Some(m) = model {
+            count_query = count_query.bind(m);
+        }
+        let total = count_query.fetch_one(&self.pool).await?;
+
+        let list_sql = format!(
+            "SELECT id, user_id, conversation_id, model, provider, tool_name, input_tokens, output_tokens, \
+                    duration_ms, error, created_at \
+             FROM one_llm_calls {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        );
+        type Row = (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+            Option<i64>,
+            Option<String>,
+            i64,
+        );
+        let mut list_query = sqlx::query_as::<_, Row>(&list_sql).bind(enterprise_id).bind(since_ms);
+        if let Some(u) = user_id {
+            list_query = list_query.bind(u);
+        }
+        if let Some(m) = model {
+            list_query = list_query.bind(m);
+        }
+        let rows = list_query.bind(limit).bind(offset).fetch_all(&self.pool).await?;
+
+        let calls = rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    user_id,
+                    conversation_id,
+                    model,
+                    provider,
+                    tool_name,
+                    input_tokens,
+                    output_tokens,
+                    duration_ms,
+                    error,
+                    created_at,
+                )| {
+                    LlmCallDto {
+                        id,
+                        user_id,
+                        conversation_id,
+                        model,
+                        provider,
+                        tool_name,
+                        input_tokens,
+                        output_tokens,
+                        duration_ms,
+                        error,
+                        created_at,
+                    }
+                },
+            )
+            .collect();
+
+        Ok(LlmCallPageDto { calls, total })
+    }
+
+    /// P2-5 retention: delete every trace row for `enterprise_id` created
+    /// before `before_ms` (epoch ms), returning how many were removed.
+    /// Enterprise-scoped on purpose — a purge of one company must never touch
+    /// another's history in the same table. Callers wanting the default window
+    /// pass `now_ms() - LLM_CALL_RETENTION_DAYS * 24 * 3600 * 1000` (the admin
+    /// endpoint does this when `beforeMs` is omitted).
+    pub async fn purge_llm_calls_older_than(&self, enterprise_id: &str, before_ms: i64) -> Result<u64, BillingError> {
+        let result = sqlx::query("DELETE FROM one_llm_calls WHERE enterprise_id = ? AND created_at < ?")
+            .bind(enterprise_id)
+            .bind(before_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
     }
 
     /// One page of agent sessions (E5 "可观测" / 智能体会话), derived by
@@ -1414,6 +1631,12 @@ mod tests {
             .execute(&svc.pool)
             .await
             .unwrap();
+            sqlx::query("INSERT INTO one_llm_calls (id, enterprise_id, user_id, created_at) VALUES (?, ?, 'u1', 0)")
+                .bind(format!("llmcall-{ent}"))
+                .bind(ent)
+                .execute(&svc.pool)
+                .await
+                .unwrap();
         }
 
         svc.delete_enterprise_billing_data("ent1").await.unwrap();
@@ -1421,6 +1644,7 @@ mod tests {
         for (table, column) in [
             ("one_enterprise_license", "enterprise_id"),
             ("one_usage_events", "enterprise_id"),
+            ("one_llm_calls", "enterprise_id"),
             ("one_department_budgets", "enterprise_id"),
             ("one_media_assets", "enterprise_id"),
             ("one_media_ledger_settings", "enterprise_id"),
@@ -2618,5 +2842,198 @@ mod tests {
         let info = svc.active_license("ent1").await.unwrap().unwrap();
         assert_eq!(info.tenant_cap, None);
         assert!(info.modules.is_empty());
+    }
+
+    // ---- P2-5: per-model-call LLM trace (`one_llm_calls`) ----
+
+    /// Map one user onto a company, so `record_llm_call`'s tenancy resolution
+    /// finds them (same fixture pattern the usage-events tests use).
+    async fn seed_llm_member(svc: &BillingService, enterprise_id: &str, user_id: &str) {
+        sqlx::query(
+            "INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) \
+             VALUES (?, ?, 'member', 0, 0)",
+        )
+        .bind(user_id)
+        .bind(enterprise_id)
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+    }
+
+    /// A successful call with the common fields filled; tests override via
+    /// struct update on the returned value where they care.
+    fn llm_call(user_id: &str, model: &str) -> NewLlmCall {
+        NewLlmCall {
+            user_id: user_id.to_owned(),
+            conversation_id: Some("c1".to_owned()),
+            model: Some(model.to_owned()),
+            provider: Some("acp".to_owned()),
+            tool_name: None,
+            input_tokens: 10,
+            output_tokens: 20,
+            duration_ms: Some(120),
+            error: None,
+        }
+    }
+
+    /// Record → list round trip: every column survives, newest first, and the
+    /// user / model / since filters each narrow the page on their own.
+    #[tokio::test]
+    async fn llm_call_roundtrip_with_user_model_and_since_filters() {
+        let svc = service().await;
+        seed_llm_member(&svc, "ent1", "alice").await;
+        svc.record_llm_call(llm_call("alice", "claude-opus-4-8")).await.unwrap();
+        svc.record_llm_call(llm_call("alice", "claude-opus-4-8")).await.unwrap();
+        svc.record_llm_call(llm_call("alice", "gpt-4")).await.unwrap();
+
+        let all = svc.list_llm_calls("ent1", 0, None, None, 50, 0).await.unwrap();
+        assert_eq!(all.total, 3);
+        assert_eq!(all.calls.len(), 3);
+        let first = &all.calls[0];
+        assert_eq!(first.model.as_deref(), Some("gpt-4"), "newest first");
+        assert_eq!(first.user_id, "alice");
+        assert_eq!(first.conversation_id.as_deref(), Some("c1"));
+        assert_eq!(first.provider.as_deref(), Some("acp"));
+        assert_eq!((first.input_tokens, first.output_tokens), (10, 20));
+        assert_eq!(first.duration_ms, Some(120));
+        assert!(first.error.is_none());
+
+        let by_model = svc.list_llm_calls("ent1", 0, None, Some("gpt-4"), 50, 0).await.unwrap();
+        assert_eq!(by_model.total, 1);
+        assert_eq!(by_model.calls[0].model.as_deref(), Some("gpt-4"));
+
+        let by_user = svc.list_llm_calls("ent1", 0, Some("alice"), None, 50, 0).await.unwrap();
+        assert_eq!(by_user.total, 3);
+
+        // `since` excludes everything stamped before it: push one row into the
+        // far past and confirm it drops out of a "recent" query. The cutoff
+        // backs off a minute so the two just-written rows (stamped at record
+        // time, a few ms before now) are safely inside the window.
+        sqlx::query("UPDATE one_llm_calls SET created_at = 1 WHERE model = 'gpt-4'")
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+        let recent = svc
+            .list_llm_calls("ent1", dream_core_common::now_ms() - 60_000, None, None, 50, 0)
+            .await
+            .unwrap();
+        assert_eq!(recent.total, 2, "the pre-since row must be excluded");
+    }
+
+    /// Same pagination contract as `list_usage_events`: `total` reflects the
+    /// whole filtered set, pages don't overlap.
+    #[tokio::test]
+    async fn llm_calls_paginate_like_usage_events() {
+        let svc = service().await;
+        seed_llm_member(&svc, "ent1", "alice").await;
+        for _ in 0..4 {
+            svc.record_llm_call(llm_call("alice", "claude-opus-4-8")).await.unwrap();
+        }
+
+        let page1 = svc.list_llm_calls("ent1", 0, None, None, 2, 0).await.unwrap();
+        let page2 = svc.list_llm_calls("ent1", 0, None, None, 2, 2).await.unwrap();
+        assert_eq!(page1.total, 4);
+        assert_eq!(page1.calls.len(), 2);
+        assert_eq!(page2.calls.len(), 2);
+        let page1_ids: std::collections::HashSet<_> = page1.calls.iter().map(|c| c.id.clone()).collect();
+        let page2_ids: std::collections::HashSet<_> = page2.calls.iter().map(|c| c.id.clone()).collect();
+        assert!(page1_ids.is_disjoint(&page2_ids), "pages must not overlap");
+    }
+
+    /// Retention purge is enterprise-scoped and removes only rows strictly
+    /// before the cutoff, reporting how many it deleted.
+    #[tokio::test]
+    async fn purge_llm_calls_removes_only_rows_before_the_window() {
+        let svc = service().await;
+        seed_llm_member(&svc, "ent1", "alice").await;
+        seed_llm_member(&svc, "ent2", "bob").await;
+        svc.record_llm_call(llm_call("alice", "claude-opus-4-8")).await.unwrap();
+        svc.record_llm_call(llm_call("alice", "claude-opus-4-8")).await.unwrap();
+        svc.record_llm_call(llm_call("bob", "claude-opus-4-8")).await.unwrap();
+
+        let now = dream_core_common::now_ms();
+        // Age deterministically one ent1 row (its oldest) and ent2's only row,
+        // so the purge has a stale row to find in each tenant.
+        for ent in ["ent1", "ent2"] {
+            sqlx::query(
+                "UPDATE one_llm_calls SET created_at = 1 \
+                 WHERE id = (SELECT id FROM one_llm_calls WHERE enterprise_id = ? ORDER BY created_at LIMIT 1)",
+            )
+            .bind(ent)
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+        }
+
+        // Default-window cutoff — exactly what the endpoint computes when
+        // `beforeMs` is omitted.
+        let cutoff = now - LLM_CALL_RETENTION_DAYS * 24 * 3600 * 1000;
+        let deleted = svc.purge_llm_calls_older_than("ent1", cutoff).await.unwrap();
+        assert_eq!(deleted, 1, "exactly ent1's one stale row");
+
+        let stale_ent1: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM one_llm_calls WHERE enterprise_id = 'ent1' AND created_at = 1")
+                .fetch_one(&svc.pool)
+                .await
+                .unwrap();
+        assert_eq!(stale_ent1, 0);
+        // The fresh ent1 row survives the purge.
+        let fresh_ent1: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_llm_calls WHERE enterprise_id = 'ent1'")
+            .fetch_one(&svc.pool)
+            .await
+            .unwrap();
+        assert_eq!(fresh_ent1, 1);
+        // ent2's stale row is a different tenant's history — untouched.
+        let ent2_left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_llm_calls WHERE enterprise_id = 'ent2'")
+            .fetch_one(&svc.pool)
+            .await
+            .unwrap();
+        assert_eq!(ent2_left, 1, "a purge of ent1 must never touch ent2");
+    }
+
+    /// Failed calls (error non-NULL) are first-class rows — a retry storm is
+    /// exactly what this trace exists to expose, so they must list like
+    /// successful ones, carrying the reason and their own duration.
+    #[tokio::test]
+    async fn failed_llm_calls_are_queryable_like_successful_ones() {
+        let svc = service().await;
+        seed_llm_member(&svc, "ent1", "alice").await;
+        svc.record_llm_call(llm_call("alice", "claude-opus-4-8")).await.unwrap();
+        svc.record_llm_call(NewLlmCall {
+            error: Some("429 rate limited".to_owned()),
+            duration_ms: Some(35),
+            input_tokens: 0,
+            output_tokens: 0,
+            ..llm_call("alice", "claude-opus-4-8")
+        })
+        .await
+        .unwrap();
+
+        let page = svc.list_llm_calls("ent1", 0, None, None, 50, 0).await.unwrap();
+        assert_eq!(page.total, 2, "the failed call is listed beside the good one");
+        let failed = &page.calls[0];
+        assert_eq!(failed.error.as_deref(), Some("429 rate limited"));
+        assert_eq!(failed.duration_ms, Some(35));
+        assert_eq!(failed.input_tokens, 0, "a failed call spent no output tokens");
+        // And the success filter direction: the good row is still clean.
+        assert!(page.calls[1].error.is_none());
+    }
+
+    /// Red line: a personal / no-company user records NOTHING. Unlike
+    /// `one_usage_events` (which keeps NULL-enterprise rows for personal
+    /// users), the per-call trace is enterprise-scoped NOT NULL by design —
+    /// it is a governed-deployment diagnostic, and there is no admin to show
+    /// it to on a personal install.
+    #[tokio::test]
+    async fn llm_calls_are_not_recorded_for_personal_users() {
+        let svc = service().await;
+        svc.record_llm_call(llm_call("nobody", "claude-opus-4-8"))
+            .await
+            .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_llm_calls")
+            .fetch_one(&svc.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
     }
 }

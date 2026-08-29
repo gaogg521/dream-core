@@ -359,6 +359,13 @@ pub struct ConversationService {
     /// field's doc comment for the split.
     pub(crate) send_gate: Arc<RwLock<Option<Arc<dyn crate::state::SendGate>>>>,
 
+    /// Optional per-call LLM trace recorder (P2-5). Same
+    /// `RwLock`-wrapped-clone-reaching shape as `usage_recorder` above, for
+    /// the same reason — but NOT the same data: one row per MODEL CALL
+    /// (attempts, retries, tool delegates, failures), not one per turn.
+    /// See [`crate::state::LlmCallTraceRecorder`].
+    pub(crate) llm_trace_recorder: Arc<RwLock<Option<Arc<dyn crate::state::LlmCallTraceRecorder>>>>,
+
     /// One background-stream watcher per LIVE Session instance (keyed by
     /// conversation id; value remembers the instance pointer so a rebuilt
     /// instance gets a fresh watcher). See `background_stream.rs` for why:
@@ -442,6 +449,7 @@ impl ConversationService {
             runtime_token_service: None,
             usage_recorder: Arc::new(RwLock::new(None)),
             send_gate: Arc::new(RwLock::new(None)),
+            llm_trace_recorder: Arc::new(RwLock::new(None)),
             background_watchers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
 
             conversation_repo,
@@ -470,6 +478,15 @@ impl ConversationService {
     /// this service — see the field's own doc comment for why.
     pub fn with_usage_recorder(&self, recorder: Arc<dyn crate::state::UsageRecorder>) {
         if let Ok(mut guard) = self.usage_recorder.write() {
+            *guard = Some(recorder);
+        }
+    }
+
+    /// Attach a per-call LLM trace recorder (one-billing; P2-5). Reaches
+    /// every existing clone of this service — see the field's own doc
+    /// comment.
+    pub fn with_llm_trace_recorder(&self, recorder: Arc<dyn crate::state::LlmCallTraceRecorder>) {
+        if let Ok(mut guard) = self.llm_trace_recorder.write() {
             *guard = Some(recorder);
         }
     }

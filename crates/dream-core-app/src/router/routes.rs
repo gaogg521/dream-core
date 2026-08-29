@@ -968,6 +968,39 @@ impl dream_core_ai_agent::ModelAllowlistGate for BillingModelAllowlistGate {
     }
 }
 
+/// The billing-plane implementation of conversation's per-call trace seam
+/// (P2-5): every model call the turn orchestrator relays lands in
+/// `one_llm_calls`. Fire-and-forget, same as `BillingUsageRecorder` above —
+/// a trace failure is logged, never propagated; the turn must not fail
+/// because observability could not write a row.
+#[cfg(feature = "enterprise")]
+struct BillingLlmCallTrace(std::sync::Arc<dream_domain_billing::BillingService>);
+
+#[cfg(feature = "enterprise")]
+impl dream_core_conversation::LlmCallTraceRecorder for BillingLlmCallTrace {
+    fn record_call(&self, user_id: String, conversation_id: String, trace: dream_core_conversation::LlmCallTrace) {
+        let service = self.0.clone();
+        tokio::spawn(async move {
+            let call = dream_domain_billing::NewLlmCall {
+                user_id,
+                conversation_id: Some(conversation_id),
+                model: trace.model,
+                // The relay path is backend-agnostic; attributing a provider
+                // shape would be a guess, so the column stays unset here.
+                provider: None,
+                tool_name: None,
+                input_tokens: trace.input_tokens.unwrap_or(0),
+                output_tokens: trace.output_tokens.unwrap_or(0),
+                duration_ms: None,
+                error: trace.error,
+            };
+            if let Err(e) = service.record_llm_call(call).await {
+                tracing::warn!(error = %e, "failed to record llm call trace row");
+            }
+        });
+    }
+}
+
 /// Adapts `one_security_policy`'s `destructive_commands_blocked` +
 /// `blocked_command_patterns`, `external_network_denied_by_default`, and
 /// `terminal_tools_require_approval` to `dream-core-ai-agent`'s
@@ -2268,10 +2301,19 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // (HTTP routes, cron, team) needs to see the same wiring, not just
     // whichever local variable this chain happens to run through.
     #[cfg(feature = "enterprise")]
-    states
-        .conversation
-        .service
-        .with_usage_recorder(std::sync::Arc::new(BillingUsageRecorder(one_billing_service.clone())));
+    {
+        states
+            .conversation
+            .service
+            .with_usage_recorder(std::sync::Arc::new(BillingUsageRecorder(one_billing_service.clone())));
+        // P2-5 per-call trace, same slot-and-adapter shape as the recorder
+        // above — a separate setter because `with_usage_recorder` (like every
+        // interior-mutability setter here) returns `()`, not the service.
+        states
+            .conversation
+            .service
+            .with_llm_trace_recorder(std::sync::Arc::new(BillingLlmCallTrace(one_billing_service.clone())));
+    }
 
     // P1-2 send policy gate (budget/rate; T3), same reasoning and the same
     // interior-mutability setter as `with_usage_recorder` right above: this

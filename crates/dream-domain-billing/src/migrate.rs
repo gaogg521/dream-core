@@ -31,6 +31,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "billing_006_license_quotas",
         include_str!("../migrations/billing_006_license_quotas.sql"),
     ),
+    (
+        "billing_007_llm_calls",
+        include_str!("../migrations/billing_007_llm_calls.sql"),
+    ),
 ];
 
 /// Run all pending one-billing migrations. Idempotent; call once at startup
@@ -80,7 +84,7 @@ pub(crate) mod tests {
         run_one_billing_migrations(db.pool()).await.unwrap();
         run_one_billing_migrations(db.pool()).await.unwrap();
 
-        for table in ["one_enterprise_license", "one_usage_events"] {
+        for table in ["one_enterprise_license", "one_usage_events", "one_llm_calls"] {
             let exists: bool =
                 sqlx::query_scalar("SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?")
                     .bind(table)
