@@ -348,6 +348,17 @@ pub struct ConversationService {
     /// whichever local variable the call happens to chain off of.
     pub(crate) usage_recorder: Arc<RwLock<Option<Arc<dyn crate::state::UsageRecorder>>>>,
 
+    /// Optional pre-send policy gate (P1-2 budget/rate; T3). Same
+    /// `RwLock`-wrapped-clone-reaching shape as `usage_recorder` right above,
+    /// for the same reason: `send_message`/`run_agent_turn` are called from
+    /// HTTP routes, IM channels, and cron, each holding their own clone of
+    /// this service, so wiring this once via `with_send_gate` must reach all
+    /// of them. This is deliberately a SEPARATE slot from
+    /// `ConversationRouterState::send_gate` (`state.rs`), which still only
+    /// covers the HTTP-only `check_model` (model-switch) path — see that
+    /// field's doc comment for the split.
+    pub(crate) send_gate: Arc<RwLock<Option<Arc<dyn crate::state::SendGate>>>>,
+
     /// One background-stream watcher per LIVE Session instance (keyed by
     /// conversation id; value remembers the instance pointer so a rebuilt
     /// instance gets a fresh watcher). See `background_stream.rs` for why:
@@ -430,6 +441,7 @@ impl ConversationService {
             runtime_base_url: None,
             runtime_token_service: None,
             usage_recorder: Arc::new(RwLock::new(None)),
+            send_gate: Arc::new(RwLock::new(None)),
             background_watchers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
 
             conversation_repo,
@@ -459,6 +471,14 @@ impl ConversationService {
     pub fn with_usage_recorder(&self, recorder: Arc<dyn crate::state::UsageRecorder>) {
         if let Ok(mut guard) = self.usage_recorder.write() {
             *guard = Some(recorder);
+        }
+    }
+
+    /// Attach a pre-send policy gate (one-billing; T3). Reaches every
+    /// existing clone of this service — see the field's own doc comment.
+    pub fn with_send_gate(&self, gate: Arc<dyn crate::state::SendGate>) {
+        if let Ok(mut guard) = self.send_gate.write() {
+            *guard = Some(gate);
         }
     }
 
@@ -3868,6 +3888,25 @@ impl ConversationService {
                 reason: "Message content must not be empty".into(),
             });
         }
+
+        // T3: budget/rate policy gate, checked here so it covers every caller
+        // of this method — the HTTP send route AND the IM-channel send path
+        // (`dream_core_channel::MessageService::send_to_agent`), which used to
+        // bypass it entirely by calling this method directly. `model: None`
+        // matches the HTTP route's own call exactly — the model isn't known
+        // at generic-send time. `None` gate (personal edition, or no company)
+        // skips the check, same as today.
+        let gate = self.send_gate.read().ok().and_then(|g| g.clone());
+        if let Some(gate) = gate
+            && let Err(denial) = gate.check_send(user_id, None).await
+        {
+            return Err(ConversationError::PolicyDenied {
+                code: denial.code,
+                message: denial.message,
+                details: denial.details,
+            });
+        }
+
         let send_started_at = now_ms();
 
         // Resolve wire refs to absolute paths up front: a bad project ref must
@@ -4090,6 +4129,21 @@ impl ConversationService {
         if request.content.trim().is_empty() {
             return Err(ConversationError::BadRequest {
                 reason: "Agent turn content must not be empty".into(),
+            });
+        }
+
+        // T3: same budget/rate policy gate as `send_message` — this is the
+        // path cron jobs call (`dream_core_cron::executor`), which used to
+        // bypass the gate entirely. See `send_message`'s identical check for
+        // the full rationale.
+        let gate = self.send_gate.read().ok().and_then(|g| g.clone());
+        if let Some(gate) = gate
+            && let Err(denial) = gate.check_send(&request.user_id, None).await
+        {
+            return Err(ConversationError::PolicyDenied {
+                code: denial.code,
+                message: denial.message,
+                details: denial.details,
             });
         }
 

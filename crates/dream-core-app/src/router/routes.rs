@@ -2087,6 +2087,25 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .service
         .with_usage_recorder(std::sync::Arc::new(BillingUsageRecorder(one_billing_service.clone())));
 
+    // P1-2 send policy gate (budget/rate; T3), same reasoning and the same
+    // interior-mutability setter as `with_usage_recorder` right above: this
+    // must reach every clone of the service, including the ones cron and the
+    // IM-channel message service hold, not just whichever router mount this
+    // local variable chains through. No gate in the personal edition — `None`
+    // skips the check entirely (see `ConversationService::send_message`),
+    // which is the pre-billing path.
+    #[cfg(feature = "enterprise")]
+    states
+        .conversation
+        .service
+        .with_send_gate(std::sync::Arc::new(EnterpriseSendGate {
+            billing: BillingSendGate {
+                billing: one_billing_service.clone(),
+                grace: policy_grace.clone(),
+            },
+            rate: SecurityPolicySendRateGate::new(one_platform_service.clone(), policy_grace.clone()),
+        }));
+
     // Conversation routes protected by auth middleware.
     let conversation_state =
         states
@@ -2095,17 +2114,6 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
             .with_content_inspector(std::sync::Arc::new(LocalContentInspector(
                 services.content_inspection.clone(),
             )));
-    // No send gate in the personal edition: seat caps, spend caps and the model
-    // allowlist are all billing-plane policy. `None` skips the check entirely
-    // (see `dream_core_conversation::routes`), which is the pre-billing path.
-    #[cfg(feature = "enterprise")]
-    let conversation_state = conversation_state.with_send_gate(std::sync::Arc::new(EnterpriseSendGate {
-        billing: BillingSendGate {
-            billing: one_billing_service.clone(),
-            grace: policy_grace.clone(),
-        },
-        rate: SecurityPolicySendRateGate::new(one_platform_service.clone(), policy_grace.clone()),
-    }));
     let conversation_authenticated =
         conversation_routes(conversation_state).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 

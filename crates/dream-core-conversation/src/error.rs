@@ -32,6 +32,18 @@ pub enum ConversationError {
     #[error("Forbidden: {reason}")]
     Forbidden { reason: String },
 
+    /// A pre-send policy gate (budget, seat, model allowlist, send-rate —
+    /// P1-2/T3) refused the send. Distinct from `Forbidden` so callers can
+    /// recover the gate's own `code`/`details` instead of just a string, and
+    /// so the HTTP mapping can reproduce `denial_to_api_error`'s exact shape
+    /// even for callers (cron, IM channel) that never went through HTTP.
+    #[error("Policy denied: {message}")]
+    PolicyDenied {
+        code: &'static str,
+        message: String,
+        details: Option<serde_json::Value>,
+    },
+
     #[error("Not found: {reason}")]
     NotFoundReason { reason: String },
 
@@ -116,6 +128,7 @@ impl ConversationError {
             Self::BadRequest { reason } => AgentError::bad_request(reason.clone()),
             Self::Busy { reason } => AgentError::conflict(reason.clone()),
             Self::Forbidden { reason } => AgentError::forbidden(reason.clone()),
+            Self::PolicyDenied { message, .. } => AgentError::forbidden(message.clone()),
             Self::NotFoundReason { reason } => AgentError::not_found(reason.clone()),
             Self::Unauthorized { reason } => AgentError::unauthorized(reason.clone()),
             Self::RateLimited => AgentError::RateLimited,
@@ -153,6 +166,7 @@ impl ConversationError {
             Self::BadRequest { .. } => "BAD_REQUEST",
             Self::Unauthorized { .. } => "UNAUTHORIZED",
             Self::Forbidden { .. } => "FORBIDDEN",
+            Self::PolicyDenied { code, .. } => code,
             Self::Busy { .. } => "CONFLICT",
             Self::RateLimited => "RATE_LIMITED",
             Self::Internal { .. } | Self::Acp(_) => "INTERNAL_ERROR",

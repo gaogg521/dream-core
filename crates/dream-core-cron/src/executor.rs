@@ -1317,6 +1317,7 @@ mod tests {
         AgentModeResponse, ConfigOptionConfirmation, SetConfigOptionResponse, WebSocketMessage,
     };
     use dream_core_common::{AgentKillReason, ConversationStatus, PaginatedResult, TimestampMs};
+    use dream_core_conversation::{PolicyDenial, SendGate};
     use dream_core_db::{
         ConversationArtifactRow, ConversationFilters, ConversationRowUpdate, MessagePageParams, MessagePageResult,
         MessageRowUpdate, MessageSearchRow,
@@ -1325,6 +1326,24 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tokio::sync::{RwLock, broadcast};
     use tokio::time::timeout;
+
+    /// Always refuses — T3: proves a cron-triggered turn is now stopped by
+    /// the send gate instead of bypassing it entirely.
+    struct RejectingSendGate;
+
+    #[async_trait::async_trait]
+    impl SendGate for RejectingSendGate {
+        async fn check_send(&self, _user_id: &str, _model: Option<&str>) -> Result<(), PolicyDenial> {
+            Err(PolicyDenial::new(
+                "BUDGET_EXCEEDED",
+                "the team's monthly spend budget is exhausted",
+            ))
+        }
+
+        async fn check_model(&self, _user_id: &str, _model: &str) -> Result<(), PolicyDenial> {
+            Ok(())
+        }
+    }
 
     fn ensure_named_workspace_path(name: &str) -> String {
         let workspace = std::env::temp_dir().join(name);
@@ -1497,6 +1516,37 @@ mod tests {
         assert_eq!(result, ExecutionResult::Skipped);
         assert_eq!(agent.send_calls(), 0, "queue protection should avoid send attempts");
         drop(claim);
+    }
+
+    /// T3 acceptance criterion: a cron-triggered turn is rejected once its
+    /// tenant is over budget. `execute` ultimately calls
+    /// `ConversationService::run_agent_turn`, which now checks the send gate
+    /// before doing anything else — the agent must never even be reached.
+    #[tokio::test]
+    async fn execute_is_blocked_by_a_rejecting_send_gate() {
+        let agent = Arc::new(RecordingAgent::new("conv_1", "default", true));
+        let executor = make_executor_with_agent(AgentInstance::Mock(agent.clone()));
+        executor
+            .conversation_service
+            .with_send_gate(Arc::new(RejectingSendGate));
+        let job = sample_job();
+
+        let result = executor.execute(&job).await;
+
+        match result {
+            ExecutionResult::Error { message } => {
+                assert!(
+                    message.contains("budget"),
+                    "expected the denial's message, got: {message}"
+                );
+            }
+            other => panic!("expected ExecutionResult::Error from the policy gate, got {other:?}"),
+        }
+        assert_eq!(
+            agent.send_calls(),
+            0,
+            "the gate must block before the agent is ever invoked"
+        );
     }
 
     #[tokio::test]

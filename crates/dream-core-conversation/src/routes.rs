@@ -36,6 +36,12 @@ impl From<ConversationError> for ApiError {
             }
             ConversationError::Busy { reason } => ApiError::Conflict(reason),
             ConversationError::Forbidden { reason } => ApiError::Forbidden(reason),
+            ConversationError::PolicyDenied { code, message, details } => ApiError::Coded {
+                status: StatusCode::FORBIDDEN,
+                code,
+                message,
+                details,
+            },
             ConversationError::NotFoundReason { reason } => ApiError::NotFound(reason),
             ConversationError::Unauthorized { reason } => ApiError::Unauthorized(reason),
             ConversationError::RateLimited => ApiError::RateLimited,
@@ -328,14 +334,10 @@ async fn send_msg(
     {
         return Err(denial_to_api_error(denial));
     }
-    // P1-2 model control: block the send when the team is over its spend budget
-    // (or the model is off-allowlist, when a model is known). No-op for
-    // personal / no-company users, or when no gate is wired.
-    if let Some(gate) = &state.send_gate
-        && let Err(denial) = gate.check_send(&user.id, None).await
-    {
-        return Err(denial_to_api_error(denial));
-    }
+    // P1-2 model control (budget/rate): checked inside `service.send_message`
+    // itself now (T3), not here — that also covers the IM-channel send path,
+    // which calls the same method directly and used to bypass this entirely.
+    // Ordering is unchanged: content inspection above still runs first.
     let response = state
         .service
         .send_message(&user.id, &id, req, &state.task_manager)

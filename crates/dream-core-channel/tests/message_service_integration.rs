@@ -557,3 +557,80 @@ async fn send_to_agent_without_assistant_name_falls_back_to_legacy_channel_name(
         .unwrap();
     assert_eq!(conversation.name, "tg-acp-codex-70880480");
 }
+
+/// Always refuses — T3: proves an IM-channel-triggered send is now stopped
+/// by the send gate instead of bypassing it entirely (the gate used to only
+/// be checked by the HTTP `send_msg` handler; `send_to_agent` calls
+/// `ConversationService::send_message` directly and never went through it).
+/// Scope note: `send_to_agent` still runs conversation creation/warmup
+/// BEFORE calling `send_message`, so those steps still happen even when the
+/// gate ultimately refuses — the gate stops the metered turn itself
+/// (message persistence + agent dispatch), not everything upstream of it.
+struct RejectingSendGate;
+
+#[async_trait]
+impl dream_core_conversation::SendGate for RejectingSendGate {
+    async fn check_send(
+        &self,
+        _user_id: &str,
+        _model: Option<&str>,
+    ) -> Result<(), dream_core_conversation::PolicyDenial> {
+        Err(dream_core_conversation::PolicyDenial::new(
+            "BUDGET_EXCEEDED",
+            "the team's monthly spend budget is exhausted",
+        ))
+    }
+
+    async fn check_model(&self, _user_id: &str, _model: &str) -> Result<(), dream_core_conversation::PolicyDenial> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn send_to_agent_is_blocked_by_a_rejecting_send_gate() {
+    let db = init_database_memory().await.unwrap();
+    let pool = db.pool().clone();
+
+    let task_manager: Arc<dyn IWorkerTaskManager> = Arc::new(RecordingTaskManager::new());
+    let conversation_svc = Arc::new(ConversationService::new(
+        std::env::temp_dir(),
+        Arc::new(TestBroadcaster::new()),
+        Arc::new(NoopSkillResolver),
+        Arc::clone(&task_manager),
+        Arc::new(SqliteConversationRepository::new(pool.clone())),
+        Arc::new(SqliteAgentMetadataRepository::new(pool.clone())),
+        Arc::new(SqliteAcpSessionRepository::new(pool.clone())),
+    ));
+    conversation_svc.with_send_gate(Arc::new(RejectingSendGate));
+
+    let settings = Arc::new(ChannelSettingsService::new(Arc::new(
+        SqliteClientPreferenceRepository::new(pool),
+    )));
+    let message_svc = ChannelMessageService::new(conversation_svc, Arc::clone(&task_manager), settings);
+
+    let session = AssistantSessionRow {
+        id: "session-gated".to_owned(),
+        user_id: "channel-user-gated".to_owned(),
+        agent_type: "aionrs".to_owned(),
+        conversation_id: None,
+        workspace: None,
+        chat_id: Some("7088048016".to_owned()),
+        created_at: 1,
+        last_activity: 1,
+    };
+
+    let err = message_svc
+        .send_to_agent(TEST_OWNER_USER_ID, &session, "hello", PluginType::Telegram)
+        .await
+        .unwrap_err();
+
+    match err {
+        ChannelError::MessageSendFailed(message) => {
+            assert!(
+                message.contains("budget"),
+                "expected the denial's message, got: {message}"
+            );
+        }
+        other => panic!("expected MessageSendFailed carrying the policy denial, got {other:?}"),
+    }
+}

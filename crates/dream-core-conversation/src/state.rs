@@ -90,7 +90,14 @@ pub struct ConversationRouterState {
     pub service: ConversationService,
     pub task_manager: Arc<dyn IWorkerTaskManager>,
     pub active_leases: Arc<ActiveLeaseRegistry>,
-    /// Optional pre-send policy gate (P1-2); when set, a send may be blocked.
+    /// Optional pre-send policy gate (P1-2), for the `check_model` allowlist
+    /// check ONLY (model-switch time, `routes_aux::set_config_option`). The
+    /// `check_send` budget/rate check used to live here too and be checked by
+    /// `routes::send_msg`, but T3 sank that one into `ConversationService`
+    /// itself (`ConversationService::send_gate`/`with_send_gate`) so it also
+    /// covers cron- and IM-channel-triggered turns, which never touch this
+    /// router state at all. Model switching is HTTP-only (there is no
+    /// "cron/channel switches the model" concept), so this field stays.
     pub send_gate: Option<Arc<dyn SendGate>>,
     /// Optional content inspector (T4); when set, a send may be blocked and
     /// findings recorded.
@@ -98,7 +105,8 @@ pub struct ConversationRouterState {
 }
 
 impl ConversationRouterState {
-    /// Attach a pre-send policy gate (one-billing). Chainable at wire-up time.
+    /// Attach a pre-send policy gate (one-billing) for the `check_model`
+    /// path only — see the field's doc comment. Chainable at wire-up time.
     pub fn with_send_gate(mut self, gate: Arc<dyn SendGate>) -> Self {
         self.send_gate = Some(gate);
         self
