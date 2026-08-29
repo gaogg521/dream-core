@@ -10,6 +10,7 @@ use serde::Deserialize;
 use dream_core_api_types::ApiResponse;
 use dream_core_auth::CurrentUser;
 
+use crate::api_assets::{ApiAssetDetailDto, ApiAssetDto};
 use crate::dlp_service::{DlpEventDto, DlpEventInput, DlpRuleDto, DlpSummaryDto};
 use crate::error::DevopsError;
 use crate::models::{
@@ -44,6 +45,20 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
         // P1-1 round 1: batch publish/unpublish + upload-a-SKILL.md.
         .route("/api/one/devops/skills/publish", axum::routing::put(publish_skills))
         .route("/api/one/devops/skills/upload", axum::routing::post(upload_skill))
+        // P1-6 API assets: imported Swagger/OpenAPI docs, publishable into the
+        // skill registry so member agents can call the endpoints via curl.
+        .route(
+            "/api/one/devops/api-assets",
+            get(list_api_assets).post(import_api_asset),
+        )
+        .route(
+            "/api/one/devops/api-assets/{id}",
+            get(get_api_asset).delete(delete_api_asset),
+        )
+        .route(
+            "/api/one/devops/api-assets/{id}/publish",
+            axum::routing::post(publish_api_asset),
+        )
         .route("/api/one/devops/mcp-registry", get(list_mcp).post(upsert_mcp))
         .route("/api/one/devops/mcp-registry/{id}", axum::routing::delete(delete_mcp))
         .route("/api/one/devops/mcp-registry/publish", axum::routing::put(publish_mcp))
@@ -839,6 +854,93 @@ async fn upload_skill(
         set_resource_tags_if_wired(&state, "skill", &dto.id, tag_ids).await?;
     }
     audit(&state, &user.id, "devops.skill.upload", Some(&dto.id)).await;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+// -- API assets (P1-6) ------------------------------------------------------
+
+async fn list_api_assets(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<ApiAssetDto>>>, DevopsError> {
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(state.service.list_api_assets(&tenant).await?)))
+}
+
+/// Import body. `spec` is the raw OpenAPI/Swagger document as a JSON value.
+/// YAML is a known limitation: only JSON is accepted (no serde_yaml in the
+/// workspace), so the client converts YAML documents before importing.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportApiAssetBody {
+    name: String,
+    spec: serde_json::Value,
+}
+
+async fn import_api_asset(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<ImportApiAssetBody>,
+) -> Result<Json<ApiResponse<ApiAssetDto>>, DevopsError> {
+    // Same gate as the other registries: an asset is the source for a
+    // distributed skill, so in an enterprise only admins import.
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    let dto = state
+        .service
+        .import_api_asset(&tenant, &user.id, &body.name, &body.spec)
+        .await?;
+    audit(&state, &user.id, "devops.api_asset.import", Some(&dto.id)).await;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn get_api_asset(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<ApiAssetDetailDto>>, DevopsError> {
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(state.service.get_api_asset(&tenant, &id).await?)))
+}
+
+async fn delete_api_asset(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    audit(&state, &user.id, "devops.api_asset.delete", Some(&id)).await;
+    state.service.delete_api_asset(&tenant, &id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+/// Publish body. `baseUrl` overrides the spec-detected base URL in the
+/// generated curl examples; `autoActive` marks the published skill
+/// admin-required (member agents load it without per-assistant opt-in).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishApiAssetBody {
+    #[serde(default)]
+    base_url: Option<String>,
+    #[serde(default)]
+    auto_active: bool,
+}
+
+async fn publish_api_asset(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(body): Json<PublishApiAssetBody>,
+) -> Result<Json<ApiResponse<SkillRegistryDto>>, DevopsError> {
+    // Writes into the skill registry are admin-only (see upsert_skill).
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    let dto = state
+        .service
+        .publish_api_asset_skill(&tenant, &user.id, &id, body.base_url.as_deref(), body.auto_active)
+        .await?;
+    audit(&state, &user.id, "devops.api_asset.publish", Some(&dto.id)).await;
     Ok(Json(ApiResponse::ok(dto)))
 }
 

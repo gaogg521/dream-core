@@ -59,7 +59,7 @@ pub struct UpdateRequirementInput {
     pub autopilot: Option<bool>,
 }
 
-fn new_id(prefix: &str) -> String {
+pub(crate) fn new_id(prefix: &str) -> String {
     // Full UUIDv7. The previous `[..12]` truncation kept only the leading
     // 48 bits — which in v7 are purely the millisecond timestamp — so two
     // ids minted in the same millisecond collided (UNIQUE constraint

@@ -19,6 +19,7 @@
 //! derived structure that can be rebuilt from `one_rag_chunks` at any time,
 //! which is what makes the startup backfill and any re-index safe.
 
+pub mod api_assets;
 pub mod breakdown;
 pub mod dlp_service;
 pub mod embedding;

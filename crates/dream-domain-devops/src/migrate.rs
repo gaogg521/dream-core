@@ -39,6 +39,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "013_content_origin",
         include_str!("../migrations/013_content_origin.sql"),
     ),
+    ("014_api_assets", include_str!("../migrations/014_api_assets.sql")),
 ];
 
 /// Run all pending one-devops migrations. Idempotent; call once at startup
@@ -179,6 +180,7 @@ mod tests {
         assert!(tables.contains(&"one_provider_channel_tokens".to_owned()));
         assert!(tables.contains(&"one_dlp_rules".to_owned()));
         assert!(tables.contains(&"one_dlp_events".to_owned()));
+        assert!(tables.contains(&"one_api_assets".to_owned()));
     }
 
     /// With a real `one_user_org` present (simulating the real app, where
