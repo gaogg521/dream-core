@@ -35,6 +35,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "012_collaboration_tenant_scope",
         include_str!("../migrations/012_collaboration_tenant_scope.sql"),
     ),
+    (
+        "013_content_origin",
+        include_str!("../migrations/013_content_origin.sql"),
+    ),
 ];
 
 /// Run all pending one-devops migrations. Idempotent; call once at startup

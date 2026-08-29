@@ -104,6 +104,13 @@ pub struct SkillRegistryDto {
     /// Read visibility (P0-4): `'all'` = every member in scope; `'admin'` =
     /// org/system admins only.
     pub visibility: String,
+    /// 'self_built' | 'market' (P1-1 round 1; 'market' reserved for the
+    /// not-yet-built remote-sync round).
+    pub origin: String,
+    pub category_id: Option<String>,
+    /// Whether this shows up in a non-admin member's listing at all — an
+    /// unpublished row exists but is a draft (P1-1 round 1).
+    pub published: bool,
     pub created_by: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -126,6 +133,13 @@ pub struct McpRegistryDto {
     pub team_id: Option<String>,
     /// Read visibility (P0-4): `'all'` | `'admin'`.
     pub visibility: String,
+    /// 'self_built' | 'market' (P1-1 round 1; 'market' reserved for the
+    /// not-yet-built remote-sync round).
+    pub origin: String,
+    pub category_id: Option<String>,
+    /// Whether this shows up in a non-admin member's listing at all — an
+    /// unpublished row exists but is a draft (P1-1 round 1).
+    pub published: bool,
     pub created_by: String,
     pub created_at: i64,
     pub updated_at: i64,

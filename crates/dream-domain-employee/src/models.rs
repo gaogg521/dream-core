@@ -44,6 +44,17 @@ pub struct PersonalAgentRow {
     pub next_run_at: Option<i64>,
     /// 'private' (owner-only) or 'shared' (usable by any same-tenant member).
     pub visibility: String,
+    /// 'self_built' (admin/owner created it directly) or 'market' (reserved
+    /// for the not-yet-built remote-sync round — see `origin.rs`… no such
+    /// file; see migration 008's own doc comment). P1-1 round 1 only ever
+    /// writes 'self_built'.
+    pub origin: String,
+    pub category_id: Option<String>,
+    /// Whether this employee shows up in listings at all for a non-owner —
+    /// orthogonal to `visibility`/grants: a `published=0` `shared` employee
+    /// stays invisible to everyone but its owner regardless of grants,
+    /// same as an unpublished skill/mcp row.
+    pub published: i64,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -72,6 +83,9 @@ pub struct PersonalAgentDto {
     pub schedule_enabled: bool,
     pub next_run_at: Option<i64>,
     pub visibility: String,
+    pub origin: String,
+    pub category_id: Option<String>,
+    pub published: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -108,6 +122,9 @@ impl From<PersonalAgentRow> for PersonalAgentDto {
             schedule_enabled: row.schedule_enabled != 0,
             next_run_at: row.next_run_at,
             visibility: row.visibility,
+            origin: row.origin,
+            category_id: row.category_id,
+            published: row.published != 0,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -141,6 +158,40 @@ pub struct EmployeeGrantRow {
     pub employee_id: String,
     pub permission: String,
     pub granted_by: String,
+    pub created_at: i64,
+}
+
+/// Valid `resource_type` values for the shared content-category/tag tables
+/// (P1-1 round 1, migration 007). One shared table set across all three
+/// content-registry resource types, filtered by this column, rather than
+/// three separate schemas — see migration 007's own doc comment for why.
+pub const CONTENT_RESOURCE_TYPES: [&str; 3] = ["skill", "mcp", "employee"];
+
+/// One node in a resource type's category tree. `parent_id = None` is a root
+/// category. The tree itself is assembled client-side from a flat list —
+/// this service never recurses.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentCategoryRow {
+    pub id: String,
+    pub tenant_id: String,
+    pub parent_id: Option<String>,
+    pub resource_type: String,
+    pub name: String,
+    pub sort_order: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// One tag definition, scoped to a tenant + resource type. Tags attach to
+/// resources many-to-many via `one_content_tag_links`.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentTagRow {
+    pub id: String,
+    pub tenant_id: String,
+    pub resource_type: String,
+    pub name: String,
     pub created_at: i64,
 }
 

@@ -41,8 +41,12 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
         )
         .route("/api/one/devops/skills", get(list_skills).post(upsert_skill))
         .route("/api/one/devops/skills/{id}", axum::routing::delete(delete_skill))
+        // P1-1 round 1: batch publish/unpublish + upload-a-SKILL.md.
+        .route("/api/one/devops/skills/publish", axum::routing::put(publish_skills))
+        .route("/api/one/devops/skills/upload", axum::routing::post(upload_skill))
         .route("/api/one/devops/mcp-registry", get(list_mcp).post(upsert_mcp))
         .route("/api/one/devops/mcp-registry/{id}", axum::routing::delete(delete_mcp))
+        .route("/api/one/devops/mcp-registry/publish", axum::routing::put(publish_mcp))
         .route(
             "/api/one/devops/model-channels",
             get(list_model_channels).post(upsert_model_channel),
@@ -474,6 +478,27 @@ async fn maybe_autopilot(state: &OneDevopsRouterState, user_id: &str, id: &str) 
     }
 }
 
+/// Best-effort — same "skip when the employee runtime isn't wired" idiom as
+/// `maybe_autopilot` above (unit tests build `OneDevopsRouterState` without
+/// it; production always wires it). The category/tag tables live in
+/// `dream-domain-employee` (P1-1 round 1, migration 007) — this crate
+/// already has a real Cargo dependency on it, so this is a plain call, not
+/// a cross-crate SQL read.
+async fn set_resource_tags_if_wired(
+    state: &OneDevopsRouterState,
+    resource_type: &str,
+    resource_id: &str,
+    tag_ids: &[String],
+) -> Result<(), DevopsError> {
+    let Some(employee) = &state.employee else {
+        return Ok(());
+    };
+    employee
+        .set_resource_tags(resource_type, resource_id, tag_ids)
+        .await
+        .map_err(|e| DevopsError::Internal(e.to_string()))
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BreakdownResult {
@@ -650,6 +675,11 @@ struct UpsertSkillBody {
     /// `'all'` (every member in scope) or `'admin'` (admins only).
     #[serde(default = "default_visibility_all")]
     visibility: String,
+    /// P1-1 round 1. Both optional and orthogonal to scope/visibility.
+    #[serde(default)]
+    category_id: Option<String>,
+    #[serde(default)]
+    tag_ids: Option<Vec<String>>,
 }
 
 fn default_true() -> bool {
@@ -682,9 +712,13 @@ async fn upsert_skill(
             &body.scope,
             body.team_id.as_deref(),
             &body.visibility,
+            body.category_id.as_deref(),
             &user.id,
         )
         .await?;
+    if let Some(tag_ids) = &body.tag_ids {
+        set_resource_tags_if_wired(&state, "skill", &dto.id, tag_ids).await?;
+    }
     audit(&state, &user.id, "devops.skill.upsert", Some(&dto.id)).await;
     Ok(Json(ApiResponse::ok(dto)))
 }
@@ -698,6 +732,111 @@ async fn delete_skill(
     audit(&state, &user.id, "devops.skill.delete", Some(&id)).await;
     state.service.delete_skill(&user.id, &id).await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishBatchBody {
+    ids: Vec<String>,
+    published: bool,
+}
+
+async fn publish_skills(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<PublishBatchBody>,
+) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    state.service.set_skills_published(&body.ids, body.published).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+/// Enterprise self-build upload (P1-1 round 1): admin uploads a `SKILL.md`
+/// directly instead of typing content/description into the JSON form.
+/// Reuses `dream_core_cron::skill_file::validate_skill_content` for the
+/// frontmatter/placeholder validation — same parser cron jobs' own skill
+/// files go through, not reimplemented here. Fields: `file` (required, the
+/// SKILL.md bytes), `categoryId` (optional), `tagIds` (optional, a
+/// JSON-encoded array of tag ids — multipart fields are plain text, so a
+/// real array field isn't an option here).
+async fn upload_skill(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    mut multipart: axum::extract::Multipart,
+) -> Result<Json<ApiResponse<SkillRegistryDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+
+    let mut file_data: Option<Vec<u8>> = None;
+    let mut category_id: Option<String> = None;
+    let mut tag_ids: Option<Vec<String>> = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| DevopsError::BadRequest(format!("multipart error: {e}")))?
+    {
+        match field.name().unwrap_or("") {
+            "file" => {
+                file_data = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| DevopsError::BadRequest(format!("failed to read file: {e}")))?
+                        .to_vec(),
+                );
+            }
+            "categoryId" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| DevopsError::BadRequest(format!("failed to read categoryId: {e}")))?;
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    category_id = Some(trimmed.to_owned());
+                }
+            }
+            "tagIds" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| DevopsError::BadRequest(format!("failed to read tagIds: {e}")))?;
+                if !text.trim().is_empty() {
+                    tag_ids = Some(
+                        serde_json::from_str(&text)
+                            .map_err(|_| DevopsError::BadRequest("tagIds must be a JSON array of strings".into()))?,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let file_data = file_data.ok_or_else(|| DevopsError::BadRequest("missing 'file' field".into()))?;
+    let content =
+        String::from_utf8(file_data).map_err(|_| DevopsError::BadRequest("SKILL.md must be UTF-8 text".into()))?;
+    let parsed = dream_core_cron::skill_file::validate_skill_content(&content)
+        .map_err(|e| DevopsError::BadRequest(e.to_string()))?;
+
+    let dto = state
+        .service
+        .upsert_skill(
+            None,
+            &parsed.name,
+            &parsed.description,
+            &content,
+            true,
+            false,
+            "org",
+            None,
+            "all",
+            category_id.as_deref(),
+            &user.id,
+        )
+        .await?;
+    if let Some(tag_ids) = &tag_ids {
+        set_resource_tags_if_wired(&state, "skill", &dto.id, tag_ids).await?;
+    }
+    audit(&state, &user.id, "devops.skill.upload", Some(&dto.id)).await;
+    Ok(Json(ApiResponse::ok(dto)))
 }
 
 async fn list_mcp(
@@ -731,6 +870,11 @@ struct UpsertMcpBody {
     team_id: Option<String>,
     #[serde(default = "default_visibility_all")]
     visibility: String,
+    /// P1-1 round 1. Both optional and orthogonal to scope/visibility.
+    #[serde(default)]
+    category_id: Option<String>,
+    #[serde(default)]
+    tag_ids: Option<Vec<String>>,
 }
 
 fn default_stdio() -> String {
@@ -756,9 +900,13 @@ async fn upsert_mcp(
             &body.scope,
             body.team_id.as_deref(),
             &body.visibility,
+            body.category_id.as_deref(),
             &user.id,
         )
         .await?;
+    if let Some(tag_ids) = &body.tag_ids {
+        set_resource_tags_if_wired(&state, "mcp", &dto.id, tag_ids).await?;
+    }
     audit(&state, &user.id, "devops.mcp.upsert", Some(&dto.id)).await;
     Ok(Json(ApiResponse::ok(dto)))
 }
@@ -771,6 +919,16 @@ async fn delete_mcp(
     require_registry_admin(&state, &user.id).await?;
     audit(&state, &user.id, "devops.mcp.delete", Some(&id)).await;
     state.service.delete_mcp_registry(&user.id, &id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn publish_mcp(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<PublishBatchBody>,
+) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    state.service.set_mcp_published(&body.ids, body.published).await?;
     Ok(Json(ApiResponse::ok(())))
 }
 

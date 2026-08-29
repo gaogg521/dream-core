@@ -910,7 +910,7 @@ impl DevopsService {
 
     pub async fn list_skills(&self, viewer_user_id: &str) -> Result<Vec<SkillRegistryDto>, DevopsError> {
         const COLS: &str = "id, name, description, content, enabled, auto_active, scope, team_id, visibility, \
-                            created_by, created_at, updated_at";
+                            origin, category_id, published, created_by, created_at, updated_at";
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
         if privileged {
             let sql = format!("SELECT {COLS} FROM one_skill_registry ORDER BY updated_at DESC");
@@ -926,7 +926,12 @@ impl DevopsService {
             .await;
         let (predicate, grant_ids) =
             Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "", viewer_user_id);
-        let sql = format!("SELECT {COLS} FROM one_skill_registry WHERE {predicate} ORDER BY updated_at DESC");
+        // P1-1 round 1: ANDed on, never part of the widen-able predicate — a
+        // matrix grant widens tenant reach/visibility, it must not also
+        // resurrect an unpublished draft.
+        let sql = format!(
+            "SELECT {COLS} FROM one_skill_registry WHERE ({predicate}) AND published = 1 ORDER BY updated_at DESC"
+        );
         let mut q = sqlx::query_as::<_, SkillRegistryDto>(&sql).bind(viewer_user_id);
         for id in &grant_ids {
             q = q.bind(id);
@@ -946,6 +951,7 @@ impl DevopsService {
         scope: &str,
         team_id: Option<&str>,
         visibility: &str,
+        category_id: Option<&str>,
         created_by: &str,
     ) -> Result<SkillRegistryDto, DevopsError> {
         let name = name.trim();
@@ -1003,7 +1009,7 @@ impl DevopsService {
                 }
                 let updated = sqlx::query(
                     "UPDATE one_skill_registry SET name = ?, description = ?, content = ?, enabled = ?, auto_active = ?, \
-                     scope = ?, team_id = ?, visibility = ?, updated_at = ? WHERE id = ?",
+                     scope = ?, team_id = ?, visibility = ?, category_id = ?, updated_at = ? WHERE id = ?",
                 )
                 .bind(name)
                 .bind(description)
@@ -1013,6 +1019,7 @@ impl DevopsService {
                 .bind(scope)
                 .bind(team_id)
                 .bind(visibility)
+                .bind(category_id)
                 .bind(now)
                 .bind(existing)
                 .execute(&self.pool)
@@ -1026,8 +1033,8 @@ impl DevopsService {
                 let id = new_id("oskill");
                 sqlx::query(
                     "INSERT INTO one_skill_registry \
-                        (id, name, description, content, enabled, auto_active, scope, team_id, visibility, created_by, created_at, updated_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (id, name, description, content, enabled, auto_active, scope, team_id, visibility, category_id, created_by, created_at, updated_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(&id)
                 .bind(name)
@@ -1038,6 +1045,7 @@ impl DevopsService {
                 .bind(scope)
                 .bind(team_id)
                 .bind(visibility)
+                .bind(category_id)
                 .bind(created_by)
                 .bind(now)
                 .bind(now)
@@ -1047,13 +1055,31 @@ impl DevopsService {
             }
         };
         sqlx::query_as::<_, SkillRegistryDto>(
-            "SELECT id, name, description, content, enabled, auto_active, scope, team_id, visibility, created_by, created_at, updated_at \
+            "SELECT id, name, description, content, enabled, auto_active, scope, team_id, visibility, \
+             origin, category_id, published, created_by, created_at, updated_at \
              FROM one_skill_registry WHERE id = ?",
         )
         .bind(&id)
         .fetch_one(&self.pool)
         .await
         .map_err(Into::into)
+    }
+
+    /// Batch set `published` for a set of skill ids (P1-1 round 1). Loops
+    /// the single-row update — see `EmployeeService::set_published_batch`'s
+    /// identical doc comment for why (this codebase's established
+    /// batch-operation idiom, `create_breakdown_children`).
+    pub async fn set_skills_published(&self, ids: &[String], published: bool) -> Result<(), DevopsError> {
+        let now = now_ms();
+        for id in ids {
+            sqlx::query("UPDATE one_skill_registry SET published = ?, updated_at = ? WHERE id = ?")
+                .bind(published)
+                .bind(now)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn delete_skill(&self, actor_user_id: &str, id: &str) -> Result<(), DevopsError> {
@@ -1081,7 +1107,7 @@ impl DevopsService {
 
     pub async fn list_mcp_registry(&self, viewer_user_id: &str) -> Result<Vec<McpRegistryDto>, DevopsError> {
         const COLS: &str = "id, name, type, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, \
-                            created_by, created_at, updated_at";
+                            origin, category_id, published, created_by, created_at, updated_at";
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
         if privileged {
             let sql = format!("SELECT {COLS} FROM one_mcp_registry ORDER BY updated_at DESC");
@@ -1095,7 +1121,11 @@ impl DevopsService {
             .await;
         let (predicate, grant_ids) =
             Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "", viewer_user_id);
-        let sql = format!("SELECT {COLS} FROM one_mcp_registry WHERE {predicate} ORDER BY updated_at DESC");
+        // P1-1 round 1: see list_skills's identical comment on why this is
+        // ANDed on outside the widen-able predicate.
+        let sql = format!(
+            "SELECT {COLS} FROM one_mcp_registry WHERE ({predicate}) AND published = 1 ORDER BY updated_at DESC"
+        );
         let mut q = sqlx::query_as::<_, McpRegistryDto>(&sql).bind(viewer_user_id);
         for id in &grant_ids {
             q = q.bind(id);
@@ -1116,6 +1146,7 @@ impl DevopsService {
         scope: &str,
         team_id: Option<&str>,
         visibility: &str,
+        category_id: Option<&str>,
         created_by: &str,
     ) -> Result<McpRegistryDto, DevopsError> {
         let name = name.trim();
@@ -1172,7 +1203,7 @@ impl DevopsService {
                 }
                 let updated = sqlx::query(
                     "UPDATE one_mcp_registry SET name = ?, type = ?, endpoint = ?, enabled = ?, has_keys = ?, secrets_json = ?, \
-                     scope = ?, team_id = ?, visibility = ?, updated_at = ? WHERE id = ?",
+                     scope = ?, team_id = ?, visibility = ?, category_id = ?, updated_at = ? WHERE id = ?",
                 )
                 .bind(name)
                 .bind(r#type)
@@ -1183,6 +1214,7 @@ impl DevopsService {
                 .bind(scope)
                 .bind(team_id)
                 .bind(visibility)
+                .bind(category_id)
                 .bind(now)
                 .bind(existing)
                 .execute(&self.pool)
@@ -1196,8 +1228,8 @@ impl DevopsService {
                 let id = new_id("omcp");
                 sqlx::query(
                     "INSERT INTO one_mcp_registry \
-                        (id, name, type, endpoint, enabled, has_keys, scope, team_id, visibility, created_by, created_at, updated_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (id, name, type, endpoint, enabled, has_keys, scope, team_id, visibility, category_id, created_by, created_at, updated_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(&id)
                 .bind(name)
@@ -1208,6 +1240,7 @@ impl DevopsService {
                 .bind(scope)
                 .bind(team_id)
                 .bind(visibility)
+                .bind(category_id)
                 .bind(created_by)
                 .bind(now)
                 .bind(now)
@@ -1217,13 +1250,29 @@ impl DevopsService {
             }
         };
         sqlx::query_as::<_, McpRegistryDto>(
-            "SELECT id, name, type, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, created_by, created_at, updated_at \
+            "SELECT id, name, type, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, \
+             origin, category_id, published, created_by, created_at, updated_at \
              FROM one_mcp_registry WHERE id = ?",
         )
         .bind(&id)
         .fetch_one(&self.pool)
         .await
         .map_err(Into::into)
+    }
+
+    /// Batch set `published` for a set of MCP entry ids (P1-1 round 1).
+    /// Same loop-based batch idiom as `set_skills_published`.
+    pub async fn set_mcp_published(&self, ids: &[String], published: bool) -> Result<(), DevopsError> {
+        let now = now_ms();
+        for id in ids {
+            sqlx::query("UPDATE one_mcp_registry SET published = ?, updated_at = ? WHERE id = ?")
+                .bind(published)
+                .bind(now)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn delete_mcp_registry(&self, actor_user_id: &str, id: &str) -> Result<(), DevopsError> {
@@ -2347,10 +2396,97 @@ mod tests {
         .unwrap();
     }
 
+    /// P1-1 round 1: category_id round-trips through create/update, and
+    /// `set_skills_published`/`set_mcp_published` gate a non-privileged
+    /// member's listing without touching what a privileged admin sees.
+    #[tokio::test]
+    async fn category_id_round_trips_and_published_gates_member_listing() {
+        let svc = service().await;
+        seed_org(&svc).await;
+
+        let skill = svc
+            .upsert_skill(
+                None,
+                "s1",
+                "d",
+                "c",
+                true,
+                false,
+                "org",
+                None,
+                "all",
+                Some("cat1"),
+                "admin1",
+            )
+            .await
+            .unwrap();
+        assert_eq!(skill.category_id.as_deref(), Some("cat1"));
+        assert!(
+            skill.published,
+            "published defaults to true so existing rows stay visible"
+        );
+
+        let mcp = svc
+            .upsert_mcp_registry(
+                None,
+                "m1",
+                "sse",
+                "https://mcp.corp/sse",
+                true,
+                false,
+                None,
+                "org",
+                None,
+                "all",
+                Some("cat2"),
+                "admin1",
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp.category_id.as_deref(), Some("cat2"));
+
+        // Both visible to the member while published.
+        assert_eq!(svc.list_skills("member1").await.unwrap().len(), 1);
+        assert_eq!(svc.list_mcp_registry("member1").await.unwrap().len(), 1);
+
+        svc.set_skills_published(&[skill.id.clone()], false).await.unwrap();
+        svc.set_mcp_published(&[mcp.id.clone()], false).await.unwrap();
+
+        // Unpublished: invisible to the member...
+        assert!(svc.list_skills("member1").await.unwrap().is_empty());
+        assert!(svc.list_mcp_registry("member1").await.unwrap().is_empty());
+        // ...but the admin (privileged) still sees the draft.
+        assert_eq!(svc.list_skills("admin1").await.unwrap().len(), 1);
+        assert_eq!(svc.list_mcp_registry("admin1").await.unwrap().len(), 1);
+
+        // Re-publishing restores member visibility.
+        svc.set_skills_published(&[skill.id.clone()], true).await.unwrap();
+        assert_eq!(svc.list_skills("member1").await.unwrap().len(), 1);
+
+        // Updating the skill can also clear the category back to none.
+        let updated = svc
+            .upsert_skill(
+                Some(&skill.id),
+                "s1",
+                "d",
+                "c",
+                true,
+                false,
+                "org",
+                None,
+                "all",
+                None,
+                "admin1",
+            )
+            .await
+            .unwrap();
+        assert!(updated.category_id.is_none());
+    }
+
     /// Seed one skill members can reach and one only admins can.
     async fn seed_two_skills(svc: &DevopsService) -> (String, String) {
         let open = svc
-            .upsert_skill(None, "open", "d", "c", true, false, "org", None, "all", "admin1")
+            .upsert_skill(None, "open", "d", "c", true, false, "org", None, "all", None, "admin1")
             .await
             .unwrap();
         let restricted = svc
@@ -2364,6 +2500,7 @@ mod tests {
                 "org",
                 None,
                 "admin",
+                None,
                 "admin1",
             )
             .await
@@ -2441,6 +2578,7 @@ mod tests {
                 "org",
                 None,
                 "admin",
+                None,
                 "admin1",
             )
             .await
@@ -2586,12 +2724,12 @@ mod tests {
     #[tokio::test]
     async fn registry_names_must_be_unique() {
         let svc = service().await;
-        svc.upsert_skill(None, "review", "d", "c", true, false, "org", None, "all", "u1")
+        svc.upsert_skill(None, "review", "d", "c", true, false, "org", None, "all", None, "u1")
             .await
             .unwrap();
         // Same name, different (new) record → rejected.
         let err = svc
-            .upsert_skill(None, "review", "d2", "c2", true, false, "org", None, "all", "u1")
+            .upsert_skill(None, "review", "d2", "c2", true, false, "org", None, "all", None, "u1")
             .await
             .unwrap_err();
         assert_eq!(err.code(), "BAD_REQUEST");
@@ -2607,6 +2745,7 @@ mod tests {
             "org",
             None,
             "all",
+            None,
             "u1",
         )
         .await
@@ -2623,6 +2762,7 @@ mod tests {
             "org",
             None,
             "all",
+            None,
             "u1",
         )
         .await
@@ -2639,6 +2779,7 @@ mod tests {
                 "org",
                 None,
                 "all",
+                None,
                 "u1",
             )
             .await
@@ -2962,7 +3103,7 @@ mod tests {
             ("b-skill", "team", Some("tB"), "all", "admin2"),
             ("secret-skill", "org", None, "admin", "admin1"),
         ] {
-            svc.upsert_skill(None, name, "", "", true, false, scope, team, vis, author)
+            svc.upsert_skill(None, name, "", "", true, false, scope, team, vis, None, author)
                 .await
                 .unwrap();
         }
@@ -2983,6 +3124,7 @@ mod tests {
                 scope,
                 team,
                 vis,
+                None,
                 author,
             )
             .await
@@ -3108,17 +3250,29 @@ mod tests {
 
         // Free tier: team scope + admin-only visibility are both gated.
         let err = svc
-            .upsert_skill(None, "s", "", "", true, false, "team", Some("tA"), "all", "admin1")
+            .upsert_skill(
+                None,
+                "s",
+                "",
+                "",
+                true,
+                false,
+                "team",
+                Some("tA"),
+                "all",
+                None,
+                "admin1",
+            )
             .await
             .unwrap_err();
         assert_eq!(err.code(), "FORBIDDEN");
         let err = svc
-            .upsert_skill(None, "s2", "", "", true, false, "org", None, "admin", "admin1")
+            .upsert_skill(None, "s2", "", "", true, false, "org", None, "admin", None, "admin1")
             .await
             .unwrap_err();
         assert_eq!(err.code(), "FORBIDDEN");
         // Plain org/all still works on free tier.
-        svc.upsert_skill(None, "s3", "", "", true, false, "org", None, "all", "admin1")
+        svc.upsert_skill(None, "s3", "", "", true, false, "org", None, "all", None, "admin1")
             .await
             .unwrap();
 
@@ -3127,9 +3281,21 @@ mod tests {
             .execute(&svc.pool)
             .await
             .unwrap();
-        svc.upsert_skill(None, "s4", "", "", true, false, "team", Some("tA"), "admin", "admin1")
-            .await
-            .unwrap();
+        svc.upsert_skill(
+            None,
+            "s4",
+            "",
+            "",
+            true,
+            false,
+            "team",
+            Some("tA"),
+            "admin",
+            None,
+            "admin1",
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -3139,21 +3305,33 @@ mod tests {
 
         // Unknown project group.
         let err = svc
-            .upsert_skill(None, "s", "", "", true, false, "team", Some("ghost"), "all", "admin1")
+            .upsert_skill(
+                None,
+                "s",
+                "",
+                "",
+                true,
+                false,
+                "team",
+                Some("ghost"),
+                "all",
+                None,
+                "admin1",
+            )
             .await
             .unwrap_err();
         assert_eq!(err.code(), "BAD_REQUEST");
 
         // team scope without a team_id.
         let err = svc
-            .upsert_skill(None, "s2", "", "", true, false, "team", None, "all", "admin1")
+            .upsert_skill(None, "s2", "", "", true, false, "team", None, "all", None, "admin1")
             .await
             .unwrap_err();
         assert_eq!(err.code(), "BAD_REQUEST");
 
         // Bad scope / visibility values.
         assert_eq!(
-            svc.upsert_skill(None, "s3", "", "", true, false, "planet", None, "all", "admin1")
+            svc.upsert_skill(None, "s3", "", "", true, false, "planet", None, "all", None, "admin1")
                 .await
                 .unwrap_err()
                 .code(),
@@ -3169,7 +3347,19 @@ mod tests {
 
         // A valid team-scoped write to an existing group succeeds and persists.
         let ok = svc
-            .upsert_skill(None, "s4", "", "", true, false, "team", Some("tA"), "admin", "admin1")
+            .upsert_skill(
+                None,
+                "s4",
+                "",
+                "",
+                true,
+                false,
+                "team",
+                Some("tA"),
+                "admin",
+                None,
+                "admin1",
+            )
             .await
             .unwrap();
         assert_eq!(ok.scope, "team");
@@ -3201,6 +3391,7 @@ mod tests {
                 "team",
                 Some("tA"),
                 "all",
+                None,
                 "admin1",
             )
             .await
@@ -3217,6 +3408,7 @@ mod tests {
                 "team",
                 Some("tA"),
                 "all",
+                None,
                 "admin1",
             )
             .await
@@ -3261,7 +3453,8 @@ mod tests {
                 "org",
                 None,
                 "all",
-                "admin2",
+                None,
+                "admin2"
             )
             .await
             .unwrap_err(),
@@ -3279,7 +3472,8 @@ mod tests {
                 "org",
                 None,
                 "all",
-                "admin2",
+                None,
+                "admin2"
             )
             .await
             .unwrap_err(),
@@ -3330,6 +3524,7 @@ mod tests {
                 "org",
                 None,
                 "all",
+                None,
                 "admin1",
             )
             .await
@@ -3349,6 +3544,7 @@ mod tests {
                 "team",
                 Some("tA"),
                 "all",
+                None,
                 "admin1",
             )
             .await
@@ -3371,9 +3567,21 @@ mod tests {
         // admin1 (org_admin of tA only) tries to author a brand-new
         // tB-scoped resource in each registry.
         assert!(matches!(
-            svc.upsert_skill(None, "s", "", "", true, false, "team", Some("tB"), "all", "admin1")
-                .await
-                .unwrap_err(),
+            svc.upsert_skill(
+                None,
+                "s",
+                "",
+                "",
+                true,
+                false,
+                "team",
+                Some("tB"),
+                "all",
+                None,
+                "admin1"
+            )
+            .await
+            .unwrap_err(),
             DevopsError::Forbidden(_)
         ));
         assert!(matches!(
@@ -3388,7 +3596,8 @@ mod tests {
                 "team",
                 Some("tB"),
                 "all",
-                "admin1",
+                None,
+                "admin1"
             )
             .await
             .unwrap_err(),
@@ -3405,7 +3614,19 @@ mod tests {
         // into tB in the same edit that also changes its content — neither
         // half should apply.
         let skill = svc
-            .upsert_skill(None, "mine", "d", "c", true, false, "team", Some("tA"), "all", "admin1")
+            .upsert_skill(
+                None,
+                "mine",
+                "d",
+                "c",
+                true,
+                false,
+                "team",
+                Some("tA"),
+                "all",
+                None,
+                "admin1",
+            )
             .await
             .unwrap();
         assert!(matches!(
@@ -3419,7 +3640,8 @@ mod tests {
                 "team",
                 Some("tB"),
                 "all",
-                "admin1",
+                None,
+                "admin1"
             )
             .await
             .unwrap_err(),
@@ -3589,6 +3811,7 @@ mod tests {
                 "org",
                 None,
                 "all",
+                None,
                 "u1",
             )
             .await
@@ -3607,6 +3830,7 @@ mod tests {
                 "org",
                 None,
                 "all",
+                None,
                 "u1",
             )
             .await
@@ -3629,6 +3853,7 @@ mod tests {
                 "org",
                 None,
                 "all",
+                None,
                 "u1",
             )
             .await
@@ -3636,7 +3861,7 @@ mod tests {
         assert!(mcp.has_keys);
         assert_eq!(svc.list_mcp_registry("u1").await.unwrap().len(), 1);
         let err = svc
-            .upsert_mcp_registry(None, "bad", "ws", "", true, false, None, "org", None, "all", "u1")
+            .upsert_mcp_registry(None, "bad", "ws", "", true, false, None, "org", None, "all", None, "u1")
             .await
             .unwrap_err();
         assert!(matches!(err, DevopsError::BadRequest(_)));

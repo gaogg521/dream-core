@@ -28,6 +28,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/005_dream_rebrand_agent_type.sql"),
     ),
     ("employee_006_grants", include_str!("../migrations/006_grants.sql")),
+    (
+        "employee_007_content_categories",
+        include_str!("../migrations/007_content_categories.sql"),
+    ),
+    (
+        "employee_008_content_origin",
+        include_str!("../migrations/008_content_origin.sql"),
+    ),
 ];
 
 /// Run all pending one-employee migrations. Idempotent.

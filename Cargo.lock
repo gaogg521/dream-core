@@ -2470,6 +2470,7 @@ dependencies = [
  "dream-core-api-types",
  "dream-core-auth",
  "dream-core-common",
+ "dream-core-cron",
  "dream-domain-employee",
  "futures-util",
  "getrandom 0.2.17",

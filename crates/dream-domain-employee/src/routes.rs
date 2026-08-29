@@ -3,7 +3,7 @@
 //! strictly owner-scoped in M3a).
 
 use axum::extract::{Path, Query, State};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
 use serde::{Deserialize, Serialize};
 
@@ -34,11 +34,31 @@ pub fn one_employee_routes(state: OneEmployeeRouterState) -> Router {
         // registry writes (`require_registry_admin`) — direct SQL against
         // one-org's table, not a shared trait (see `EmployeeService::user_org_role`).
         .route("/api/one/employee/admin/agents", get(list_agents_for_admin))
+        .route("/api/one/employee/admin/agents/publish", put(publish_agents))
         .route(
             "/api/one/employee/admin/grants",
             get(list_grants_for_admin)
                 .put(grant_employee_access)
                 .delete(revoke_employee_access),
+        )
+        // Content categories/tags (P1-1 round 1), shared across
+        // skill/mcp/employee — see migration 007's own doc comment for why
+        // this crate owns the tables even though the routes for skill/mcp
+        // live in dream-domain-devops (which calls these service methods
+        // directly, not via HTTP).
+        .route(
+            "/api/one/employee/admin/categories",
+            get(list_categories).post(create_category),
+        )
+        .route(
+            "/api/one/employee/admin/categories/{id}",
+            put(update_category).delete(delete_category),
+        )
+        .route("/api/one/employee/admin/tags", get(list_tags).post(create_tag))
+        .route("/api/one/employee/admin/tags/{id}", delete(delete_tag))
+        .route(
+            "/api/one/employee/admin/resource-tags",
+            get(list_resource_tags).put(set_resource_tags),
         )
         .with_state(state)
 }
@@ -377,6 +397,195 @@ async fn revoke_employee_access(
     state
         .service
         .revoke_employee_access(&tenant, &q.subject_type, &q.subject_id, &q.employee_id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishBatchBody {
+    ids: Vec<String>,
+    published: bool,
+}
+
+async fn publish_agents(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<PublishBatchBody>,
+) -> Result<Json<ApiResponse<()>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    state
+        .service
+        .set_published_batch(&tenant, &body.ids, body.published)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+// --- admin: content categories / tags (P1-1 round 1) ---
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResourceTypeQuery {
+    resource_type: String,
+}
+
+async fn list_categories(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(q): Query<ResourceTypeQuery>,
+) -> Result<Json<ApiResponse<Vec<crate::models::ContentCategoryRow>>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(
+        state.service.list_categories(&tenant, &q.resource_type).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateCategoryBody {
+    resource_type: String,
+    parent_id: Option<String>,
+    name: String,
+    #[serde(default)]
+    sort_order: i64,
+}
+
+async fn create_category(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<CreateCategoryBody>,
+) -> Result<Json<ApiResponse<crate::models::ContentCategoryRow>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    let row = state
+        .service
+        .create_category(
+            &tenant,
+            &body.resource_type,
+            body.parent_id.as_deref(),
+            &body.name,
+            body.sort_order,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(row)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateCategoryBody {
+    parent_id: Option<String>,
+    name: String,
+    #[serde(default)]
+    sort_order: i64,
+}
+
+async fn update_category(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateCategoryBody>,
+) -> Result<Json<ApiResponse<crate::models::ContentCategoryRow>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    let row = state
+        .service
+        .update_category(&id, body.parent_id.as_deref(), &body.name, body.sort_order)
+        .await?;
+    Ok(Json(ApiResponse::ok(row)))
+}
+
+async fn delete_category(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    state.service.delete_category(&id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn list_tags(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(q): Query<ResourceTypeQuery>,
+) -> Result<Json<ApiResponse<Vec<crate::models::ContentTagRow>>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(
+        state.service.list_tags(&tenant, &q.resource_type).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateTagBody {
+    resource_type: String,
+    name: String,
+}
+
+async fn create_tag(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<CreateTagBody>,
+) -> Result<Json<ApiResponse<crate::models::ContentTagRow>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    let row = state
+        .service
+        .create_tag(&tenant, &body.resource_type, &body.name)
+        .await?;
+    Ok(Json(ApiResponse::ok(row)))
+}
+
+async fn delete_tag(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    state.service.delete_tag(&id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResourceTagsQuery {
+    resource_type: String,
+    resource_id: String,
+}
+
+async fn list_resource_tags(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(q): Query<ResourceTagsQuery>,
+) -> Result<Json<ApiResponse<Vec<crate::models::ContentTagRow>>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .list_resource_tags(&q.resource_type, &q.resource_id)
+            .await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetResourceTagsBody {
+    resource_type: String,
+    resource_id: String,
+    tag_ids: Vec<String>,
+}
+
+async fn set_resource_tags(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<SetResourceTagsBody>,
+) -> Result<Json<ApiResponse<()>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    state
+        .service
+        .set_resource_tags(&body.resource_type, &body.resource_id, &body.tag_ids)
         .await?;
     Ok(Json(ApiResponse::ok(())))
 }

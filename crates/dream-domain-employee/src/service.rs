@@ -16,6 +16,7 @@
 //!   behave identically to upstream cron jobs (zero upstream diff)
 //! - runHistory JSON blob → `one_employee_runs` table
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -34,9 +35,9 @@ use dream_core_team::TeamSessionService;
 
 use crate::error::EmployeeError;
 use crate::models::{
-    EMPLOYEE_GRANT_ALL, EMPLOYEE_GRANT_SUBJECT_TYPES, EMPLOYEE_PERMISSION_MANAGE, EMPLOYEE_PERMISSION_USE,
-    EmployeeGrantRow, EmployeeRunRow, PersonalAgentDto, PersonalAgentRow, RUN_FAILED, RUN_RUNNING, RUN_SUCCESS,
-    TRIGGER_BREAKDOWN, TRIGGER_CRON, TRIGGER_MANUAL,
+    CONTENT_RESOURCE_TYPES, ContentCategoryRow, ContentTagRow, EMPLOYEE_GRANT_ALL, EMPLOYEE_GRANT_SUBJECT_TYPES,
+    EMPLOYEE_PERMISSION_MANAGE, EMPLOYEE_PERMISSION_USE, EmployeeGrantRow, EmployeeRunRow, PersonalAgentDto,
+    PersonalAgentRow, RUN_FAILED, RUN_RUNNING, RUN_SUCCESS, TRIGGER_BREAKDOWN, TRIGGER_CRON, TRIGGER_MANUAL,
 };
 
 /// Outcome of a blocking run: the run/conversation linkage plus the agent's
@@ -199,6 +200,14 @@ async fn select_agent_for_use(
     if row.owner_user_id == user_id {
         return Ok(Some(row));
     }
+    // P1-1 round 1: an unpublished shared employee stays invisible to
+    // everyone but its owner, regardless of grants — same convention as
+    // skill/mcp's `published` filter. The owner's own access above is
+    // unaffected: publish state gates discoverability, not the owner's
+    // ability to run/manage their own draft.
+    if row.published == 0 {
+        return Ok(None);
+    }
     match effective_employee_permission(pool, tenant_id, user_id, agent_id).await? {
         Some(_) => Ok(Some(row)),
         None => Ok(None),
@@ -230,10 +239,13 @@ async fn select_available_agents(
         }
         // A non-owner reaching a `shared` row: visible only with an explicit
         // grant now (see migration 006's doc comment on `one_employee_grants`
-        // — this tightened `shared`'s default reach on purpose).
-        if effective_employee_permission(pool, tenant_id, user_id, &row.id)
-            .await?
-            .is_some()
+        // — this tightened `shared`'s default reach on purpose), AND only
+        // once published (P1-1 round 1 — an unpublished draft never appears
+        // in anyone else's available-agents list, granted or not).
+        if row.published != 0
+            && effective_employee_permission(pool, tenant_id, user_id, &row.id)
+                .await?
+                .is_some()
         {
             visible.push(row);
         }
@@ -440,6 +452,322 @@ async fn grant_employee_access(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Batch set `published` for a tenant's employees (P1-1 round 1). Loops the
+/// single-row update rather than one bulk statement, matching this
+/// codebase's own batch-operation idiom (`create_breakdown_children` in
+/// `dream-domain-devops`) — an id from another tenant is silently a no-op
+/// row (`WHERE id = ? AND tenant_id = ?` matches nothing) rather than an
+/// error, so one bad id in a batch doesn't fail the whole call.
+async fn set_published_batch(
+    pool: &SqlitePool,
+    tenant_id: &str,
+    ids: &[String],
+    published: bool,
+) -> Result<(), EmployeeError> {
+    let now = now_ms() as i64;
+    for id in ids {
+        sqlx::query("UPDATE one_personal_agents SET published = ?, updated_at = ? WHERE id = ? AND tenant_id = ?")
+            .bind(published as i64)
+            .bind(now)
+            .bind(id)
+            .bind(tenant_id)
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
+// ── content categories / tags (P1-1 round 1) ────────────────────────────
+//
+// Shared across skill/mcp/employee (see migration 007's own doc comment for
+// why this lives in this crate). `dream-domain-devops` calls these
+// functions through `EmployeeService`'s thin wrappers — it already has a
+// real Cargo dependency on this crate, so this is a normal function call,
+// not a cross-crate SQL read.
+
+fn validate_content_resource_type(resource_type: &str) -> Result<(), EmployeeError> {
+    if !CONTENT_RESOURCE_TYPES.contains(&resource_type) {
+        return Err(EmployeeError::BadRequest(format!(
+            "unknown resource type '{resource_type}' (allowed: skill/mcp/employee)"
+        )));
+    }
+    Ok(())
+}
+
+async fn list_categories(
+    pool: &SqlitePool,
+    tenant_id: &str,
+    resource_type: &str,
+) -> Result<Vec<ContentCategoryRow>, EmployeeError> {
+    validate_content_resource_type(resource_type)?;
+    let rows = sqlx::query_as::<_, ContentCategoryRow>(
+        "SELECT * FROM one_content_categories WHERE tenant_id = ? AND resource_type = ? \
+         ORDER BY sort_order ASC, created_at ASC",
+    )
+    .bind(tenant_id)
+    .bind(resource_type)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+async fn get_category(pool: &SqlitePool, id: &str) -> Result<ContentCategoryRow, EmployeeError> {
+    sqlx::query_as::<_, ContentCategoryRow>("SELECT * FROM one_content_categories WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| EmployeeError::BadRequest(format!("category '{id}' not found")))
+}
+
+async fn create_category(
+    pool: &SqlitePool,
+    tenant_id: &str,
+    resource_type: &str,
+    parent_id: Option<&str>,
+    name: &str,
+    sort_order: i64,
+) -> Result<ContentCategoryRow, EmployeeError> {
+    validate_content_resource_type(resource_type)?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(EmployeeError::BadRequest("category name must not be empty".into()));
+    }
+    let id = short_id("cat");
+    let now = now_ms() as i64;
+    sqlx::query(
+        "INSERT INTO one_content_categories \
+             (id, tenant_id, parent_id, resource_type, name, sort_order, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(tenant_id)
+    .bind(parent_id)
+    .bind(resource_type)
+    .bind(name)
+    .bind(sort_order)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    get_category(pool, &id).await
+}
+
+async fn update_category(
+    pool: &SqlitePool,
+    id: &str,
+    parent_id: Option<&str>,
+    name: &str,
+    sort_order: i64,
+) -> Result<ContentCategoryRow, EmployeeError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(EmployeeError::BadRequest("category name must not be empty".into()));
+    }
+    if parent_id == Some(id) {
+        return Err(EmployeeError::BadRequest("a category cannot be its own parent".into()));
+    }
+    let now = now_ms() as i64;
+    let result = sqlx::query(
+        "UPDATE one_content_categories SET parent_id = ?, name = ?, sort_order = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(parent_id)
+    .bind(name)
+    .bind(sort_order)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(EmployeeError::BadRequest(format!("category '{id}' not found")));
+    }
+    get_category(pool, id).await
+}
+
+/// Rejects deletion when child categories still point at this one — the
+/// tree can't have a dangling parent. Does NOT check whether any
+/// skill/mcp/employee row still references this as its `category_id`:
+/// those tables live in other crates (skill/mcp in `dream-domain-devops`,
+/// which this crate has no read access to — the dependency points the
+/// other way), and `category_id` is a soft, unenforced reference by design.
+/// A row whose category was deleted just reads as "uncategorized" the next
+/// time it's listed, rather than blocking the deletion or requiring a
+/// cross-crate integrity sweep.
+async fn delete_category(pool: &SqlitePool, id: &str) -> Result<(), EmployeeError> {
+    let has_children: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_content_categories WHERE parent_id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+    if has_children {
+        return Err(EmployeeError::BadRequest(
+            "delete or move this category's sub-categories first".into(),
+        ));
+    }
+    sqlx::query("DELETE FROM one_content_categories WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn list_tags(
+    pool: &SqlitePool,
+    tenant_id: &str,
+    resource_type: &str,
+) -> Result<Vec<ContentTagRow>, EmployeeError> {
+    validate_content_resource_type(resource_type)?;
+    let rows = sqlx::query_as::<_, ContentTagRow>(
+        "SELECT * FROM one_content_tags WHERE tenant_id = ? AND resource_type = ? ORDER BY name ASC",
+    )
+    .bind(tenant_id)
+    .bind(resource_type)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+async fn create_tag(
+    pool: &SqlitePool,
+    tenant_id: &str,
+    resource_type: &str,
+    name: &str,
+) -> Result<ContentTagRow, EmployeeError> {
+    validate_content_resource_type(resource_type)?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(EmployeeError::BadRequest("tag name must not be empty".into()));
+    }
+    let existing: Option<ContentTagRow> =
+        sqlx::query_as("SELECT * FROM one_content_tags WHERE tenant_id = ? AND resource_type = ? AND name = ?")
+            .bind(tenant_id)
+            .bind(resource_type)
+            .bind(name)
+            .fetch_optional(pool)
+            .await?;
+    if let Some(row) = existing {
+        return Ok(row);
+    }
+    let id = short_id("tag");
+    let now = now_ms() as i64;
+    sqlx::query("INSERT INTO one_content_tags (id, tenant_id, resource_type, name, created_at) VALUES (?, ?, ?, ?, ?)")
+        .bind(&id)
+        .bind(tenant_id)
+        .bind(resource_type)
+        .bind(name)
+        .bind(now)
+        .execute(pool)
+        .await?;
+    Ok(ContentTagRow {
+        id,
+        tenant_id: tenant_id.to_owned(),
+        resource_type: resource_type.to_owned(),
+        name: name.to_owned(),
+        created_at: now,
+    })
+}
+
+/// Deletes the tag and every link to it — no `ON DELETE CASCADE` is
+/// declared (SQLite FKs aren't enforced here), so the link cleanup is
+/// explicit.
+async fn delete_tag(pool: &SqlitePool, id: &str) -> Result<(), EmployeeError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM one_content_tag_links WHERE tag_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM one_content_tags WHERE id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Full replace of one resource's tag set — deletes existing links and
+/// inserts the new set in one transaction, matching this crate's own
+/// upsert-by-replace convention (see `grant_employee_access`'s sibling
+/// functions for the same "caller sends the whole desired state" shape).
+async fn set_resource_tags(
+    pool: &SqlitePool,
+    resource_type: &str,
+    resource_id: &str,
+    tag_ids: &[String],
+) -> Result<(), EmployeeError> {
+    validate_content_resource_type(resource_type)?;
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM one_content_tag_links WHERE resource_type = ? AND resource_id = ?")
+        .bind(resource_type)
+        .bind(resource_id)
+        .execute(&mut *tx)
+        .await?;
+    for tag_id in tag_ids {
+        sqlx::query("INSERT INTO one_content_tag_links (tag_id, resource_type, resource_id) VALUES (?, ?, ?)")
+            .bind(tag_id)
+            .bind(resource_type)
+            .bind(resource_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Tags for one resource — what the tag multi-select shows when editing a
+/// single item.
+async fn list_resource_tags(
+    pool: &SqlitePool,
+    resource_type: &str,
+    resource_id: &str,
+) -> Result<Vec<ContentTagRow>, EmployeeError> {
+    let rows = sqlx::query_as::<_, ContentTagRow>(
+        "SELECT t.* FROM one_content_tags t \
+         JOIN one_content_tag_links l ON l.tag_id = t.id \
+         WHERE l.resource_type = ? AND l.resource_id = ? ORDER BY t.name ASC",
+    )
+    .bind(resource_type)
+    .bind(resource_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Tags for a whole page of resources in one query, keyed by `resource_id`
+/// — what a list/table view uses to show tag chips per row without an N+1
+/// query per item.
+async fn list_tags_for_resources(
+    pool: &SqlitePool,
+    resource_type: &str,
+    resource_ids: &[String],
+) -> Result<HashMap<String, Vec<ContentTagRow>>, EmployeeError> {
+    if resource_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = vec!["?"; resource_ids.len()].join(", ");
+    let sql = format!(
+        "SELECT t.*, l.resource_id AS link_resource_id FROM one_content_tags t \
+         JOIN one_content_tag_links l ON l.tag_id = t.id \
+         WHERE l.resource_type = ? AND l.resource_id IN ({placeholders})"
+    );
+    let mut query = sqlx::query(&sql).bind(resource_type);
+    for resource_id in resource_ids {
+        query = query.bind(resource_id);
+    }
+    let rows = query.fetch_all(pool).await?;
+    let mut by_resource: HashMap<String, Vec<ContentTagRow>> = HashMap::new();
+    for row in rows {
+        use sqlx::Row;
+        let resource_id: String = row.try_get("link_resource_id")?;
+        let tag = ContentTagRow {
+            id: row.try_get("id")?,
+            tenant_id: row.try_get("tenant_id")?,
+            resource_type: row.try_get("resource_type")?,
+            name: row.try_get("name")?,
+            created_at: row.try_get("created_at")?,
+        };
+        by_resource.entry(resource_id).or_default().push(tag);
+    }
+    Ok(by_resource)
 }
 
 /// Truncate a reply to a 240-char run summary (matches the TS reference).
@@ -754,6 +1082,23 @@ impl EmployeeService {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
+    /// Batch set `published` for a tenant's employees (P1-1 round 1). Admin
+    /// operation — callers must run `require_registry_admin` first, same as
+    /// every other `admin/*` route in this crate. Loops the single-row
+    /// update rather than one bulk statement, matching this codebase's own
+    /// batch-operation idiom (`create_breakdown_children` in
+    /// `dream-domain-devops`) — an id from another tenant is silently a
+    /// no-op row (`WHERE id = ? AND tenant_id = ?` matches nothing) rather
+    /// than an error, so one bad id in a batch doesn't fail the whole call.
+    pub async fn set_published_batch(
+        &self,
+        tenant_id: &str,
+        ids: &[String],
+        published: bool,
+    ) -> Result<(), EmployeeError> {
+        set_published_batch(&self.pool, tenant_id, ids, published).await
+    }
+
     /// Same idiom as `dream_domain_devops::DevopsService::user_org_role`:
     /// direct SQL against one-org's table rather than a cross-crate
     /// dependency. `None` when one-org isn't initialized at all (personal /
@@ -843,6 +1188,90 @@ impl EmployeeService {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    // ── content categories / tags (P1-1 round 1) ──────────────────────
+    //
+    // Shared across skill/mcp/employee (see migration 007's own doc comment
+    // for why this lives in this crate). `dream-domain-devops` calls these
+    // methods directly — it already has a real Cargo dependency on this
+    // crate, so this is a normal function call, not a cross-crate SQL read.
+    // All thin `&self.pool` wrappers around free functions below, same
+    // testability shape as `select_agent_for_use`/`grant_employee_access`.
+
+    pub async fn list_categories(
+        &self,
+        tenant_id: &str,
+        resource_type: &str,
+    ) -> Result<Vec<ContentCategoryRow>, EmployeeError> {
+        list_categories(&self.pool, tenant_id, resource_type).await
+    }
+
+    pub async fn create_category(
+        &self,
+        tenant_id: &str,
+        resource_type: &str,
+        parent_id: Option<&str>,
+        name: &str,
+        sort_order: i64,
+    ) -> Result<ContentCategoryRow, EmployeeError> {
+        create_category(&self.pool, tenant_id, resource_type, parent_id, name, sort_order).await
+    }
+
+    pub async fn update_category(
+        &self,
+        id: &str,
+        parent_id: Option<&str>,
+        name: &str,
+        sort_order: i64,
+    ) -> Result<ContentCategoryRow, EmployeeError> {
+        update_category(&self.pool, id, parent_id, name, sort_order).await
+    }
+
+    pub async fn delete_category(&self, id: &str) -> Result<(), EmployeeError> {
+        delete_category(&self.pool, id).await
+    }
+
+    pub async fn list_tags(&self, tenant_id: &str, resource_type: &str) -> Result<Vec<ContentTagRow>, EmployeeError> {
+        list_tags(&self.pool, tenant_id, resource_type).await
+    }
+
+    pub async fn create_tag(
+        &self,
+        tenant_id: &str,
+        resource_type: &str,
+        name: &str,
+    ) -> Result<ContentTagRow, EmployeeError> {
+        create_tag(&self.pool, tenant_id, resource_type, name).await
+    }
+
+    pub async fn delete_tag(&self, id: &str) -> Result<(), EmployeeError> {
+        delete_tag(&self.pool, id).await
+    }
+
+    pub async fn set_resource_tags(
+        &self,
+        resource_type: &str,
+        resource_id: &str,
+        tag_ids: &[String],
+    ) -> Result<(), EmployeeError> {
+        set_resource_tags(&self.pool, resource_type, resource_id, tag_ids).await
+    }
+
+    pub async fn list_resource_tags(
+        &self,
+        resource_type: &str,
+        resource_id: &str,
+    ) -> Result<Vec<ContentTagRow>, EmployeeError> {
+        list_resource_tags(&self.pool, resource_type, resource_id).await
+    }
+
+    pub async fn list_tags_for_resources(
+        &self,
+        resource_type: &str,
+        resource_ids: &[String],
+    ) -> Result<HashMap<String, Vec<ContentTagRow>>, EmployeeError> {
+        list_tags_for_resources(&self.pool, resource_type, resource_ids).await
     }
 
     /// Set an employee's visibility ('private' | 'shared'). Owner-only: only
@@ -1678,6 +2107,9 @@ mod tests {
             schedule_enabled: 0,
             next_run_at: None,
             visibility: "private".into(),
+            origin: "self_built".into(),
+            category_id: None,
+            published: 1,
             created_at: 0,
             updated_at: 0,
         }
@@ -2062,5 +2494,186 @@ mod tests {
         // At always returns the absolute timestamp regardless of `now`.
         assert_eq!(compute_next_run(&schedule, 1000), Some(5_000));
         assert_eq!(compute_next_run(&schedule, 100_000), Some(5_000));
+    }
+
+    // ── content categories / tags / published (P1-1 round 1) ───────────
+
+    async fn insert_agent_with_published(
+        pool: &SqlitePool,
+        id: &str,
+        owner: &str,
+        tenant: &str,
+        visibility: &str,
+        published: i64,
+    ) {
+        sqlx::query(
+            "INSERT INTO one_personal_agents \
+             (id, owner_user_id, tenant_id, name, agent_type, automation_config, schedule_enabled, visibility, published, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, 'claude', '{}', 0, ?, ?, 0, 0)",
+        )
+        .bind(id)
+        .bind(owner)
+        .bind(tenant)
+        .bind(id)
+        .bind(visibility)
+        .bind(published)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn unpublished_shared_employee_is_invisible_even_with_a_grant() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        run_one_employee_migrations(db.pool()).await.unwrap();
+        let pool = db.pool();
+        insert_agent_with_published(pool, "a1", "A", "t1", "shared", 0).await;
+        insert_employee_grant(pool, "t1", "member", "B", "a1", "manage").await;
+
+        // Owner still sees their own unpublished draft.
+        assert!(select_agent_for_use(pool, "A", "t1", "a1").await.unwrap().is_some());
+        // A non-owner with a `manage` grant still can't reach it while unpublished.
+        assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_none());
+        let ids: std::collections::HashSet<String> = select_available_agents(pool, "B", "t1")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert!(!ids.contains("a1"));
+    }
+
+    #[tokio::test]
+    async fn category_tree_crud_and_delete_rejects_with_children() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        run_one_employee_migrations(db.pool()).await.unwrap();
+        let pool = db.pool();
+
+        let root = create_category(pool, "t1", "skill", None, "  运维  ", 0).await.unwrap();
+        assert_eq!(root.name, "运维", "name must be trimmed");
+        assert!(root.parent_id.is_none());
+
+        let child = create_category(pool, "t1", "skill", Some(&root.id), "Kubernetes", 1)
+            .await
+            .unwrap();
+        assert_eq!(child.parent_id.as_deref(), Some(root.id.as_str()));
+
+        // A category from a different resource_type is invisible to this list.
+        create_category(pool, "t1", "mcp", None, "工具分类", 0).await.unwrap();
+        let skill_categories = list_categories(pool, "t1", "skill").await.unwrap();
+        assert_eq!(skill_categories.len(), 2);
+
+        // Deleting the root while it still has a child is rejected.
+        assert!(delete_category(pool, &root.id).await.is_err());
+
+        let updated = update_category(pool, &child.id, None, "K8s", 5).await.unwrap();
+        assert_eq!(updated.name, "K8s");
+        assert!(updated.parent_id.is_none(), "reassigned to root");
+
+        // Now the (former) root has no children and can be deleted.
+        delete_category(pool, &root.id).await.unwrap();
+        assert!(
+            list_categories(pool, "t1", "skill")
+                .await
+                .unwrap()
+                .iter()
+                .any(|c| c.id == child.id)
+        );
+
+        assert!(matches!(
+            create_category(pool, "t1", "bogus", None, "x", 0).await,
+            Err(EmployeeError::BadRequest(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn tag_create_is_idempotent_by_name_and_delete_cascades_links() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        run_one_employee_migrations(db.pool()).await.unwrap();
+        let pool = db.pool();
+
+        let tag1 = create_tag(pool, "t1", "skill", "生产力").await.unwrap();
+        let tag2 = create_tag(pool, "t1", "skill", "生产力").await.unwrap();
+        assert_eq!(tag1.id, tag2.id, "re-creating the same name returns the existing row");
+        assert_eq!(list_tags(pool, "t1", "skill").await.unwrap().len(), 1);
+
+        set_resource_tags(pool, "skill", "sk_1", std::slice::from_ref(&tag1.id))
+            .await
+            .unwrap();
+        assert_eq!(list_resource_tags(pool, "skill", "sk_1").await.unwrap().len(), 1);
+
+        delete_tag(pool, &tag1.id).await.unwrap();
+        assert!(list_resource_tags(pool, "skill", "sk_1").await.unwrap().is_empty());
+        assert!(list_tags(pool, "t1", "skill").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_resource_tags_fully_replaces_the_previous_set() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        run_one_employee_migrations(db.pool()).await.unwrap();
+        let pool = db.pool();
+        let a = create_tag(pool, "t1", "skill", "a").await.unwrap();
+        let b = create_tag(pool, "t1", "skill", "b").await.unwrap();
+
+        set_resource_tags(pool, "skill", "sk_1", &[a.id.clone(), b.id.clone()])
+            .await
+            .unwrap();
+        assert_eq!(list_resource_tags(pool, "skill", "sk_1").await.unwrap().len(), 2);
+
+        set_resource_tags(pool, "skill", "sk_1", std::slice::from_ref(&b.id))
+            .await
+            .unwrap();
+        let remaining = list_resource_tags(pool, "skill", "sk_1").await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, b.id);
+    }
+
+    #[tokio::test]
+    async fn list_tags_for_resources_batches_without_n_plus_one() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        run_one_employee_migrations(db.pool()).await.unwrap();
+        let pool = db.pool();
+        let tag = create_tag(pool, "t1", "skill", "热门").await.unwrap();
+        set_resource_tags(pool, "skill", "sk_1", std::slice::from_ref(&tag.id))
+            .await
+            .unwrap();
+        set_resource_tags(pool, "skill", "sk_2", std::slice::from_ref(&tag.id))
+            .await
+            .unwrap();
+
+        let by_resource = list_tags_for_resources(
+            pool,
+            "skill",
+            &["sk_1".to_owned(), "sk_2".to_owned(), "sk_3".to_owned()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(by_resource.get("sk_1").map(Vec::len), Some(1));
+        assert_eq!(by_resource.get("sk_2").map(Vec::len), Some(1));
+        assert!(!by_resource.contains_key("sk_3"));
+    }
+
+    #[tokio::test]
+    async fn set_published_batch_is_scoped_to_tenant() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        run_one_employee_migrations(db.pool()).await.unwrap();
+        let pool = db.pool();
+        insert_agent(pool, "a1", "A", "t1", "shared").await;
+        insert_agent(pool, "a2", "A", "t2", "shared").await;
+
+        set_published_batch(pool, "t1", &["a1".to_owned(), "a2".to_owned()], false)
+            .await
+            .unwrap();
+
+        let a1_published: i64 = sqlx::query_scalar("SELECT published FROM one_personal_agents WHERE id = 'a1'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        let a2_published: i64 = sqlx::query_scalar("SELECT published FROM one_personal_agents WHERE id = 'a2'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(a1_published, 0, "a1 is in tenant t1, must be unpublished");
+        assert_eq!(a2_published, 1, "a2 is in tenant t2, the batch call must not touch it");
     }
 }
