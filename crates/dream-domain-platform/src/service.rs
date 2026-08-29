@@ -23,8 +23,9 @@ use crate::container::{ContainerRuntime, ContainerSettings, ContainerStatus, Noo
 use crate::error::PlatformError;
 use crate::ip_allowlist::ip_allowed;
 use crate::models::{
-    ApiKeyDto, CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, IpAllowlistConfigDto, MyNotificationDto,
-    MyNotificationsDto, NewApiKeyDto, NotificationDto, ResourceGrantDto, SceneDto, SecurityPolicyDto, SiemConfigDto,
+    ApiKeyDto, CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto,
+    FileVaultReconcileEntry, IpAllowlistConfigDto, MyNotificationDto, MyNotificationsDto, NewApiKeyDto,
+    NotificationDto, ResourceGrantDto, SceneDto, SecurityPolicyDto, SiemConfigDto,
 };
 use crate::siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
 
@@ -85,6 +86,11 @@ pub struct PlatformService {
     container_runtime: Arc<dyn ContainerRuntime>,
     collaboration_provider: Arc<dyn CollaborationProvider>,
     siem_exporter: Arc<dyn SiemExporter>,
+    /// Root directory for the personal file vault (P2-4). Objects live at
+    /// `<root>/<tenant>/<user>/…`; the ledger stays in SQLite. Wired at the
+    /// app layer (`<data_dir>/file-vault`); `None` → uploads and
+    /// reconciliation report "not configured" instead of touching disk.
+    storage_root: Option<std::path::PathBuf>,
 }
 
 fn is_admin_role(role: &str) -> bool {
@@ -99,6 +105,7 @@ impl PlatformService {
             container_runtime: Arc::new(NoopContainerRuntime),
             collaboration_provider: Arc::new(NoopCollaborationProvider),
             siem_exporter: Arc::new(NoopSiemExporter),
+            storage_root: None,
         }
     }
 
@@ -106,6 +113,14 @@ impl PlatformService {
     /// app layer. Chainable at construction time.
     pub fn with_container_runtime(mut self, runtime: Arc<dyn ContainerRuntime>) -> Self {
         self.container_runtime = runtime;
+        self
+    }
+
+    /// Point the personal file vault (P2-4) at its storage root —
+    /// `<data_dir>/file-vault` at the app layer. Chainable at construction
+    /// time.
+    pub fn with_storage_root(mut self, root: std::path::PathBuf) -> Self {
+        self.storage_root = Some(root);
         self
     }
 
@@ -1840,6 +1855,437 @@ impl PlatformService {
         }
         Ok(())
     }
+
+    // --- Personal file vault (P2-4 个人文件仓库) ---
+
+    /// Vault state for one member. No settings row = available / unlimited —
+    /// the row is created lazily on first freeze/quota touch (see the
+    /// migration's comment), so absence must not read as frozen.
+    async fn vault_settings(&self, tenant_id: &str, user_id: &str) -> Result<(String, Option<i64>), PlatformError> {
+        let row: Option<(String, Option<i64>)> = sqlx::query_as(
+            "SELECT status, quota_bytes FROM one_file_vault_settings WHERE tenant_id = ? AND user_id = ?",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.unwrap_or_else(|| ("available".to_owned(), None)))
+    }
+
+    /// One member's own vault view: status, quota, usage, object count.
+    pub async fn my_vault(&self, tenant_id: &str, user_id: &str) -> Result<FileVaultDto, PlatformError> {
+        let (status, quota_bytes) = self.vault_settings(tenant_id, user_id).await?;
+        let (usage_bytes, object_count): (i64, i64) = sqlx::query_as(
+            "SELECT COALESCE(SUM(size_bytes), 0), COUNT(*) FROM one_file_vault_objects \
+             WHERE tenant_id = ? AND user_id = ? AND deleted_at IS NULL",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(FileVaultDto {
+            user_id: user_id.to_owned(),
+            status,
+            quota_bytes,
+            usage_bytes,
+            object_count,
+        })
+    }
+
+    fn vault_user_dir(&self, tenant_id: &str, user_id: &str) -> Result<std::path::PathBuf, PlatformError> {
+        let root = self
+            .storage_root
+            .as_ref()
+            .ok_or_else(|| PlatformError::Internal("file vault storage root is not configured".into()))?;
+        Ok(root.join(tenant_id).join(user_id))
+    }
+
+    /// Store one uploaded object. Refuses a frozen vault (compliance hold on
+    /// new data — existing objects stay readable and deletable) and a full
+    /// quota; the disk write happens after the ledger insert would have been
+    /// validated, and a failed disk write aborts the whole call so the
+    /// ledger and the bytes never disagree from this path.
+    pub async fn upload_vault_object(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        file_name: &str,
+        bytes: &[u8],
+    ) -> Result<FileVaultObjectDto, PlatformError> {
+        let (status, quota_bytes) = self.vault_settings(tenant_id, user_id).await?;
+        if status == "frozen" {
+            return Err(PlatformError::Forbidden("file vault is frozen".into()));
+        }
+        let (usage_bytes,): (i64,) = sqlx::query_as(
+            "SELECT COALESCE(SUM(size_bytes), 0) FROM one_file_vault_objects \
+             WHERE tenant_id = ? AND user_id = ? AND deleted_at IS NULL",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await?;
+        if let Some(quota) = quota_bytes {
+            if usage_bytes + bytes.len() as i64 > quota {
+                return Err(PlatformError::BadRequest("file vault quota exceeded".into()));
+            }
+        }
+        let file_name = sanitize_vault_file_name(file_name);
+        if file_name.is_empty() {
+            return Err(PlatformError::BadRequest("file name must not be empty".into()));
+        }
+
+        let id = generate_prefixed_id("vf");
+        let sha256 = format!("{:x}", Sha256::digest(bytes));
+        let storage_name = format!("{id}__{file_name}");
+        let dir = self.vault_user_dir(tenant_id, user_id)?;
+        let storage_key = format!("{tenant_id}/{user_id}/{storage_name}");
+
+        sqlx::query(
+            "INSERT INTO one_file_vault_objects (id, tenant_id, user_id, file_name, size_bytes, sha256, storage_key, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(&file_name)
+        .bind(bytes.len() as i64)
+        .bind(&sha256)
+        .bind(&storage_key)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?;
+
+        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join(&storage_name), bytes)) {
+            // The ledger row must not outlive its bytes: roll the row back so
+            // usage stays truthful for the reconcile pass.
+            let _ = sqlx::query("DELETE FROM one_file_vault_objects WHERE id = ?")
+                .bind(&id)
+                .execute(&self.pool)
+                .await;
+            return Err(PlatformError::Internal(format!("failed to store vault object: {e}")));
+        }
+
+        Ok(FileVaultObjectDto {
+            id,
+            file_name,
+            size_bytes: bytes.len() as i64,
+            sha256,
+            created_at: now_ms(),
+            deleted_at: None,
+        })
+    }
+
+    /// The caller's own stored objects, newest first, including tombstones
+    /// (they are the owner's audit trail).
+    pub async fn list_my_vault_objects(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+    ) -> Result<Vec<FileVaultObjectDto>, PlatformError> {
+        self.list_vault_objects(tenant_id, user_id).await
+    }
+
+    async fn list_vault_objects(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+    ) -> Result<Vec<FileVaultObjectDto>, PlatformError> {
+        let rows: Vec<(String, String, i64, String, i64, Option<i64>)> = sqlx::query_as(
+            "SELECT id, file_name, size_bytes, sha256, created_at, deleted_at \
+             FROM one_file_vault_objects WHERE tenant_id = ? AND user_id = ? ORDER BY created_at DESC",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, file_name, size_bytes, sha256, created_at, deleted_at)| FileVaultObjectDto {
+                    id,
+                    file_name,
+                    size_bytes,
+                    sha256,
+                    created_at,
+                    deleted_at,
+                },
+            )
+            .collect())
+    }
+
+    /// Resolve one object for download. Only the owner (or a tenant admin —
+    /// separate admin route) may read it; the storage path is joined from the
+    /// ledger row's stored key, never from request input.
+    pub async fn read_vault_object(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        id: &str,
+    ) -> Result<(FileVaultObjectDto, Vec<u8>), PlatformError> {
+        let row: Option<(String, i64, String, String, i64)> = sqlx::query_as(
+            "SELECT file_name, size_bytes, storage_key, sha256, created_at FROM one_file_vault_objects \
+             WHERE tenant_id = ? AND user_id = ? AND id = ? AND deleted_at IS NULL",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((file_name, size_bytes, storage_key, sha256, created_at)) = row else {
+            return Err(PlatformError::NotFound("vault object not found".into()));
+        };
+        let root = self
+            .storage_root
+            .as_ref()
+            .ok_or_else(|| PlatformError::Internal("file vault storage root is not configured".into()))?;
+        let bytes = std::fs::read(root.join(&storage_key))
+            .map_err(|e| PlatformError::Internal(format!("failed to read vault object: {e}")))?;
+        Ok((
+            FileVaultObjectDto {
+                id: id.to_owned(),
+                file_name,
+                size_bytes,
+                sha256,
+                created_at,
+                deleted_at: None,
+            },
+            bytes,
+        ))
+    }
+
+    /// Owner deletes one of their own objects: tombstone the row, remove the
+    /// bytes. A failed disk removal still tombstones — the reconcile pass
+    /// reports leftovers, and a delete that 500s forever because a file
+    /// vanished out-of-band would be worse.
+    pub async fn delete_vault_object(&self, tenant_id: &str, user_id: &str, id: &str) -> Result<(), PlatformError> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT storage_key FROM one_file_vault_objects \
+             WHERE tenant_id = ? AND user_id = ? AND id = ? AND deleted_at IS NULL",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((storage_key,)) = row else {
+            return Err(PlatformError::NotFound("vault object not found".into()));
+        };
+        sqlx::query("UPDATE one_file_vault_objects SET deleted_at = ? WHERE id = ?")
+            .bind(now_ms())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if let Some(root) = self.storage_root.as_ref() {
+            let _ = std::fs::remove_file(root.join(&storage_key));
+        }
+        Ok(())
+    }
+
+    /// Every member's vault for the admin governance page: the union of
+    /// current members and anyone who ever stored an object (a departed
+    /// member's frozen vault with files still shows up — that is exactly the
+    /// row an admin needs to see when offboarding).
+    pub async fn admin_list_vaults(&self, tenant_id: &str) -> Result<Vec<FileVaultDto>, PlatformError> {
+        let rows: Vec<(String, Option<String>, Option<i64>, i64, i64)> = sqlx::query_as(
+            "SELECT u.user_id, s.status, s.quota_bytes, COALESCE(o.usage_bytes, 0), COALESCE(o.object_count, 0) \
+             FROM (SELECT user_id FROM one_user_org WHERE tenant_id = ? \
+                   UNION SELECT DISTINCT user_id FROM one_file_vault_objects WHERE tenant_id = ?) u \
+             LEFT JOIN one_file_vault_settings s ON s.tenant_id = ? AND s.user_id = u.user_id \
+             LEFT JOIN (SELECT user_id, SUM(size_bytes) AS usage_bytes, COUNT(*) AS object_count \
+                        FROM one_file_vault_objects WHERE tenant_id = ? AND deleted_at IS NULL GROUP BY user_id) o \
+                      ON o.user_id = u.user_id \
+             ORDER BY u.user_id",
+        )
+        .bind(tenant_id)
+        .bind(tenant_id)
+        .bind(tenant_id)
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(user_id, status, quota_bytes, usage_bytes, object_count)| FileVaultDto {
+                    user_id,
+                    status: status.unwrap_or_else(|| "available".to_owned()),
+                    quota_bytes,
+                    usage_bytes,
+                    object_count,
+                },
+            )
+            .collect())
+    }
+
+    /// Freeze or release one member's vault. Freezing blocks new uploads
+    /// only — see the migration's comment for why existing objects stay
+    /// readable and deletable.
+    pub async fn admin_set_vault_status(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        status: &str,
+    ) -> Result<(), PlatformError> {
+        if !matches!(status, "available" | "frozen") {
+            return Err(PlatformError::BadRequest(format!("unknown vault status '{status}'")));
+        }
+        sqlx::query(
+            "INSERT INTO one_file_vault_settings (tenant_id, user_id, status, quota_bytes, updated_at) \
+             VALUES (?, ?, ?, NULL, ?) \
+             ON CONFLICT(tenant_id, user_id) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(status)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Set (or clear, `None`) one member's vault quota. Passes an explicit
+    /// status so a quota edit on a frozen vault does not silently unfreeze it.
+    pub async fn admin_set_vault_quota(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        quota_bytes: Option<i64>,
+    ) -> Result<(), PlatformError> {
+        if let Some(q) = quota_bytes {
+            if q < 0 {
+                return Err(PlatformError::BadRequest("quota must not be negative".into()));
+            }
+        }
+        let (status, _) = self.vault_settings(tenant_id, user_id).await?;
+        sqlx::query(
+            "INSERT INTO one_file_vault_settings (tenant_id, user_id, status, quota_bytes, updated_at) \
+             VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(tenant_id, user_id) DO UPDATE SET quota_bytes = excluded.quota_bytes, \
+                 updated_at = excluded.updated_at",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(status)
+        .bind(quota_bytes)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The reconcile pass ("对账"): walk the tenant's storage directories and
+    /// compare what is on disk against the ledger. Three mismatch classes per
+    /// member — ledger rows missing bytes, bytes missing a ledger row, and
+    /// rows whose on-disk size disagrees. A not-configured storage root is an
+    /// error, not an empty report: an admin asking for reconciliation must
+    /// not be told "everything matches" when nothing was checked.
+    pub async fn admin_reconcile_vaults(&self, tenant_id: &str) -> Result<Vec<FileVaultReconcileEntry>, PlatformError> {
+        let root = self
+            .storage_root
+            .as_ref()
+            .ok_or_else(|| PlatformError::Internal("file vault storage root is not configured".into()))?;
+        let tenant_dir = root.join(tenant_id);
+        let mut entries: Vec<FileVaultReconcileEntry> = Vec::new();
+
+        // Ledger side, grouped by member: id + file_name + size per live row.
+        let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
+            "SELECT user_id, id, file_name, size_bytes FROM one_file_vault_objects \
+             WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY user_id, id",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut ledger: std::collections::BTreeMap<String, Vec<(String, String, i64)>> = Default::default();
+        for (user_id, id, file_name, size_bytes) in rows {
+            ledger.entry(user_id).or_default().push((id, file_name, size_bytes));
+        }
+
+        // Disk side: `<root>/<tenant>/<user>/<object_id>__<name>`.
+        let mut on_disk: std::collections::BTreeMap<String, Vec<(String, u64)>> = Default::default();
+        if let Ok(user_dirs) = std::fs::read_dir(&tenant_dir) {
+            for user_dir in user_dirs.flatten() {
+                let user_id = user_dir.file_name().to_string_lossy().to_string();
+                if let Ok(files) = std::fs::read_dir(user_dir.path()) {
+                    for file in files.flatten() {
+                        let Ok(meta) = file.metadata() else { continue };
+                        if !meta.is_file() {
+                            continue;
+                        }
+                        let name = file.file_name().to_string_lossy().to_string();
+                        let object_id = name.split("__").next().unwrap_or(&name).to_owned();
+                        on_disk
+                            .entry(user_id.clone())
+                            .or_default()
+                            .push((object_id, meta.len()));
+                    }
+                }
+            }
+        }
+
+        for user_id in ledger
+            .keys()
+            .chain(on_disk.keys())
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            let ledger_rows = ledger.get(user_id).cloned().unwrap_or_default();
+            let disk_files = on_disk.get(user_id).cloned().unwrap_or_default();
+            let mut entry = FileVaultReconcileEntry {
+                user_id: user_id.to_owned(),
+                missing_on_disk: Vec::new(),
+                missing_in_ledger: Vec::new(),
+                size_mismatches: Vec::new(),
+            };
+            for (id, file_name, size_bytes) in &ledger_rows {
+                match disk_files.iter().find(|(disk_id, _)| disk_id == id) {
+                    None => entry.missing_on_disk.push(format!("{file_name} ({id})")),
+                    Some((_, disk_size)) if *disk_size != *size_bytes as u64 => {
+                        entry.size_mismatches.push(format!("{file_name} ({id})"));
+                    }
+                    Some(_) => {}
+                }
+            }
+            for (disk_id, _) in &disk_files {
+                if !ledger_rows.iter().any(|(id, _, _)| id == disk_id) {
+                    entry.missing_in_ledger.push(disk_id.clone());
+                }
+            }
+            if !entry.missing_on_disk.is_empty()
+                || !entry.missing_in_ledger.is_empty()
+                || !entry.size_mismatches.is_empty()
+            {
+                entries.push(entry);
+            }
+        }
+        Ok(entries)
+    }
+
+    /// Admin listing of one member's stored objects (including tombstones).
+    pub async fn admin_list_vault_objects(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+    ) -> Result<Vec<FileVaultObjectDto>, PlatformError> {
+        self.list_vault_objects(tenant_id, user_id).await
+    }
+}
+
+/// Keep only the final path component of an uploaded file name and strip
+/// characters that make the storage name unpleasant or unsafe. The storage
+/// name is `<object_id>__<sanitized>` under an id-scoped directory, so this
+/// is defense in depth — the directory layout already prevents traversal.
+fn sanitize_vault_file_name(raw: &str) -> String {
+    let name = std::path::Path::new(raw)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    name.chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect::<String>()
+        .trim()
+        .to_owned()
 }
 
 type ApiKeyRow = (
@@ -2976,6 +3422,198 @@ mod tests {
                 .unwrap_err()
                 .code(),
             "BAD_REQUEST"
+        );
+    }
+
+    // --- Personal file vault (P2-4 个人文件仓库) ---
+
+    async fn setup_vault(tag: &str) -> (dream_core_db::Database, PlatformService, std::path::PathBuf) {
+        let (db, _) = setup().await;
+        let root = std::env::temp_dir().join(format!("one-platform-vault-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let service = PlatformService::new(db.pool().clone(), [7u8; 32]).with_storage_root(root.clone());
+        (db, service, root)
+    }
+
+    #[tokio::test]
+    async fn vault_upload_stores_bytes_ledger_and_usage_in_agreement() {
+        let (_db, service, _root) = setup_vault("roundtrip").await;
+        let stored = service
+            .upload_vault_object("t1", "alice", "notes.txt", b"hello vault")
+            .await
+            .unwrap();
+        assert_eq!(stored.file_name, "notes.txt");
+
+        let vault = service.my_vault("t1", "alice").await.unwrap();
+        assert_eq!(vault.usage_bytes, 11);
+        assert_eq!(vault.object_count, 1);
+        assert_eq!(vault.status, "available");
+        assert_eq!(vault.quota_bytes, None);
+
+        // Reading back yields the exact bytes that went in.
+        let (dto, bytes) = service.read_vault_object("t1", "alice", &stored.id).await.unwrap();
+        assert_eq!(bytes, b"hello vault");
+        assert_eq!(dto.file_name, "notes.txt");
+
+        // A member with no vault activity reads as available / unlimited.
+        let bob = service.my_vault("t1", "bob").await.unwrap();
+        assert_eq!(bob.status, "available");
+        assert_eq!(bob.usage_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn frozen_vault_blocks_uploads_but_keeps_existing_objects_usable() {
+        let (_db, service, _root) = setup_vault("frozen").await;
+        let stored = service
+            .upload_vault_object("t1", "alice", "keep.txt", b"keep me")
+            .await
+            .unwrap();
+        service.admin_set_vault_status("t1", "alice", "frozen").await.unwrap();
+
+        let err = service
+            .upload_vault_object("t1", "alice", "new.txt", b"nope")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "FORBIDDEN");
+
+        // The hold is on new data, not on the member's own history.
+        let (_, bytes) = service.read_vault_object("t1", "alice", &stored.id).await.unwrap();
+        assert_eq!(bytes, b"keep me");
+        service.delete_vault_object("t1", "alice", &stored.id).await.unwrap();
+        assert_eq!(service.my_vault("t1", "alice").await.unwrap().object_count, 0);
+
+        // Releasing the vault lets uploads through again, and unknown
+        // statuses are rejected.
+        service
+            .admin_set_vault_status("t1", "alice", "available")
+            .await
+            .unwrap();
+        assert!(
+            service
+                .upload_vault_object("t1", "alice", "new.txt", b"ok")
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            service
+                .admin_set_vault_status("t1", "alice", "shredded")
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+    }
+
+    #[tokio::test]
+    async fn vault_quota_blocks_the_upload_that_would_exceed_it() {
+        let (_db, service, _root) = setup_vault("quota").await;
+        service.admin_set_vault_quota("t1", "alice", Some(10)).await.unwrap();
+        service
+            .upload_vault_object("t1", "alice", "six.bin", b"123456")
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .upload_vault_object("t1", "alice", "six.bin", b"123456")
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+        // Exactly filling the quota is fine; a negative quota is not.
+        assert!(
+            service
+                .upload_vault_object("t1", "alice", "four.bin", b"1234")
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            service
+                .admin_set_vault_quota("t1", "alice", Some(-1))
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_reports_missing_orphan_and_size_mismatches() {
+        let (_db, service, root) = setup_vault("reconcile").await;
+        let a = service
+            .upload_vault_object("t1", "alice", "a.txt", b"aaaaa")
+            .await
+            .unwrap();
+        let b = service
+            .upload_vault_object("t1", "alice", "b.txt", b"bbbbb")
+            .await
+            .unwrap();
+        let c = service
+            .upload_vault_object("t1", "alice", "c.txt", b"ccccc")
+            .await
+            .unwrap();
+
+        // a: file vanishes out-of-band → missing on disk.
+        std::fs::remove_file(root.join("t1").join("alice").join(format!("{}__a.txt", a.id))).unwrap();
+        // b: truncated in place → size mismatch.
+        std::fs::write(root.join("t1").join("alice").join(format!("{}__b.txt", b.id)), b"b").unwrap();
+        // Orphan: bytes with no ledger row → missing in ledger.
+        std::fs::write(root.join("t1").join("alice").join("orphan__orphan.bin"), b"zz").unwrap();
+
+        let report = service.admin_reconcile_vaults("t1").await.unwrap();
+        assert_eq!(report.len(), 1, "only alice's vault is inconsistent: {report:?}");
+        let entry = &report[0];
+        assert_eq!(entry.user_id, "alice");
+        assert_eq!(entry.missing_on_disk, vec![format!("a.txt ({})", a.id)]);
+        assert_eq!(entry.size_mismatches, vec![format!("b.txt ({})", b.id)]);
+        assert_eq!(entry.missing_in_ledger.len(), 1);
+        assert!(entry.missing_in_ledger[0].starts_with("orphan"));
+
+        // c is intact, so a clean tenant yields an empty report.
+        assert!(service.read_vault_object("t1", "alice", &c.id).await.is_ok());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn vault_file_names_cannot_traverse_and_tombstones_survive() {
+        let (_db, service, root) = setup_vault("sanitize").await;
+        // Traversal components are dropped by the file-name extraction, not
+        // by relying on platform-specific separators.
+        let stored = service
+            .upload_vault_object("t1", "alice", "../../../evil?.txt", b"safe")
+            .await
+            .unwrap();
+        assert_eq!(stored.file_name, "evil_.txt");
+        // The object landed inside the member's own directory.
+        assert!(
+            root.join("t1")
+                .join("alice")
+                .join(format!("{}__evil_.txt", stored.id))
+                .is_file()
+        );
+
+        service.delete_vault_object("t1", "alice", &stored.id).await.unwrap();
+        // Tombstoned: gone from live reads and from usage, kept in the ledger.
+        assert_eq!(
+            service
+                .read_vault_object("t1", "alice", &stored.id)
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND"
+        );
+        assert_eq!(service.my_vault("t1", "alice").await.unwrap().usage_bytes, 0);
+        let listed = service.list_my_vault_objects("t1", "alice").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].deleted_at.is_some());
+        // Deleting it again is a NotFound, not a double tombstone.
+        assert_eq!(
+            service
+                .delete_vault_object("t1", "alice", &stored.id)
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND"
         );
     }
 }

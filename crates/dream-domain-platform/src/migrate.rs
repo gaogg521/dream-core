@@ -22,6 +22,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ),
     ("006_api_keys", include_str!("../migrations/006_api_keys.sql")),
     ("007_notifications", include_str!("../migrations/007_notifications.sql")),
+    ("008_file_vault", include_str!("../migrations/008_file_vault.sql")),
 ];
 
 /// Run all pending one-platform migrations. Idempotent; call once at startup

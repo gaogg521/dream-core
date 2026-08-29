@@ -1832,10 +1832,15 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
 
     // Built ahead of `AuthState` so the IP allowlist can be wired into the
     // auth middleware — mirrors `create_router_with_all_state`.
-    let one_platform_service = std::sync::Arc::new(dream_domain_platform::PlatformService::new(
-        services.database.pool().clone(),
-        crate::config::derive_encryption_key(&services.data_secret_raw),
-    ));
+    let one_platform_service = std::sync::Arc::new(
+        dream_domain_platform::PlatformService::new(
+            services.database.pool().clone(),
+            crate::config::derive_encryption_key(&services.data_secret_raw),
+        )
+        // P2-4 personal file vault: same shared data dir / storage root as
+        // the main binary (see create_router_with_runtime's wiring).
+        .with_storage_root(services.data_dir.join("file-vault")),
+    );
     let policy_grace = services.policy_grace.clone();
     let ip_allowlist: Option<std::sync::Arc<dyn dream_core_auth::IpAllowlistGate>> =
         Some(std::sync::Arc::new(PlatformIpAllowlistGate {
@@ -2019,10 +2024,15 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // through a single shared `AuthState`. Cheap to construct this early:
     // only needs the pool + encryption key, both already on `services`.
     #[cfg(feature = "enterprise")]
-    let one_platform_service = std::sync::Arc::new(dream_domain_platform::PlatformService::new(
-        services.database.pool().clone(),
-        crate::config::derive_encryption_key(&services.data_secret_raw),
-    ));
+    let one_platform_service = std::sync::Arc::new(
+        dream_domain_platform::PlatformService::new(
+            services.database.pool().clone(),
+            crate::config::derive_encryption_key(&services.data_secret_raw),
+        )
+        // P2-4 personal file vault: objects live under the shared data dir,
+        // same volume both binaries see (T2 verified concurrent access).
+        .with_storage_root(services.data_dir.join("file-vault")),
+    );
 
     // One tracker per process, shared by every enterprise gate: they all read
     // the same plane, so one of them reaching it proves the plane is alive for

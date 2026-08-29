@@ -191,3 +191,46 @@ pub struct MyNotificationsDto {
     pub notifications: Vec<MyNotificationDto>,
     pub unread_count: i64,
 }
+
+/// One member's file vault as the admin governance page shows it ("个人文件
+/// 仓库", align-openocta P2-4): availability status, optional quota, and
+/// usage aggregated from the object ledger. A member with no settings row
+/// reads as available / unlimited — see the migration's comment.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileVaultDto {
+    pub user_id: String,
+    /// `"available" | "frozen"`.
+    pub status: String,
+    pub quota_bytes: Option<i64>,
+    pub usage_bytes: i64,
+    pub object_count: i64,
+}
+
+/// One stored vault object, admin or owner view. `deleted_at` is set for
+/// tombstoned rows (the disk file is gone; the ledger row stays for the
+/// audit trail).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileVaultObjectDto {
+    pub id: String,
+    pub file_name: String,
+    pub size_bytes: i64,
+    pub sha256: String,
+    pub created_at: i64,
+    pub deleted_at: Option<i64>,
+}
+
+/// One member's reconciliation result: what the ledger claims vs what the
+/// storage directory actually holds.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileVaultReconcileEntry {
+    pub user_id: String,
+    /// Ledger rows with no file on disk (data loss or out-of-band deletion).
+    pub missing_on_disk: Vec<String>,
+    /// Files on disk with no ledger row (out-of-band writes).
+    pub missing_in_ledger: Vec<String>,
+    /// Ledger rows whose on-disk size differs from `size_bytes`.
+    pub size_mismatches: Vec<String>,
+}

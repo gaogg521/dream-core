@@ -27,7 +27,8 @@
 //! A grant only ever *adds* reachability on the enforced paths, and never
 //! widens tenancy (see `DevopsService::widen_with_grants`).
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Multipart, Path, Query, State};
+use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use serde::Deserialize;
@@ -39,8 +40,9 @@ use crate::collaboration::CollaborationStatus;
 use crate::container::ContainerStatus;
 use crate::error::PlatformError;
 use crate::models::{
-    ApiKeyDto, CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, IpAllowlistConfigDto, MyNotificationsDto,
-    NewApiKeyDto, NotificationDto, ResourceGrantDto, SceneDto, SecurityPolicyDto, SiemConfigDto,
+    ApiKeyDto, CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto,
+    FileVaultReconcileEntry, IpAllowlistConfigDto, MyNotificationsDto, NewApiKeyDto, NotificationDto, ResourceGrantDto,
+    SceneDto, SecurityPolicyDto, SiemConfigDto,
 };
 use crate::rbac::{RequirePlatformAdmin, RequirePlatformMember};
 use crate::siem::SiemStatus;
@@ -116,6 +118,34 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
         // messages read; composing stays admin-only above.
         .route("/api/one/notifications", get(my_notifications))
         .route("/api/one/notifications/read", post(mark_notifications_read))
+        // P2-4 personal file vault — member self-service half. Uploads are
+        // 10 MiB-capped by the shared `BODY_LIMIT`; frozen vaults refuse
+        // uploads but keep existing objects readable/deletable.
+        .route("/api/one/vault", get(my_vault))
+        .route("/api/one/vault/files", get(list_my_vault_files).post(upload_vault_file))
+        .route(
+            "/api/one/vault/files/{id}",
+            get(download_vault_file).delete(delete_vault_file),
+        )
+        // P2-4 admin governance half: per-member status/quota/usage plus the
+        // ledger-vs-disk reconciliation pass.
+        .route("/api/one/admin/platform/file-vault", get(admin_list_file_vaults))
+        .route(
+            "/api/one/admin/platform/file-vault/reconcile",
+            post(admin_reconcile_file_vaults),
+        )
+        .route(
+            "/api/one/admin/platform/file-vault/{user_id}/status",
+            axum::routing::put(admin_set_file_vault_status),
+        )
+        .route(
+            "/api/one/admin/platform/file-vault/{user_id}/quota",
+            axum::routing::put(admin_set_file_vault_quota),
+        )
+        .route(
+            "/api/one/admin/platform/file-vault/{user_id}/objects",
+            get(admin_list_file_vault_objects),
+        )
         .with_state(state)
 }
 
@@ -750,3 +780,163 @@ async fn mark_notifications_read(
 /// sent history) while `unread_count` always counts the full visible set —
 /// see `PlatformService::list_my_notifications`.
 const MY_NOTIFICATIONS_LIMIT: i64 = 200;
+
+// --- P2-4 personal file vault — member self-service half ---
+
+async fn my_vault(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformMember(actor): RequirePlatformMember,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<FileVaultDto>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.my_vault(&actor.tenant_id, &user.id).await?,
+    )))
+}
+
+async fn list_my_vault_files(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformMember(actor): RequirePlatformMember,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<FileVaultObjectDto>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_my_vault_objects(&actor.tenant_id, &user.id).await?,
+    )))
+}
+
+/// Multipart upload: exactly one `file` field carrying the bytes and its
+/// client-side name. Extra fields are ignored, a missing `file` field is a
+/// 400.
+async fn upload_vault_file(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformMember(actor): RequirePlatformMember,
+    Extension(user): Extension<CurrentUser>,
+    mut multipart: Multipart,
+) -> Result<Json<ApiResponse<FileVaultObjectDto>>, PlatformError> {
+    let mut uploaded: Option<(String, Vec<u8>)> = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| PlatformError::BadRequest(format!("invalid multipart body: {e}")))?
+    {
+        if field.name() != Some("file") {
+            continue;
+        }
+        let file_name = field.file_name().unwrap_or_default().to_owned();
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|e| PlatformError::BadRequest(format!("failed to read upload: {e}")))?;
+        uploaded = Some((file_name, bytes.to_vec()));
+        break;
+    }
+    let Some((file_name, bytes)) = uploaded else {
+        return Err(PlatformError::BadRequest(
+            "multipart body must carry a 'file' field".into(),
+        ));
+    };
+    let dto = state
+        .service
+        .upload_vault_object(&actor.tenant_id, &user.id, &file_name, &bytes)
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn download_vault_file(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformMember(actor): RequirePlatformMember,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<axum::response::Response, PlatformError> {
+    let (dto, bytes) = state.service.read_vault_object(&actor.tenant_id, &user.id, &id).await?;
+    let disposition = format!(
+        "attachment; filename=\"{}\"",
+        dto.file_name.replace(['"', '\\', '\r', '\n'], "_")
+    );
+    Ok(([(axum::http::header::CONTENT_DISPOSITION, disposition)], bytes).into_response())
+}
+
+async fn delete_vault_file(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformMember(actor): RequirePlatformMember,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, PlatformError> {
+    state
+        .service
+        .delete_vault_object(&actor.tenant_id, &user.id, &id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+// --- P2-4 personal file vault — admin governance half ---
+
+async fn admin_list_file_vaults(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<Vec<FileVaultDto>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.admin_list_vaults(&actor.tenant_id).await?,
+    )))
+}
+
+async fn admin_reconcile_file_vaults(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<Vec<FileVaultReconcileEntry>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.admin_reconcile_vaults(&actor.tenant_id).await?,
+    )))
+}
+
+async fn admin_set_file_vault_status(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(user_id): Path<String>,
+    Json(body): Json<SetVaultStatusBody>,
+) -> Result<Json<ApiResponse<()>>, PlatformError> {
+    state
+        .service
+        .admin_set_vault_status(&actor.tenant_id, &user_id, &body.status)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetVaultStatusBody {
+    /// `"available" | "frozen"`.
+    status: String,
+}
+
+async fn admin_set_file_vault_quota(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(user_id): Path<String>,
+    Json(body): Json<SetVaultQuotaBody>,
+) -> Result<Json<ApiResponse<()>>, PlatformError> {
+    state
+        .service
+        .admin_set_vault_quota(&actor.tenant_id, &user_id, body.quota_bytes)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetVaultQuotaBody {
+    /// `null` = unlimited.
+    quota_bytes: Option<i64>,
+}
+
+async fn admin_list_file_vault_objects(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(user_id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<FileVaultObjectDto>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .admin_list_vault_objects(&actor.tenant_id, &user_id)
+            .await?,
+    )))
+}
