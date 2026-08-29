@@ -101,6 +101,50 @@ pub struct SecurityPolicyDto {
     pub updated_at: Option<i64>,
 }
 
+/// One security policy template (P1-8 安全策略模板层, second layer of the
+/// reference product's 全局基线/策略模板 model): a *named snapshot* of the
+/// same seven policy fields the tenant baseline carries. Storing or binding
+/// one changes nothing by itself — only an explicit `apply` copies its fields
+/// into the tenant baseline that enforcement actually reads. `binding_count`
+/// is the "覆盖实例数" the template list shows: how many subjects the
+/// template has been allocated to, not how many are governed by it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecurityPolicyTemplateDto {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// Which built-in tier the fields were authored from — provenance only.
+    pub tier: String,
+    pub terminal_tools_require_approval: bool,
+    pub destructive_commands_blocked: bool,
+    pub blocked_command_patterns: Vec<String>,
+    pub external_network_denied_by_default: bool,
+    pub message_scan_enabled: bool,
+    pub message_redact_enabled: bool,
+    pub send_rate_limit_per_minute: Option<i64>,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub binding_count: i64,
+}
+
+/// One template's assignment to a subject (a member or a whole department).
+/// An allocation record, not a live grant — see the migration 009 header for
+/// the three-layer semantics and why enforcement stays on the baseline.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyTemplateBindingDto {
+    pub id: String,
+    pub template_id: String,
+    /// `"member" | "department"`.
+    pub subject_type: String,
+    pub subject_id: String,
+    pub note: Option<String>,
+    pub bound_by: String,
+    pub bound_at: i64,
+}
+
 /// An open-integration API key (E5), redacted — never carries the secret or
 /// its hash. `key_prefix` is enough to tell keys apart in a list without
 /// ever re-displaying the full secret.

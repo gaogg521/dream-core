@@ -25,7 +25,8 @@ use crate::ip_allowlist::ip_allowed;
 use crate::models::{
     ApiKeyDto, CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto,
     FileVaultReconcileEntry, IpAllowlistConfigDto, MyNotificationDto, MyNotificationsDto, NewApiKeyDto,
-    NotificationDto, ResourceGrantDto, SceneDto, SecurityPolicyDto, SiemConfigDto,
+    NotificationDto, PolicyTemplateBindingDto, ResourceGrantDto, SceneDto, SecurityPolicyDto,
+    SecurityPolicyTemplateDto, SiemConfigDto,
 };
 use crate::siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
 
@@ -70,6 +71,13 @@ const EMPLOYEE_NOT_SUPPORTED_MESSAGE: &str = "resource type 'employee' is not su
 /// whenever a new one is added" — the escape hatch for "give this department
 /// every skill" without one row per skill.
 pub const GRANT_ALL_RESOURCES: &str = "*";
+
+/// Valid `subject_type` values for a security-policy-template binding
+/// (P1-8): a specific member, or every member under a department. No `scene`
+/// dimension — a scene is a bundle of resource grants (E5), not a security
+/// posture, and conflating the two would make one admin action silently
+/// change two unrelated things.
+pub const POLICY_TEMPLATE_SUBJECT_TYPES: [&str; 2] = ["member", "department"];
 
 /// The caller's resolved enterprise membership (active tenant + role).
 #[derive(Debug, Clone)]
@@ -1314,6 +1322,437 @@ impl PlatformService {
         self.get_security_policy(tenant_id).await
     }
 
+    // --- Security policy templates (P1-8 安全策略模板层, second layer) ---
+
+    // Three-layer semantics (see migration 009's header for the full why):
+    // a template is a *named snapshot* of the same fields the tenant
+    // baseline carries; a binding is an *allocation record* whose only live
+    // effect is the template's binding_count; enforcement still reads the
+    // per-tenant baseline exclusively, and `apply_policy_template` is the
+    // explicit copy step. Per-member enforcement would need the hot-path
+    // policy lookups to resolve a per-user dimension — a separate project,
+    // not something a schema column buys.
+
+    /// Create a named policy snapshot. `tier` records which built-in tier the
+    /// fields were authored from — pure provenance, never consulted again.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_policy_template(
+        &self,
+        tenant_id: &str,
+        name: &str,
+        description: &str,
+        tier: &str,
+        terminal_tools_require_approval: bool,
+        destructive_commands_blocked: bool,
+        blocked_command_patterns: &[String],
+        external_network_denied_by_default: bool,
+        message_scan_enabled: bool,
+        message_redact_enabled: bool,
+        send_rate_limit_per_minute: Option<i64>,
+        created_by: &str,
+    ) -> Result<SecurityPolicyTemplateDto, PlatformError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(PlatformError::BadRequest("template name must not be empty".into()));
+        }
+        let id = generate_prefixed_id("spt");
+        let now = now_ms();
+        let patterns_json =
+            serde_json::to_string(blocked_command_patterns).map_err(|e| PlatformError::Internal(e.to_string()))?;
+        sqlx::query(
+            "INSERT INTO one_security_policy_templates \
+                 (id, tenant_id, name, description, tier, terminal_tools_require_approval, \
+                  destructive_commands_blocked, blocked_command_patterns, external_network_denied_by_default, \
+                  message_scan_enabled, message_redact_enabled, send_rate_limit_per_minute, \
+                  created_by, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(tenant_id)
+        .bind(name)
+        .bind(description.trim())
+        .bind(tier)
+        .bind(terminal_tools_require_approval)
+        .bind(destructive_commands_blocked)
+        .bind(&patterns_json)
+        .bind(external_network_denied_by_default)
+        .bind(message_scan_enabled)
+        .bind(message_redact_enabled)
+        .bind(send_rate_limit_per_minute)
+        .bind(created_by)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_policy_template(tenant_id, &id)
+            .await?
+            .ok_or_else(|| PlatformError::Internal("policy template vanished immediately after insert".into()))
+    }
+
+    pub async fn list_policy_templates(
+        &self,
+        tenant_id: &str,
+    ) -> Result<Vec<SecurityPolicyTemplateDto>, PlatformError> {
+        let rows: Vec<PolicyTemplateRow> = sqlx::query_as(
+            "SELECT t.id, t.name, t.description, t.tier, t.terminal_tools_require_approval, \
+                    t.destructive_commands_blocked, t.blocked_command_patterns, \
+                    t.external_network_denied_by_default, t.message_scan_enabled, t.message_redact_enabled, \
+                    t.send_rate_limit_per_minute, t.created_by, t.created_at, t.updated_at, \
+                    COUNT(b.id) AS binding_count \
+             FROM one_security_policy_templates t \
+             LEFT JOIN one_security_policy_bindings b ON b.template_id = t.id \
+             WHERE t.tenant_id = ? \
+             GROUP BY t.id \
+             ORDER BY t.created_at DESC",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Self::policy_template_row_to_dto).collect())
+    }
+
+    async fn get_policy_template(
+        &self,
+        tenant_id: &str,
+        id: &str,
+    ) -> Result<Option<SecurityPolicyTemplateDto>, PlatformError> {
+        let row: Option<PolicyTemplateRow> = sqlx::query_as(
+            "SELECT t.id, t.name, t.description, t.tier, t.terminal_tools_require_approval, \
+                    t.destructive_commands_blocked, t.blocked_command_patterns, \
+                    t.external_network_denied_by_default, t.message_scan_enabled, t.message_redact_enabled, \
+                    t.send_rate_limit_per_minute, t.created_by, t.created_at, t.updated_at, \
+                    (SELECT COUNT(*) FROM one_security_policy_bindings b WHERE b.template_id = t.id) \
+             FROM one_security_policy_templates t \
+             WHERE t.tenant_id = ? AND t.id = ?",
+        )
+        .bind(tenant_id)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(Self::policy_template_row_to_dto))
+    }
+
+    fn policy_template_row_to_dto(row: PolicyTemplateRow) -> SecurityPolicyTemplateDto {
+        SecurityPolicyTemplateDto {
+            id: row.0,
+            name: row.1,
+            description: row.2,
+            tier: row.3,
+            terminal_tools_require_approval: row.4,
+            destructive_commands_blocked: row.5,
+            blocked_command_patterns: serde_json::from_str(&row.6).unwrap_or_default(),
+            external_network_denied_by_default: row.7,
+            message_scan_enabled: row.8,
+            message_redact_enabled: row.9,
+            send_rate_limit_per_minute: row.10,
+            created_by: row.11,
+            created_at: row.12,
+            updated_at: row.13,
+            binding_count: row.14,
+        }
+    }
+
+    /// Edit a template's snapshot in place. `tier` is deliberately not
+    /// updatable: it records how the snapshot was *authored*, and rewriting
+    /// provenance after the fact would make the label a lie. Existing
+    /// bindings keep pointing at the template — they record allocation, not
+    /// a frozen copy, so the next `apply` picks up the edited fields.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_policy_template(
+        &self,
+        tenant_id: &str,
+        id: &str,
+        name: &str,
+        description: &str,
+        terminal_tools_require_approval: bool,
+        destructive_commands_blocked: bool,
+        blocked_command_patterns: &[String],
+        external_network_denied_by_default: bool,
+        message_scan_enabled: bool,
+        message_redact_enabled: bool,
+        send_rate_limit_per_minute: Option<i64>,
+    ) -> Result<SecurityPolicyTemplateDto, PlatformError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(PlatformError::BadRequest("template name must not be empty".into()));
+        }
+        let patterns_json =
+            serde_json::to_string(blocked_command_patterns).map_err(|e| PlatformError::Internal(e.to_string()))?;
+        let result = sqlx::query(
+            "UPDATE one_security_policy_templates SET \
+                 name = ?, description = ?, terminal_tools_require_approval = ?, \
+                 destructive_commands_blocked = ?, blocked_command_patterns = ?, \
+                 external_network_denied_by_default = ?, message_scan_enabled = ?, \
+                 message_redact_enabled = ?, send_rate_limit_per_minute = ?, updated_at = ? \
+             WHERE tenant_id = ? AND id = ?",
+        )
+        .bind(name)
+        .bind(description.trim())
+        .bind(terminal_tools_require_approval)
+        .bind(destructive_commands_blocked)
+        .bind(&patterns_json)
+        .bind(external_network_denied_by_default)
+        .bind(message_scan_enabled)
+        .bind(message_redact_enabled)
+        .bind(send_rate_limit_per_minute)
+        .bind(now_ms())
+        .bind(tenant_id)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(PlatformError::NotFound("policy template not found".into()));
+        }
+        self.get_policy_template(tenant_id, id)
+            .await?
+            .ok_or_else(|| PlatformError::Internal("policy template vanished immediately after update".into()))
+    }
+
+    /// Delete a template and its bindings in one transaction. Binding rows
+    /// reference the template by id, so leaving them behind would dangle;
+    /// the baseline is untouched — a template that was applied before
+    /// deletion has already been copied into it, which is exactly the point
+    /// of the copy semantics.
+    pub async fn delete_policy_template(&self, tenant_id: &str, id: &str) -> Result<(), PlatformError> {
+        let mut tx = self.pool.begin().await?;
+        let deleted = sqlx::query("DELETE FROM one_security_policy_templates WHERE tenant_id = ? AND id = ?")
+            .bind(tenant_id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if deleted == 0 {
+            return Err(PlatformError::NotFound("policy template not found".into()));
+        }
+        sqlx::query("DELETE FROM one_security_policy_bindings WHERE template_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Register that this template has been allocated to a member or a whole
+    /// department. Re-binding the same (template, subject) triple overwrites
+    /// the note/audit fields in place — the subject either is or is not
+    /// allocated to the template, so "already bound" is not an error (same
+    /// posture as `grant_resource`). Members must already exist in
+    /// `one_user_org` (silently recording a typo'd id would be a fake
+    /// success, the exact failure mode targeted notifications reject);
+    /// departments are validated against `one_departments` the same way.
+    pub async fn bind_policy_template(
+        &self,
+        tenant_id: &str,
+        template_id: &str,
+        subject_type: &str,
+        subject_id: &str,
+        note: Option<&str>,
+        bound_by: &str,
+    ) -> Result<PolicyTemplateBindingDto, PlatformError> {
+        if !POLICY_TEMPLATE_SUBJECT_TYPES.contains(&subject_type) {
+            return Err(PlatformError::BadRequest(format!(
+                "unknown binding subject type '{subject_type}'"
+            )));
+        }
+        let subject_id = subject_id.trim();
+        if subject_id.is_empty() {
+            return Err(PlatformError::BadRequest("binding subject id must not be empty".into()));
+        }
+        self.require_policy_template(tenant_id, template_id).await?;
+
+        // Same existence check for both subject kinds: a member against
+        // one_user_org, a department against one_departments. Departments are
+        // checked because the table lives in the same database (one-org owns
+        // it) and `effective_resource_ids` already queries it unguarded —
+        // validating here costs one SELECT and keeps both halves of the
+        // subject-type union equally honest.
+        let subject_exists: bool = match subject_type {
+            "member" => {
+                sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_user_org WHERE tenant_id = ? AND user_id = ?")
+                    .bind(tenant_id)
+                    .bind(subject_id)
+                    .fetch_one(&self.pool)
+                    .await?
+            }
+            _ => {
+                sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_departments WHERE tenant_id = ? AND id = ?")
+                    .bind(tenant_id)
+                    .bind(subject_id)
+                    .fetch_one(&self.pool)
+                    .await?
+            }
+        };
+        if !subject_exists {
+            return Err(PlatformError::BadRequest(format!(
+                "binding subject '{subject_id}' is not a known {subject_type} of this tenant"
+            )));
+        }
+
+        let id = generate_prefixed_id("spb");
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO one_security_policy_bindings \
+                 (id, tenant_id, template_id, subject_type, subject_id, note, bound_by, bound_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(template_id, subject_type, subject_id) DO UPDATE SET \
+                 note = excluded.note, bound_by = excluded.bound_by, bound_at = excluded.bound_at",
+        )
+        .bind(&id)
+        .bind(tenant_id)
+        .bind(template_id)
+        .bind(subject_type)
+        .bind(subject_id)
+        .bind(note)
+        .bind(bound_by)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_policy_template_binding(tenant_id, template_id, subject_type, subject_id)
+            .await?
+            .ok_or_else(|| PlatformError::Internal("policy template binding vanished immediately after upsert".into()))
+    }
+
+    /// Remove one allocation. A binding that never existed is `NotFound` —
+    /// same posture as `revoke_api_key`: silent success is reserved for
+    /// states that can be reached twice (revoked keys), and a missing
+    /// binding id is more likely a stale UI than a finished operation.
+    pub async fn unbind_policy_template(&self, tenant_id: &str, binding_id: &str) -> Result<(), PlatformError> {
+        let deleted = sqlx::query("DELETE FROM one_security_policy_bindings WHERE tenant_id = ? AND id = ?")
+            .bind(tenant_id)
+            .bind(binding_id)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        if deleted == 0 {
+            return Err(PlatformError::NotFound("policy template binding not found".into()));
+        }
+        Ok(())
+    }
+
+    pub async fn list_policy_template_bindings(
+        &self,
+        tenant_id: &str,
+        template_id: &str,
+    ) -> Result<Vec<PolicyTemplateBindingDto>, PlatformError> {
+        self.require_policy_template(tenant_id, template_id).await?;
+        let rows: Vec<(String, String, String, Option<String>, String, i64)> = sqlx::query_as(
+            "SELECT id, subject_type, subject_id, note, bound_by, bound_at \
+             FROM one_security_policy_bindings WHERE tenant_id = ? AND template_id = ? \
+             ORDER BY bound_at ASC",
+        )
+        .bind(tenant_id)
+        .bind(template_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, subject_type, subject_id, note, bound_by, bound_at)| PolicyTemplateBindingDto {
+                    id,
+                    template_id: template_id.to_owned(),
+                    subject_type,
+                    subject_id,
+                    note,
+                    bound_by,
+                    bound_at,
+                },
+            )
+            .collect())
+    }
+
+    async fn get_policy_template_binding(
+        &self,
+        tenant_id: &str,
+        template_id: &str,
+        subject_type: &str,
+        subject_id: &str,
+    ) -> Result<Option<PolicyTemplateBindingDto>, PlatformError> {
+        let row: Option<(String, String, String, Option<String>, String, i64)> = sqlx::query_as(
+            "SELECT id, subject_type, subject_id, note, bound_by, bound_at \
+             FROM one_security_policy_bindings \
+             WHERE tenant_id = ? AND template_id = ? AND subject_type = ? AND subject_id = ?",
+        )
+        .bind(tenant_id)
+        .bind(template_id)
+        .bind(subject_type)
+        .bind(subject_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(
+            |(id, subject_type, subject_id, note, bound_by, bound_at)| PolicyTemplateBindingDto {
+                id,
+                template_id: template_id.to_owned(),
+                subject_type,
+                subject_id,
+                note,
+                bound_by,
+                bound_at,
+            },
+        ))
+    }
+
+    async fn require_policy_template(&self, tenant_id: &str, id: &str) -> Result<(), PlatformError> {
+        let exists: bool =
+            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_security_policy_templates WHERE tenant_id = ? AND id = ?")
+                .bind(tenant_id)
+                .bind(id)
+                .fetch_one(&self.pool)
+                .await?;
+        if !exists {
+            return Err(PlatformError::NotFound("policy template not found".into()));
+        }
+        Ok(())
+    }
+
+    /// Copy a template's fields into the tenant baseline — the explicit
+    /// "apply" step that is the *only* way a template changes enforcement,
+    /// because the enforcement hot paths (tool-call security gate, send
+    /// gate) read `one_security_policy` and nothing else.
+    ///
+    /// The baseline is stored with `tier = "custom"`: `tier` records how the
+    /// baseline got here, and once applied a template leaves no live link —
+    /// the next baseline edit goes through `set_security_policy` and there is
+    /// no re-apply to trace, so a snapshot label would imply a connection
+    /// that no longer exists. A rebinding/apply of a *new* template version
+    /// is a fresh, explicit action. `applied_by` is audit-logged only (the
+    /// baseline table has no provenance column and 005 is shipped).
+    pub async fn apply_policy_template(
+        &self,
+        tenant_id: &str,
+        template_id: &str,
+        applied_by: &str,
+    ) -> Result<SecurityPolicyDto, PlatformError> {
+        let template = self
+            .get_policy_template(tenant_id, template_id)
+            .await?
+            .ok_or_else(|| PlatformError::NotFound("policy template not found".into()))?;
+        let applied = self
+            .upsert_security_policy(
+                tenant_id,
+                &SecurityPolicyDto {
+                    tier: "custom".to_owned(),
+                    terminal_tools_require_approval: template.terminal_tools_require_approval,
+                    destructive_commands_blocked: template.destructive_commands_blocked,
+                    blocked_command_patterns: template.blocked_command_patterns,
+                    external_network_denied_by_default: template.external_network_denied_by_default,
+                    message_scan_enabled: template.message_scan_enabled,
+                    message_redact_enabled: template.message_redact_enabled,
+                    send_rate_limit_per_minute: template.send_rate_limit_per_minute,
+                    updated_at: None,
+                },
+            )
+            .await?;
+        tracing::info!(
+            tenant = tenant_id,
+            template = template_id,
+            applied_by,
+            "security policy template applied"
+        );
+        Ok(applied)
+    }
+
     // --- Open-integration API keys (E5) ---
 
     /// Shown chars of the plaintext secret kept as `key_prefix`, so the admin
@@ -2329,6 +2768,24 @@ fn api_key_path_allowed(request_path: &str, allowed_paths: &[String]) -> bool {
 
 type SecurityPolicyRow = (String, bool, bool, String, bool, bool, bool, Option<i64>, i64);
 
+type PolicyTemplateRow = (
+    String,      // id
+    String,      // name
+    String,      // description
+    String,      // tier
+    bool,        // terminal_tools_require_approval
+    bool,        // destructive_commands_blocked
+    String,      // blocked_command_patterns (JSON)
+    bool,        // external_network_denied_by_default
+    bool,        // message_scan_enabled
+    bool,        // message_redact_enabled
+    Option<i64>, // send_rate_limit_per_minute
+    String,      // created_by
+    i64,         // created_at
+    i64,         // updated_at
+    i64,         // binding_count (aggregate)
+);
+
 type SceneRow = (String, String, String, Option<String>, String, bool, i64, i64);
 
 #[cfg(test)]
@@ -3006,6 +3463,559 @@ mod tests {
             t2.tier, "relaxed",
             "an untouched tenant must not inherit another tenant's tier"
         );
+    }
+
+    // --- P1-8 security policy templates (安全策略模板层) ---
+
+    #[tokio::test]
+    async fn policy_template_crud_roundtrips() {
+        let (_db, service) = setup().await;
+        let created = service
+            .create_policy_template(
+                "t1",
+                "严格-研发部",
+                "for engineering",
+                "strict",
+                true,
+                true,
+                &["rm -rf".to_owned()],
+                true,
+                true,
+                true,
+                Some(20),
+                "admin1",
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.name, "严格-研发部");
+        assert_eq!(created.tier, "strict", "provenance tier is recorded, never consulted");
+        assert_eq!(created.blocked_command_patterns, vec!["rm -rf".to_owned()]);
+        assert_eq!(created.send_rate_limit_per_minute, Some(20));
+        assert_eq!(created.binding_count, 0);
+
+        let updated = service
+            .update_policy_template(
+                "t1",
+                &created.id,
+                "严格-研发部 v2",
+                "tightened",
+                true,
+                false,
+                &[],
+                false,
+                false,
+                true,
+                Some(10),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.name, "严格-研发部 v2");
+        assert_eq!(updated.tier, "strict", "the authored-from tier must survive an edit");
+        assert!(!updated.destructive_commands_blocked);
+        assert_eq!(updated.send_rate_limit_per_minute, Some(10));
+
+        let listed = service.list_policy_templates("t1").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, created.id);
+
+        service.delete_policy_template("t1", &created.id).await.unwrap();
+        assert!(service.list_policy_templates("t1").await.unwrap().is_empty());
+        assert_eq!(
+            service
+                .delete_policy_template("t1", &created.id)
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND"
+        );
+    }
+
+    #[tokio::test]
+    async fn policy_template_rejects_an_empty_name() {
+        let (_db, service) = setup().await;
+        for name in ["", "   "] {
+            assert_eq!(
+                service
+                    .create_policy_template(
+                        "t1",
+                        name,
+                        "",
+                        "custom",
+                        false,
+                        false,
+                        &[],
+                        false,
+                        false,
+                        false,
+                        None,
+                        "admin1"
+                    )
+                    .await
+                    .unwrap_err()
+                    .code(),
+                "BAD_REQUEST"
+            );
+        }
+        let created = service
+            .create_policy_template(
+                "t1",
+                "x",
+                "",
+                "custom",
+                false,
+                false,
+                &[],
+                false,
+                false,
+                false,
+                None,
+                "admin1",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .update_policy_template(
+                    "t1",
+                    &created.id,
+                    "  ",
+                    "",
+                    false,
+                    false,
+                    &[],
+                    false,
+                    false,
+                    false,
+                    None
+                )
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+    }
+
+    /// A binding is an allocation record: re-binding the same
+    /// (template, subject) triple must overwrite note/bound_by/bound_at in
+    /// place, never duplicate the row.
+    #[tokio::test]
+    async fn policy_template_binding_upsert_overwrites() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "alice", "t1", "member").await;
+        let template = service
+            .create_policy_template(
+                "t1",
+                "standard-ish",
+                "",
+                "standard",
+                true,
+                true,
+                &[],
+                false,
+                false,
+                false,
+                Some(30),
+                "admin1",
+            )
+            .await
+            .unwrap();
+
+        let first = service
+            .bind_policy_template("t1", &template.id, "member", "alice", Some("initial"), "admin1")
+            .await
+            .unwrap();
+        let second = service
+            .bind_policy_template("t1", &template.id, "member", "alice", Some("re-bound"), "admin2")
+            .await
+            .unwrap();
+
+        assert_eq!(first.id, second.id, "same triple must reuse the binding row");
+        assert_eq!(second.note.as_deref(), Some("re-bound"));
+        assert_eq!(second.bound_by, "admin2");
+        assert_eq!(
+            service
+                .list_policy_template_bindings("t1", &template.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Unknown subject types and blank subject ids are rejected outright.
+        assert_eq!(
+            service
+                .bind_policy_template("t1", &template.id, "scene", "s1", None, "admin1")
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+        assert_eq!(
+            service
+                .bind_policy_template("t1", &template.id, "member", "  ", None, "admin1")
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+    }
+
+    #[tokio::test]
+    async fn policy_template_rejects_binding_a_non_member() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "alice", "t1", "member").await;
+        let template = service
+            .create_policy_template(
+                "t1",
+                "t",
+                "",
+                "custom",
+                false,
+                false,
+                &[],
+                false,
+                false,
+                false,
+                None,
+                "admin1",
+            )
+            .await
+            .unwrap();
+
+        // A typo'd member id must be a 400, not a silently recorded binding —
+        // same posture as a targeted notification to a non-recipient.
+        assert_eq!(
+            service
+                .bind_policy_template("t1", &template.id, "member", "mallory", None, "admin1")
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+        // Departments are validated against one_departments the same way.
+        assert_eq!(
+            service
+                .bind_policy_template("t1", &template.id, "department", "eng", None, "admin1")
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+        seed_department(db.pool(), "t1", "eng", None, "Engineering").await;
+        service
+            .bind_policy_template("t1", &template.id, "department", "eng", None, "admin1")
+            .await
+            .unwrap();
+
+        // Binding against a template of another tenant is a NotFound, not a
+        // cross-tenant write.
+        service
+            .create_policy_template(
+                "t2",
+                "other",
+                "",
+                "custom",
+                false,
+                false,
+                &[],
+                false,
+                false,
+                false,
+                None,
+                "admin2",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .bind_policy_template("t1", "spt_missing", "member", "alice", None, "admin1")
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND"
+        );
+    }
+
+    /// Unbinding removes the allocation record; the baseline a previous apply
+    /// wrote must stay untouched (the copy semantics' whole point).
+    #[tokio::test]
+    async fn unbind_policy_template_removes_only_the_allocation() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "alice", "t1", "member").await;
+        let template = service
+            .create_policy_template(
+                "t1",
+                "strict-ish",
+                "",
+                "strict",
+                true,
+                true,
+                &[],
+                true,
+                true,
+                true,
+                Some(20),
+                "admin1",
+            )
+            .await
+            .unwrap();
+        let binding = service
+            .bind_policy_template("t1", &template.id, "member", "alice", None, "admin1")
+            .await
+            .unwrap();
+
+        service
+            .apply_policy_template("t1", &template.id, "admin1")
+            .await
+            .unwrap();
+        service.unbind_policy_template("t1", &binding.id).await.unwrap();
+        assert!(
+            service
+                .list_policy_template_bindings("t1", &template.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // The applied baseline survives the unbind: apply is a copy, not a link.
+        let baseline = service.get_security_policy("t1").await.unwrap();
+        assert!(baseline.terminal_tools_require_approval);
+        assert_eq!(baseline.send_rate_limit_per_minute, Some(20));
+
+        assert_eq!(
+            service
+                .unbind_policy_template("t1", &binding.id)
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_policy_template_cascades_bindings() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "alice", "t1", "member").await;
+        let template = service
+            .create_policy_template(
+                "t1",
+                "t",
+                "",
+                "custom",
+                false,
+                false,
+                &[],
+                false,
+                false,
+                false,
+                None,
+                "admin1",
+            )
+            .await
+            .unwrap();
+        service
+            .bind_policy_template("t1", &template.id, "member", "alice", None, "admin1")
+            .await
+            .unwrap();
+
+        service.delete_policy_template("t1", &template.id).await.unwrap();
+        // The binding rows must not dangle after their template is gone.
+        let orphan_bindings: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM one_security_policy_bindings WHERE template_id = ?")
+                .bind(&template.id)
+                .fetch_one(&service.pool)
+                .await
+                .unwrap();
+        assert_eq!(orphan_bindings, 0);
+    }
+
+    /// The core copy semantics: binding a template changes nothing, apply
+    /// flips every baseline field to the template's snapshot — and after the
+    /// apply, editing the template again does NOT move the baseline (no live
+    /// link), because a re-apply is the explicit action.
+    #[tokio::test]
+    async fn apply_policy_template_copies_fields_into_the_baseline() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "alice", "t1", "member").await;
+
+        // Baseline starts relaxed; binding alone must not move it.
+        let template = service
+            .create_policy_template(
+                "t1",
+                "strict-ish",
+                "",
+                "strict",
+                true,
+                true,
+                &["mkfs".to_owned()],
+                true,
+                true,
+                true,
+                Some(20),
+                "admin1",
+            )
+            .await
+            .unwrap();
+        service
+            .bind_policy_template("t1", &template.id, "member", "alice", None, "admin1")
+            .await
+            .unwrap();
+        assert_eq!(service.get_security_policy("t1").await.unwrap().tier, "relaxed");
+
+        let applied = service
+            .apply_policy_template("t1", &template.id, "admin1")
+            .await
+            .unwrap();
+        assert_eq!(
+            applied.tier, "custom",
+            "applied baseline is a hand-managed copy, not a live link"
+        );
+        assert!(applied.terminal_tools_require_approval);
+        assert!(applied.destructive_commands_blocked);
+        assert_eq!(applied.blocked_command_patterns, vec!["mkfs".to_owned()]);
+        assert!(applied.external_network_denied_by_default);
+        assert!(applied.message_scan_enabled && applied.message_redact_enabled);
+        assert_eq!(applied.send_rate_limit_per_minute, Some(20));
+
+        // Editing the template afterwards leaves the baseline alone.
+        service
+            .update_policy_template(
+                "t1",
+                &template.id,
+                "strict-ish",
+                "",
+                false,
+                false,
+                &[],
+                false,
+                false,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        let still_applied = service.get_security_policy("t1").await.unwrap();
+        assert!(still_applied.terminal_tools_require_approval);
+
+        // An explicit re-apply picks up the edited snapshot.
+        let reapplied = service
+            .apply_policy_template("t1", &template.id, "admin1")
+            .await
+            .unwrap();
+        assert!(!reapplied.terminal_tools_require_approval);
+        assert_eq!(reapplied.send_rate_limit_per_minute, None);
+    }
+
+    #[tokio::test]
+    async fn apply_policy_template_404s_on_an_unknown_template() {
+        let (_db, service) = setup().await;
+        assert_eq!(
+            service
+                .apply_policy_template("t1", "spt_missing", "admin1")
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND"
+        );
+        // Another tenant's template id is equally invisible.
+        let t2_template = service
+            .create_policy_template(
+                "t2",
+                "t2-only",
+                "",
+                "custom",
+                false,
+                false,
+                &[],
+                false,
+                false,
+                false,
+                None,
+                "admin2",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .apply_policy_template("t1", &t2_template.id, "admin1")
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND"
+        );
+    }
+
+    #[tokio::test]
+    async fn policy_template_binding_count_is_reported() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "alice", "t1", "member").await;
+        seed_membership(db.pool(), "bob", "t1", "member").await;
+        seed_department(db.pool(), "t1", "eng", None, "Engineering").await;
+        let template = service
+            .create_policy_template(
+                "t1",
+                "t",
+                "",
+                "custom",
+                false,
+                false,
+                &[],
+                false,
+                false,
+                false,
+                None,
+                "admin1",
+            )
+            .await
+            .unwrap();
+        service
+            .bind_policy_template("t1", &template.id, "member", "alice", None, "admin1")
+            .await
+            .unwrap();
+        service
+            .bind_policy_template("t1", &template.id, "department", "eng", None, "admin1")
+            .await
+            .unwrap();
+        // A second template must not inflate the first one's count.
+        service
+            .create_policy_template(
+                "t1",
+                "other",
+                "",
+                "custom",
+                false,
+                false,
+                &[],
+                false,
+                false,
+                false,
+                None,
+                "admin1",
+            )
+            .await
+            .unwrap();
+
+        let listed = service.list_policy_templates("t1").await.unwrap();
+        let dto = listed.iter().find(|t| t.id == template.id).unwrap();
+        assert_eq!(dto.binding_count, 2, "覆盖实例数 = the template's binding rows");
+        assert_eq!(
+            dto.binding_count,
+            service
+                .list_policy_template_bindings("t1", &template.id)
+                .await
+                .unwrap()
+                .len() as i64
+        );
+
+        service
+            .unbind_policy_template(
+                "t1",
+                &service.list_policy_template_bindings("t1", &template.id).await.unwrap()[0].id,
+            )
+            .await
+            .unwrap();
+        let after = service.list_policy_templates("t1").await.unwrap();
+        assert_eq!(after.iter().find(|t| t.id == template.id).unwrap().binding_count, 1);
     }
 
     // --- E5 open-integration API keys ---

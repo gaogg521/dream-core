@@ -41,8 +41,8 @@ use crate::container::ContainerStatus;
 use crate::error::PlatformError;
 use crate::models::{
     ApiKeyDto, CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto,
-    FileVaultReconcileEntry, IpAllowlistConfigDto, MyNotificationsDto, NewApiKeyDto, NotificationDto, ResourceGrantDto,
-    SceneDto, SecurityPolicyDto, SiemConfigDto,
+    FileVaultReconcileEntry, IpAllowlistConfigDto, MyNotificationsDto, NewApiKeyDto, NotificationDto,
+    PolicyTemplateBindingDto, ResourceGrantDto, SceneDto, SecurityPolicyDto, SecurityPolicyTemplateDto, SiemConfigDto,
 };
 use crate::rbac::{RequirePlatformAdmin, RequirePlatformMember};
 use crate::siem::SiemStatus;
@@ -99,6 +99,30 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
         .route(
             "/api/one/admin/platform/security-policy/tier",
             post(apply_security_policy_tier),
+        )
+        // P1-8 安全策略模板层: named policy snapshots, independently bound to
+        // members/departments, copied into the tenant baseline by an explicit
+        // apply. Binding never changes enforcement by itself — see the
+        // migration 009 header for the three-layer semantics.
+        .route(
+            "/api/one/admin/platform/security-policy/templates",
+            get(list_policy_templates).post(create_policy_template),
+        )
+        .route(
+            "/api/one/admin/platform/security-policy/templates/{id}",
+            axum::routing::put(update_policy_template).delete(delete_policy_template),
+        )
+        .route(
+            "/api/one/admin/platform/security-policy/templates/{id}/apply",
+            post(apply_policy_template),
+        )
+        .route(
+            "/api/one/admin/platform/security-policy/templates/{id}/bindings",
+            get(list_policy_template_bindings).post(bind_policy_template),
+        )
+        .route(
+            "/api/one/admin/platform/security-policy/bindings/{bindingId}",
+            axum::routing::delete(unbind_policy_template),
         )
         .route(
             "/api/one/admin/platform/api-keys",
@@ -637,6 +661,175 @@ async fn apply_security_policy_tier(
     Ok(Json(ApiResponse::ok(dto)))
 }
 
+// --- P1-8 security policy templates (安全策略模板层) ---
+
+async fn list_policy_templates(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<Vec<SecurityPolicyTemplateDto>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_policy_templates(&actor.tenant_id).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PolicyTemplateBody {
+    name: String,
+    #[serde(default)]
+    description: String,
+    /// Which built-in tier the fields were authored from — provenance only.
+    #[serde(default = "default_policy_template_tier")]
+    tier: String,
+    #[serde(default)]
+    terminal_tools_require_approval: bool,
+    #[serde(default)]
+    destructive_commands_blocked: bool,
+    #[serde(default)]
+    blocked_command_patterns: Vec<String>,
+    #[serde(default)]
+    external_network_denied_by_default: bool,
+    #[serde(default)]
+    message_scan_enabled: bool,
+    #[serde(default)]
+    message_redact_enabled: bool,
+    #[serde(default)]
+    send_rate_limit_per_minute: Option<i64>,
+}
+
+fn default_policy_template_tier() -> String {
+    "custom".to_owned()
+}
+
+async fn create_policy_template(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<PolicyTemplateBody>,
+) -> Result<Json<ApiResponse<SecurityPolicyTemplateDto>>, PlatformError> {
+    let dto = state
+        .service
+        .create_policy_template(
+            &actor.tenant_id,
+            &body.name,
+            &body.description,
+            &body.tier,
+            body.terminal_tools_require_approval,
+            body.destructive_commands_blocked,
+            &body.blocked_command_patterns,
+            body.external_network_denied_by_default,
+            body.message_scan_enabled,
+            body.message_redact_enabled,
+            body.send_rate_limit_per_minute,
+            &user.id,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn update_policy_template(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+    Json(body): Json<PolicyTemplateBody>,
+) -> Result<Json<ApiResponse<SecurityPolicyTemplateDto>>, PlatformError> {
+    let dto = state
+        .service
+        .update_policy_template(
+            &actor.tenant_id,
+            &id,
+            &body.name,
+            &body.description,
+            body.terminal_tools_require_approval,
+            body.destructive_commands_blocked,
+            &body.blocked_command_patterns,
+            body.external_network_denied_by_default,
+            body.message_scan_enabled,
+            body.message_redact_enabled,
+            body.send_rate_limit_per_minute,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn delete_policy_template(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, PlatformError> {
+    state.service.delete_policy_template(&actor.tenant_id, &id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn apply_policy_template(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<SecurityPolicyDto>>, PlatformError> {
+    let dto = state
+        .service
+        .apply_policy_template(&actor.tenant_id, &id, &user.id)
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn list_policy_template_bindings(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<PolicyTemplateBindingDto>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .list_policy_template_bindings(&actor.tenant_id, &id)
+            .await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BindPolicyTemplateBody {
+    /// `"member" | "department"`.
+    subject_type: String,
+    subject_id: String,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+async fn bind_policy_template(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<BindPolicyTemplateBody>,
+) -> Result<Json<ApiResponse<PolicyTemplateBindingDto>>, PlatformError> {
+    let dto = state
+        .service
+        .bind_policy_template(
+            &actor.tenant_id,
+            &id,
+            &body.subject_type,
+            &body.subject_id,
+            body.note.as_deref(),
+            &user.id,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn unbind_policy_template(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(binding_id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, PlatformError> {
+    state
+        .service
+        .unbind_policy_template(&actor.tenant_id, &binding_id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
 // --- E5 open-integration API keys ---
 
 async fn list_api_keys(
@@ -709,7 +902,7 @@ struct CreateNotificationBody {
     /// Only read for `kind = "targeted"`; every id must be a member of the
     /// tenant.
     #[serde(default)]
-    recipientIds: Vec<String>,
+    recipient_ids: Vec<String>,
 }
 
 async fn create_notification(
@@ -726,7 +919,7 @@ async fn create_notification(
             body.category.as_deref().unwrap_or(""),
             &body.title,
             &body.body,
-            &body.recipientIds,
+            &body.recipient_ids,
             &user.id,
         )
         .await?;
