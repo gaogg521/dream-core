@@ -10,7 +10,7 @@ use serde::Deserialize;
 use dream_core_api_types::ApiResponse;
 use dream_core_auth::CurrentUser;
 
-use crate::dlp_service::{DlpEventDto, DlpEventInput, DlpRuleDto};
+use crate::dlp_service::{DlpEventDto, DlpEventInput, DlpRuleDto, DlpSummaryDto};
 use crate::error::DevopsError;
 use crate::models::{
     McpRegistryDto, MilestoneDto, PipelineDto, PipelineRunDto, ProviderChannelDto, RagConfigDto, RagDocumentDto,
@@ -70,6 +70,9 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
             "/api/one/devops/dlp/events",
             get(list_dlp_events).post(report_dlp_events),
         )
+        // Aggregated findings for the reports' security half — same admin gate
+        // as the raw list it summarizes.
+        .route("/api/one/devops/dlp/summary", get(dlp_summary))
         .route("/api/one/devops/rag/documents", get(list_rag).post(register_rag))
         .route("/api/one/devops/rag/documents/{id}", axum::routing::delete(delete_rag))
         .route(
@@ -1171,6 +1174,28 @@ async fn list_dlp_events(
     )))
 }
 
+#[derive(Deserialize)]
+struct DlpSummaryQuery {
+    /// Inclusive lower bound on `created_at` (ms). Defaults to 0 = all history.
+    #[serde(default)]
+    since: Option<i64>,
+}
+
+/// Aggregated findings (by day / by action) for the reports' security half.
+/// Admin-gated exactly like the raw event list — the aggregate narrows the
+/// same findings, so it leaks nothing new, but it says nothing a non-admin
+/// needs to act on either.
+async fn dlp_summary(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(query): Query<DlpSummaryQuery>,
+) -> Result<Json<ApiResponse<DlpSummaryDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    Ok(Json(ApiResponse::ok(
+        state.service.dlp_summary(query.since.unwrap_or(0)).await?,
+    )))
+}
+
 async fn list_rag(
     State(state): State<OneDevopsRouterState>,
     Extension(user): Extension<CurrentUser>,
@@ -1755,4 +1780,92 @@ async fn update_pipeline_run(
         )
         .await?;
     Ok(Json(ApiResponse::ok(dto)))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use dream_core_auth::CurrentUser;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::migrate::run_one_devops_migrations;
+    use crate::service::DevopsService;
+    use crate::state::OneDevopsRouterState;
+
+    /// In-memory service with the org tables `require_registry_admin` reads.
+    /// Same tenant fixture shape as dlp_service's tests: admin1 is org_admin
+    /// of tA, memberA an ordinary member of tA.
+    async fn router() -> axum::Router {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        run_one_devops_migrations(&pool).await.unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, tenant_id));
+             CREATE TABLE one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('admin1', 'tA', 'org_admin'), ('memberA', 'tA', 'member');
+             INSERT INTO one_active_tenant (user_id, tenant_id) VALUES ('admin1', 'tA'), ('memberA', 'tA');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        one_devops_routes(OneDevopsRouterState::new(Arc::new(DevopsService::new(pool))))
+    }
+
+    fn user(id: &str) -> CurrentUser {
+        // `local_default` fills the identity fields; only the id matters here.
+        let mut u = CurrentUser::local_default();
+        u.id = id.to_owned();
+        u
+    }
+
+    async fn get_summary(router: axum::Router, who: CurrentUser) -> axum::http::Response<Body> {
+        let mut request = Request::builder()
+            .uri("/api/one/devops/dlp/summary?since=0")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(who);
+        router.oneshot(request).await.unwrap()
+    }
+
+    /// The aggregate narrows the same findings the raw event list shows, so it
+    /// must sit behind the exact same admin gate — a member reading per-day
+    /// findings for the whole company from a "summary" endpoint is the same
+    /// leak as reading the raw list, just pre-chewed.
+    #[tokio::test]
+    async fn dlp_summary_is_admin_only() {
+        let router = router().await;
+
+        let response = get_summary(router.clone(), user("memberA")).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let response = get_summary(router.clone(), user("admin1")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // No org row = standalone/personal mode: the machine owner passes, same
+        // as every other registry-write gate in this crate.
+        let response = get_summary(router, user("no_org")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// Happy path returns the aggregate envelope (empty DB → all zeros), not
+    /// just a 200: the status-only assertion above cannot tell a working
+    /// endpoint from one that serializes nothing.
+    #[tokio::test]
+    async fn dlp_summary_returns_the_aggregate_envelope() {
+        let router = router().await;
+        let response = get_summary(router, user("admin1")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["data"]["totalEvents"], 0);
+        assert_eq!(json["data"]["totalBlocked"], 0);
+    }
 }

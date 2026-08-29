@@ -28,6 +28,22 @@ fn acp_backend_from_build_options(options: &BuildTaskOptions) -> Option<&str> {
     }
 }
 
+/// The channel attribution for this attempt's billing row (P1-4): the raw
+/// `providers.id` of the configuration the turn was built for —
+/// `prov_chan_<channel_id>` for enterprise channels, an opaque id for personal
+/// provider configs. Extracted BEFORE `build_options` is moved into
+/// `get_or_build_task` (same borrow-before-move pattern as
+/// `acp_backend_from_build_options`), because after the move the session
+/// context is gone and there is no second chance to read it.
+///
+/// An empty/whitespace id counts as no channel: the column stays NULL and the
+/// report buckets the row as `unknown`, rather than an empty-string key that
+/// would render as a blank channel in the console.
+fn channel_id_from_build_options(options: &BuildTaskOptions) -> Option<String> {
+    let id = options.context.model.provider_id.trim();
+    (!id.is_empty()).then(|| id.to_owned())
+}
+
 pub(crate) struct TurnStartInput {
     pub user_id: String,
     pub conversation: ConversationRow,
@@ -99,6 +115,9 @@ impl ConversationTurnOrchestrator {
         let build_started_at = now_ms();
         let availability_agent_id = availability_agent_id(&input.build_options);
         let backend = acp_backend_from_build_options(&input.build_options).map(str::to_owned);
+        // Borrowed before `build_options` is moved into `get_or_build_task` —
+        // see `channel_id_from_build_options` for why there is no later chance.
+        let channel_id = channel_id_from_build_options(&input.build_options);
         info!(
             conversation_id = %input.conv_id,
             turn_id = %input.turn_id,
@@ -427,7 +446,13 @@ impl ConversationTurnOrchestrator {
             // billed by the provider.
             let recorder = self.service.usage_recorder.read().ok().and_then(|g| g.clone());
             if let Some(recorder) = recorder {
-                meter_attempt(recorder.as_ref(), &input.user_id, &input.conv_id, &outcome);
+                meter_attempt(
+                    recorder.as_ref(),
+                    &input.user_id,
+                    &input.conv_id,
+                    channel_id.as_deref(),
+                    &outcome,
+                );
             }
 
             // P2-5 per-call trace: same boundary, finer grain — every
@@ -892,11 +917,26 @@ async fn record_agent_session_success(service: &ConversationService, user_id: &s
 ///
 /// Extracted from the orchestrator loop so it can be tested without standing up
 /// a whole conversation service.
-fn meter_attempt(recorder: &dyn crate::state::UsageRecorder, user_id: &str, conv_id: &str, outcome: &RelayOutcome) {
+///
+/// `channel_id` (the main turn's raw `providers.id`) is applied ONLY to the
+/// turn's own row. The delegate rows get `None` on purpose:
+/// `DelegateUsageEventData` carries just `{model, input_tokens, output_tokens}`
+/// — no provider id — so attributing a tool's borrowed model call to the main
+/// turn's channel would fabricate attribution the channel report would present
+/// as fact. Honest gap, not an oversight: fixing it needs the delegate event to
+/// start carrying the channel it actually ran on.
+fn meter_attempt(
+    recorder: &dyn crate::state::UsageRecorder,
+    user_id: &str,
+    conv_id: &str,
+    channel_id: Option<&str>,
+    outcome: &RelayOutcome,
+) {
     recorder.record_turn(
         user_id.to_owned(),
         conv_id.to_owned(),
         outcome.model.clone(),
+        channel_id.map(str::to_owned),
         outcome.input_tokens,
         outcome.output_tokens,
     );
@@ -905,6 +945,8 @@ fn meter_attempt(recorder: &dyn crate::state::UsageRecorder, user_id: &str, conv
             user_id.to_owned(),
             conv_id.to_owned(),
             Some(delegate.model.clone()),
+            // See the doc comment: no channel attribution for delegates.
+            None,
             Some(delegate.input_tokens),
             Some(delegate.output_tokens),
         );
@@ -978,7 +1020,9 @@ mod tests {
 
     /// Captures what the billing plane would have been told.
     #[derive(Default)]
-    struct RecordingUsageRecorder(std::sync::Mutex<Vec<(String, Option<String>, Option<i64>, Option<i64>)>>);
+    struct RecordingUsageRecorder(
+        std::sync::Mutex<Vec<(String, Option<String>, Option<String>, Option<i64>, Option<i64>)>>,
+    );
 
     impl crate::state::UsageRecorder for RecordingUsageRecorder {
         fn record_turn(
@@ -986,13 +1030,14 @@ mod tests {
             user_id: String,
             _conversation_id: String,
             model: Option<String>,
+            channel_id: Option<String>,
             input_tokens: Option<i64>,
             output_tokens: Option<i64>,
         ) {
             self.0
                 .lock()
                 .unwrap()
-                .push((user_id, model, input_tokens, output_tokens));
+                .push((user_id, model, channel_id, input_tokens, output_tokens));
         }
     }
 
@@ -1016,17 +1061,23 @@ mod tests {
             ..finish_outcome(false)
         };
 
-        meter_attempt(&recorder, "user-1", "conv-1", &outcome);
+        meter_attempt(&recorder, "user-1", "conv-1", None, &outcome);
 
         let rows = recorder.0.lock().unwrap();
         assert_eq!(rows.len(), 2, "the delegate call needs a row of its own");
         assert_eq!(
             rows[0],
-            ("user-1".into(), Some("deepseek-v4-flash".into()), Some(900), Some(80))
+            (
+                "user-1".into(),
+                Some("deepseek-v4-flash".into()),
+                None,
+                Some(900),
+                Some(80)
+            )
         );
         assert_eq!(
             rows[1],
-            ("user-1".into(), Some("kimi-k2-6".into()), Some(1_234), Some(56)),
+            ("user-1".into(), Some("kimi-k2-6".into()), None, Some(1_234), Some(56)),
             "the delegate row must be priced under the model that was actually called"
         );
     }
@@ -1045,7 +1096,7 @@ mod tests {
             ..finish_outcome(false)
         };
 
-        meter_attempt(&recorder, "user-1", "conv-1", &outcome);
+        meter_attempt(&recorder, "user-1", "conv-1", None, &outcome);
 
         assert_eq!(recorder.0.lock().unwrap().len(), 4, "1 turn + 3 delegate calls");
     }
@@ -1055,9 +1106,87 @@ mod tests {
     fn a_turn_without_a_delegate_call_records_one_row() {
         let recorder = RecordingUsageRecorder::default();
 
-        meter_attempt(&recorder, "user-1", "conv-1", &finish_outcome(false));
+        meter_attempt(&recorder, "user-1", "conv-1", None, &finish_outcome(false));
 
         assert_eq!(recorder.0.lock().unwrap().len(), 1);
+    }
+
+    /// The main turn's row carries the channel it ran on; a delegate's row
+    /// carries NONE. The delegate event has no provider id, so inheriting the
+    /// main turn's channel would fabricate attribution in the channel report.
+    #[test]
+    fn the_main_turn_is_attributed_to_its_channel_but_delegates_are_not() {
+        let recorder = RecordingUsageRecorder::default();
+        let outcome = RelayOutcome {
+            model: Some("deepseek-v4-flash".into()),
+            input_tokens: Some(900),
+            output_tokens: Some(80),
+            delegate_usage: vec![DelegateUsageEventData {
+                model: "kimi-k2-6".into(),
+                input_tokens: 10,
+                output_tokens: 5,
+            }],
+            ..finish_outcome(false)
+        };
+
+        meter_attempt(&recorder, "user-1", "conv-1", Some("prov_chan_chanA"), &outcome);
+
+        let rows = recorder.0.lock().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].2.as_deref(),
+            Some("prov_chan_chanA"),
+            "main turn keeps its channel"
+        );
+        assert_eq!(rows[1].2, None, "delegate must NOT inherit the main turn's channel");
+    }
+
+    /// A personal config with a provider id gets that id verbatim; a blank
+    /// provider id means no attribution (NULL → `unknown` bucket), never an
+    /// empty-string channel key that would render as a blank column entry.
+    #[test]
+    fn channel_id_from_build_options_takes_the_provider_id_and_rejects_blank() {
+        use dream_core_ai_agent::session_context::{
+            AcpSessionBuildContext, AgentSessionContext, ConversationContext, WorkspaceContext,
+        };
+        use dream_core_common::ProviderWithModel;
+
+        let context_for = |provider_id: &str| {
+            BuildTaskOptions::new(AgentSessionContext {
+                conversation: ConversationContext {
+                    conversation_id: "conv-1".into(),
+                    user_id: "user-1".into(),
+                    agent_type: AgentType::Acp,
+                    source: None,
+                },
+                workspace: WorkspaceContext {
+                    path: "/tmp/workspace".into(),
+                    stored_path: "/tmp/workspace".into(),
+                    is_custom: false,
+                },
+                model: ProviderWithModel {
+                    provider_id: provider_id.to_owned(),
+                    model: "model".into(),
+                    use_model: None,
+                },
+                skills: vec![],
+                runtime_env: vec![],
+                team: None,
+                kind: AgentSessionKind::Acp(Box::new(AcpSessionBuildContext {
+                    config: Default::default(),
+                    team: None,
+                    belongs_to_team: false,
+                    session_id: None,
+                    session_snapshot: None,
+                })),
+            })
+        };
+
+        let resolved = channel_id_from_build_options(&context_for("prov_chan_chanA")).unwrap();
+        assert_eq!(resolved, "prov_chan_chanA");
+
+        // Whitespace-only is as good as absent.
+        assert_eq!(channel_id_from_build_options(&context_for("   ")), None);
     }
 
     fn finish_outcome(needs_auth: bool) -> RelayOutcome {

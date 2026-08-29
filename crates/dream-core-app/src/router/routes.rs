@@ -544,6 +544,7 @@ impl dream_core_conversation::UsageRecorder for BillingUsageRecorder {
         user_id: String,
         conversation_id: String,
         model: Option<String>,
+        channel_id: Option<String>,
         input_tokens: Option<i64>,
         output_tokens: Option<i64>,
     ) {
@@ -554,6 +555,7 @@ impl dream_core_conversation::UsageRecorder for BillingUsageRecorder {
                     &user_id,
                     Some(&conversation_id),
                     model.as_deref(),
+                    channel_id.as_deref(),
                     input_tokens,
                     output_tokens,
                 )

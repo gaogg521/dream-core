@@ -79,7 +79,7 @@ impl LicenseInfoDto {
     }
 }
 
-/// One aggregation bucket (by user, by model, or by day).
+/// One aggregation bucket (by user, by model, by channel, or by day).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageBucketDto {
@@ -100,6 +100,12 @@ pub struct UsageSummaryDto {
     pub estimated_cost_micros: i64,
     pub by_user: Vec<UsageBucketDto>,
     pub by_model: Vec<UsageBucketDto>,
+    /// Bucket key is the raw `providers.id` that served the turn
+    /// (`prov_chan_<channel_id>` for enterprise channels); `"unknown"` covers
+    /// historical rows and sources with no provider id. No join against the
+    /// channel registry here — the frontend strips the `prov_chan_` prefix and
+    /// resolves display names via the devops channel registry.
+    pub by_channel: Vec<UsageBucketDto>,
     pub by_day: Vec<UsageBucketDto>,
     /// Bucket key `"unassigned"` covers members with no department (T7).
     pub by_department: Vec<UsageBucketDto>,
@@ -141,6 +147,10 @@ pub struct UsageEventDto {
     pub user_id: String,
     pub conversation_id: Option<String>,
     pub model: Option<String>,
+    /// Raw `providers.id` that served the turn (`prov_chan_<channel_id>` for
+    /// enterprise channels); `None` for historical rows and sources with no
+    /// provider id — the frontend renders those as personal/other, not NULL.
+    pub channel_id: Option<String>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub total_tokens: Option<i64>,

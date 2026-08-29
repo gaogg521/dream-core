@@ -35,6 +35,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "billing_007_llm_calls",
         include_str!("../migrations/billing_007_llm_calls.sql"),
     ),
+    (
+        "billing_008_usage_channel",
+        include_str!("../migrations/billing_008_usage_channel.sql"),
+    ),
 ];
 
 /// Run all pending one-billing migrations. Idempotent; call once at startup

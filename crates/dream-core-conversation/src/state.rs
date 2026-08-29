@@ -13,12 +13,23 @@ use dream_core_ai_agent::{ActiveLeaseRegistry, IWorkerTaskManager};
 /// reported usage (currently: ACP-bridged CLIs), in which case a real
 /// implementation should record the turn without a cost estimate rather than
 /// guessing `$0`.
+///
+/// `channel_id` is the raw `providers.id` of the configuration the turn ran on
+/// (`prov_chan_<channel_id>` for enterprise channels), extracted from the
+/// session's `ProviderWithModel` before the agent task consumes it. `None`
+/// means the caller has no attribution — tool-delegated model calls today —
+/// and implementations must record a NULL, never inherit the main turn's
+/// channel: a delegate's borrowed model is not billed to the session's
+/// provider, and inventing that attribution would fabricate channel report
+/// data. (Same honesty rule as the zero-cost turn: record what is known,
+/// surface the gap, do not paper over it.)
 pub trait UsageRecorder: Send + Sync {
     fn record_turn(
         &self,
         user_id: String,
         conversation_id: String,
         model: Option<String>,
+        channel_id: Option<String>,
         input_tokens: Option<i64>,
         output_tokens: Option<i64>,
     );

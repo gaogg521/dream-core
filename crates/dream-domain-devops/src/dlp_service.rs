@@ -58,6 +58,32 @@ pub struct DlpEventDto {
     pub created_at: i64,
 }
 
+/// One aggregation bucket of DLP findings (by day or by action).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DlpBucketDto {
+    /// `YYYY-MM-DD` day or the raw `action` string (`log` / `block`).
+    pub key: String,
+    pub count: i64,
+}
+
+/// Aggregate findings over a time window, for the reports' security half.
+/// Counts findings, not tokens or messages — the same unit the raw event list
+/// shows, so the aggregate can always be reconciled against it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DlpSummaryDto {
+    pub since: i64,
+    pub total_events: i64,
+    /// How many findings triggered a rule in `block` mode (vs record-only
+    /// `log`). Deliberately NOT reused as an "LLM failure count" anywhere: a
+    /// DLP interception is a policy action on the client side, unrelated to
+    /// whether a model call succeeded.
+    pub total_blocked: i64,
+    pub by_day: Vec<DlpBucketDto>,
+    pub by_action: Vec<DlpBucketDto>,
+}
+
 /// Everything needed to create or update one rule.
 ///
 /// A struct rather than positional parameters because six of these are `&str`:
@@ -361,6 +387,45 @@ impl DevopsService {
         .fetch_all(&self.pool)
         .await?)
     }
+
+    /// Aggregate findings since `since_ms`, by day and by action, for the
+    /// reports' security half. Same unit as [`Self::list_dlp_events`] rows
+    /// (one finding = one row), so an operator can always reconcile the
+    /// aggregate against the raw list it summarizes.
+    pub async fn dlp_summary(&self, since_ms: i64) -> Result<DlpSummaryDto, DevopsError> {
+        let by_day = self
+            .dlp_buckets(since_ms, "strftime('%Y-%m-%d', created_at / 1000, 'unixepoch')")
+            .await?;
+        let by_action = self.dlp_buckets(since_ms, "action").await?;
+        let (total_events, total_blocked): (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*), COALESCE(SUM(CASE WHEN action = 'block' THEN 1 ELSE 0 END), 0) \
+             FROM one_dlp_events WHERE created_at >= ?",
+        )
+        .bind(since_ms)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(DlpSummaryDto {
+            since: since_ms,
+            total_events,
+            total_blocked,
+            by_day,
+            by_action,
+        })
+    }
+
+    /// Grouped aggregation. `key_expr` is a trusted SQL expression (never user
+    /// input) selecting the bucket key — same pattern as one-billing's
+    /// `BillingService::buckets`.
+    async fn dlp_buckets(&self, since_ms: i64, key_expr: &str) -> Result<Vec<DlpBucketDto>, DevopsError> {
+        let sql = format!(
+            "SELECT {key_expr} AS k, COUNT(*) FROM one_dlp_events WHERE created_at >= ? GROUP BY k ORDER BY COUNT(*) DESC"
+        );
+        let rows: Vec<(String, i64)> = sqlx::query_as(&sql).bind(since_ms).fetch_all(&self.pool).await?;
+        Ok(rows
+            .into_iter()
+            .map(|(key, count)| DlpBucketDto { key, count })
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -598,5 +663,56 @@ mod tests {
     async fn recording_nothing_is_not_an_error() {
         let svc = service().await;
         assert_eq!(svc.record_dlp_events("memberA", &[]).await.unwrap(), 0);
+    }
+
+    /// Direct rows (not `record_dlp_events`, which stamps `now_ms`) so the
+    /// day/action buckets and the `since` cutoff are exercised against known
+    /// timestamps: two findings on 2026-08-01 (one block, one log) and one
+    /// block on 2026-08-02, plus one pre-window log that must be excluded.
+    #[tokio::test]
+    async fn dlp_summary_buckets_by_day_and_action_and_honours_since() {
+        let svc = service().await;
+        // 2026-08-01T00:00:00Z, in ms.
+        let day1: i64 = 1_785_542_400_000;
+        for (offset_ms, action) in [
+            (3_600_000, "block"),
+            (7_200_000, "log"),
+            (86_400_000 + 3_600_000, "block"),
+            (-86_400_000, "log"), // before the window
+        ] {
+            let ms = day1 + offset_ms;
+            sqlx::query(
+                "INSERT INTO one_dlp_events (id, user_id, rule_id, rule_name, action, hits, excerpt, created_at)                  VALUES (?, 'memberA', 'r1', 'rule', ?, 1, '', ?)",
+            )
+            .bind(format!("e-{ms}-{action}"))
+            .bind(action)
+            .bind(ms)
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+        }
+
+        let summary = svc.dlp_summary(day1).await.unwrap();
+        assert_eq!(summary.since, day1);
+        assert_eq!(summary.total_events, 3, "the pre-window finding is excluded");
+        assert_eq!(summary.total_blocked, 2);
+        let day_bucket = |key: &str| summary.by_day.iter().find(|b| b.key == key).map(|b| b.count);
+        assert_eq!(day_bucket("2026-08-01"), Some(2), "block + log on day one");
+        assert_eq!(day_bucket("2026-08-02"), Some(1));
+        let action_bucket = |key: &str| summary.by_action.iter().find(|b| b.key == key).map(|b| b.count);
+        assert_eq!(action_bucket("block"), Some(2));
+        assert_eq!(action_bucket("log"), Some(1));
+    }
+
+    /// An empty window must be all zeros with no phantom buckets — the report
+    /// renders "no findings" from this, not an error.
+    #[tokio::test]
+    async fn dlp_summary_of_an_empty_window_is_all_zeros() {
+        let svc = service().await;
+        let summary = svc.dlp_summary(0).await.unwrap();
+        assert_eq!(summary.total_events, 0);
+        assert_eq!(summary.total_blocked, 0);
+        assert!(summary.by_day.is_empty());
+        assert!(summary.by_action.is_empty());
     }
 }

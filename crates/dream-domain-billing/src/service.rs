@@ -996,11 +996,18 @@ impl BillingService {
     /// Record one metered turn. `enterprise_id` is resolved from the user;
     /// personal users record with a NULL enterprise. Tokens are best-effort
     /// (may be `None`); cost is an estimate from the model rate table.
+    ///
+    /// `channel_id` is the raw `providers.id` of the configuration that served
+    /// the turn (`prov_chan_<channel_id>` for enterprise channels; `None` for
+    /// historical callers and sources with no provider id, which bucket as
+    /// `"unknown"` — see the migration's doc comment for why this is stored
+    /// verbatim with no cross-crate join).
     pub async fn record_turn(
         &self,
         user_id: &str,
         conversation_id: Option<&str>,
         model: Option<&str>,
+        channel_id: Option<&str>,
         input_tokens: Option<i64>,
         output_tokens: Option<i64>,
     ) -> Result<(), BillingError> {
@@ -1031,8 +1038,8 @@ impl BillingService {
         }
         sqlx::query(
             "INSERT INTO one_usage_events \
-                (id, user_id, enterprise_id, department_id, conversation_id, model, input_tokens, output_tokens, total_tokens, estimated_cost_micros, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (id, user_id, enterprise_id, department_id, conversation_id, model, channel_id, input_tokens, output_tokens, total_tokens, estimated_cost_micros, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(generate_prefixed_id("usage"))
         .bind(user_id)
@@ -1040,6 +1047,7 @@ impl BillingService {
         .bind(department_id)
         .bind(conversation_id)
         .bind(model)
+        .bind(channel_id)
         .bind(input_tokens)
         .bind(output_tokens)
         .bind(total_tokens)
@@ -1093,11 +1101,14 @@ impl BillingService {
     }
 
     /// Aggregate usage for a company since `since_ms`, grouped by user, model,
-    /// and day, plus grand totals.
+    /// channel, and day, plus grand totals.
     pub async fn usage_summary(&self, enterprise_id: &str, since_ms: i64) -> Result<UsageSummaryDto, BillingError> {
         let by_user = self.buckets(enterprise_id, since_ms, "user_id").await?;
         let by_model = self
             .buckets(enterprise_id, since_ms, "COALESCE(model, 'unknown')")
+            .await?;
+        let by_channel = self
+            .buckets(enterprise_id, since_ms, "COALESCE(channel_id, 'unknown')")
             .await?;
         let by_day = self
             .buckets(
@@ -1141,6 +1152,7 @@ impl BillingService {
             estimated_cost_micros: total_cost,
             by_user,
             by_model,
+            by_channel,
             by_day,
             by_department,
             unpriced_media_calls,
@@ -1221,13 +1233,14 @@ impl BillingService {
         let total = count_query.fetch_one(&self.pool).await?;
 
         let list_sql = format!(
-            "SELECT id, user_id, conversation_id, model, input_tokens, output_tokens, total_tokens, \
+            "SELECT id, user_id, conversation_id, model, channel_id, input_tokens, output_tokens, total_tokens, \
                     estimated_cost_micros, created_at \
              FROM one_usage_events {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?"
         );
         type Row = (
             String,
             String,
+            Option<String>,
             Option<String>,
             Option<String>,
             Option<i64>,
@@ -1248,12 +1261,24 @@ impl BillingService {
         let events = rows
             .into_iter()
             .map(
-                |(id, user_id, conversation_id, model, input_tokens, output_tokens, total_tokens, cost, created_at)| {
+                |(
+                    id,
+                    user_id,
+                    conversation_id,
+                    model,
+                    channel_id,
+                    input_tokens,
+                    output_tokens,
+                    total_tokens,
+                    cost,
+                    created_at,
+                )| {
                     UsageEventDto {
                         id,
                         user_id,
                         conversation_id,
                         model,
+                        channel_id,
                         input_tokens,
                         output_tokens,
                         total_tokens,
@@ -1673,7 +1698,7 @@ mod tests {
             assert!(svc.entitlement(None, f).await.unwrap(), "personal allows {f:?}");
         }
         // Recording usage with no enterprise is fine (NULL enterprise_id).
-        svc.record_turn("nobody", Some("c1"), Some("claude-opus"), Some(10), Some(20))
+        svc.record_turn("nobody", Some("c1"), Some("claude-opus"), None, Some(10), Some(20))
             .await
             .unwrap();
     }
@@ -1799,10 +1824,10 @@ mod tests {
             .execute(&svc.pool)
             .await
             .unwrap();
-        svc.record_turn("alice", Some("c1"), Some("claude-opus-4-8"), Some(100), Some(200))
+        svc.record_turn("alice", Some("c1"), Some("claude-opus-4-8"), None, Some(100), Some(200))
             .await
             .unwrap();
-        svc.record_turn("alice", Some("c1"), Some("claude-opus-4-8"), Some(50), Some(50))
+        svc.record_turn("alice", Some("c1"), Some("claude-opus-4-8"), None, Some(50), Some(50))
             .await
             .unwrap();
         let summary = svc.usage_summary("ent1", 0).await.unwrap();
@@ -1814,6 +1839,90 @@ mod tests {
         assert_eq!(summary.by_model[0].key, "claude-opus-4-8");
     }
 
+    /// The channel dimension (P1-4) must keep three row origins apart: an
+    /// enterprise channel (raw `providers.id`, `prov_chan_<channel_id>`), a
+    /// personally configured provider (an id with no registry row), and rows
+    /// written before the column existed (NULL). The NULL bucket is labelled
+    /// `unknown` — same convention as a NULL model — and none of the three may
+    /// fold into each other, or the channel report quietly overcounts one and
+    /// undercounts the rest.
+    #[tokio::test]
+    async fn usage_summary_buckets_channel_and_never_mixes_sources() {
+        let svc = service().await;
+        add_members(&svc, "ent1", 1).await;
+        sqlx::query("UPDATE one_enterprise_members SET user_id = 'alice' WHERE enterprise_id = 'ent1'")
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+        svc.record_turn(
+            "alice",
+            Some("c1"),
+            Some("claude-opus-4-8"),
+            Some("prov_chan_chanA"),
+            Some(10),
+            Some(10),
+        )
+        .await
+        .unwrap();
+        svc.record_turn(
+            "alice",
+            Some("c1"),
+            Some("gpt-4"),
+            Some("prov_chan_chanA"),
+            Some(10),
+            Some(10),
+        )
+        .await
+        .unwrap();
+        svc.record_turn(
+            "alice",
+            Some("c1"),
+            Some("claude-opus-4-8"),
+            Some("personal-provider"),
+            Some(10),
+            Some(10),
+        )
+        .await
+        .unwrap();
+        // Pre-P1-4 row shape: no channel at all.
+        svc.record_turn("alice", Some("c1"), Some("gpt-4"), None, Some(10), Some(10))
+            .await
+            .unwrap();
+
+        let summary = svc.usage_summary("ent1", 0).await.unwrap();
+        assert_eq!(summary.by_channel.len(), 3, "three sources, three buckets");
+        let bucket = |key: &str| {
+            summary
+                .by_channel
+                .iter()
+                .find(|b| b.key == key)
+                .unwrap_or_else(|| panic!("missing channel bucket {key}"))
+        };
+        assert_eq!(bucket("prov_chan_chanA").turns, 2);
+        assert_eq!(bucket("prov_chan_chanA").total_tokens, 40);
+        assert_eq!(bucket("personal-provider").turns, 1);
+        assert_eq!(bucket("unknown").turns, 1);
+        // Channel is an orthogonal dimension: the model buckets are unaffected.
+        assert_eq!(summary.by_model.len(), 2);
+        // The raw row keeps the column verbatim — the frontend, not this
+        // crate, strips the `prov_chan_` prefix and resolves display names.
+        let page = svc.list_usage_events("ent1", 0, None, None, 50, 0).await.unwrap();
+        let event = page
+            .events
+            .iter()
+            .find(|e| {
+                e.model.as_deref() == Some("gpt-4")
+                    && e.conversation_id.as_deref() == Some("c1")
+                    && e.input_tokens == Some(10)
+                    && e.output_tokens == Some(10)
+            })
+            .unwrap();
+        assert!(
+            event.channel_id.is_none(),
+            "None channel must read back as NULL, not 'unknown'"
+        );
+    }
+
     #[tokio::test]
     async fn list_usage_events_filters_and_paginates() {
         let svc = service().await;
@@ -1823,11 +1932,18 @@ mod tests {
             .await
             .unwrap();
         for i in 0..3 {
-            svc.record_turn("alice", Some("c1"), Some("claude-opus-4-8"), Some(10 + i), Some(20))
-                .await
-                .unwrap();
+            svc.record_turn(
+                "alice",
+                Some("c1"),
+                Some("claude-opus-4-8"),
+                None,
+                Some(10 + i),
+                Some(20),
+            )
+            .await
+            .unwrap();
         }
-        svc.record_turn("alice", Some("c1"), Some("gpt-4"), Some(5), Some(5))
+        svc.record_turn("alice", Some("c1"), Some("gpt-4"), None, Some(5), Some(5))
             .await
             .unwrap();
 
@@ -1870,10 +1986,10 @@ mod tests {
             .execute(&svc.pool)
             .await
             .unwrap();
-        svc.record_turn("alice", Some("c1"), Some("claude-opus-4-8"), Some(10), Some(10))
+        svc.record_turn("alice", Some("c1"), Some("claude-opus-4-8"), None, Some(10), Some(10))
             .await
             .unwrap();
-        svc.record_turn("bob", Some("c2"), Some("claude-opus-4-8"), Some(10), Some(10))
+        svc.record_turn("bob", Some("c2"), Some("claude-opus-4-8"), None, Some(10), Some(10))
             .await
             .unwrap();
 
@@ -1890,18 +2006,18 @@ mod tests {
             .execute(&svc.pool)
             .await
             .unwrap();
-        svc.record_turn("alice", Some("c1"), Some("claude-opus-4-8"), Some(100), Some(100))
+        svc.record_turn("alice", Some("c1"), Some("claude-opus-4-8"), None, Some(100), Some(100))
             .await
             .unwrap();
-        svc.record_turn("alice", Some("c1"), Some("gpt-4"), Some(50), Some(50))
+        svc.record_turn("alice", Some("c1"), Some("gpt-4"), None, Some(50), Some(50))
             .await
             .unwrap();
-        svc.record_turn("alice", Some("c2"), Some("claude-opus-4-8"), Some(10), Some(10))
+        svc.record_turn("alice", Some("c2"), Some("claude-opus-4-8"), None, Some(10), Some(10))
             .await
             .unwrap();
         // No conversation_id: must be excluded from sessions, not merged into
         // a misleading "no conversation" bucket.
-        svc.record_turn("alice", None, Some("claude-opus-4-8"), Some(999), Some(999))
+        svc.record_turn("alice", None, Some("claude-opus-4-8"), None, Some(999), Some(999))
             .await
             .unwrap();
 
@@ -1927,17 +2043,32 @@ mod tests {
     #[tokio::test]
     async fn conversation_cost_sums_every_turn_for_that_conversation() {
         let svc = service().await;
-        svc.record_turn("solo", Some("conv_x"), Some("claude-opus-4-8"), Some(100), Some(200))
-            .await
-            .unwrap();
-        svc.record_turn("solo", Some("conv_x"), Some("claude-opus-4-8"), Some(50), Some(50))
-            .await
-            .unwrap();
+        svc.record_turn(
+            "solo",
+            Some("conv_x"),
+            Some("claude-opus-4-8"),
+            None,
+            Some(100),
+            Some(200),
+        )
+        .await
+        .unwrap();
+        svc.record_turn(
+            "solo",
+            Some("conv_x"),
+            Some("claude-opus-4-8"),
+            None,
+            Some(50),
+            Some(50),
+        )
+        .await
+        .unwrap();
         // A different conversation for the same user must not bleed in.
         svc.record_turn(
             "solo",
             Some("conv_y"),
             Some("claude-opus-4-8"),
+            None,
             Some(9_999),
             Some(9_999),
         )
@@ -1994,7 +2125,7 @@ mod tests {
             .await
             .unwrap();
         // A chat turn must not be mistaken for unpriced media.
-        svc.record_turn("alice", Some("c1"), Some("some-chat-model"), Some(10), Some(10))
+        svc.record_turn("alice", Some("c1"), Some("some-chat-model"), None, Some(10), Some(10))
             .await
             .unwrap();
 
@@ -2074,7 +2205,7 @@ mod tests {
         // Spend cap: clear the allowlist, set a tiny cap, then overspend.
         svc.set_model_control("entX", Some(100), &[]).await.unwrap();
         assert!(svc.check_send_allowed("zoe", Some("gpt-4")).await.is_ok()); // under budget so far
-        svc.record_turn("zoe", Some("c1"), Some("claude-opus-4-8"), Some(1000), Some(1000))
+        svc.record_turn("zoe", Some("c1"), Some("claude-opus-4-8"), None, Some(1000), Some(1000))
             .await
             .unwrap(); // ~90000 micros >> 100
         assert_eq!(
@@ -2489,7 +2620,7 @@ mod tests {
         let svc = service().await;
         add_user_org(&svc, "dana", Some("deptA")).await;
 
-        svc.record_turn("dana", None, Some("gpt-4"), Some(10), Some(10))
+        svc.record_turn("dana", None, Some("gpt-4"), None, Some(10), Some(10))
             .await
             .unwrap();
         svc.record_media_usage(MediaUsage {
@@ -2512,7 +2643,7 @@ mod tests {
         assert_eq!(depts, vec![Some("deptA".to_owned()), Some("deptA".to_owned())]);
 
         // No one_user_org row at all → NULL, not an error.
-        svc.record_turn("no_org_row", None, Some("gpt-4"), Some(10), Some(10))
+        svc.record_turn("no_org_row", None, Some("gpt-4"), None, Some(10), Some(10))
             .await
             .unwrap();
         let none_dept: Option<String> =
@@ -2542,9 +2673,16 @@ mod tests {
         svc.set_department_budget("entD", "deptA", Some(100)).await.unwrap();
         assert!(svc.check_send_allowed("dana", Some("gpt-4")).await.is_ok());
 
-        svc.record_turn("dana", Some("c1"), Some("claude-opus-4-8"), Some(1000), Some(1000))
-            .await
-            .unwrap(); // ~90000 micros >> 100
+        svc.record_turn(
+            "dana",
+            Some("c1"),
+            Some("claude-opus-4-8"),
+            None,
+            Some(1000),
+            Some(1000),
+        )
+        .await
+        .unwrap(); // ~90000 micros >> 100
         assert_eq!(
             svc.check_send_allowed("dana", Some("gpt-4")).await.unwrap_err().code(),
             "DEPARTMENT_BUDGET_EXCEEDED"
@@ -2564,9 +2702,16 @@ mod tests {
         let svc = service().await;
         add_user_org(&svc, "dana", Some("deptA")).await;
         svc.set_department_budget("entD", "deptA", Some(500)).await.unwrap();
-        svc.record_turn("dana", Some("c1"), Some("claude-opus-4-8"), Some(1000), Some(1000))
-            .await
-            .unwrap();
+        svc.record_turn(
+            "dana",
+            Some("c1"),
+            Some("claude-opus-4-8"),
+            None,
+            Some(1000),
+            Some(1000),
+        )
+        .await
+        .unwrap();
 
         let budgets = svc.list_department_budgets("entD").await.unwrap();
         assert_eq!(budgets.len(), 1);
@@ -2588,18 +2733,32 @@ mod tests {
     async fn reassigning_a_users_department_does_not_reshuffle_past_spend() {
         let svc = service().await;
         add_user_org(&svc, "dana", Some("deptA")).await;
-        svc.record_turn("dana", Some("c1"), Some("claude-opus-4-8"), Some(1000), Some(1000))
-            .await
-            .unwrap();
+        svc.record_turn(
+            "dana",
+            Some("c1"),
+            Some("claude-opus-4-8"),
+            None,
+            Some(1000),
+            Some(1000),
+        )
+        .await
+        .unwrap();
 
         // Move dana to deptB going forward.
         sqlx::query("UPDATE one_user_org SET department_id = 'deptB' WHERE user_id = 'dana'")
             .execute(&svc.pool)
             .await
             .unwrap();
-        svc.record_turn("dana", Some("c2"), Some("claude-opus-4-8"), Some(1000), Some(1000))
-            .await
-            .unwrap();
+        svc.record_turn(
+            "dana",
+            Some("c2"),
+            Some("claude-opus-4-8"),
+            None,
+            Some(1000),
+            Some(1000),
+        )
+        .await
+        .unwrap();
 
         let depts: Vec<Option<String>> =
             sqlx::query_scalar("SELECT department_id FROM one_usage_events WHERE user_id = 'dana' ORDER BY created_at")
