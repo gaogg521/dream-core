@@ -424,6 +424,13 @@ impl AppServices {
             database.pool().clone(),
             encryption_key,
         ));
+        // Same posture as `platform_for_agent_factory` above: a second
+        // WorkflowService over the same pool is harmless (pool clone + no
+        // in-memory state), and the terminal-tool approval gate needs one
+        // here because the agent factory is built before the router — and
+        // before the governance plane that also holds a handle.
+        #[cfg(feature = "enterprise")]
+        let workflow_for_agent_factory = Arc::new(dream_domain_workflow::WorkflowService::new(database.pool().clone()));
 
         // NOT adopted this sync (2026-07-29): upstream wires a `session_spawner`
         // here for the direct-CLI SessionAgentTask path — see the matching notes
@@ -467,6 +474,7 @@ impl AppServices {
             #[cfg(feature = "enterprise")]
             tool_call_security_gate: Some(Arc::new(crate::router::PlatformToolCallSecurityGate {
                 platform: platform_for_agent_factory,
+                workflow: Some(workflow_for_agent_factory),
             })),
             #[cfg(not(feature = "enterprise"))]
             tool_call_security_gate: None,

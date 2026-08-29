@@ -22,6 +22,14 @@ use async_trait::async_trait;
 /// tool call only costs one tenant/policy lookup regardless of how many
 /// policy dimensions apply to it.
 ///
+/// `is_terminal_tool` (`ToolKind::Execute` on the ACP path) feeds the third
+/// policy dimension, `terminal_tools_require_approval`: when the caller's
+/// policy demands it, the implementation may create an approval task and
+/// block inside `check` until an administrator decides (or the deadline
+/// passes — a timeout denies, the conservative default). Blocking here is
+/// the same trade the permission router already makes when it waits for the
+/// human user's own confirmation.
+///
 /// `command_text` is best-effort text extracted from the tool call (title
 /// plus the raw input serialized to JSON) — this crate has no reliable,
 /// verified way to know which specific field of a given agent CLI's tool
@@ -38,5 +46,11 @@ use async_trait::async_trait;
 /// same convention as [`crate::model_policy::ModelAllowlistGate`].
 #[async_trait]
 pub trait ToolCallSecurityGate: Send + Sync {
-    async fn check(&self, user_id: &str, command_text: &str, is_network_fetch: bool) -> Result<Option<String>, String>;
+    async fn check(
+        &self,
+        user_id: &str,
+        command_text: &str,
+        is_network_fetch: bool,
+        is_terminal_tool: bool,
+    ) -> Result<Option<String>, String>;
 }

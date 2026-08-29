@@ -82,8 +82,13 @@ impl PermissionRouter {
                 // blocked command must never reach either.
                 if let Some(gate) = this.tool_call_security_gate.as_ref() {
                     let command_text = extract_command_text(&perm_req.request);
-                    let is_network_fetch = perm_req.request.tool_call.fields.kind == Some(SdkToolKind::Fetch);
-                    match gate.check(&this.user_id, &command_text, is_network_fetch).await {
+                    let kind = perm_req.request.tool_call.fields.kind;
+                    let is_network_fetch = kind == Some(SdkToolKind::Fetch);
+                    let is_terminal_tool = kind == Some(SdkToolKind::Execute);
+                    match gate
+                        .check(&this.user_id, &command_text, is_network_fetch, is_terminal_tool)
+                        .await
+                    {
                         Ok(Some(reason)) => {
                             warn!(
                                 conversation_id = %runtime.conversation_id(),
@@ -672,6 +677,7 @@ mod tests {
             _user_id: &str,
             _command_text: &str,
             _is_network_fetch: bool,
+            _is_terminal_tool: bool,
         ) -> Result<Option<String>, String> {
             self.verdict.clone()
         }
@@ -836,11 +842,12 @@ mod tests {
         assert_eq!(router.get_confirmations().len(), 1);
     }
 
-    /// Records the `is_network_fetch` flag it was called with, so a test can
-    /// assert `PermissionRouter` correctly derived it from the request's
-    /// ACP `ToolKind` rather than always passing a fixed value.
+    /// Records the `is_network_fetch` / `is_terminal_tool` flags it was called
+    /// with, so a test can assert `PermissionRouter` correctly derived them
+    /// from the request's ACP `ToolKind` rather than always passing fixed
+    /// values.
     struct RecordingToolCallSecurityGate {
-        seen: StdMutex<Vec<bool>>,
+        seen: StdMutex<Vec<(bool, bool)>>,
     }
 
     #[async_trait::async_trait]
@@ -850,8 +857,9 @@ mod tests {
             _user_id: &str,
             _command_text: &str,
             is_network_fetch: bool,
+            is_terminal_tool: bool,
         ) -> Result<Option<String>, String> {
-            self.seen.lock().unwrap().push(is_network_fetch);
+            self.seen.lock().unwrap().push((is_network_fetch, is_terminal_tool));
             Ok(None)
         }
     }
@@ -891,7 +899,7 @@ mod tests {
             .expect("permission request should be accepted");
 
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(gate.seen.lock().unwrap().as_slice(), &[true]);
+        assert_eq!(gate.seen.lock().unwrap().as_slice(), &[(true, false)]);
     }
 
     /// A non-fetch call (e.g. editing a file) must be reported as `false`.
@@ -917,7 +925,7 @@ mod tests {
             .expect("permission request should be accepted");
 
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(gate.seen.lock().unwrap().as_slice(), &[false]);
+        assert_eq!(gate.seen.lock().unwrap().as_slice(), &[(false, false)]);
     }
 
     #[test]

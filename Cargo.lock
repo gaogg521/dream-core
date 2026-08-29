@@ -1846,6 +1846,7 @@ dependencies = [
  "dream-domain-org",
  "dream-domain-platform",
  "dream-domain-sso",
+ "dream-domain-workflow",
  "dream-engine-config",
  "dunce",
  "futures-util",
@@ -2536,6 +2537,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "dream-domain-memory"
+version = "0.1.70-one.1"
+dependencies = [
+ "axum",
+ "dream-core-api-types",
+ "dream-core-auth",
+ "dream-core-common",
+ "dream-core-db",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "dream-domain-org"
 version = "0.1.70-one.1"
 dependencies = [
@@ -2598,6 +2617,23 @@ dependencies = [
  "tracing",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "dream-domain-workflow"
+version = "0.1.70-one.1"
+dependencies = [
+ "axum",
+ "dream-core-api-types",
+ "dream-core-auth",
+ "dream-core-common",
+ "dream-core-db",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

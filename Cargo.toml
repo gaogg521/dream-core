@@ -34,6 +34,8 @@ members = [
     "crates/dream-domain-enterprise",
     "crates/dream-domain-billing",
     "crates/dream-domain-platform",
+    "crates/dream-domain-workflow",
+    "crates/dream-domain-memory",
 ]
 
 [workspace.package]
@@ -76,6 +78,8 @@ dream-domain-devops = { path = "crates/dream-domain-devops" }
 dream-domain-enterprise = { path = "crates/dream-domain-enterprise" }
 dream-domain-billing = { path = "crates/dream-domain-billing" }
 dream-domain-platform = { path = "crates/dream-domain-platform" }
+dream-domain-workflow = { path = "crates/dream-domain-workflow" }
+dream-domain-memory = { path = "crates/dream-domain-memory" }
 
 # Pinned to fork gaogg521/aionrs (master) = upstream v0.2.8 + fork-only patches
 # (textualize tool replay, empty tool_call args, deferred schema promote, GLM

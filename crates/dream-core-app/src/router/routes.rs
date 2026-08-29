@@ -969,10 +969,19 @@ impl dream_core_ai_agent::ModelAllowlistGate for BillingModelAllowlistGate {
 }
 
 /// Adapts `one_security_policy`'s `destructive_commands_blocked` +
-/// `blocked_command_patterns` and `external_network_denied_by_default` to
-/// `dream-core-ai-agent`'s `ToolCallSecurityGate` port, consulted by the ACP
-/// permission router before a tool call reaches the user for approval (or
-/// is auto-approved).
+/// `blocked_command_patterns`, `external_network_denied_by_default`, and
+/// `terminal_tools_require_approval` to `dream-core-ai-agent`'s
+/// `ToolCallSecurityGate` port, consulted by the ACP permission router
+/// before a tool call reaches the user for approval (or is auto-approved).
+///
+/// The approval dimension (P2-1's terminal-tool flow, T8's fifth field) is
+/// the one that *blocks inside this call*: when the policy demands approval
+/// for terminal tools, a `tool` workflow task is created and the call waits
+/// — polling the shared ledger, so a decision made on the admin binary's
+/// queue is seen here — until an administrator approves, rejects, or the
+/// deadline passes. A timeout is a denial (`wait_for_decision`'s contract),
+/// the conservative default the plan fixes because the reference product
+/// does not expose its own.
 ///
 /// No shared `PolicyGrace` here — unlike the IP allowlist or the send-rate
 /// gate, a failure in this check only fails closed on the ONE tool call
@@ -982,12 +991,27 @@ impl dream_core_ai_agent::ModelAllowlistGate for BillingModelAllowlistGate {
 #[cfg(feature = "enterprise")]
 pub(crate) struct PlatformToolCallSecurityGate {
     pub(crate) platform: std::sync::Arc<dream_domain_platform::PlatformService>,
+    /// The approval backend. `None` (tests, or a plane built without the
+    /// workflow crate) keeps `terminal_tools_require_approval` at its T8
+    /// posture: stored, surfaced in the UI, but not enforced.
+    pub(crate) workflow: Option<std::sync::Arc<dream_domain_workflow::WorkflowService>>,
 }
+
+/// The task title carries a bounded slice of the command text: enough for an
+/// administrator skimming the queue to tell two terminal calls apart, short
+/// enough that a machine-generated blob cannot flood the list.
+const APPROVAL_TITLE_MAX_CHARS: usize = 120;
 
 #[async_trait::async_trait]
 #[cfg(feature = "enterprise")]
 impl dream_core_ai_agent::ToolCallSecurityGate for PlatformToolCallSecurityGate {
-    async fn check(&self, user_id: &str, command_text: &str, is_network_fetch: bool) -> Result<Option<String>, String> {
+    async fn check(
+        &self,
+        user_id: &str,
+        command_text: &str,
+        is_network_fetch: bool,
+        is_terminal_tool: bool,
+    ) -> Result<Option<String>, String> {
         let actor = match self.platform.resolve_actor(user_id).await {
             // No enterprise membership: nothing governs this caller.
             Ok(None) => return Ok(None),
@@ -1006,15 +1030,85 @@ impl dream_core_ai_agent::ToolCallSecurityGate for PlatformToolCallSecurityGate 
             ));
         }
 
-        if !policy.destructive_commands_blocked {
-            return Ok(None);
+        if policy.destructive_commands_blocked {
+            let haystack = command_text.to_lowercase();
+            if let Some(pattern) = policy
+                .blocked_command_patterns
+                .iter()
+                .find(|pattern| !pattern.is_empty() && haystack.contains(&pattern.to_lowercase()))
+            {
+                return Ok(Some(format!(
+                    "blocked by company security policy (matches '{pattern}')"
+                )));
+            }
         }
-        let haystack = command_text.to_lowercase();
-        let matched = policy
-            .blocked_command_patterns
-            .iter()
-            .find(|pattern| !pattern.is_empty() && haystack.contains(&pattern.to_lowercase()));
-        Ok(matched.map(|pattern| format!("blocked by company security policy (matches '{pattern}')")))
+
+        if is_terminal_tool && policy.terminal_tools_require_approval {
+            let Some(workflow) = self.workflow.as_ref() else {
+                // Policy demands approval but no approval backend is wired:
+                // fail closed on this call (same convention as a check
+                // error) rather than silently executing what the tenant
+                // asked to gate.
+                return Err("terminal tools require approval but no approval backend is wired".to_owned());
+            };
+            match self
+                .run_terminal_approval(workflow, &actor.tenant_id, user_id, command_text)
+                .await
+            {
+                Ok(None) => {}
+                other => return other,
+            }
+        }
+
+        Ok(None)
+    }
+}
+
+#[cfg(feature = "enterprise")]
+impl PlatformToolCallSecurityGate {
+    /// Create the `tool` approval task and block until it is decided or the
+    /// deadline passes. `Ok(None)` = approved (the call proceeds);
+    /// `Ok(Some(reason))` / `Err` = the call is denied, with the reason the
+    /// transcript will show.
+    async fn run_terminal_approval(
+        &self,
+        workflow: &dream_domain_workflow::WorkflowService,
+        tenant_id: &str,
+        user_id: &str,
+        command_text: &str,
+    ) -> Result<Option<String>, String> {
+        let title: String = command_text.chars().take(APPROVAL_TITLE_MAX_CHARS).collect();
+        let task = workflow
+            .create_task(
+                tenant_id,
+                "tool",
+                user_id,
+                &title,
+                "terminal tool call awaiting administrator approval (security policy)",
+                &serde_json::json!({ "commandText": command_text }),
+                Some(dream_core_common::now_ms() + dream_domain_workflow::TERMINAL_APPROVAL_TIMEOUT_MS),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        tracing::info!(
+            task_id = %task.id,
+            tenant_id,
+            user_id,
+            "terminal tool call held for administrator approval"
+        );
+        match workflow
+            .wait_for_decision(tenant_id, &task.id, dream_domain_workflow::TERMINAL_APPROVAL_TIMEOUT_MS)
+            .await
+        {
+            Ok(dream_domain_workflow::ApprovalOutcome::Approved) => {
+                tracing::info!(task_id = %task.id, "terminal tool call approved");
+                Ok(None)
+            }
+            Ok(dream_domain_workflow::ApprovalOutcome::Denied { reason }) => {
+                Ok(Some(format!("blocked by company security policy ({reason})")))
+            }
+            Err(e) => Err(e.to_string()),
+        }
     }
 }
 
@@ -1283,6 +1377,19 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
                 .with_source(e)
             })?;
     }
+    // one-workflow: approval tasks (P2-1).
+    #[cfg(feature = "enterprise")]
+    {
+        dream_domain_workflow::run_one_workflow_migrations(services.database.pool())
+            .await
+            .map_err(|e| {
+                RouterBuildError::new(
+                    "router.dream_domain_workflow.migrate",
+                    "failed to run one-workflow migrations",
+                )
+                .with_source(e)
+            })?;
+    }
 
     // Start channel orchestrator (message loop)
     tokio::spawn(
@@ -1449,6 +1556,7 @@ pub(crate) struct GovernancePlane {
     pub enterprise: Router,
     pub billing: Router,
     pub platform: Router,
+    pub workflow: Router,
     pub sso_public: Router,
     pub sso_admin: Router,
     /// Handed back rather than kept: one-employee and one-devops both need it,
@@ -1457,6 +1565,10 @@ pub(crate) struct GovernancePlane {
     /// Same reason: the matrix needs both the platform service and the org
     /// service, and this is the only place that holds both.
     pub grant_source: std::sync::Arc<dyn dream_domain_devops::grants::ResourceGrantSource>,
+    /// Handed back so the terminal-tool approval gate (`PlatformToolCallSecurityGate`)
+    /// can create tasks and block on decisions without a second service over
+    /// the same pool.
+    pub workflow_service: std::sync::Arc<dream_domain_workflow::WorkflowService>,
     /// Handed back so `create_admin_router` can apply the same E4 module gate
     /// to `admin_devops_routes` (built outside this function, since it isn't
     /// part of the personal-plane-shared devops surface) without constructing
@@ -1749,15 +1861,31 @@ pub(crate) fn build_governance_plane(
             org: one_org_service.clone(),
         });
 
+    // one-workflow routes (/api/workflow/*) — the approval subsystem (P2-1).
+    // Members submit and watch their own tasks; the pending queue and every
+    // decision belong to the admin group. The service handle is handed back
+    // on the plane so the terminal-tool approval gate can block on it (see
+    // `PlatformToolCallSecurityGate`).
+    let one_workflow_service = std::sync::Arc::new(dream_domain_workflow::WorkflowService::new(
+        services.database.pool().clone(),
+    ));
+    let one_workflow_state = dream_domain_workflow::OneWorkflowRouterState::new(one_workflow_service.clone());
+    let one_workflow_authenticated = dream_domain_workflow::one_workflow_routes(one_workflow_state)
+        .route_layer(from_fn_with_state(license_gate.clone(), license_module_gate_middleware))
+        .route_layer(from_fn_with_state(password_gate.clone(), require_password_changed_gate))
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
     GovernancePlane {
         org: one_org_authenticated,
         enterprise: one_enterprise_authenticated,
         billing: one_billing_authenticated,
         platform: one_platform_authenticated,
+        workflow: one_workflow_authenticated,
         sso_public: one_sso_public,
         sso_admin: one_sso_admin,
         tenant_resolver,
         grant_source,
+        workflow_service: one_workflow_service,
         license_gate,
         password_gate,
     }
@@ -1826,6 +1954,15 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
             RouterBuildError::new(
                 "router.dream_domain_platform.migrate",
                 "failed to run one-platform migrations",
+            )
+            .with_source(e)
+        })?;
+    dream_domain_workflow::run_one_workflow_migrations(services.database.pool())
+        .await
+        .map_err(|e| {
+            RouterBuildError::new(
+                "router.dream_domain_workflow.migrate",
+                "failed to run one-workflow migrations",
             )
             .with_source(e)
         })?;
@@ -1904,6 +2041,7 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
         .merge(governance.enterprise)
         .merge(governance.billing)
         .merge(governance.platform)
+        .merge(governance.workflow)
         .merge(governance.sso_public)
         .merge(governance.sso_admin)
         .merge(admin_devops_authenticated)
@@ -2371,6 +2509,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(governance.enterprise)
         .merge(governance.billing)
         .merge(governance.platform)
+        .merge(governance.workflow)
         .merge(governance.sso_public)
         .merge(governance.sso_admin);
 
@@ -3160,7 +3299,10 @@ mod tests {
     async fn tool_call_security_gate_passes_without_an_actor() {
         use dream_core_ai_agent::ToolCallSecurityGate;
         let (_db, platform) = platform_service_for_test().await;
-        let gate = PlatformToolCallSecurityGate { platform };
+        let gate = PlatformToolCallSecurityGate {
+            platform,
+            workflow: None,
+        };
         assert!(
             gate.check("no-membership-user", "rm -rf /", false)
                 .await
@@ -3175,7 +3317,10 @@ mod tests {
         use dream_core_ai_agent::ToolCallSecurityGate;
         let (db, platform) = platform_service_for_test().await;
         seed_membership(db.pool(), "user-1", "t1").await;
-        let gate = PlatformToolCallSecurityGate { platform };
+        let gate = PlatformToolCallSecurityGate {
+            platform,
+            workflow: None,
+        };
         assert!(gate.check("user-1", "rm -rf /", true).await.unwrap().is_none());
     }
 
@@ -3187,7 +3332,10 @@ mod tests {
         seed_membership(db.pool(), "user-1", "t1").await;
         platform.apply_security_policy_tier("t1", "standard").await.unwrap();
 
-        let gate = PlatformToolCallSecurityGate { platform };
+        let gate = PlatformToolCallSecurityGate {
+            platform,
+            workflow: None,
+        };
         // Uses only "sudo" (not e.g. "shutdown") so the matched pattern is
         // unambiguous regardless of `blocked_command_patterns` iteration order.
         let reason = gate
@@ -3206,7 +3354,10 @@ mod tests {
         seed_membership(db.pool(), "user-1", "t1").await;
         platform.apply_security_policy_tier("t1", "standard").await.unwrap();
 
-        let gate = PlatformToolCallSecurityGate { platform };
+        let gate = PlatformToolCallSecurityGate {
+            platform,
+            workflow: None,
+        };
         assert!(
             gate.check("user-1", "Read /tmp/notes.txt", false)
                 .await
@@ -3223,7 +3374,10 @@ mod tests {
         seed_membership(db.pool(), "user-1", "t1").await;
         platform.apply_security_policy_tier("t1", "strict").await.unwrap();
 
-        let gate = PlatformToolCallSecurityGate { platform };
+        let gate = PlatformToolCallSecurityGate {
+            platform,
+            workflow: None,
+        };
         assert!(
             gate.check("user-1", "Fetch https://example.com", true)
                 .await
@@ -3241,7 +3395,10 @@ mod tests {
         // standard blocks destructive commands but not network access.
         platform.apply_security_policy_tier("t1", "standard").await.unwrap();
 
-        let gate = PlatformToolCallSecurityGate { platform };
+        let gate = PlatformToolCallSecurityGate {
+            platform,
+            workflow: None,
+        };
         assert!(
             gate.check("user-1", "Fetch https://example.com", true)
                 .await
@@ -3258,7 +3415,10 @@ mod tests {
         seed_membership(db.pool(), "user-1", "t1").await;
         platform.apply_security_policy_tier("t1", "strict").await.unwrap();
 
-        let gate = PlatformToolCallSecurityGate { platform };
+        let gate = PlatformToolCallSecurityGate {
+            platform,
+            workflow: None,
+        };
         // is_network_fetch = false: a non-network call must not be blocked by
         // the network-denial flag, even though the tenant is on strict.
         assert!(
