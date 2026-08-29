@@ -152,6 +152,12 @@ pub enum ModuleAccess {
     Expired,
 }
 
+impl ModuleAccess {
+    pub fn authorized(&self) -> bool {
+        matches!(self, ModuleAccess::Authorized)
+    }
+}
+
 /// Core check shared by [`LicensePayload::module_authorized`] and
 /// `LicenseInfoDto::classify_module_access` (`models.rs`, which reads this
 /// same `modules` list back out of storage rather than off a freshly
@@ -165,6 +171,72 @@ pub enum ModuleAccess {
 /// [`LicensePayload::modules`]'s doc comment. Once `modules` is non-empty, it
 /// becomes an explicit allowlist: a module not named in it is not
 /// authorized, even if the whole license is otherwise valid.
+/// Whether one `modules` entry covers `module_id` at the path layer (P1-10
+/// per-page granularity).
+///
+/// Three entry shapes, in the order they are checked:
+/// - `"/admin/*"` is T5's coarse whole-plane token and keeps covering the
+///   ENTIRE governance plane, not just its `/admin` subtree — narrowing it
+///   would retroactively strip access from keys that were sold under the
+///   coarse semantics (red line: gate semantics only ever add).
+/// - A `*`-suffixed entry covers its prefix (`/reports/*` covers
+///   `/reports/x` and `/reports/x/y`).
+/// - A plain path entry covers exactly itself and its `/`-boundary subtree
+///   (`/admin/users` covers `/admin/users/role` but not `/admin/usersX`).
+///
+/// Entries that do not start with `/` (opaque identifiers — UUIDs, future
+/// non-path modules) cover nothing at the path layer; they ride along in the
+/// signed payload for whatever app-level consumer will eventually read them.
+fn entry_covers_path(entry: &str, module_id: &str) -> bool {
+    if entry == "/admin/*" {
+        return true;
+    }
+    if !entry.starts_with('/') {
+        return false;
+    }
+    match entry.strip_suffix('*') {
+        Some(prefix) => module_id.starts_with(prefix),
+        None => module_id == entry || module_id.starts_with(&format!("{entry}/")),
+    }
+}
+
+/// The module id a request path maps to for per-page matching: the
+/// governance plane's `/api/one` prefix is stripped, so `/api/one/admin/users`
+/// maps to `/admin/users` — the same shape vendor keys name in their
+/// `modules` entries. Paths outside the plane map to themselves; they are
+/// irrelevant to this gate anyway.
+pub fn module_id_for_path(request_path: &str) -> &str {
+    request_path.strip_prefix("/api/one").unwrap_or(request_path)
+}
+
+/// Path-level classification for the P1-10 per-page license gate: same
+/// three-state answer as [`classify_module_access`], but a request is
+/// covered when ANY entry covers its module id (see [`entry_covers_path`]).
+/// An empty `modules` list is still "unrestricted" — the invariant that must
+/// never invert, because inverting it locks every existing deployment out of
+/// its own admin plane on upgrade.
+pub fn classify_path_access(modules: &[LicenseModuleGrant], request_path: &str, now_ms: i64) -> ModuleAccess {
+    if modules.is_empty() {
+        return ModuleAccess::Authorized;
+    }
+    let module_id = module_id_for_path(request_path);
+    let covers = |m: &LicenseModuleGrant| entry_covers_path(&m.module, module_id);
+    let authorized = modules
+        .iter()
+        .any(|m| covers(m) && m.starts_at.is_none_or(|s| now_ms >= s) && m.expires_at.is_none_or(|e| now_ms < e));
+    if authorized {
+        return ModuleAccess::Authorized;
+    }
+    let expired = modules
+        .iter()
+        .any(|m| covers(m) && m.expires_at.is_some_and(|e| now_ms >= e));
+    if expired {
+        ModuleAccess::Expired
+    } else {
+        ModuleAccess::NotAuthorized
+    }
+}
+
 pub fn classify_module_access(modules: &[LicenseModuleGrant], module: &str, now_ms: i64) -> ModuleAccess {
     if modules.is_empty() {
         return ModuleAccess::Authorized;
@@ -194,6 +266,13 @@ impl LicensePayload {
     /// for the full semantics (this is just its boolean collapse).
     pub fn module_authorized(&self, module: &str, now_ms: i64) -> bool {
         classify_module_access(&self.modules, module, now_ms) == ModuleAccess::Authorized
+    }
+
+    /// Path-level counterpart (P1-10 per-page granularity) — see
+    /// [`classify_path_access`] for the entry shapes and the `"/admin/*"`
+    /// whole-plane back-compat rule.
+    pub fn classify_path_access(&self, request_path: &str, now_ms: i64) -> ModuleAccess {
+        classify_path_access(&self.modules, request_path, now_ms)
     }
 }
 
@@ -291,6 +370,12 @@ mod tests {
         let sk_b64 = URL_SAFE_NO_PAD.encode(sk.to_bytes());
         let vk_b64 = URL_SAFE_NO_PAD.encode(sk.verifying_key().to_bytes());
         (sign_license_key(payload, &sk_b64).unwrap(), vk_b64)
+    }
+
+    fn payload_with(modules: Vec<LicenseModuleGrant>) -> LicensePayload {
+        let mut p = payload("enterprise", None);
+        p.modules = modules;
+        p
     }
 
     fn payload(tier: &str, exp: Option<i64>) -> LicensePayload {
@@ -435,6 +520,70 @@ mod tests {
             !p.module_authorized("/billing/*", dream_core_common::now_ms()),
             "a module not named in a non-empty list must not be authorized"
         );
+    }
+
+    #[test]
+    fn path_access_matches_boundaries_and_star_prefixes() {
+        let now = dream_core_common::now_ms();
+        let grant = |module: &str| LicenseModuleGrant {
+            module: module.to_owned(),
+            starts_at: None,
+            expires_at: None,
+        };
+
+        // Plain entry: exact match and `/`-boundary subtree, never a raw
+        // string prefix (usersX must not inherit /users).
+        let p = payload_with(vec![grant("/admin/users")]);
+        let ok = |path| assert!(p.classify_path_access(path, now).authorized());
+        let blocked = |path| assert!(!p.classify_path_access(path, now).authorized());
+        ok("/api/one/admin/users");
+        ok("/api/one/admin/users/role");
+        blocked("/api/one/admin/usersX");
+        blocked("/api/one/admin/sso");
+
+        // Star-suffixed entry covers its prefix.
+        let p = payload_with(vec![grant("/reports/*")]);
+        assert!(p.classify_path_access("/api/one/reports/overview", now).authorized());
+        assert!(!p.classify_path_access("/api/one/admin/users", now).authorized());
+
+        // Non-path entries (future UUID modules) cover nothing at the path layer.
+        let p = payload_with(vec![grant("mod_uuid_1")]);
+        assert!(!p.classify_path_access("/api/one/admin/users", now).authorized());
+    }
+
+    #[test]
+    fn path_access_treats_the_coarse_admin_star_as_whole_plane() {
+        let now = dream_core_common::now_ms();
+        let mut p = payload("enterprise", None);
+        p.modules = vec![LicenseModuleGrant {
+            module: "/admin/*".to_owned(),
+            starts_at: None,
+            expires_at: None,
+        }];
+        // T5 sold this token as the whole governance plane; per-page
+        // granularity must not narrow what it already granted.
+        for path in ["/api/one/admin/users", "/api/one/org/context", "/api/one/billing/usage"] {
+            assert!(p.classify_path_access(path, now).authorized(), "path {path}");
+        }
+    }
+
+    #[test]
+    fn path_access_distinguishes_expired_from_never_granted() {
+        let now = 1_700_000_000_000i64;
+        let mut p = payload("enterprise", None);
+        p.modules = vec![LicenseModuleGrant {
+            module: "/admin/users".to_owned(),
+            starts_at: None,
+            expires_at: Some(now - 1_000),
+        }];
+        assert!(matches!(
+            p.classify_path_access("/api/one/admin/users", now),
+            ModuleAccess::Expired
+        ));
+        assert!(matches!(
+            p.classify_path_access("/api/one/admin/sso", now),
+            ModuleAccess::NotAuthorized
+        ));
     }
 
     #[test]

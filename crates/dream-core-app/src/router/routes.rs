@@ -1683,7 +1683,7 @@ async fn license_module_gate_middleware(
         Ok(None) | Err(_) => return Ok(next.run(request).await),
     };
 
-    match license.classify_module_access(ADMIN_MODULE, dream_core_common::now_ms()) {
+    match license.classify_path_access(request.uri().path(), dream_core_common::now_ms()) {
         dream_domain_billing::ModuleAccess::Authorized => Ok(next.run(request).await),
         dream_domain_billing::ModuleAccess::NotAuthorized => Err(ApiError::coded(
             StatusCode::FORBIDDEN,
@@ -2980,10 +2980,28 @@ mod tests {
         fn gate_app(billing: std::sync::Arc<dream_domain_billing::BillingService>) -> axum::Router {
             axum::Router::new()
                 .route("/probe", get(|| async { StatusCode::OK }))
+                .route("/api/one/admin/users", get(|| async { StatusCode::OK }))
+                .route("/api/one/admin/users/role", get(|| async { StatusCode::OK }))
+                .route("/api/one/admin/sso", get(|| async { StatusCode::OK }))
                 .route_layer(axum::middleware::from_fn_with_state(
                     LicenseModuleGateState { billing },
                     license_module_gate_middleware,
                 ))
+        }
+
+        /// Request one of the page-shaped routes; the middleware strips
+        /// `/api/one` to get the module id, so the two routes above map to
+        /// `/admin/users` and `/admin/sso`.
+        async fn request_page(
+            app: axum::Router,
+            user: Option<dream_core_auth::CurrentUser>,
+            path: &'static str,
+        ) -> axum::response::Response {
+            let mut request = Request::builder().uri(path);
+            if let Some(user) = user {
+                request = request.extension(user);
+            }
+            app.oneshot(request.body(Body::empty()).unwrap()).await.unwrap()
         }
 
         async fn request_as(app: axum::Router, user: Option<dream_core_auth::CurrentUser>) -> axum::response::Response {
@@ -3083,6 +3101,59 @@ mod tests {
         /// Denial reasons must be distinguishable: "never granted" and
         /// "granted, but lapsed" are different problems an operator would fix
         /// differently (buy the addon vs. renew it).
+        /// P1-10 per-page granularity: an entry naming one admin page
+        /// authorizes that page's subtree and nothing else on the plane.
+        #[tokio::test]
+        async fn per_page_entry_authorizes_its_subtree_and_blocks_the_rest() {
+            let (db, billing) = billing_service_for_test().await;
+            seed_enterprise_member(db.pool(), "u1", "ent1").await;
+            seed_license(
+                db.pool(),
+                "ent1",
+                r#"[{"module":"/admin/users","startsAt":null,"expiresAt":null}]"#,
+            )
+            .await;
+            let app = gate_app(billing);
+
+            let ok = request_page(app.clone(), Some(current_user("u1")), "/api/one/admin/users").await;
+            assert_eq!(ok.status(), StatusCode::OK, "the named page itself must pass");
+
+            let subtree = request_page(app.clone(), Some(current_user("u1")), "/api/one/admin/users/role").await;
+            assert_eq!(subtree.status(), StatusCode::OK, "the page's subtree passes too");
+
+            let other = request_page(app, Some(current_user("u1")), "/api/one/admin/sso").await;
+            assert_eq!(
+                other.status(),
+                StatusCode::FORBIDDEN,
+                "a page the license does not name is blocked"
+            );
+            assert_eq!(error_code(other).await, "LICENSE_MODULE_NOT_AUTHORIZED");
+        }
+
+        /// Back-compat: the T5 coarse `/admin/*` token still covers the whole
+        /// plane — narrowing it would strip access from keys already sold
+        /// under the coarse semantics.
+        #[tokio::test]
+        async fn the_coarse_admin_star_token_still_covers_the_whole_plane() {
+            let (db, billing) = billing_service_for_test().await;
+            seed_enterprise_member(db.pool(), "u1", "ent1").await;
+            seed_license(
+                db.pool(),
+                "ent1",
+                r#"[{"module":"/admin/*","startsAt":null,"expiresAt":null}]"#,
+            )
+            .await;
+            let app = gate_app(billing);
+            for path in ["/probe", "/api/one/admin/users", "/api/one/admin/sso"] {
+                let response = request_page(app.clone(), Some(current_user("u1")), path).await;
+                assert_eq!(
+                    response.status(),
+                    StatusCode::OK,
+                    "path {path} must stay covered by /admin/*"
+                );
+            }
+        }
+
         #[tokio::test]
         async fn expired_admin_module_grant_is_forbidden_as_expired_not_not_authorized() {
             let (db, billing) = billing_service_for_test().await;

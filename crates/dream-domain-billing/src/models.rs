@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::license_key::{LicenseModuleGrant, ModuleAccess, classify_module_access};
+use crate::license_key::{LicenseModuleGrant, ModuleAccess, classify_module_access, classify_path_access};
 
 /// Whether a feature is included in the current plan.
 #[derive(Debug, Clone, Serialize)]
@@ -76,6 +76,13 @@ impl LicenseInfoDto {
     /// `LicensePayload`.
     pub fn classify_module_access(&self, module: &str, now_ms: i64) -> ModuleAccess {
         classify_module_access(&self.modules, module, now_ms)
+    }
+
+    /// Path-level counterpart (P1-10 per-page granularity) — see
+    /// `license_key::classify_path_access` for the entry shapes and the
+    /// `"/admin/*"` whole-plane back-compat rule.
+    pub fn classify_path_access(&self, request_path: &str, now_ms: i64) -> ModuleAccess {
+        classify_path_access(&self.modules, request_path, now_ms)
     }
 }
 
