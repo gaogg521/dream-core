@@ -34,8 +34,9 @@ use dream_core_team::TeamSessionService;
 
 use crate::error::EmployeeError;
 use crate::models::{
-    EmployeeRunRow, PersonalAgentDto, PersonalAgentRow, RUN_FAILED, RUN_RUNNING, RUN_SUCCESS, TRIGGER_BREAKDOWN,
-    TRIGGER_CRON, TRIGGER_MANUAL,
+    EMPLOYEE_GRANT_ALL, EMPLOYEE_GRANT_SUBJECT_TYPES, EMPLOYEE_PERMISSION_MANAGE, EMPLOYEE_PERMISSION_USE,
+    EmployeeGrantRow, EmployeeRunRow, PersonalAgentDto, PersonalAgentRow, RUN_FAILED, RUN_RUNNING, RUN_SUCCESS,
+    TRIGGER_BREAKDOWN, TRIGGER_CRON, TRIGGER_MANUAL,
 };
 
 /// Outcome of a blocking run: the run/conversation linkage plus the agent's
@@ -183,7 +184,7 @@ async fn select_agent_for_use(
     tenant_id: &str,
     agent_id: &str,
 ) -> Result<Option<PersonalAgentRow>, sqlx::Error> {
-    sqlx::query_as::<_, PersonalAgentRow>(
+    let Some(row) = sqlx::query_as::<_, PersonalAgentRow>(
         "SELECT * FROM one_personal_agents \
          WHERE id = ? AND (owner_user_id = ? OR (visibility = 'shared' AND tenant_id = ?))",
     )
@@ -191,17 +192,27 @@ async fn select_agent_for_use(
     .bind(user_id)
     .bind(tenant_id)
     .fetch_optional(pool)
-    .await
+    .await?
+    else {
+        return Ok(None);
+    };
+    if row.owner_user_id == user_id {
+        return Ok(Some(row));
+    }
+    match effective_employee_permission(pool, tenant_id, user_id, agent_id).await? {
+        Some(_) => Ok(Some(row)),
+        None => Ok(None),
+    }
 }
 
-/// Own employees plus tenant-shared ones. Free function, mirrors
-/// `select_agent_for_use` for testability.
+/// Own employees plus tenant-shared ones the caller has been granted access
+/// to. Free function, mirrors `select_agent_for_use` for testability.
 async fn select_available_agents(
     pool: &SqlitePool,
     user_id: &str,
     tenant_id: &str,
 ) -> Result<Vec<PersonalAgentRow>, sqlx::Error> {
-    sqlx::query_as::<_, PersonalAgentRow>(
+    let candidates = sqlx::query_as::<_, PersonalAgentRow>(
         "SELECT * FROM one_personal_agents \
          WHERE owner_user_id = ? OR (visibility = 'shared' AND tenant_id = ?) \
          ORDER BY updated_at DESC",
@@ -209,7 +220,226 @@ async fn select_available_agents(
     .bind(user_id)
     .bind(tenant_id)
     .fetch_all(pool)
-    .await
+    .await?;
+
+    let mut visible = Vec::with_capacity(candidates.len());
+    for row in candidates {
+        if row.owner_user_id == user_id {
+            visible.push(row);
+            continue;
+        }
+        // A non-owner reaching a `shared` row: visible only with an explicit
+        // grant now (see migration 006's doc comment on `one_employee_grants`
+        // — this tightened `shared`'s default reach on purpose).
+        if effective_employee_permission(pool, tenant_id, user_id, &row.id)
+            .await?
+            .is_some()
+        {
+            visible.push(row);
+        }
+    }
+    Ok(visible)
+}
+
+/// Ordered so `Manage > Use` — a manager may also run/converse with the
+/// employee (`EMPLOYEE_PERMISSION_MANAGE`'s own doc comment: "implied by").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum EmployeePermission {
+    Use,
+    Manage,
+}
+
+impl EmployeePermission {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            EMPLOYEE_PERMISSION_USE => Some(Self::Use),
+            EMPLOYEE_PERMISSION_MANAGE => Some(Self::Manage),
+            _ => None,
+        }
+    }
+}
+
+/// `one_user_org`/`one_departments`/`one_scene_members` belong to
+/// `dream-domain-org`/`dream-domain-platform`, which never run their
+/// migrations in a personal/standalone deployment (no org at all) — same
+/// case `EmployeeService::user_org_role` already handles for `one_user_org`.
+/// A missing table here just means "no ancestry/membership to speak of",
+/// same as an empty result, not an error.
+fn is_missing_table_error(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(db) if db.message().contains("no such table"))
+}
+
+/// Same query shape as `dream_domain_platform::PlatformService::department_ancestry`
+/// (walks `one_departments.parent_id` starting from the caller's own
+/// department in `one_user_org`), duplicated here rather than depended on —
+/// two Domain-layer crates may not depend on each other directly per this
+/// repo's architecture rules, and this repo's own established idiom for a
+/// lookup this simple is direct SQL against the other crate's table (see
+/// `dream_domain_devops::DevopsService::user_org_role`, which does the exact
+/// same thing against `one_user_org` for its own admin-role check), not a
+/// new trait.
+async fn department_ancestry(pool: &SqlitePool, tenant_id: &str, user_id: &str) -> Result<Vec<String>, sqlx::Error> {
+    let mut current: Option<String> =
+        match sqlx::query_scalar("SELECT department_id FROM one_user_org WHERE tenant_id = ? AND user_id = ?")
+            .bind(tenant_id)
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await
+        {
+            Ok(v) => v.flatten(),
+            Err(e) if is_missing_table_error(&e) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+
+    let mut chain = Vec::new();
+    let mut hops = 0;
+    while let Some(department_id) = current {
+        if hops >= 64 {
+            tracing::warn!(tenant_id, user_id, "department ancestry exceeded 64 hops; truncating");
+            break;
+        }
+        hops += 1;
+        chain.push(department_id.clone());
+        current = match sqlx::query_scalar("SELECT parent_id FROM one_departments WHERE tenant_id = ? AND id = ?")
+            .bind(tenant_id)
+            .bind(&department_id)
+            .fetch_optional(pool)
+            .await
+        {
+            Ok(v) => v.flatten(),
+            Err(e) if is_missing_table_error(&e) => None,
+            Err(e) => return Err(e),
+        };
+    }
+    Ok(chain)
+}
+
+/// Same query shape as `PlatformService::scene_ids_for_member` — see
+/// `department_ancestry`'s doc comment for why this is duplicated SQL, not a
+/// shared function, and `is_missing_table_error`'s for the fallback.
+async fn scene_ids_for_member(pool: &SqlitePool, tenant_id: &str, user_id: &str) -> Result<Vec<String>, sqlx::Error> {
+    let result: Result<Vec<(String,)>, sqlx::Error> =
+        sqlx::query_as("SELECT scene_id FROM one_scene_members WHERE tenant_id = ? AND user_id = ?")
+            .bind(tenant_id)
+            .bind(user_id)
+            .fetch_all(pool)
+            .await;
+    match result {
+        Ok(rows) => Ok(rows.into_iter().map(|(id,)| id).collect()),
+        Err(e) if is_missing_table_error(&e) => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Highest permission a subject list holds on `employee_id` (or the `*`
+/// wildcard), for one `subject_type`. `None` when `subject_ids` is empty or
+/// no row matches — never an error, same "absence is just absence" contract
+/// `fold_grants_for_subjects` uses for the four-type matrix.
+async fn max_employee_permission_for_subjects(
+    pool: &SqlitePool,
+    tenant_id: &str,
+    subject_type: &str,
+    subject_ids: &[String],
+    employee_id: &str,
+) -> Result<Option<EmployeePermission>, sqlx::Error> {
+    if subject_ids.is_empty() {
+        return Ok(None);
+    }
+    let placeholders = vec!["?"; subject_ids.len()].join(", ");
+    let sql = format!(
+        "SELECT permission FROM one_employee_grants \
+         WHERE tenant_id = ? AND subject_type = ? AND employee_id IN (?, '{EMPLOYEE_GRANT_ALL}') \
+         AND subject_id IN ({placeholders})"
+    );
+    let mut query = sqlx::query_scalar::<_, String>(&sql)
+        .bind(tenant_id)
+        .bind(subject_type)
+        .bind(employee_id);
+    for subject_id in subject_ids {
+        query = query.bind(subject_id);
+    }
+    let rows = query.fetch_all(pool).await?;
+    Ok(rows.iter().filter_map(|p| EmployeePermission::parse(p)).max())
+}
+
+/// Highest permission `user_id` holds on `employee_id` via the
+/// resource-authorization matrix — a direct member grant, or one on any
+/// ancestor department, or one via scene membership, whichever is highest.
+/// Resolves only the non-owner path: the owner is always fully authorized
+/// regardless of this function, and callers must check that separately (see
+/// `select_agent_for_use`/`get_for_manage`, both of which do).
+async fn effective_employee_permission(
+    pool: &SqlitePool,
+    tenant_id: &str,
+    user_id: &str,
+    employee_id: &str,
+) -> Result<Option<EmployeePermission>, sqlx::Error> {
+    let mut best = max_employee_permission_for_subjects(
+        pool,
+        tenant_id,
+        "member",
+        std::slice::from_ref(&user_id.to_owned()),
+        employee_id,
+    )
+    .await?;
+
+    let department_ids = department_ancestry(pool, tenant_id, user_id).await?;
+    if let Some(p) =
+        max_employee_permission_for_subjects(pool, tenant_id, "department", &department_ids, employee_id).await?
+    {
+        best = Some(best.map_or(p, |b| b.max(p)));
+    }
+
+    let scene_ids = scene_ids_for_member(pool, tenant_id, user_id).await?;
+    if let Some(p) = max_employee_permission_for_subjects(pool, tenant_id, "scene", &scene_ids, employee_id).await? {
+        best = Some(best.map_or(p, |b| b.max(p)));
+    }
+
+    Ok(best)
+}
+
+/// Upsert one subject's grant on one employee (or `EMPLOYEE_GRANT_ALL`) — same
+/// `ON CONFLICT ... DO UPDATE` upsert convention as the other four resource
+/// types' matrix.
+#[allow(clippy::too_many_arguments)]
+async fn grant_employee_access(
+    pool: &SqlitePool,
+    tenant_id: &str,
+    subject_type: &str,
+    subject_id: &str,
+    employee_id: &str,
+    permission: &str,
+    granted_by: &str,
+) -> Result<(), EmployeeError> {
+    if !EMPLOYEE_GRANT_SUBJECT_TYPES.contains(&subject_type) {
+        return Err(EmployeeError::BadRequest(format!(
+            "unknown subject type '{subject_type}'"
+        )));
+    }
+    if permission != EMPLOYEE_PERMISSION_USE && permission != EMPLOYEE_PERMISSION_MANAGE {
+        return Err(EmployeeError::BadRequest(format!(
+            "unknown permission '{permission}' (allowed: use/manage)"
+        )));
+    }
+    sqlx::query(
+        "INSERT INTO one_employee_grants \
+             (id, tenant_id, subject_type, subject_id, employee_id, permission, granted_by, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(tenant_id, subject_type, subject_id, employee_id) \
+         DO UPDATE SET permission = excluded.permission, granted_by = excluded.granted_by, \
+                        created_at = excluded.created_at",
+    )
+    .bind(short_id("empgrant"))
+    .bind(tenant_id)
+    .bind(subject_type)
+    .bind(subject_id)
+    .bind(employee_id)
+    .bind(permission)
+    .bind(granted_by)
+    .bind(now_ms() as i64)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// Truncate a reply to a 240-char run summary (matches the TS reference).
@@ -468,6 +698,153 @@ impl EmployeeService {
             .ok_or(EmployeeError::NotFound)
     }
 
+    /// Unscoped read by id — for re-fetching a row after `get_for_manage`
+    /// already proved the caller may act on it. `get`'s own
+    /// `WHERE ... AND owner_user_id = ?` would wrongly 404 here for a
+    /// non-owner manager.
+    async fn get_by_id(&self, agent_id: &str) -> Result<PersonalAgentRow, EmployeeError> {
+        sqlx::query_as::<_, PersonalAgentRow>("SELECT * FROM one_personal_agents WHERE id = ?")
+            .bind(agent_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(EmployeeError::NotFound)
+    }
+
+    /// Resolve an employee the caller may *manage* (edit / schedule): their
+    /// own, or a `shared` one they hold a `manage` grant on via the
+    /// resource-authorization matrix. `NotFound` otherwise — same
+    /// don't-distinguish-missing-from-not-yours convention `get` already
+    /// uses for a non-owner. Deleting stays owner-only and does not use this
+    /// (see `delete`'s doc comment).
+    async fn get_for_manage(
+        &self,
+        user_id: &str,
+        tenant_id: &str,
+        agent_id: &str,
+    ) -> Result<PersonalAgentRow, EmployeeError> {
+        if let Ok(row) = self.get(user_id, agent_id).await {
+            return Ok(row);
+        }
+        let row = sqlx::query_as::<_, PersonalAgentRow>(
+            "SELECT * FROM one_personal_agents WHERE id = ? AND visibility = 'shared' AND tenant_id = ?",
+        )
+        .bind(agent_id)
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(EmployeeError::NotFound)?;
+        match effective_employee_permission(&self.pool, tenant_id, user_id, agent_id).await? {
+            Some(EmployeePermission::Manage) => Ok(row),
+            _ => Err(EmployeeError::NotFound),
+        }
+    }
+
+    /// Every digital employee in the tenant — the admin registry view. No
+    /// owner/visibility filter on purpose: an admin overseeing the tenant
+    /// should see everything, including other members' `private` employees,
+    /// same as `dream_domain_devops::DevopsService::list_skills`'s
+    /// privileged branch does for the other three registries.
+    pub async fn list_all_for_tenant(&self, tenant_id: &str) -> Result<Vec<PersonalAgentDto>, EmployeeError> {
+        let rows = sqlx::query_as::<_, PersonalAgentRow>(
+            "SELECT * FROM one_personal_agents WHERE tenant_id = ? ORDER BY updated_at DESC",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// Same idiom as `dream_domain_devops::DevopsService::user_org_role`:
+    /// direct SQL against one-org's table rather than a cross-crate
+    /// dependency. `None` when one-org isn't initialized at all (personal /
+    /// standalone) — callers treat that as "not an admin gate, let it
+    /// through", matching devops's own convention for the same case.
+    pub async fn user_org_role(&self, user_id: &str) -> Result<Option<String>, EmployeeError> {
+        let result = sqlx::query_scalar::<_, String>(
+            "SELECT uo.role FROM one_user_org uo WHERE uo.user_id = ? \
+             ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC, \
+                       uo.created_at DESC, uo.tenant_id ASC LIMIT 1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await;
+        match result {
+            Ok(role) => Ok(role),
+            // one-org's tables don't exist at all outside enterprise builds.
+            Err(e) if is_missing_table_error(&e) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Grant (or overwrite) one subject's permission on one employee (or
+    /// every shared employee, via `EMPLOYEE_GRANT_ALL`). Idempotent —
+    /// re-granting the same subject/employee pair updates the permission in
+    /// place rather than erroring, matching `one_resource_grants`'s own
+    /// upsert convention for the other four resource types.
+    pub async fn grant_employee_access(
+        &self,
+        tenant_id: &str,
+        subject_type: &str,
+        subject_id: &str,
+        employee_id: &str,
+        permission: &str,
+        granted_by: &str,
+    ) -> Result<(), EmployeeError> {
+        grant_employee_access(
+            &self.pool,
+            tenant_id,
+            subject_type,
+            subject_id,
+            employee_id,
+            permission,
+            granted_by,
+        )
+        .await
+    }
+
+    /// Revoke one subject's grant on one employee. Idempotent — revoking a
+    /// grant that doesn't exist is not an error (matches
+    /// `PlatformService::revoke_resource`'s own convention).
+    pub async fn revoke_employee_access(
+        &self,
+        tenant_id: &str,
+        subject_type: &str,
+        subject_id: &str,
+        employee_id: &str,
+    ) -> Result<(), EmployeeError> {
+        sqlx::query(
+            "DELETE FROM one_employee_grants \
+             WHERE tenant_id = ? AND subject_type = ? AND subject_id = ? AND employee_id = ?",
+        )
+        .bind(tenant_id)
+        .bind(subject_type)
+        .bind(subject_id)
+        .bind(employee_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Current grants for one subject — what the authorization editor shows
+    /// when it's open on that member/department/scene.
+    pub async fn list_employee_grants(
+        &self,
+        tenant_id: &str,
+        subject_type: &str,
+        subject_id: &str,
+    ) -> Result<Vec<EmployeeGrantRow>, EmployeeError> {
+        let rows = sqlx::query_as::<_, EmployeeGrantRow>(
+            "SELECT * FROM one_employee_grants \
+             WHERE tenant_id = ? AND subject_type = ? AND subject_id = ? ORDER BY created_at DESC",
+        )
+        .bind(tenant_id)
+        .bind(subject_type)
+        .bind(subject_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     /// Set an employee's visibility ('private' | 'shared'). Owner-only: only
     /// the creator can share or unshare their employee.
     pub async fn set_visibility(
@@ -551,11 +928,12 @@ impl EmployeeService {
 
     pub async fn update(
         &self,
-        owner_user_id: &str,
+        user_id: &str,
+        tenant_id: &str,
         agent_id: &str,
         input: UpdateEmployeeInput,
     ) -> Result<PersonalAgentDto, EmployeeError> {
-        let existing = self.get(owner_user_id, agent_id).await?;
+        let existing = self.get_for_manage(user_id, tenant_id, agent_id).await?;
         let name = match input.name.as_deref().map(str::trim) {
             Some("") => return Err(EmployeeError::BadRequest("name must not be empty".into())),
             Some(name) => name.to_owned(),
@@ -591,13 +969,13 @@ impl EmployeeService {
             .as_deref()
             .and_then(|raw| serde_json::from_str::<ProviderWithModel>(raw).ok());
         let touches_binding = input.agent_type.is_some() || input.model.is_some();
-        self.validate_model_binding(owner_user_id, &agent_type, effective_model.as_ref(), touches_binding)
+        self.validate_model_binding(user_id, &agent_type, effective_model.as_ref(), touches_binding)
             .await?;
 
         sqlx::query(
             "UPDATE one_personal_agents SET name = ?, description = ?, agent_type = ?, assistant_id = ?, \
              agent_id_override = ?, model_id = ?, model = ?, automation_config = ?, updated_at = ? \
-             WHERE id = ? AND owner_user_id = ?",
+             WHERE id = ?",
         )
         .bind(&name)
         .bind(&description)
@@ -609,13 +987,19 @@ impl EmployeeService {
         .bind(&automation_config)
         .bind(now_ms() as i64)
         .bind(agent_id)
-        .bind(owner_user_id)
         .execute(&self.pool)
         .await?;
 
-        Ok(self.get(owner_user_id, agent_id).await?.into())
+        // Not `self.get`: `get_for_manage` above already proved `user_id` may
+        // act on this row, but a non-owner manager would fail `get`'s own
+        // `owner_user_id = ?` filter on the way back out.
+        Ok(self.get_by_id(agent_id).await?.into())
     }
 
+    /// Owner-only, deliberately not extended to `manage` grant holders —
+    /// deleting someone else's asset is a bigger blast radius than editing
+    /// it, so this stays a stricter line than `update`/`set_schedule` for
+    /// now (see the `EMPLOYEE_PERMISSION_MANAGE` doc comment).
     pub async fn delete(&self, owner_user_id: &str, agent_id: &str) -> Result<(), EmployeeError> {
         let result = sqlx::query("DELETE FROM one_personal_agents WHERE id = ? AND owner_user_id = ?")
             .bind(agent_id)
@@ -632,15 +1016,17 @@ impl EmployeeService {
 
     /// Replace the schedule on a personal agent. Recomputes `next_run_at`
     /// against the supplied schedule (or clears it when disabled/removed).
+    /// Owner, or a `manage`-grant holder on a `shared` employee.
     pub async fn set_schedule(
         &self,
-        owner_user_id: &str,
+        user_id: &str,
+        tenant_id: &str,
         agent_id: &str,
         input: ScheduleInput,
     ) -> Result<PersonalAgentDto, EmployeeError> {
-        // Verify ownership before writing; the row is needed for nothing
-        // else here (schedule is overwritten wholesale).
-        self.get(owner_user_id, agent_id).await?;
+        // Verify ownership/manage-permission before writing; the row is
+        // needed for nothing else here (schedule is overwritten wholesale).
+        self.get_for_manage(user_id, tenant_id, agent_id).await?;
         let schedule_json = input
             .schedule
             .as_ref()
@@ -661,18 +1047,17 @@ impl EmployeeService {
         sqlx::query(
             "UPDATE one_personal_agents \
              SET schedule = ?, schedule_enabled = ?, next_run_at = ?, updated_at = ? \
-             WHERE id = ? AND owner_user_id = ?",
+             WHERE id = ?",
         )
         .bind(&schedule_json)
         .bind(if enabled { 1 } else { 0 })
         .bind(next_run_at)
         .bind(now_ms() as i64)
         .bind(agent_id)
-        .bind(owner_user_id)
         .execute(&self.pool)
         .await?;
 
-        Ok(self.get(owner_user_id, agent_id).await?.into())
+        Ok(self.get_by_id(agent_id).await?.into())
     }
 
     // --- runs ---
@@ -701,14 +1086,20 @@ impl EmployeeService {
     /// Manual "run now": create a fresh conversation, fire the run prompt as a
     /// hidden turn in the background, record the outcome in
     /// `one_employee_runs`. Returns immediately with `{run_id, conversation_id}`.
+    /// Owner, or a same-tenant member the employee is `shared` with and who
+    /// holds at least `use` on it via the resource-authorization matrix (see
+    /// `resolve_agent_for_use`). Previously owner-only regardless of
+    /// `visibility` — sharing an employee alone never actually let anyone
+    /// else run it from this route; this closes that gap now that a grant
+    /// can say so explicitly.
     pub async fn run_now(
         self: &Arc<Self>,
-        owner_user_id: &str,
+        user_id: &str,
+        tenant_id: &str,
         agent_id: &str,
     ) -> Result<(String, String), EmployeeError> {
-        let agent = self.get(owner_user_id, agent_id).await?;
-        self.start_personal_run(owner_user_id, &agent, TRIGGER_MANUAL, None)
-            .await
+        let agent = self.resolve_agent_for_use(user_id, tenant_id, agent_id).await?;
+        self.start_personal_run(user_id, &agent, TRIGGER_MANUAL, None).await
     }
 
     /// Manual run carrying an extra task context (e.g. a devops requirement
@@ -899,15 +1290,22 @@ impl EmployeeService {
     /// conversation_id via `TeamSessionService::get_team`, then fires the
     /// run prompt via `send_message_to_agent` (fire-and-ack), then polls
     /// `get_run_state` until the slot settles.
+    /// Same access rule as `run_now`: owner, or a same-tenant member holding
+    /// at least `use` on a `shared` employee via the matrix. `owner_user_id`
+    /// here (kept as-is throughout this function) means the caller driving
+    /// the run, not necessarily the employee definition's owner — same
+    /// convention `run_now_with_context` already documents for its own
+    /// `user_id` parameter.
     pub async fn run_now_team(
         self: &Arc<Self>,
         owner_user_id: &str,
+        tenant_id: &str,
         agent_id: &str,
         team_id: &str,
         slot_id: &str,
     ) -> Result<(String, String), EmployeeError> {
         let team_session = self.require_team_session()?.clone();
-        let agent = self.get(owner_user_id, agent_id).await?;
+        let agent = self.resolve_agent_for_use(owner_user_id, tenant_id, agent_id).await?;
 
         // Resolve the slot's existing conversation_id before we fire — we
         // need it for summary extraction after the run settles.
@@ -1424,8 +1822,40 @@ mod tests {
         .unwrap();
     }
 
+    async fn insert_employee_grant(
+        pool: &SqlitePool,
+        tenant_id: &str,
+        subject_type: &str,
+        subject_id: &str,
+        employee_id: &str,
+        permission: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO one_employee_grants \
+             (id, tenant_id, subject_type, subject_id, employee_id, permission, granted_by, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, 'admin1', 0)",
+        )
+        .bind(uuid::Uuid::now_v7().simple().to_string())
+        .bind(tenant_id)
+        .bind(subject_type)
+        .bind(subject_id)
+        .bind(employee_id)
+        .bind(permission)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// This is the load-bearing semantic change T12's employee-grant work
+    /// makes on purpose (align-openocta §3): `shared` alone no longer means
+    /// "usable by the whole tenant" the way it did before this feature —
+    /// see migration 006's own doc comment. `sharing_requires_an_explicit_grant_now`
+    /// below replaces the old `sharing_resolves_own_and_tenant_shared`, which
+    /// asserted exactly the opposite (a non-owner seeing a `shared` row with
+    /// zero grants configured) — that assertion described the old behavior
+    /// correctly, but the old behavior is what this feature exists to change.
     #[tokio::test]
-    async fn sharing_resolves_own_and_tenant_shared() {
+    async fn sharing_requires_an_explicit_grant_now() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(db.pool()).await.unwrap();
         let pool = db.pool();
@@ -1435,18 +1865,27 @@ mod tests {
         insert_agent(pool, "b1", "B", "t1", "shared").await;
         insert_agent(pool, "c1", "C", "t2", "shared").await;
 
-        // A@t1: own a1/a2; same-tenant shared b1; NOT cross-tenant c1.
+        // Owner always sees their own, regardless of visibility.
         assert!(select_agent_for_use(pool, "A", "t1", "a1").await.unwrap().is_some());
-        assert!(select_agent_for_use(pool, "A", "t1", "b1").await.unwrap().is_some());
-        assert!(select_agent_for_use(pool, "A", "t1", "c1").await.unwrap().is_none());
-        // B@t1: NOT A's private a1; A's shared a2 yes; own b1 yes.
+        assert!(select_agent_for_use(pool, "A", "t1", "a2").await.unwrap().is_some());
+
+        // B@t1, with zero grants configured: NOT A's private a1 (never was
+        // reachable), and — the new part — NOT A's `shared` a2 either. Own
+        // b1 is still visible (ownership, not sharing).
         assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_none());
+        assert!(select_agent_for_use(pool, "B", "t1", "a2").await.unwrap().is_none());
+        assert!(select_agent_for_use(pool, "B", "t1", "b1").await.unwrap().is_some());
+
+        // Grant B `use` on a2 (a direct member grant) — now B can reach it.
+        insert_employee_grant(pool, "t1", "member", "B", "a2", "use").await;
         assert!(select_agent_for_use(pool, "B", "t1", "a2").await.unwrap().is_some());
-        // Cross-tenant: A@t2 cannot use t1-shared b1, but always sees own a1.
+
+        // Cross-tenant: A@t2 cannot reach t1-shared b1 even with a grant that
+        // would only ever be looked up under tenant t1, but always sees own a1.
         assert!(select_agent_for_use(pool, "A", "t2", "b1").await.unwrap().is_none());
         assert!(select_agent_for_use(pool, "A", "t2", "a1").await.unwrap().is_some());
 
-        // list_available for B@t1 = own b1 + shared-in-t1 a2 (not private a1, not t2 c1).
+        // list_available for B@t1 = own b1 + granted a2 (not private a1, not t2 c1).
         let ids: std::collections::HashSet<String> = select_available_agents(pool, "B", "t1")
             .await
             .unwrap()
@@ -1454,6 +1893,144 @@ mod tests {
             .map(|r| r.id)
             .collect();
         assert_eq!(ids, ["a2".to_owned(), "b1".to_owned()].into_iter().collect());
+    }
+
+    #[tokio::test]
+    async fn wildcard_grant_covers_every_shared_employee() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        run_one_employee_migrations(db.pool()).await.unwrap();
+        let pool = db.pool();
+        insert_agent(pool, "a1", "A", "t1", "shared").await;
+        insert_agent(pool, "a2", "A", "t1", "shared").await;
+        insert_agent(pool, "a3", "A", "t1", "private").await;
+
+        // No grant yet: B sees neither.
+        assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_none());
+
+        insert_employee_grant(pool, "t1", "member", "B", EMPLOYEE_GRANT_ALL, "use").await;
+        assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_some());
+        assert!(select_agent_for_use(pool, "B", "t1", "a2").await.unwrap().is_some());
+        // `private` is never in the matrix's reach, wildcard or not.
+        assert!(select_agent_for_use(pool, "B", "t1", "a3").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn permission_resolves_via_department_ancestry() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        run_one_employee_migrations(db.pool()).await.unwrap();
+        let pool = db.pool();
+        insert_agent(pool, "a1", "A", "t1", "shared").await;
+
+        sqlx::raw_sql(
+            "CREATE TABLE one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, \
+                 department_id TEXT, PRIMARY KEY (user_id, tenant_id));\
+             CREATE TABLE one_departments (id TEXT PRIMARY KEY NOT NULL, tenant_id TEXT NOT NULL, parent_id TEXT);",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO one_user_org (user_id, tenant_id, department_id) VALUES ('B', 't1', 'dept_child')")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO one_departments (id, tenant_id, parent_id) VALUES ('dept_child', 't1', 'dept_root')")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO one_departments (id, tenant_id, parent_id) VALUES ('dept_root', 't1', NULL)")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        // B is not granted directly, but is in dept_child whose ancestor is
+        // dept_root — grant the ancestor, B must still resolve it.
+        assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_none());
+        insert_employee_grant(pool, "t1", "department", "dept_root", "a1", "use").await;
+        assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn permission_resolves_via_scene_membership() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        run_one_employee_migrations(db.pool()).await.unwrap();
+        let pool = db.pool();
+        insert_agent(pool, "a1", "A", "t1", "shared").await;
+
+        sqlx::raw_sql(
+            "CREATE TABLE one_scene_members (scene_id TEXT NOT NULL, tenant_id TEXT NOT NULL, \
+                 user_id TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (scene_id, user_id));",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO one_scene_members (scene_id, tenant_id, user_id, added_at) VALUES ('scene_sales', 't1', 'B', 0)")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_none());
+        insert_employee_grant(pool, "t1", "scene", "scene_sales", "a1", "use").await;
+        assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn manage_permission_implies_use_and_outranks_it() {
+        assert!(EmployeePermission::Manage > EmployeePermission::Use);
+
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        run_one_employee_migrations(db.pool()).await.unwrap();
+        let pool = db.pool();
+        insert_agent(pool, "a1", "A", "t1", "shared").await;
+        insert_employee_grant(pool, "t1", "member", "B", "a1", "manage").await;
+
+        // A `manage` grant alone is enough to satisfy the (weaker) use check.
+        assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_some());
+        assert_eq!(
+            effective_employee_permission(pool, "t1", "B", "a1").await.unwrap(),
+            Some(EmployeePermission::Manage)
+        );
+    }
+
+    #[tokio::test]
+    async fn grant_employee_access_upserts_and_validates_input() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        run_one_employee_migrations(db.pool()).await.unwrap();
+        let pool = db.pool();
+
+        grant_employee_access(pool, "t1", "member", "B", "a1", EMPLOYEE_PERMISSION_USE, "admin1")
+            .await
+            .unwrap();
+        let rows: Vec<EmployeeGrantRow> = sqlx::query_as(
+            "SELECT * FROM one_employee_grants WHERE tenant_id = 't1' AND subject_id = 'B' AND employee_id = 'a1'",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].permission, "use");
+
+        // Re-granting the same (tenant, subject_type, subject_id, employee_id)
+        // upserts in place rather than duplicating the row.
+        grant_employee_access(pool, "t1", "member", "B", "a1", EMPLOYEE_PERMISSION_MANAGE, "admin1")
+            .await
+            .unwrap();
+        let rows: Vec<EmployeeGrantRow> = sqlx::query_as(
+            "SELECT * FROM one_employee_grants WHERE tenant_id = 't1' AND subject_id = 'B' AND employee_id = 'a1'",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].permission, "manage");
+
+        assert!(matches!(
+            grant_employee_access(pool, "t1", "bogus", "B", "a1", EMPLOYEE_PERMISSION_USE, "admin1").await,
+            Err(EmployeeError::BadRequest(_))
+        ));
+        assert!(matches!(
+            grant_employee_access(pool, "t1", "member", "B", "a1", "bogus", "admin1").await,
+            Err(EmployeeError::BadRequest(_))
+        ));
     }
 
     #[test]

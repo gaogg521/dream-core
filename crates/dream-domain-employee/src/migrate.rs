@@ -19,6 +19,15 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "employee_004_persona_model",
         include_str!("../migrations/004_persona_and_model.sql"),
     ),
+    // Was never registered here despite the file shipping — a real bug found
+    // while adding 006 below, fixed alongside it since both touch this same
+    // array. Safe to backfill now: the UPDATE it runs is idempotent (matches
+    // zero rows once already applied).
+    (
+        "employee_005_dream_rebrand_agent_type",
+        include_str!("../migrations/005_dream_rebrand_agent_type.sql"),
+    ),
+    ("employee_006_grants", include_str!("../migrations/006_grants.sql")),
 ];
 
 /// Run all pending one-employee migrations. Idempotent.

@@ -2,7 +2,7 @@
 //! (handlers read `CurrentUser` from request extensions; employees are
 //! strictly owner-scoped in M3a).
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ use dream_core_auth::CurrentUser;
 use dream_core_common::ProviderWithModel;
 
 use crate::error::EmployeeError;
-use crate::models::{EmployeeRunRow, PersonalAgentDto};
+use crate::models::{EmployeeGrantRow, EmployeeRunRow, PersonalAgentDto};
 use crate::service::{CreateEmployeeInput, ScheduleInput, UpdateEmployeeInput};
 use crate::state::OneEmployeeRouterState;
 
@@ -29,7 +29,28 @@ pub fn one_employee_routes(state: OneEmployeeRouterState) -> Router {
         .route("/api/one/employee/agents/{agent_id}/visibility", put(set_visibility))
         .route("/api/one/employee/agents/{agent_id}/runs", get(list_runs))
         .route("/api/one/employee/runs/{run_id}", get(get_run))
+        // Admin registry + resource-authorization matrix (align-openocta §3,
+        // delivery-gaps T4 step 2). Same admin gate devops uses for its own
+        // registry writes (`require_registry_admin`) — direct SQL against
+        // one-org's table, not a shared trait (see `EmployeeService::user_org_role`).
+        .route("/api/one/employee/admin/agents", get(list_agents_for_admin))
+        .route(
+            "/api/one/employee/admin/grants",
+            get(list_grants_for_admin)
+                .put(grant_employee_access)
+                .delete(revoke_employee_access),
+        )
         .with_state(state)
+}
+
+async fn require_registry_admin(state: &OneEmployeeRouterState, user_id: &str) -> Result<(), EmployeeError> {
+    match state.service.user_org_role(user_id).await? {
+        None => Ok(()),
+        Some(role) if role == "org_admin" || role == "system_admin" || role == "admin" => Ok(()),
+        Some(_) => Err(EmployeeError::Forbidden(
+            "the digital-employee registry and its authorization matrix are admin-only".into(),
+        )),
+    }
 }
 
 async fn list_agents(
@@ -146,10 +167,12 @@ async fn update_agent(
     Path(agent_id): Path<String>,
     Json(body): Json<UpdateAgentBody>,
 ) -> Result<Json<ApiResponse<PersonalAgentDto>>, EmployeeError> {
+    let tenant = state.tenant_of(&user.id).await;
     let agent = state
         .service
         .update(
             &user.id,
+            &tenant,
             &agent_id,
             UpdateEmployeeInput {
                 name: body.name,
@@ -187,7 +210,8 @@ async fn run_agent(
     Extension(user): Extension<CurrentUser>,
     Path(agent_id): Path<String>,
 ) -> Result<Json<ApiResponse<RunNowDto>>, EmployeeError> {
-    let (run_id, conversation_id) = state.service.run_now(&user.id, &agent_id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    let (run_id, conversation_id) = state.service.run_now(&user.id, &tenant, &agent_id).await?;
     Ok(Json(ApiResponse::ok(RunNowDto {
         run_id,
         conversation_id,
@@ -207,9 +231,10 @@ async fn run_agent_team(
     Path(agent_id): Path<String>,
     Json(body): Json<RunTeamBody>,
 ) -> Result<Json<ApiResponse<RunNowDto>>, EmployeeError> {
+    let tenant = state.tenant_of(&user.id).await;
     let (run_id, conversation_id) = state
         .service
-        .run_now_team(&user.id, &agent_id, &body.team_id, &body.slot_id)
+        .run_now_team(&user.id, &tenant, &agent_id, &body.team_id, &body.slot_id)
         .await?;
     Ok(Json(ApiResponse::ok(RunNowDto {
         run_id,
@@ -231,10 +256,12 @@ async fn set_schedule(
     Path(agent_id): Path<String>,
     Json(body): Json<SetScheduleBody>,
 ) -> Result<Json<ApiResponse<PersonalAgentDto>>, EmployeeError> {
+    let tenant = state.tenant_of(&user.id).await;
     let agent = state
         .service
         .set_schedule(
             &user.id,
+            &tenant,
             &agent_id,
             ScheduleInput {
                 schedule: body.schedule,
@@ -261,4 +288,95 @@ async fn get_run(
     Path(run_id): Path<String>,
 ) -> Result<Json<ApiResponse<EmployeeRunRow>>, EmployeeError> {
     Ok(Json(ApiResponse::ok(state.service.get_run(&user.id, &run_id).await?)))
+}
+
+// --- admin: registry + resource-authorization matrix ---
+
+/// Every digital employee in the tenant, owner-agnostic — the admin
+/// registry view (`ResourceRegistryTab`'s fourth tab on the dream-en side).
+async fn list_agents_for_admin(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<PersonalAgentDto>>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(state.service.list_all_for_tenant(&tenant).await?)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GrantSubjectQuery {
+    subject_type: String,
+    subject_id: String,
+}
+
+async fn list_grants_for_admin(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(q): Query<GrantSubjectQuery>,
+) -> Result<Json<ApiResponse<Vec<EmployeeGrantRow>>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .list_employee_grants(&tenant, &q.subject_type, &q.subject_id)
+            .await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GrantEmployeeAccessBody {
+    subject_type: String,
+    subject_id: String,
+    employee_id: String,
+    permission: String,
+}
+
+async fn grant_employee_access(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<GrantEmployeeAccessBody>,
+) -> Result<Json<ApiResponse<()>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    state
+        .service
+        .grant_employee_access(
+            &tenant,
+            &body.subject_type,
+            &body.subject_id,
+            &body.employee_id,
+            &body.permission,
+            &user.id,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RevokeEmployeeAccessQuery {
+    subject_type: String,
+    subject_id: String,
+    employee_id: String,
+}
+
+/// Query params, not a JSON body — this codebase's own convention for DELETE
+/// (see `oneAdmin.deleteResourceGrant`'s path-param sibling on the dream-en
+/// side); the frontend's `httpDelete` helper only builds URLs, never sends a
+/// body.
+async fn revoke_employee_access(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(q): Query<RevokeEmployeeAccessQuery>,
+) -> Result<Json<ApiResponse<()>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    state
+        .service
+        .revoke_employee_access(&tenant, &q.subject_type, &q.subject_id, &q.employee_id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
 }

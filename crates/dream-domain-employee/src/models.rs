@@ -114,6 +114,36 @@ impl From<PersonalAgentRow> for PersonalAgentDto {
     }
 }
 
+/// Valid `subject_type` values for an employee grant — same three kinds (and
+/// same meaning) as `dream-domain-platform::GRANT_SUBJECT_TYPES`, duplicated
+/// here rather than shared across the crate boundary (see `service.rs`'s
+/// module docs on why: same-layer domain crates talk in raw SQL against each
+/// other's tables here, not a shared trait, for lookups this simple).
+pub const EMPLOYEE_GRANT_SUBJECT_TYPES: [&str; 3] = ["member", "department", "scene"];
+/// `employee_id` sentinel meaning "every shared digital employee in the tenant".
+pub const EMPLOYEE_GRANT_ALL: &str = "*";
+/// Can run/converse with the employee, and see it in the picker. Implied by `MANAGE`.
+pub const EMPLOYEE_PERMISSION_USE: &str = "use";
+/// `USE` plus editing (name/description/model/persona) and scheduling.
+/// Deleting a shared employee stays owner-only regardless of this grant —
+/// see `EmployeeService::delete`'s doc comment.
+pub const EMPLOYEE_PERMISSION_MANAGE: &str = "manage";
+
+/// One subject's authorization on one (or every, via `EMPLOYEE_GRANT_ALL`)
+/// shared digital employee.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmployeeGrantRow {
+    pub id: String,
+    pub tenant_id: String,
+    pub subject_type: String,
+    pub subject_id: String,
+    pub employee_id: String,
+    pub permission: String,
+    pub granted_by: String,
+    pub created_at: i64,
+}
+
 /// One digital-employee execution (structured replacement for the legacy
 /// `automationConfig.runHistory` JSON blob).
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
