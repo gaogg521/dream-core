@@ -32,6 +32,7 @@ enterprise = [
     "dep:dream-domain-billing",
     "dep:dream-domain-platform",
     "dep:dream-domain-workflow",
+    "dep:dream-domain-memory",
 ]
 
 telegram = ["dream-core-channel/telegram"]
@@ -71,6 +72,7 @@ dream-domain-org = { workspace = true, optional = true }
 dream-domain-employee.workspace = true
 dream-domain-sso = { workspace = true, optional = true }
 dream-domain-workflow = { workspace = true, optional = true }
+dream-domain-memory = { workspace = true, optional = true }
 dream-domain-devops.workspace = true
 dream-domain-enterprise = { workspace = true, optional = true }
 dream-domain-billing = { workspace = true, optional = true }

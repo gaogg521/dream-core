@@ -1390,6 +1390,19 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
                 .with_source(e)
             })?;
     }
+    // one-memory: collections / items / refine jobs / grants (P2-2).
+    #[cfg(feature = "enterprise")]
+    {
+        dream_domain_memory::run_one_memory_migrations(services.database.pool())
+            .await
+            .map_err(|e| {
+                RouterBuildError::new(
+                    "router.dream_domain_memory.migrate",
+                    "failed to run one-memory migrations",
+                )
+                .with_source(e)
+            })?;
+    }
 
     // Start channel orchestrator (message loop)
     tokio::spawn(
@@ -1557,6 +1570,7 @@ pub(crate) struct GovernancePlane {
     pub billing: Router,
     pub platform: Router,
     pub workflow: Router,
+    pub memory: Router,
     pub sso_public: Router,
     pub sso_admin: Router,
     /// Handed back rather than kept: one-employee and one-devops both need it,
@@ -1875,12 +1889,26 @@ pub(crate) fn build_governance_plane(
         .route_layer(from_fn_with_state(password_gate.clone(), require_password_changed_gate))
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
+    // one-memory routes (/api/one/{admin/,}memory/*) — the memory subsystem
+    // (P2-2): three collection tiers, refinement jobs, and read/write
+    // grants. Same governance-plane assembly so a later admin-svc split can
+    // lift it out whole.
+    let one_memory_service = std::sync::Arc::new(dream_domain_memory::MemoryService::new(
+        services.database.pool().clone(),
+    ));
+    let one_memory_state = dream_domain_memory::OneMemoryRouterState::new(one_memory_service);
+    let one_memory_authenticated = dream_domain_memory::one_memory_routes(one_memory_state)
+        .route_layer(from_fn_with_state(license_gate.clone(), license_module_gate_middleware))
+        .route_layer(from_fn_with_state(password_gate.clone(), require_password_changed_gate))
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
     GovernancePlane {
         org: one_org_authenticated,
         enterprise: one_enterprise_authenticated,
         billing: one_billing_authenticated,
         platform: one_platform_authenticated,
         workflow: one_workflow_authenticated,
+        memory: one_memory_authenticated,
         sso_public: one_sso_public,
         sso_admin: one_sso_admin,
         tenant_resolver,
@@ -1966,6 +1994,15 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
             )
             .with_source(e)
         })?;
+    dream_domain_memory::run_one_memory_migrations(services.database.pool())
+        .await
+        .map_err(|e| {
+            RouterBuildError::new(
+                "router.dream_domain_memory.migrate",
+                "failed to run one-memory migrations",
+            )
+            .with_source(e)
+        })?;
 
     // Built ahead of `AuthState` so the IP allowlist can be wired into the
     // auth middleware — mirrors `create_router_with_all_state`.
@@ -2042,6 +2079,7 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
         .merge(governance.billing)
         .merge(governance.platform)
         .merge(governance.workflow)
+        .merge(governance.memory)
         .merge(governance.sso_public)
         .merge(governance.sso_admin)
         .merge(admin_devops_authenticated)
@@ -2510,6 +2548,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(governance.billing)
         .merge(governance.platform)
         .merge(governance.workflow)
+        .merge(governance.memory)
         .merge(governance.sso_public)
         .merge(governance.sso_admin);
 
@@ -3304,7 +3343,7 @@ mod tests {
             workflow: None,
         };
         assert!(
-            gate.check("no-membership-user", "rm -rf /", false)
+            gate.check("no-membership-user", "rm -rf /", false, false)
                 .await
                 .unwrap()
                 .is_none()
@@ -3321,7 +3360,7 @@ mod tests {
             platform,
             workflow: None,
         };
-        assert!(gate.check("user-1", "rm -rf /", true).await.unwrap().is_none());
+        assert!(gate.check("user-1", "rm -rf /", true, false).await.unwrap().is_none());
     }
 
     #[cfg(feature = "enterprise")]
@@ -3339,7 +3378,7 @@ mod tests {
         // Uses only "sudo" (not e.g. "shutdown") so the matched pattern is
         // unambiguous regardless of `blocked_command_patterns` iteration order.
         let reason = gate
-            .check("user-1", "Run shell command: sudo apt-get remove foo", false)
+            .check("user-1", "Run shell command: sudo apt-get remove foo", false, true)
             .await
             .unwrap();
         assert!(reason.is_some());
@@ -3359,7 +3398,7 @@ mod tests {
             workflow: None,
         };
         assert!(
-            gate.check("user-1", "Read /tmp/notes.txt", false)
+            gate.check("user-1", "Read /tmp/notes.txt", false, false)
                 .await
                 .unwrap()
                 .is_none()
@@ -3379,7 +3418,7 @@ mod tests {
             workflow: None,
         };
         assert!(
-            gate.check("user-1", "Fetch https://example.com", true)
+            gate.check("user-1", "Fetch https://example.com", true, false)
                 .await
                 .unwrap()
                 .is_some()
@@ -3400,7 +3439,7 @@ mod tests {
             workflow: None,
         };
         assert!(
-            gate.check("user-1", "Fetch https://example.com", true)
+            gate.check("user-1", "Fetch https://example.com", true, false)
                 .await
                 .unwrap()
                 .is_none()
@@ -3422,7 +3461,7 @@ mod tests {
         // is_network_fetch = false: a non-network call must not be blocked by
         // the network-denial flag, even though the tenant is on strict.
         assert!(
-            gate.check("user-1", "Read /tmp/notes.txt", false)
+            gate.check("user-1", "Read /tmp/notes.txt", false, false)
                 .await
                 .unwrap()
                 .is_none()
