@@ -39,10 +39,10 @@ use crate::collaboration::CollaborationStatus;
 use crate::container::ContainerStatus;
 use crate::error::PlatformError;
 use crate::models::{
-    ApiKeyDto, CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, IpAllowlistConfigDto, NewApiKeyDto,
-    ResourceGrantDto, SceneDto, SecurityPolicyDto, SiemConfigDto,
+    ApiKeyDto, CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, IpAllowlistConfigDto, MyNotificationsDto,
+    NewApiKeyDto, NotificationDto, ResourceGrantDto, SceneDto, SecurityPolicyDto, SiemConfigDto,
 };
-use crate::rbac::RequirePlatformAdmin;
+use crate::rbac::{RequirePlatformAdmin, RequirePlatformMember};
 use crate::siem::SiemStatus;
 use crate::state::OnePlatformRouterState;
 
@@ -103,6 +103,19 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
             get(list_api_keys).post(create_api_key),
         )
         .route("/api/one/admin/platform/api-keys/{id}", delete(revoke_api_key))
+        .route(
+            "/api/one/admin/platform/notifications",
+            get(list_notifications).post(create_notification),
+        )
+        .route(
+            "/api/one/admin/platform/notifications/{id}",
+            axum::routing::delete(delete_notification),
+        )
+        // Member-facing self-service half of the in-app notifications — any
+        // enterprise member (any role) reads their own inbox and marks
+        // messages read; composing stays admin-only above.
+        .route("/api/one/notifications", get(my_notifications))
+        .route("/api/one/notifications/read", post(mark_notifications_read))
         .with_state(state)
 }
 
@@ -642,3 +655,98 @@ async fn revoke_api_key(
     state.service.revoke_api_key(&actor.tenant_id, &id).await?;
     Ok(Json(ApiResponse::ok(())))
 }
+
+// --- P2-3 in-app notifications (站内消息) ---
+
+async fn list_notifications(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<Vec<NotificationDto>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_notifications(&actor.tenant_id).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateNotificationBody {
+    /// `"broadcast" | "targeted"`.
+    kind: String,
+    #[serde(default)]
+    category: Option<String>,
+    title: String,
+    body: String,
+    /// Only read for `kind = "targeted"`; every id must be a member of the
+    /// tenant.
+    #[serde(default)]
+    recipientIds: Vec<String>,
+}
+
+async fn create_notification(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<CreateNotificationBody>,
+) -> Result<Json<ApiResponse<NotificationDto>>, PlatformError> {
+    let dto = state
+        .service
+        .create_notification(
+            &actor.tenant_id,
+            &body.kind,
+            body.category.as_deref().unwrap_or(""),
+            &body.title,
+            &body.body,
+            &body.recipientIds,
+            &user.id,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn delete_notification(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, PlatformError> {
+    state.service.delete_notification(&actor.tenant_id, &id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn my_notifications(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformMember(actor): RequirePlatformMember,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<MyNotificationsDto>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .list_my_notifications(&actor.tenant_id, &user.id, MY_NOTIFICATIONS_LIMIT)
+            .await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MarkNotificationsReadBody {
+    /// Empty = mark every visible unread one ("mark all read").
+    #[serde(default)]
+    ids: Vec<String>,
+}
+
+async fn mark_notifications_read(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformMember(actor): RequirePlatformMember,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<MarkNotificationsReadBody>,
+) -> Result<Json<ApiResponse<()>>, PlatformError> {
+    state
+        .service
+        .mark_notifications_read(&actor.tenant_id, &user.id, &body.ids)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+/// The inbox caps the rows it returns (an old tenant can accumulate a long
+/// sent history) while `unread_count` always counts the full visible set —
+/// see `PlatformService::list_my_notifications`.
+const MY_NOTIFICATIONS_LIMIT: i64 = 200;

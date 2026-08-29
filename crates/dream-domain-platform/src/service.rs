@@ -23,8 +23,8 @@ use crate::container::{ContainerRuntime, ContainerSettings, ContainerStatus, Noo
 use crate::error::PlatformError;
 use crate::ip_allowlist::ip_allowed;
 use crate::models::{
-    ApiKeyDto, CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, IpAllowlistConfigDto, NewApiKeyDto,
-    ResourceGrantDto, SceneDto, SecurityPolicyDto, SiemConfigDto,
+    ApiKeyDto, CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, IpAllowlistConfigDto, MyNotificationDto,
+    MyNotificationsDto, NewApiKeyDto, NotificationDto, ResourceGrantDto, SceneDto, SecurityPolicyDto, SiemConfigDto,
 };
 use crate::siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
 
@@ -154,6 +154,17 @@ impl PlatformService {
             Some(actor) if !is_admin_role(&actor.role) => {
                 Err(PlatformError::Forbidden("Administrator role required".into()))
             }
+            Some(actor) => Ok(actor),
+        }
+    }
+
+    /// Resolve the caller and require any enterprise membership (any role) —
+    /// the gate for member-facing self-service routes (the in-app
+    /// notification inbox). Personal edition (no membership) →
+    /// `NotInEnterprise`.
+    pub async fn require_member(&self, user_id: &str) -> Result<PlatformActor, PlatformError> {
+        match self.resolve_actor(user_id).await? {
+            None => Err(PlatformError::NotInEnterprise),
             Some(actor) => Ok(actor),
         }
     }
@@ -1485,6 +1496,350 @@ impl PlatformService {
             }
         }
     }
+
+    // --- In-app notifications (P2-3 站内消息) ---
+
+    /// Compose and send one notification. A `broadcast` reaches every member
+    /// of the tenant (now and in the future — see the migration's comment for
+    /// why there are no recipient rows); a `targeted` one only the listed
+    /// users, every one of which must already be a member of this tenant.
+    pub async fn create_notification(
+        &self,
+        tenant_id: &str,
+        kind: &str,
+        category: &str,
+        title: &str,
+        body: &str,
+        recipient_ids: &[String],
+        created_by: &str,
+    ) -> Result<NotificationDto, PlatformError> {
+        let kind = match kind {
+            "broadcast" | "targeted" => kind,
+            other => {
+                return Err(PlatformError::BadRequest(format!(
+                    "unknown notification kind '{other}'"
+                )));
+            }
+        };
+        let title = title.trim();
+        let body = body.trim();
+        if title.is_empty() {
+            return Err(PlatformError::BadRequest("notification title must not be empty".into()));
+        }
+        if body.is_empty() {
+            return Err(PlatformError::BadRequest("notification body must not be empty".into()));
+        }
+
+        let id = generate_prefixed_id("ntf");
+        let now = now_ms();
+        if kind == "targeted" {
+            if recipient_ids.is_empty() {
+                return Err(PlatformError::BadRequest(
+                    "a targeted notification requires at least one recipient".into(),
+                ));
+            }
+            let mut tx = self.pool.begin().await?;
+            // Reject (rather than silently drop) recipients that are not
+            // members — an admin told "sent" while half the list silently
+            // received nothing would be a fake success, the exact failure
+            // mode delivery-gaps T4 was about.
+            for user_id in recipient_ids {
+                let member: Option<(String,)> =
+                    sqlx::query_as("SELECT user_id FROM one_user_org WHERE tenant_id = ? AND user_id = ?")
+                        .bind(tenant_id)
+                        .bind(user_id)
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                if member.is_none() {
+                    return Err(PlatformError::BadRequest(format!(
+                        "recipient '{user_id}' is not a member of this tenant"
+                    )));
+                }
+            }
+            sqlx::query(
+                "INSERT INTO one_notifications (id, tenant_id, kind, category, title, body, created_by, created_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&id)
+            .bind(tenant_id)
+            .bind(kind)
+            .bind(category.trim())
+            .bind(title)
+            .bind(body)
+            .bind(created_by)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+            for user_id in recipient_ids {
+                sqlx::query(
+                    "INSERT OR IGNORE INTO one_notification_recipients (notification_id, user_id) VALUES (?, ?)",
+                )
+                .bind(&id)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+            tx.commit().await?;
+        } else {
+            sqlx::query(
+                "INSERT INTO one_notifications (id, tenant_id, kind, category, title, body, created_by, created_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&id)
+            .bind(tenant_id)
+            .bind(kind)
+            .bind(category.trim())
+            .bind(title)
+            .bind(body)
+            .bind(created_by)
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+        }
+
+        self.get_notification(tenant_id, &id)
+            .await?
+            .ok_or_else(|| PlatformError::Internal("notification vanished immediately after insert".into()))
+    }
+
+    async fn get_notification(&self, tenant_id: &str, id: &str) -> Result<Option<NotificationDto>, PlatformError> {
+        let row: Option<(String, String, String, String, String, String, i64)> = sqlx::query_as(
+            "SELECT id, kind, category, title, body, created_by, created_at \
+             FROM one_notifications WHERE tenant_id = ? AND id = ?",
+        )
+        .bind(tenant_id)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((id, kind, category, title, body, created_by, created_at)) = row else {
+            return Ok(None);
+        };
+        let (recipient_count, read_count) = self.notification_audience_counts(tenant_id, &id, &kind).await?;
+        Ok(Some(NotificationDto {
+            id,
+            kind,
+            category,
+            title,
+            body,
+            recipient_count,
+            read_count,
+            created_by,
+            created_at,
+        }))
+    }
+
+    /// Audience size and how much of it has read one notification. A
+    /// broadcast's audience is the tenant's *current* roster (members who
+    /// joined after the send are part of it, by the same rule that shows the
+    /// notification to them); a targeted one's audience is its recipient rows.
+    async fn notification_audience_counts(
+        &self,
+        tenant_id: &str,
+        id: &str,
+        kind: &str,
+    ) -> Result<(i64, i64), PlatformError> {
+        let recipient_count: i64 = if kind == "broadcast" {
+            sqlx::query_scalar("SELECT COUNT(*) FROM one_user_org WHERE tenant_id = ?")
+                .bind(tenant_id)
+                .fetch_one(&self.pool)
+                .await?
+        } else {
+            sqlx::query_scalar("SELECT COUNT(*) FROM one_notification_recipients WHERE notification_id = ?")
+                .bind(id)
+                .fetch_one(&self.pool)
+                .await?
+        };
+        let read_count: i64 = if kind == "broadcast" {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM one_notification_reads rd \
+                 JOIN one_user_org uo ON uo.user_id = rd.user_id AND uo.tenant_id = ? \
+                 WHERE rd.notification_id = ?",
+            )
+            .bind(tenant_id)
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await?
+        } else {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM one_notification_reads rd \
+                 JOIN one_notification_recipients r ON r.notification_id = rd.notification_id AND r.user_id = rd.user_id \
+                 WHERE rd.notification_id = ?",
+            )
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await?
+        };
+        Ok((recipient_count, read_count))
+    }
+
+    /// The admin's sent history, newest first.
+    pub async fn list_notifications(&self, tenant_id: &str) -> Result<Vec<NotificationDto>, PlatformError> {
+        let rows: Vec<(String, String, String, String, String, String, i64)> = sqlx::query_as(
+            "SELECT id, kind, category, title, body, created_by, created_at \
+             FROM one_notifications WHERE tenant_id = ? ORDER BY created_at DESC",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (id, kind, category, title, body, created_by, created_at) in rows {
+            let (recipient_count, read_count) = self.notification_audience_counts(tenant_id, &id, &kind).await?;
+            out.push(NotificationDto {
+                id,
+                kind,
+                category,
+                title,
+                body,
+                recipient_count,
+                read_count,
+                created_by,
+                created_at,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Withdraw a sent notification. Removes the message and its recipient
+    /// rows; read rows for it disappear with the message (they reference its
+    /// id and nothing else), which is the intent — the notification no
+    /// longer exists for anyone.
+    pub async fn delete_notification(&self, tenant_id: &str, id: &str) -> Result<(), PlatformError> {
+        let mut tx = self.pool.begin().await?;
+        let deleted = sqlx::query("DELETE FROM one_notifications WHERE tenant_id = ? AND id = ?")
+            .bind(tenant_id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if deleted == 0 {
+            return Err(PlatformError::NotFound("notification not found".into()));
+        }
+        sqlx::query("DELETE FROM one_notification_recipients WHERE notification_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM one_notification_reads WHERE notification_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The calling member's inbox: every notification of their active tenant
+    /// addressed to them (all broadcasts + targeted ones listing them),
+    /// newest first, with their personal read stamp and the unread count the
+    /// home page's to-do card wants. `limit` caps the returned rows only —
+    /// `unread_count` always counts the full visible set.
+    pub async fn list_my_notifications(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        limit: i64,
+    ) -> Result<MyNotificationsDto, PlatformError> {
+        let rows: Vec<(String, String, String, String, String, String, i64, Option<i64>)> = sqlx::query_as(
+            "SELECT n.id, n.kind, n.category, n.title, n.body, n.created_by, n.created_at, rd.read_at \
+             FROM one_notifications n \
+             LEFT JOIN one_notification_reads rd ON rd.notification_id = n.id AND rd.user_id = ? \
+             WHERE n.tenant_id = ? \
+               AND (n.kind = 'broadcast' \
+                    OR EXISTS (SELECT 1 FROM one_notification_recipients r \
+                               WHERE r.notification_id = n.id AND r.user_id = ?)) \
+             ORDER BY n.created_at DESC LIMIT ?",
+        )
+        .bind(user_id)
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        let unread_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM one_notifications n \
+             WHERE n.tenant_id = ? \
+               AND (n.kind = 'broadcast' \
+                    OR EXISTS (SELECT 1 FROM one_notification_recipients r \
+                               WHERE r.notification_id = n.id AND r.user_id = ?)) \
+               AND NOT EXISTS (SELECT 1 FROM one_notification_reads rd \
+                               WHERE rd.notification_id = n.id AND rd.user_id = ?)",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(MyNotificationsDto {
+            notifications: rows
+                .into_iter()
+                .map(
+                    |(id, kind, category, title, body, created_by, created_at, read_at)| MyNotificationDto {
+                        id,
+                        kind,
+                        category,
+                        title,
+                        body,
+                        created_by,
+                        created_at,
+                        read_at,
+                    },
+                )
+                .collect(),
+            unread_count,
+        })
+    }
+
+    /// Mark notifications read for one member. An empty `ids` marks every
+    /// visible unread one — the inbox's "mark all read". Ids the caller
+    /// cannot see (another tenant's, a targeted one not addressed to them)
+    /// are silently skipped rather than erroring, same posture as the other
+    /// idempotent mutations in this service.
+    pub async fn mark_notifications_read(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        ids: &[String],
+    ) -> Result<(), PlatformError> {
+        let visibility = "n.tenant_id = ? \
+             AND (n.kind = 'broadcast' \
+                  OR EXISTS (SELECT 1 FROM one_notification_recipients r \
+                             WHERE r.notification_id = n.id AND r.user_id = ?))";
+        if ids.is_empty() {
+            sqlx::query(&format!(
+                "INSERT OR IGNORE INTO one_notification_reads (notification_id, user_id, read_at) \
+                 SELECT n.id, ?, ? FROM one_notifications n WHERE {visibility} \
+                   AND NOT EXISTS (SELECT 1 FROM one_notification_reads rd \
+                                   WHERE rd.notification_id = n.id AND rd.user_id = ?)"
+            ))
+            .bind(user_id)
+            .bind(now_ms())
+            .bind(tenant_id)
+            .bind(user_id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+            return Ok(());
+        }
+        for id in ids {
+            let visible: Option<(String,)> = sqlx::query_as(&format!(
+                "SELECT n.id FROM one_notifications n WHERE n.id = ? AND {visibility}"
+            ))
+            .bind(id)
+            .bind(tenant_id)
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await?;
+            if visible.is_some() {
+                sqlx::query(
+                    "INSERT OR IGNORE INTO one_notification_reads (notification_id, user_id, read_at) VALUES (?, ?, ?)",
+                )
+                .bind(id)
+                .bind(user_id)
+                .bind(now_ms())
+                .execute(&self.pool)
+                .await?;
+            }
+        }
+        Ok(())
+    }
 }
 
 type ApiKeyRow = (
@@ -2459,6 +2814,168 @@ mod tests {
                 .await
                 .unwrap(),
             ApiKeyAuthOutcome::PathNotAllowed
+        );
+    }
+
+    // --- In-app notifications (P2-3 站内消息) ---
+
+    #[tokio::test]
+    async fn broadcast_reaches_every_member_and_late_joiners_too() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "admin1", "t1", "org_admin").await;
+        seed_membership(db.pool(), "alice", "t1", "member").await;
+        let sent = service
+            .create_notification("t1", "broadcast", "公告", "维护窗口", "周六 02:00-04:00", &[], "admin1")
+            .await
+            .unwrap();
+        // A broadcast's audience is the whole roster, evaluated at read time.
+        assert_eq!(sent.recipient_count, 2);
+
+        let alice = service.list_my_notifications("t1", "alice", 100).await.unwrap();
+        assert_eq!(alice.notifications.len(), 1);
+        assert_eq!(alice.unread_count, 1);
+
+        // A member who joins AFTER the send still sees the broadcast — the
+        // reason broadcast rows carry no recipient snapshot.
+        seed_membership(db.pool(), "bob", "t1", "member").await;
+        let bob = service.list_my_notifications("t1", "bob", 100).await.unwrap();
+        assert_eq!(bob.notifications.len(), 1);
+        assert_eq!(bob.unread_count, 1);
+    }
+
+    #[tokio::test]
+    async fn targeted_reaches_only_its_recipients_and_rejects_non_members() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "admin1", "t1", "org_admin").await;
+        seed_membership(db.pool(), "alice", "t1", "member").await;
+        seed_membership(db.pool(), "mallory", "t2", "member").await;
+
+        let sent = service
+            .create_notification(
+                "t1",
+                "targeted",
+                "安全",
+                "凭证轮换",
+                "请轮换你的 API Key",
+                &["alice".to_owned()],
+                "admin1",
+            )
+            .await
+            .unwrap();
+        assert_eq!(sent.recipient_count, 1);
+
+        let alice = service.list_my_notifications("t1", "alice", 100).await.unwrap();
+        assert_eq!(alice.unread_count, 1);
+        // A non-recipient member of the same tenant sees nothing…
+        let carol = service.list_my_notifications("t1", "carol", 100).await.unwrap();
+        assert!(carol.notifications.is_empty());
+        // …and a targeted message can never be aimed at a non-member.
+        let err = service
+            .create_notification("t1", "targeted", "", "hi", "body", &["mallory".to_owned()], "admin1")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "BAD_REQUEST");
+        // A targeted send with no recipients is rejected, not a silent no-op.
+        assert_eq!(
+            service
+                .create_notification("t1", "targeted", "", "hi", "body", &[], "admin1")
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+        assert_eq!(
+            service
+                .create_notification("t1", "wallpaper", "", "hi", "body", &[], "admin1")
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_marks_are_per_user_and_mark_all_is_scoped_to_visibility() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "admin1", "t1", "org_admin").await;
+        seed_membership(db.pool(), "alice", "t1", "member").await;
+        seed_membership(db.pool(), "bob", "t1", "member").await;
+        service
+            .create_notification("t1", "broadcast", "", "one", "body", &[], "admin1")
+            .await
+            .unwrap();
+        service
+            .create_notification("t1", "broadcast", "", "two", "body", &[], "admin1")
+            .await
+            .unwrap();
+
+        service.mark_notifications_read("t1", "alice", &[]).await.unwrap();
+        let alice = service.list_my_notifications("t1", "alice", 100).await.unwrap();
+        assert_eq!(alice.unread_count, 0);
+        // Bob's state is untouched — read marks are per user.
+        let bob = service.list_my_notifications("t1", "bob", 100).await.unwrap();
+        assert_eq!(bob.unread_count, 2);
+        // Marking again is idempotent.
+        service.mark_notifications_read("t1", "alice", &[]).await.unwrap();
+        assert_eq!(
+            service
+                .list_my_notifications("t1", "alice", 100)
+                .await
+                .unwrap()
+                .unread_count,
+            0
+        );
+        // The admin's sent history reflects the audience reads.
+        let history = service.list_notifications("t1").await.unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].read_count, 1);
+        assert_eq!(history[0].recipient_count, 3);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_notification_removes_it_for_everyone() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "admin1", "t1", "org_admin").await;
+        seed_membership(db.pool(), "alice", "t1", "member").await;
+        let sent = service
+            .create_notification("t1", "broadcast", "", "oops", "wrong message", &[], "admin1")
+            .await
+            .unwrap();
+        service.mark_notifications_read("t1", "alice", &[]).await.unwrap();
+
+        service.delete_notification("t1", &sent.id).await.unwrap();
+        assert!(service.list_notifications("t1").await.unwrap().is_empty());
+        let alice = service.list_my_notifications("t1", "alice", 100).await.unwrap();
+        assert!(alice.notifications.is_empty() && alice.unread_count == 0);
+        // Unknown id → NotFound, not a silent success.
+        assert_eq!(
+            service
+                .delete_notification("t1", "ntf_missing")
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND"
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_title_and_body_must_not_be_blank() {
+        let (_db, service) = setup().await;
+        assert_eq!(
+            service
+                .create_notification("t1", "broadcast", "", "  ", "body", &[], "admin1")
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+        assert_eq!(
+            service
+                .create_notification("t1", "broadcast", "", "title", "   ", &[], "admin1")
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
         );
     }
 }

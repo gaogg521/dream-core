@@ -147,3 +147,47 @@ pub struct SceneDto {
     pub created_at: i64,
     pub updated_at: i64,
 }
+
+/// One sent in-app notification, as the admin's sent-history list shows it
+/// ("站内消息", align-openocta P2-3). `recipient_count` / `read_count` are
+/// aggregates, not rows: a broadcast has an unbounded audience (every
+/// current and future member of the tenant) so its `recipient_count` is
+/// the tenant's current roster size at read time.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationDto {
+    pub id: String,
+    /// `"broadcast" | "targeted"`.
+    pub kind: String,
+    pub category: String,
+    pub title: String,
+    pub body: String,
+    pub recipient_count: i64,
+    pub read_count: i64,
+    pub created_by: String,
+    pub created_at: i64,
+}
+
+/// One in-app notification as its recipient sees it — the member-facing
+/// inbox / the home page's unread card. `read_at` is `None` while unread.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MyNotificationDto {
+    pub id: String,
+    pub kind: String,
+    pub category: String,
+    pub title: String,
+    pub body: String,
+    pub created_by: String,
+    pub created_at: i64,
+    pub read_at: Option<i64>,
+}
+
+/// The member-facing inbox page plus the count the home page's unread
+/// aggregation wants, in one round trip.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MyNotificationsDto {
+    pub notifications: Vec<MyNotificationDto>,
+    pub unread_count: i64,
+}

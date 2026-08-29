@@ -31,3 +31,23 @@ impl FromRequestParts<OnePlatformRouterState> for RequirePlatformAdmin {
         Ok(Self(actor))
     }
 }
+
+/// Requires any enterprise membership (any role) — the member-facing
+/// counterpart to [`RequirePlatformAdmin`], for self-service routes such as
+/// the in-app notification inbox. Admins pass too (they are members).
+#[derive(Debug, Clone)]
+pub struct RequirePlatformMember(pub PlatformActor);
+
+impl FromRequestParts<OnePlatformRouterState> for RequirePlatformMember {
+    type Rejection = PlatformError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &OnePlatformRouterState) -> Result<Self, Self::Rejection> {
+        let user = parts
+            .extensions
+            .get::<CurrentUser>()
+            .cloned()
+            .ok_or_else(|| PlatformError::Forbidden("Authentication required".into()))?;
+        let actor = state.service.require_member(&user.id).await?;
+        Ok(Self(actor))
+    }
+}
