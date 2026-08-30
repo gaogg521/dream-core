@@ -14,6 +14,7 @@ mod mysql;
 mod pool;
 mod postgres;
 mod repository;
+pub mod testing;
 
 pub use agent_binding::{
     AgentBindingResolution, binding_resolution_for_agent, resolve_agent_binding, resolve_agent_binding_for_user,
