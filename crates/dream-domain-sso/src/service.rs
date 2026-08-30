@@ -792,7 +792,7 @@ mod tests {
         // one-sso's own tables (one_sso_providers/one_sso_identities) — real
         // migrations, so display_name/org_unit_path etc. stay in sync with
         // production schema instead of a hand-rolled CREATE TABLE drifting.
-        crate::migrate::run_one_sso_migrations(db.pool()).await.unwrap();
+        crate::migrate::run_one_sso_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let user_repo: Arc<dyn IUserRepository> = Arc::new(dream_core_db::SqliteUserRepository::new(db.pool().clone()));
         SsoService::new(
             db.pool().clone(),

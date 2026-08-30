@@ -276,3 +276,37 @@ match self {
 - `crates/dream-core-db/docs/e-pg-postgres-support.md`（顶部加一行：「2026-08-31：企业版主存储改走 MySQL（`enterprise-db-p3-3-implementation-plan.zh-CN.md`）；本文件描述的 PG 第一片保留、休眠，当以后换 PG 的前置工作」）
 
 **每 crate `#[cfg(test)]`**——加 MySQL-gated 平行测试。
+
+---
+
+## 8. 实施记录（2026-08-31，阶段 1+2 完成）
+
+阶段 1（基建）与阶段 2（runner + 66 个 MySQL 迁移文件）已完成，等 cargo 解禁后统一编译验证。
+真库验证方式：每写完一套 `migrations_mysql/`，用 `scratchpad/replay_mysql.sh <dir> <db>` 在
+`dream-mysql-test` 容器（mysql:8.0.46，端口 13306，root/test）里逐文件回放——9 套全部 0 错误通过。
+
+### 实施中新增的方言发现（§1 表格的补充）
+
+| 发现 | 处理 |
+|---|---|
+| **`SENSITIVE` 是 MySQL 8.0 保留字**（`one_config_entries.sensitive`） | 反引号。真库回放抓到的，文档上没写 |
+| **`VALUE`/`SENSITIVE` 之外的 `TRIGGER` 也是保留字**（`one_pipelines.trigger`） | 反引号 |
+| 复合唯一键宽度：utf8mb4 下 4~5 列 `VARCHAR(255)` 超过 InnoDB 3072 字节索引上限（`one_resource_grants` 5 列、`one_employee_grants` 4 列） | 这些表的 id 列改 `VARCHAR(191)`（191×4=764/列），单列键保持 `VARCHAR(255)` |
+| MySQL TEXT 列要设默认值必须用表达式括号形式 | 所有 `TEXT ... DEFAULT '[]'` 写成 `DEFAULT ('[]')` |
+| SQLite 局部唯一索引（`WHERE x IS NOT NULL`） | 平凡映射为普通唯一索引——MySQL 唯一索引天然允许多个 NULL，语义等价 |
+| SQLite 的 FK 声明（仅 org 2 处）从未被强制（无 PRAGMA foreign_keys） | MySQL 版降为注释，保持行为对齐 |
+| org 007 的表重建舞步 | MySQL 直接 `ALTER TABLE ... DROP PRIMARY KEY, ADD PRIMARY KEY (user_id, tenant_id)`，无需重建 |
+| billing 001 的 `strftime('%s','now')` 种子 | `CAST(UNIX_TIMESTAMP() AS UNSIGNED) * 1000` |
+
+### 阶段 2 实际形态（与原方案的差异）
+
+- 迁移文件 **1:1 镜像** SQLite 树的文件粒度（66 个 → 66 个），ledger 键逐一对齐；SQLite 表重建类迁移
+  在 MySQL 侧写成等价的直接 ALTER，不是逐句翻译。
+- 布尔语义列统一 `TINYINT(1)`（可被 bool 和整数双向 decode）；时间戳/计数一律 `BIGINT`。
+- 大正文列（skill content / rag chunk / api asset spec / pipeline log / memory content / prompt）
+  统一 `LONGTEXT`。
+- `dream-core-db/src/testing.rs` 落地 `mysql_test_pool()`（`DREAM_TEST_MYSQL_URL` gated，
+  每测试建随机库 `dream_test_<pid>_<nanos>`，`cleanup()` 显式 DROP）。
+- 9 个 runner 全部切到 `run_ledgered_migrations`；devops 的 backfill 双后端（`sqlite_master` /
+  `information_schema.tables` 探测）。调用点（routes.rs 生产 20 处 + 各 crate 测试 ~50 处）
+  以 `&DbPool::Sqlite(...)` 包装——阶段 3 的 `AppServices.db` 就位后生产点改传 `services.db.clone()`。

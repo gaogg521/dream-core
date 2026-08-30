@@ -447,7 +447,7 @@ mod tests {
     /// the join can be exercised without depending on that crate.
     async fn service() -> EnterpriseService {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_enterprise_migrations(db.pool()).await.unwrap();
+        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         sqlx::query(
             "CREATE TABLE one_sso_identities (\
                 provider TEXT NOT NULL, external_id TEXT NOT NULL, user_id TEXT NOT NULL)",
@@ -479,7 +479,7 @@ mod tests {
     #[tokio::test]
     async fn snapshot_spanning_several_chunks_is_written_whole() {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::run_one_enterprise_migrations(db.pool()).await.unwrap();
+        crate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let svc = EnterpriseService::new(db.pool().clone());
 
         let people: Vec<_> = (0..DIRECTORY_WRITE_CHUNK * 2 + 7)

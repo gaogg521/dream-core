@@ -472,7 +472,7 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        run_one_devops_migrations(&pool).await.unwrap();
+        run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone())).await.unwrap();
         DevopsService::new(pool)
     }
 

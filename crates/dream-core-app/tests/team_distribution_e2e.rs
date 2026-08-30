@@ -21,7 +21,7 @@ async fn team_skill_distribution_end_to_end() {
     let (mut app, services, _paths) = build_app_with_skill_paths(tmp.path()).await;
     // create_router_with_states (used by the harness) skips the one-devops
     // migration that create_router runs, so bring up the registry tables.
-    dream_domain_devops::run_one_devops_migrations(services.database.pool())
+    dream_domain_devops::run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
         .await
         .unwrap();
     let (token, csrf) = setup_and_login(&mut app, &services, "owner", "pw12345678").await;
@@ -125,7 +125,7 @@ async fn team_mcp_distribution_with_secrets_end_to_end() {
     let (mut app, services, _paths) = build_app_with_skill_paths(tmp.path()).await;
     // create_router_with_states (used by the harness) skips the one-devops
     // migration that create_router runs, so bring up the registry tables.
-    dream_domain_devops::run_one_devops_migrations(services.database.pool())
+    dream_domain_devops::run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
         .await
         .unwrap();
     let (token, csrf) = setup_and_login(&mut app, &services, "owner", "pw12345678").await;

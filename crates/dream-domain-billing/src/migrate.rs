@@ -3,8 +3,12 @@
 //! Shares the `_one_migrations` ledger with one-org / one-sso / one-enterprise
 //! but keys entries under the `billing_` prefix so names never collide.
 //! Append-only. MUST run after one-enterprise migrations — `billing_001_init`
-//! grandfathers existing `one_enterprises` rows.
+//! grandfathers existing `one_enterprises` rows. Since P3-3 the runner logic
+//! lives in `dream_core_db::run_ledgered_migrations`; this file only carries
+//! the two migration trees (SQLite `migrations/`, MySQL `migrations_mysql/`)
+//! and hands them to the shared runner keyed by the pool's backend.
 
+use dream_core_db::{DbPool, MigrationSet, run_ledgered_migrations};
 use sqlx::SqlitePool;
 
 use crate::error::BillingError;
@@ -41,38 +45,54 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Run all pending one-billing migrations. Idempotent; call once at startup
-/// after the upstream database AND one-enterprise migrations have run.
-pub async fn run_one_billing_migrations(pool: &SqlitePool) -> Result<(), BillingError> {
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS _one_migrations (\
-             name TEXT PRIMARY KEY,\
-             applied_at INTEGER NOT NULL\
-         )",
+const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
+    (
+        "billing_001_init",
+        include_str!("../migrations_mysql/billing_001_init.sql"),
+    ),
+    (
+        "billing_002_model_control",
+        include_str!("../migrations_mysql/billing_002_model_control.sql"),
+    ),
+    (
+        "billing_003_license_activation",
+        include_str!("../migrations_mysql/billing_003_license_activation.sql"),
+    ),
+    (
+        "billing_004_department_budgets",
+        include_str!("../migrations_mysql/billing_004_department_budgets.sql"),
+    ),
+    (
+        "billing_005_media_ledger",
+        include_str!("../migrations_mysql/billing_005_media_ledger.sql"),
+    ),
+    (
+        "billing_006_license_quotas",
+        include_str!("../migrations_mysql/billing_006_license_quotas.sql"),
+    ),
+    (
+        "billing_007_llm_calls",
+        include_str!("../migrations_mysql/billing_007_llm_calls.sql"),
+    ),
+    (
+        "billing_008_usage_channel",
+        include_str!("../migrations_mysql/billing_008_usage_channel.sql"),
+    ),
+];
+
+/// Run all pending one-billing migrations on the pool's backend. Idempotent;
+/// call once at startup after the upstream database AND one-enterprise
+/// migrations have run.
+pub async fn run_one_billing_migrations(pool: &DbPool) -> Result<(), BillingError> {
+    run_ledgered_migrations(
+        pool,
+        "_one_migrations",
+        MigrationSet {
+            sqlite: MIGRATIONS,
+            mysql: MIGRATIONS_MYSQL,
+        },
     )
-    .execute(pool)
     .await?;
-
-    for (name, sql) in MIGRATIONS {
-        let applied: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM _one_migrations WHERE name = ?")
-            .bind(name)
-            .fetch_one(pool)
-            .await?;
-        if applied {
-            continue;
-        }
-
-        let mut tx = pool.begin().await?;
-        sqlx::raw_sql(sql).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO _one_migrations (name, applied_at) VALUES (?, ?)")
-            .bind(name)
-            .bind(dream_core_common::now_ms())
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
-        tracing::info!(migration = name, "one-billing migration applied");
-    }
-
     Ok(())
 }
 
@@ -85,8 +105,12 @@ pub(crate) mod tests {
         let db = dream_core_db::init_database_memory().await.unwrap();
         // one-enterprise tables must exist first (grandfather SELECT).
         one_enterprise_tables(db.pool()).await;
-        run_one_billing_migrations(db.pool()).await.unwrap();
-        run_one_billing_migrations(db.pool()).await.unwrap();
+        run_one_billing_migrations(&DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
+        run_one_billing_migrations(&DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
 
         for table in ["one_enterprise_license", "one_usage_events", "one_llm_calls"] {
             let exists: bool =
@@ -112,5 +136,33 @@ pub(crate) mod tests {
         .execute(pool)
         .await
         .unwrap();
+    }
+
+    /// Requires a real MySQL 8.0.16+ server via `DREAM_TEST_MYSQL_URL`;
+    /// skipped when unset. Seeds a minimal `one_enterprises` (same idiom as
+    /// `one_enterprise_tables` above) so the grandfather SELECT has a source.
+    #[tokio::test]
+    async fn migrations_are_idempotent_mysql() {
+        let Some(db) = dream_core_db::testing::mysql_test_pool().await else {
+            eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
+            return;
+        };
+
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS one_enterprises (id VARCHAR(255) PRIMARY KEY, provider VARCHAR(64) NULL, external_id VARCHAR(255) NULL, display_name VARCHAR(255) NULL, created_at BIGINT NULL, updated_at BIGINT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_as_cs;",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        run_one_billing_migrations(&db.pool).await.unwrap();
+        run_one_billing_migrations(&db.pool).await.unwrap();
+
+        let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _one_migrations WHERE name LIKE 'billing_%'")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(applied, MIGRATIONS_MYSQL.len() as i64);
+
+        db.cleanup().await.unwrap();
     }
 }

@@ -2,9 +2,15 @@
 //!
 //! Same pattern as one-org: our own `_one_devops_migrations` ledger,
 //! fully decoupled from the upstream sqlx migrator so upstream rebases
-//! can never collide with our files.
+//! can never collide with our files. Since P3-3 the runner logic lives in
+//! `dream_core_db::run_ledgered_migrations`; this file only carries the two
+//! migration trees (SQLite `migrations/`, MySQL `migrations_mysql/`) and
+//! hands them to the shared runner keyed by the pool's backend. The
+//! post-migration tenant backfill is the one backend-branching piece: table
+//! existence is probed in `sqlite_master` on SQLite and
+//! `information_schema.tables` on MySQL.
 
-use sqlx::SqlitePool;
+use dream_core_db::{DbBackend, DbPool, MigrationSet, run_ledgered_migrations};
 
 use crate::error::DevopsError;
 
@@ -43,37 +49,79 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("015_market_sync", include_str!("../migrations/015_market_sync.sql")),
 ];
 
-/// Run all pending one-devops migrations. Idempotent; call once at startup
-/// after the upstream database (and its migrator) has been initialized.
-pub async fn run_one_devops_migrations(pool: &SqlitePool) -> Result<(), DevopsError> {
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS _one_devops_migrations (\
-             name TEXT PRIMARY KEY,\
-             applied_at INTEGER NOT NULL\
-         )",
+const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
+    (
+        "001_init",
+        include_str!("../migrations_mysql/001_init.sql"),
+    ),
+    (
+        "002_milestones",
+        include_str!("../migrations_mysql/002_milestones.sql"),
+    ),
+    (
+        "003_rag_pipeline",
+        include_str!("../migrations_mysql/003_rag_pipeline.sql"),
+    ),
+    (
+        "004_autopilot",
+        include_str!("../migrations_mysql/004_autopilot.sql"),
+    ),
+    (
+        "005_test_plans",
+        include_str!("../migrations_mysql/005_test_plans.sql"),
+    ),
+    (
+        "006_pipelines",
+        include_str!("../migrations_mysql/006_pipelines.sql"),
+    ),
+    (
+        "007_skill_auto_active",
+        include_str!("../migrations_mysql/007_skill_auto_active.sql"),
+    ),
+    (
+        "008_mcp_secrets",
+        include_str!("../migrations_mysql/008_mcp_secrets.sql"),
+    ),
+    (
+        "009_resource_visibility",
+        include_str!("../migrations_mysql/009_resource_visibility.sql"),
+    ),
+    (
+        "010_provider_registry",
+        include_str!("../migrations_mysql/010_provider_registry.sql"),
+    ),
+    ("011_dlp", include_str!("../migrations_mysql/011_dlp.sql")),
+    (
+        "012_collaboration_tenant_scope",
+        include_str!("../migrations_mysql/012_collaboration_tenant_scope.sql"),
+    ),
+    (
+        "013_content_origin",
+        include_str!("../migrations_mysql/013_content_origin.sql"),
+    ),
+    (
+        "014_api_assets",
+        include_str!("../migrations_mysql/014_api_assets.sql"),
+    ),
+    (
+        "015_market_sync",
+        include_str!("../migrations_mysql/015_market_sync.sql"),
+    ),
+];
+
+/// Run all pending one-devops migrations on the pool's backend. Idempotent;
+/// call once at startup after the upstream database (and its migrator) has
+/// been initialized.
+pub async fn run_one_devops_migrations(pool: &DbPool) -> Result<(), DevopsError> {
+    run_ledgered_migrations(
+        pool,
+        "_one_devops_migrations",
+        MigrationSet {
+            sqlite: MIGRATIONS,
+            mysql: MIGRATIONS_MYSQL,
+        },
     )
-    .execute(pool)
     .await?;
-
-    for (name, sql) in MIGRATIONS {
-        let applied: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM _one_devops_migrations WHERE name = ?")
-            .bind(name)
-            .fetch_one(pool)
-            .await?;
-        if applied {
-            continue;
-        }
-
-        let mut tx = pool.begin().await?;
-        sqlx::raw_sql(sql).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO _one_devops_migrations (name, applied_at) VALUES (?, ?)")
-            .bind(name)
-            .bind(dream_core_common::now_ms())
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
-        tracing::info!(migration = name, "one-devops migration applied");
-    }
 
     backfill_collaboration_tenant_ids(pool).await?;
 
@@ -90,17 +138,33 @@ pub async fn run_one_devops_migrations(pool: &SqlitePool) -> Result<(), DevopsEr
 /// earlier boot ran before one-org's tables existed.
 ///
 /// `one_user_org` belongs to one-org, not this crate. In the real app
-/// one-org's migrations always run first (see
-/// `dream-app/router/routes.rs`), but this crate's own tests exercise
-/// `run_one_devops_migrations` in isolation against a pool that never has
-/// it — checking existence first, rather than letting the query fail, keeps
-/// that isolation test meaningful instead of forcing it to know about
-/// another crate's schema.
-async fn backfill_collaboration_tenant_ids(pool: &SqlitePool) -> Result<(), DevopsError> {
-    let has_user_org: bool =
-        sqlx::query_scalar("SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = 'one_user_org'")
-            .fetch_one(pool)
+/// one-org's migrations always run first (see the app router), but this
+/// crate's own tests exercise `run_one_devops_migrations` in isolation
+/// against a pool that never has it — checking existence first, rather than
+/// letting the query fail, keeps that isolation test meaningful instead of
+/// forcing it to know about another crate's schema.
+///
+/// The UPDATE statements themselves are `?`-placeholder-free and identical on
+/// both backends; only the existence probe differs.
+async fn backfill_collaboration_tenant_ids(pool: &DbPool) -> Result<(), DevopsError> {
+    let has_user_org = match pool.backend() {
+        DbBackend::Sqlite => {
+            let p = pool.sqlite();
+            let has: bool =
+                sqlx::query_scalar("SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = 'one_user_org'")
+                    .fetch_one(p)
+                    .await?;
+            has
+        }
+        DbBackend::MySql => {
+            let has: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'one_user_org'",
+            )
+            .fetch_one(pool.mysql())
             .await?;
+            has > 0
+        }
+    };
     if !has_user_org {
         return Ok(());
     }
@@ -112,35 +176,37 @@ async fn backfill_collaboration_tenant_ids(pool: &SqlitePool) -> Result<(), Devo
         ("one_test_cases", "creator_id"),
         ("one_pipelines", "creator_id"),
     ] {
-        sqlx::query(&format!(
-            "UPDATE {table} SET tenant_id = ( \
-                 SELECT tenant_id FROM one_user_org WHERE user_id = {table}.{creator_col} LIMIT 1 \
-             ) \
-             WHERE tenant_id = 'default' AND {creator_col} IN (SELECT user_id FROM one_user_org)"
-        ))
-        .execute(pool)
+        pool.execute(
+            &format!(
+                "UPDATE {table} SET tenant_id = ( \
+                     SELECT tenant_id FROM one_user_org WHERE user_id = {table}.{creator_col} LIMIT 1 \
+                 ) \
+                 WHERE tenant_id = 'default' AND {creator_col} IN (SELECT user_id FROM one_user_org)"
+            ),
+            &[],
+        )
         .await?;
     }
 
     // No reliable creator of their own — inherit from the parent, which was
     // just backfilled above.
-    sqlx::query(
+    pool.execute(
         "UPDATE one_requirement_comments SET tenant_id = ( \
              SELECT r.tenant_id FROM one_requirements r WHERE r.id = one_requirement_comments.requirement_id \
          ) \
          WHERE tenant_id = 'default' \
            AND requirement_id IN (SELECT id FROM one_requirements WHERE tenant_id != 'default')",
+        &[],
     )
-    .execute(pool)
     .await?;
-    sqlx::query(
+    pool.execute(
         "UPDATE one_pipeline_runs SET tenant_id = ( \
              SELECT p.tenant_id FROM one_pipelines p WHERE p.id = one_pipeline_runs.pipeline_id \
          ) \
          WHERE tenant_id = 'default' \
            AND pipeline_id IN (SELECT id FROM one_pipelines WHERE tenant_id != 'default')",
+        &[],
     )
-    .execute(pool)
     .await?;
 
     Ok(())
@@ -157,8 +223,8 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        run_one_devops_migrations(&pool).await.unwrap();
-        run_one_devops_migrations(&pool).await.unwrap();
+        run_one_devops_migrations(&DbPool::Sqlite(pool.clone())).await.unwrap();
+        run_one_devops_migrations(&DbPool::Sqlite(pool.clone())).await.unwrap();
 
         let tables: Vec<String> =
             sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'one_%' ORDER BY name")
@@ -208,7 +274,7 @@ mod tests {
             .await
             .unwrap();
 
-        run_one_devops_migrations(&pool).await.unwrap();
+        run_one_devops_migrations(&DbPool::Sqlite(pool.clone())).await.unwrap();
 
         sqlx::query(
             "INSERT INTO one_requirements (id, type, subject, status, priority, creator_id, created_at, updated_at) \
@@ -246,7 +312,9 @@ mod tests {
         .await
         .unwrap();
 
-        backfill_collaboration_tenant_ids(&pool).await.unwrap();
+        backfill_collaboration_tenant_ids(&DbPool::Sqlite(pool.clone()))
+            .await
+            .unwrap();
 
         let req_tenant: String = sqlx::query_scalar("SELECT tenant_id FROM one_requirements WHERE id = 'r1'")
             .fetch_one(&pool)
@@ -269,5 +337,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(run_tenant, "t1");
+    }
+
+    /// Requires a real MySQL 8.0.16+ server via `DREAM_TEST_MYSQL_URL`;
+    /// skipped when unset. Also exercises the MySQL arm of the backfill's
+    /// `information_schema` existence probe (with `one_user_org` absent, the
+    /// backfill must no-op cleanly).
+    #[tokio::test]
+    async fn migrations_are_idempotent_mysql() {
+        let Some(db) = dream_core_db::testing::mysql_test_pool().await else {
+            eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
+            return;
+        };
+
+        run_one_devops_migrations(&db.pool).await.unwrap();
+        run_one_devops_migrations(&db.pool).await.unwrap();
+
+        let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _one_devops_migrations")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(applied, MIGRATIONS_MYSQL.len() as i64);
+
+        // The 5-column ledger key of `one_market_imports` and the case-sensitive
+        // registry lookup, the two most dialect-sensitive spots here.
+        let skills: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_skill_registry")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(skills, 0);
+
+        db.cleanup().await.unwrap();
     }
 }

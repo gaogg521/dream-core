@@ -2646,7 +2646,7 @@ mod tests {
 
     async fn setup() -> (dream_core_db::Database, Arc<OrgService>, Arc<dyn IUserRepository>) {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_migrations(db.pool()).await.unwrap();
+        crate::migrate::run_one_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let user_repo: Arc<dyn IUserRepository> = Arc::new(SqliteUserRepository::new(db.pool().clone()));
         let data_dir = std::env::temp_dir().join(format!("one-org-test-{}", uuid::Uuid::now_v7()));
         let service = Arc::new(OrgService::new(

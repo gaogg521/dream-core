@@ -445,7 +445,7 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        run_one_devops_migrations(&pool).await.unwrap();
+        run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone())).await.unwrap();
         // The visibility predicate reads one-org's tables through the shared
         // pool, same cross-crate precedent the other registries use. Column
         // list copied from the existing service tests so the shapes cannot
@@ -632,7 +632,7 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        run_one_devops_migrations(&pool).await.unwrap();
+        run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone())).await.unwrap();
         sqlx::raw_sql("CREATE TABLE IF NOT EXISTS one_user_org (user_id TEXT, tenant_id TEXT, role TEXT);")
             .execute(&pool)
             .await

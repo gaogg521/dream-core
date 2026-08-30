@@ -1770,7 +1770,7 @@ mod tests {
             .await
             .unwrap();
         crate::migrate::tests::one_enterprise_tables(&pool).await;
-        crate::migrate::run_one_billing_migrations(&pool).await.unwrap();
+        crate::migrate::run_one_billing_migrations(&dream_core_db::DbPool::Sqlite(pool.clone())).await.unwrap();
         BillingService::new(pool, Arc::new(ManualBillingProvider))
     }
 
@@ -1995,7 +1995,7 @@ mod tests {
             .execute(&svc.pool)
             .await
             .unwrap();
-        crate::migrate::run_one_billing_migrations(&svc.pool).await.unwrap();
+        crate::migrate::run_one_billing_migrations(&dream_core_db::DbPool::Sqlite(svc.pool.clone())).await.unwrap();
         // Grandfathered to enterprise: all features on, unlimited seats.
         assert!(svc.entitlement(Some("ent_old"), Feature::AuditLog).await.unwrap());
         let plan = svc.plan("ent_old").await.unwrap();

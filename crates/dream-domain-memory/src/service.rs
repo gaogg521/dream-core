@@ -1130,7 +1130,7 @@ mod tests {
 
     async fn setup() -> (dream_core_db::Database, MemoryService) {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_memory_migrations(db.pool()).await.unwrap();
+        crate::migrate::run_one_memory_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let service = MemoryService::new(db.pool().clone());
         (db, service)
     }
