@@ -44,7 +44,10 @@ impl MySqlDatabase {
 /// Connects to `database_url` and runs the MySQL migrator
 /// (`migrations_mysql/`, independent of the SQLite `migrations/` tree).
 pub async fn init_database_mysql(database_url: &str) -> Result<MySqlDatabase, DbError> {
-    let pool = MySqlPoolOptions::new().max_connections(10).connect(database_url).await?;
+    let pool = MySqlPoolOptions::new()
+        .max_connections(10)
+        .connect(database_url)
+        .await?;
 
     MYSQL_MIGRATOR.run(&pool).await?;
 
