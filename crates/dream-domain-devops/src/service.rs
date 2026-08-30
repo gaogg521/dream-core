@@ -34,6 +34,12 @@ pub struct DevopsService {
     /// must see the same wiring. Set once at assembly, read without locking
     /// afterwards.
     pub(crate) grants: std::sync::OnceLock<std::sync::Arc<dyn crate::grants::ResourceGrantSource>>,
+    /// Config-vault resolver (P1-5 consumption side). Wired once by the app
+    /// router under the `enterprise` feature; unset everywhere else, and then
+    /// `{{config.…}}` tokens in distributed skill content pass through
+    /// verbatim — the pre-vault behaviour. Same `OnceLock`-after-share shape
+    /// as `grants` right above and for the same assembly-order reason.
+    pub(crate) config_resolver: std::sync::OnceLock<std::sync::Arc<dyn crate::config_resolver::ConfigResolver>>,
 }
 
 #[derive(Debug, Default)]
@@ -84,6 +90,7 @@ impl DevopsService {
             pool,
             encryption_key: None,
             grants: std::sync::OnceLock::new(),
+            config_resolver: std::sync::OnceLock::new(),
         }
     }
 
@@ -101,6 +108,24 @@ impl DevopsService {
     pub fn set_grants(&self, grants: std::sync::Arc<dyn crate::grants::ResourceGrantSource>) {
         if self.grants.set(grants).is_err() {
             tracing::warn!("resource-grant source already wired; ignoring the second attempt");
+        }
+    }
+
+    /// Wire the config-vault resolver. Called once by the app router under
+    /// the `enterprise` feature; `&self` so it can run after this service is
+    /// already shared, same as `set_grants`.
+    pub fn set_config_resolver(&self, resolver: std::sync::Arc<dyn crate::config_resolver::ConfigResolver>) {
+        if self.config_resolver.set(resolver).is_err() {
+            tracing::warn!("config resolver already wired; ignoring the second attempt");
+        }
+    }
+
+    /// Expand `{{config.…}}` tokens in distributed skill content for a member.
+    /// No-op (identity) when no resolver is wired.
+    pub(crate) async fn resolve_config(&self, viewer_user_id: &str, content: &str) -> String {
+        match self.config_resolver.get() {
+            Some(resolver) => resolver.resolve(viewer_user_id, content).await,
+            None => content.to_owned(),
         }
     }
 
@@ -936,7 +961,21 @@ impl DevopsService {
         for id in &grant_ids {
             q = q.bind(id);
         }
-        Ok(q.fetch_all(&self.pool).await?)
+        let mut rows = q.fetch_all(&self.pool).await?;
+        // P1-5 consumption side: this branch is the member's team-sync fetch,
+        // whose result is materialised as SKILL.md on their disk. Expand
+        // `{{config.<set>.<key>}}` here so the on-disk skill carries real
+        // values. The privileged branch above is left untouched — an admin
+        // audits references against the literal token and a decrypted
+        // sensitive value must never cross a list endpoint.
+        if self.config_resolver.get().is_some() {
+            for row in &mut rows {
+                if row.content.contains("{{config.") {
+                    row.content = self.resolve_config(viewer_user_id, &row.content).await;
+                }
+            }
+        }
+        Ok(rows)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2391,6 +2430,17 @@ mod tests {
         }
     }
 
+    /// A config resolver that swaps a single fixed token, so the seam can be
+    /// checked without the platform vault.
+    struct FixedResolver;
+
+    #[async_trait::async_trait]
+    impl crate::config_resolver::ConfigResolver for FixedResolver {
+        async fn resolve(&self, _viewer: &str, content: &str) -> String {
+            content.replace("{{config.api.base_url}}", "https://resolved.example.com")
+        }
+    }
+
     /// Make `member1` a real member and `admin1` an admin.
     ///
     /// Without this the viewer has no `one_user_org` row, which
@@ -2494,6 +2544,50 @@ mod tests {
             .await
             .unwrap();
         assert!(updated.category_id.is_none());
+    }
+
+    /// P1-5 consumption side: `{{config.…}}` tokens are expanded for the
+    /// member's registry read (the team-sync fetch) and left verbatim for the
+    /// admin's; with no resolver wired both see the raw token.
+    #[tokio::test]
+    async fn config_tokens_expand_for_the_member_read_only() {
+        let svc = service().await;
+        seed_org(&svc).await;
+        svc.upsert_skill(
+            None,
+            "s1",
+            "d",
+            "hit {{config.api.base_url}}/v1",
+            true,
+            false,
+            "org",
+            None,
+            "all",
+            None,
+            "admin1",
+        )
+        .await
+        .unwrap();
+
+        // No resolver: everyone sees the raw token.
+        assert!(
+            svc.list_skills("member1").await.unwrap()[0]
+                .content
+                .contains("{{config.api.base_url}}")
+        );
+
+        svc.set_config_resolver(std::sync::Arc::new(FixedResolver));
+        // Member (non-privileged) read: expanded.
+        assert_eq!(
+            svc.list_skills("member1").await.unwrap()[0].content,
+            "hit https://resolved.example.com/v1"
+        );
+        // Admin (privileged) read: still the raw token.
+        assert!(
+            svc.list_skills("admin1").await.unwrap()[0]
+                .content
+                .contains("{{config.api.base_url}}")
+        );
     }
 
     /// Seed one skill members can reach and one only admins can.
