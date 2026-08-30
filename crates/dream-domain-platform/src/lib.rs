@@ -28,7 +28,8 @@ pub use migrate::run_one_platform_migrations;
 pub use rbac::RequirePlatformAdmin;
 pub use routes::one_platform_routes;
 pub use service::{
-    ApiKeyAuthOutcome, GRANT_ALL_RESOURCES, GRANT_RESOURCE_TYPES, GRANT_SUBJECT_TYPES, PlatformActor, PlatformService,
+    ApiKeyAuthOutcome, ConfigImportRow, GRANT_ALL_RESOURCES, GRANT_RESOURCE_TYPES, GRANT_SUBJECT_TYPES, PlatformActor,
+    PlatformService,
 };
 pub use siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
 pub use state::OnePlatformRouterState;

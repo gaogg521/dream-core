@@ -23,9 +23,10 @@ use crate::container::{ContainerRuntime, ContainerSettings, ContainerStatus, Noo
 use crate::error::PlatformError;
 use crate::ip_allowlist::ip_allowed;
 use crate::models::{
-    ApiKeyDto, CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto,
+    ApiKeyDto, CollaborationConfigDto, ConfigBulkImportDto, ConfigEntryDto, ConfigSetDto, ConfigSetReference,
+    ConfigSetReferencesDto, ContainerConfigDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto,
     FileVaultReconcileEntry, IpAllowlistConfigDto, MyNotificationDto, MyNotificationsDto, NewApiKeyDto,
-    NotificationDto, PolicyTemplateBindingDto, ResourceGrantDto, SceneDto, SecurityPolicyDto,
+    NotificationDto, PolicyTemplateBindingDto, ResourceGrantDto, SENSITIVE_PLACEHOLDER, SceneDto, SecurityPolicyDto,
     SecurityPolicyTemplateDto, SiemConfigDto,
 };
 use crate::siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
@@ -84,6 +85,18 @@ pub const POLICY_TEMPLATE_SUBJECT_TYPES: [&str; 2] = ["member", "department"];
 pub struct PlatformActor {
     pub tenant_id: String,
     pub role: String,
+}
+
+/// One structured row of a config-vault bulk import. The frontend parses the
+/// CSV/Excel file into these and posts them; the backend never sees the file
+/// itself (see `bulk_import_config_entries`).
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigImportRow {
+    pub key: String,
+    pub value: String,
+    #[serde(default)]
+    pub sensitive: bool,
 }
 
 pub struct PlatformService {
@@ -2705,6 +2718,495 @@ impl PlatformService {
     ) -> Result<Vec<FileVaultObjectDto>, PlatformError> {
         self.list_vault_objects(tenant_id, user_id).await
     }
+
+    // --- Config vault (P1-5 配置项) ---
+
+    /// Create a named configuration set. The name is the alias consumers
+    /// write into `{{config.<name>.<key>}}`, so it must be unique per tenant
+    /// (a duplicate would make the reference syntax ambiguous) and non-empty.
+    pub async fn create_config_set(
+        &self,
+        tenant_id: &str,
+        name: &str,
+        description: &str,
+        created_by: &str,
+    ) -> Result<ConfigSetDto, PlatformError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(PlatformError::BadRequest("config set name must not be empty".into()));
+        }
+        let id = generate_prefixed_id("cfgset");
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO one_config_sets (id, tenant_id, name, description, created_by, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(tenant_id)
+        .bind(name)
+        .bind(description.trim())
+        .bind(created_by)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db) if db.is_unique_violation() => {
+                PlatformError::BadRequest(format!("a config set named '{name}' already exists"))
+            }
+            _ => PlatformError::from(e),
+        })?;
+        self.get_config_set(tenant_id, &id)
+            .await?
+            .ok_or_else(|| PlatformError::Internal("config set vanished immediately after insert".into()))
+    }
+
+    pub async fn list_config_sets(&self, tenant_id: &str) -> Result<Vec<ConfigSetDto>, PlatformError> {
+        let rows: Vec<ConfigSetRow> = sqlx::query_as(
+            "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.updated_at, \
+                    (SELECT COUNT(*) FROM one_config_entries e WHERE e.set_id = s.id) AS entry_count \
+             FROM one_config_sets s WHERE s.tenant_id = ? ORDER BY s.created_at DESC",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            // Reference counting is one extra scan per set; sets are a
+            // handful per tenant, so a loop beats a dynamic-SQL join.
+            let ref_count = self.config_reference_count(&row.1).await?;
+            out.push(ConfigSetDto {
+                id: row.0,
+                name: row.1,
+                description: row.2,
+                created_by: row.3,
+                created_at: row.4,
+                updated_at: row.5,
+                entry_count: row.6,
+                ref_count,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn update_config_set(
+        &self,
+        tenant_id: &str,
+        id: &str,
+        name: &str,
+        description: &str,
+    ) -> Result<ConfigSetDto, PlatformError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(PlatformError::BadRequest("config set name must not be empty".into()));
+        }
+        let result = sqlx::query(
+            "UPDATE one_config_sets SET name = ?, description = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+        )
+        .bind(name)
+        .bind(description.trim())
+        .bind(now_ms())
+        .bind(tenant_id)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db) if db.is_unique_violation() => {
+                PlatformError::BadRequest(format!("a config set named '{name}' already exists"))
+            }
+            _ => PlatformError::from(e),
+        })?;
+        if result.rows_affected() == 0 {
+            return Err(PlatformError::NotFound("config set not found".into()));
+        }
+        self.get_config_set(tenant_id, id)
+            .await?
+            .ok_or_else(|| PlatformError::Internal("config set vanished immediately after update".into()))
+    }
+
+    /// Delete a set and its entries in one transaction. Entries reference the
+    /// set by id, so leaving them behind would dangle — same posture as
+    /// policy-template deletion. Note this does NOT stop a skill body from
+    /// still carrying `{{config.<name>.…}}`; the references endpoint exists
+    /// precisely so an admin can check before deleting.
+    pub async fn delete_config_set(&self, tenant_id: &str, id: &str) -> Result<(), PlatformError> {
+        let mut tx = self.pool.begin().await?;
+        let deleted = sqlx::query("DELETE FROM one_config_sets WHERE tenant_id = ? AND id = ?")
+            .bind(tenant_id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if deleted == 0 {
+            return Err(PlatformError::NotFound("config set not found".into()));
+        }
+        sqlx::query("DELETE FROM one_config_entries WHERE set_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn get_config_set(&self, tenant_id: &str, id: &str) -> Result<Option<ConfigSetDto>, PlatformError> {
+        let row: Option<ConfigSetRow> = sqlx::query_as(
+            "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.updated_at, \
+                    (SELECT COUNT(*) FROM one_config_entries e WHERE e.set_id = s.id) AS entry_count \
+             FROM one_config_sets s WHERE s.tenant_id = ? AND s.id = ?",
+        )
+        .bind(tenant_id)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some(row) => {
+                let ref_count = self.config_reference_count(&row.1).await?;
+                Ok(Some(ConfigSetDto {
+                    id: row.0,
+                    name: row.1,
+                    description: row.2,
+                    created_by: row.3,
+                    created_at: row.4,
+                    updated_at: row.5,
+                    entry_count: row.6,
+                    ref_count,
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Upsert one entry. `value` absent/blank = keep the stored one — the
+    /// same "absent = keep" convention as the container/collaboration/SIEM
+    /// secrets, so flipping the sensitive flag never requires re-pasting a
+    /// credential. A brand-new key, however, requires a value: "keep the old
+    /// one" has nothing to keep.
+    pub async fn put_config_entry(
+        &self,
+        tenant_id: &str,
+        set_id: &str,
+        key: &str,
+        value: Option<&str>,
+        sensitive: bool,
+    ) -> Result<ConfigEntryDto, PlatformError> {
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(PlatformError::BadRequest("config entry key must not be empty".into()));
+        }
+        let exists: bool =
+            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_config_sets WHERE tenant_id = ? AND id = ?")
+                .bind(tenant_id)
+                .bind(set_id)
+                .fetch_one(&self.pool)
+                .await?;
+        if !exists {
+            return Err(PlatformError::NotFound("config set not found".into()));
+        }
+
+        let existing: Option<(String, String, bool)> =
+            sqlx::query_as("SELECT id, value, sensitive FROM one_config_entries WHERE set_id = ? AND key = ?")
+                .bind(set_id)
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?;
+
+        let entry_id;
+        let stored;
+        match existing {
+            Some((id, old_value, old_sensitive)) => {
+                entry_id = id;
+                stored = match value {
+                    // Whitespace-only counts as absent too: a config value of
+                    // "   " is always a paste accident, never data (keys are
+                    // trimmed for the same reason).
+                    Some(v) if !v.trim().is_empty() => Self::entry_storage_value(v, sensitive, &self.encryption_key)?,
+                    // No new value: keep the stored bytes, but if the
+                    // sensitive flag flipped, restamp them (plaintext left
+                    // under `sensitive = 1` would be a fake guarantee, and an
+                    // undecryptable old ciphertext fails loudly instead of
+                    // silently shipping garbage).
+                    _ => Self::entry_restamp_value(&old_value, old_sensitive, sensitive, &self.encryption_key)?,
+                };
+                sqlx::query("UPDATE one_config_entries SET value = ?, sensitive = ? WHERE id = ?")
+                    .bind(&stored)
+                    .bind(sensitive)
+                    .bind(&entry_id)
+                    .execute(&self.pool)
+                    .await?;
+            }
+            None => {
+                let Some(v) = value.filter(|v| !v.trim().is_empty()) else {
+                    return Err(PlatformError::BadRequest("a new config entry requires a value".into()));
+                };
+                entry_id = generate_prefixed_id("cfge");
+                stored = Self::entry_storage_value(v, sensitive, &self.encryption_key)?;
+                sqlx::query(
+                    "INSERT INTO one_config_entries (id, tenant_id, set_id, key, value, sensitive) \
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                )
+                .bind(&entry_id)
+                .bind(tenant_id)
+                .bind(set_id)
+                .bind(key)
+                .bind(&stored)
+                .bind(sensitive)
+                .execute(&self.pool)
+                .await?;
+            }
+        }
+
+        Ok(ConfigEntryDto {
+            id: entry_id,
+            set_id: set_id.to_owned(),
+            key: key.to_owned(),
+            // Redaction happens here and nowhere else: a sensitive entry's
+            // plaintext never crosses a DTO, in any list or single read.
+            value: if sensitive {
+                SENSITIVE_PLACEHOLDER.to_owned()
+            } else {
+                stored
+            },
+            sensitive,
+            has_value: true,
+        })
+    }
+
+    /// Bytes to store for an entry value: plaintext unless sensitive, in
+    /// which case the same `encrypt_string` helper as the container
+    /// registry_secret.
+    fn entry_storage_value(value: &str, sensitive: bool, key: &[u8; 32]) -> Result<String, PlatformError> {
+        if sensitive {
+            encrypt_string(value, key).map_err(|e| PlatformError::Internal(e.to_string()))
+        } else {
+            Ok(value.to_owned())
+        }
+    }
+
+    /// Re-derive the stored bytes when only the sensitive flag changed.
+    fn entry_restamp_value(
+        stored: &str,
+        old_sensitive: bool,
+        new_sensitive: bool,
+        key: &[u8; 32],
+    ) -> Result<String, PlatformError> {
+        match (old_sensitive, new_sensitive) {
+            (false, true) => Self::entry_storage_value(stored, true, key),
+            (true, false) => decrypt_string(stored, key)
+                .map_err(|e| PlatformError::Internal(format!("stored sensitive value cannot be decrypted: {e}"))),
+            _ => Ok(stored.to_owned()),
+        }
+    }
+
+    /// Every entry of one set, redacted. A sensitive entry carries
+    /// `"<sensitive>"` in `value` and `hasValue: true` — the key and the
+    /// presence are all any admin UI needs; the plaintext stays decryptable
+    /// only for future runtime consumers, never for a list endpoint.
+    pub async fn list_config_entries(
+        &self,
+        tenant_id: &str,
+        set_id: &str,
+    ) -> Result<Vec<ConfigEntryDto>, PlatformError> {
+        let exists: bool =
+            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_config_sets WHERE tenant_id = ? AND id = ?")
+                .bind(tenant_id)
+                .bind(set_id)
+                .fetch_one(&self.pool)
+                .await?;
+        if !exists {
+            return Err(PlatformError::NotFound("config set not found".into()));
+        }
+        let rows: Vec<(String, String, String, String, bool)> = sqlx::query_as(
+            "SELECT id, set_id, key, value, sensitive FROM one_config_entries WHERE set_id = ? ORDER BY key ASC",
+        )
+        .bind(set_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, set_id, key, value, sensitive)| ConfigEntryDto {
+                value: if sensitive {
+                    SENSITIVE_PLACEHOLDER.to_owned()
+                } else {
+                    value
+                },
+                id,
+                set_id,
+                key,
+                sensitive,
+                has_value: true,
+            })
+            .collect())
+    }
+
+    /// Delete one entry by id. `NotFound` if it does not exist or belongs to
+    /// another tenant — the tenant filter is load-bearing, same as
+    /// `revoke_resource`.
+    pub async fn delete_config_entry(&self, tenant_id: &str, entry_id: &str) -> Result<(), PlatformError> {
+        let deleted = sqlx::query("DELETE FROM one_config_entries WHERE tenant_id = ? AND id = ?")
+            .bind(tenant_id)
+            .bind(entry_id)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        if deleted == 0 {
+            return Err(PlatformError::NotFound("config entry not found".into()));
+        }
+        Ok(())
+    }
+
+    /// Bulk import (P1-5 "Excel 批量迁移"). CSV/Excel parsing stays in the
+    /// frontend — the browser already reads the file and knows the sheet
+    /// shape, and shipping a spreadsheet parser into the backend would buy
+    /// nothing but binary deps; this endpoint only accepts structured rows.
+    ///
+    /// `merge = false` refuses a set that already has entries (a full
+    /// replace must never silently half-apply); `merge = true` upserts, so
+    /// re-importing an exported sheet is idempotent. Within the batch, a
+    /// later row with the same key overwrites the earlier one — "last row
+    /// wins" is what a spreadsheet user expects — and both the superseded
+    /// duplicates and empty-key rows count as `skipped`.
+    pub async fn bulk_import_config_entries(
+        &self,
+        tenant_id: &str,
+        set_id: &str,
+        rows: &[ConfigImportRow],
+        merge: bool,
+    ) -> Result<ConfigBulkImportDto, PlatformError> {
+        let exists: bool =
+            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_config_sets WHERE tenant_id = ? AND id = ?")
+                .bind(tenant_id)
+                .bind(set_id)
+                .fetch_one(&self.pool)
+                .await?;
+        if !exists {
+            return Err(PlatformError::NotFound("config set not found".into()));
+        }
+        if !merge {
+            let has_entries: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_config_entries WHERE set_id = ?")
+                .bind(set_id)
+                .fetch_one(&self.pool)
+                .await?;
+            if has_entries {
+                return Err(PlatformError::BadRequest(
+                    "config set already has entries; pass merge=true to merge into it".into(),
+                ));
+            }
+        }
+
+        // Dedupe in-batch, last row wins.
+        let mut deduped: std::collections::HashMap<String, (String, bool)> = std::collections::HashMap::new();
+        let mut skipped: i64 = 0;
+        for row in rows {
+            let key = row.key.trim();
+            if key.is_empty()
+                || deduped
+                    .insert(key.to_owned(), (row.value.clone(), row.sensitive))
+                    .is_some()
+            {
+                skipped += 1;
+            }
+        }
+
+        let mut tx = self.pool.begin().await?;
+        for (key, (value, sensitive)) in &deduped {
+            let stored = Self::entry_storage_value(value, *sensitive, &self.encryption_key)?;
+            sqlx::query(
+                "INSERT INTO one_config_entries (id, tenant_id, set_id, key, value, sensitive) \
+                 VALUES (?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(set_id, key) DO UPDATE SET value = excluded.value, sensitive = excluded.sensitive",
+            )
+            .bind(generate_prefixed_id("cfge"))
+            .bind(tenant_id)
+            .bind(set_id)
+            .bind(key)
+            .bind(&stored)
+            .bind(sensitive)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(ConfigBulkImportDto {
+            imported: deduped.len() as i64,
+            skipped,
+        })
+    }
+
+    /// Who consumes this set: the skills whose body embeds a
+    /// `{{config.<set-alias>.<key>}}` reference. The count an admin checks
+    /// before deleting or renaming a set.
+    ///
+    /// Boundary (deliberate, same-SQLite-pool precedent): this queries
+    /// devops' `one_skill_registry` directly instead of going through a
+    /// devops service — one-platform reads `one_user_org` the same way in
+    /// `resolve_actor`, and a cross-crate join API would invert the
+    /// dependency for one LIKE scan. Consequences, kept honest:
+    ///
+    /// - `one_skill_registry` has no `tenant_id` column, so the scan is
+    ///   tenant-agnostic; a set name match counts references from any
+    ///   tenant's skills in the shared database.
+    /// - Only skill bodies are scanned. `one_mcp_registry` has no content
+    ///   column (its fields are endpoint/`secrets_json`, not prose), so MCP
+    ///   tools cannot embed references today; when they can, this query
+    ///   must grow the second table.
+    /// - `one_skill_registry`'s column set is devops' business — a devops
+    ///   migration that renames `content` breaks this query, and this crate
+    ///   must follow. A missing table (devops never initialized) reads as
+    ///   "no references", not an error.
+    pub async fn config_set_references(
+        &self,
+        tenant_id: &str,
+        set_id: &str,
+    ) -> Result<ConfigSetReferencesDto, PlatformError> {
+        let set = self
+            .get_config_set(tenant_id, set_id)
+            .await?
+            .ok_or_else(|| PlatformError::NotFound("config set not found".into()))?;
+
+        // INSTR, not LIKE: the alias is user-chosen and may contain `%`/`_`,
+        // which LIKE would treat as wildcards; a plain substring search has
+        // no escaping problem to get wrong.
+        let needle = format!("{{{{config.{}.", set.name);
+        let result = sqlx::query_as::<_, (String, String)>(
+            "SELECT id, name FROM one_skill_registry WHERE INSTR(content, ?) > 0 ORDER BY name ASC",
+        )
+        .bind(&needle)
+        .fetch_all(&self.pool)
+        .await;
+        let references = match result {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|(skill_id, skill_name)| ConfigSetReference { skill_id, skill_name })
+                .collect(),
+            // Table missing = one-devops never initialized = nothing can
+            // reference the set yet.
+            Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => Vec::new(),
+            Err(e) => return Err(e.into()),
+        };
+        let count = references.len() as i64;
+        Ok(ConfigSetReferencesDto {
+            set_id: set.id,
+            set_name: set.name,
+            count,
+            references,
+        })
+    }
+
+    /// Row count of skills embedding a reference to the named set — the
+    /// `ref_count` shown in the set list. Same boundaries as
+    /// [`Self::config_set_references`].
+    async fn config_reference_count(&self, set_name: &str) -> Result<i64, PlatformError> {
+        let needle = format!("{{{{config.{}.", set_name);
+        let result =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM one_skill_registry WHERE INSTR(content, ?) > 0")
+                .bind(&needle)
+                .fetch_one(&self.pool)
+                .await;
+        match result {
+            Ok(count) => Ok(count),
+            Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => Ok(0),
+            Err(e) => Err(e.into()),
+        }
+    }
 }
 
 /// Keep only the final path component of an uploaded file name and strip
@@ -2787,6 +3289,10 @@ type PolicyTemplateRow = (
 );
 
 type SceneRow = (String, String, String, Option<String>, String, bool, i64, i64);
+
+/// one_config_sets row + aggregate: id, name, description, created_by,
+/// created_at, updated_at, entry_count.
+type ConfigSetRow = (String, String, String, String, i64, i64, i64);
 
 #[cfg(test)]
 mod tests {
@@ -4620,6 +5126,490 @@ mod tests {
         assert_eq!(
             service
                 .delete_vault_object("t1", "alice", &stored.id)
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND"
+        );
+    }
+
+    // --- P1-5 config vault (配置项) ---
+
+    #[tokio::test]
+    async fn config_set_crud_and_unique_name() {
+        let (_db, service) = setup().await;
+        let set = service
+            .create_config_set("t1", "api-gateway", "shared API config", "admin1")
+            .await
+            .unwrap();
+        assert_eq!(set.name, "api-gateway");
+        assert_eq!(set.entry_count, 0);
+        assert_eq!(set.ref_count, 0);
+
+        // A duplicate alias would make `{{config.<name>.…}}` ambiguous.
+        assert_eq!(
+            service
+                .create_config_set("t1", "api-gateway", "", "admin1")
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+        // Same alias in another tenant is fine — uniqueness is per tenant.
+        service
+            .create_config_set("t2", "api-gateway", "", "admin2")
+            .await
+            .unwrap();
+        // Whitespace-only names are empty names.
+        assert_eq!(
+            service
+                .create_config_set("t1", "   ", "", "admin1")
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+
+        let updated = service
+            .update_config_set("t1", &set.id, "api-gw", "renamed")
+            .await
+            .unwrap();
+        assert_eq!(updated.name, "api-gw");
+
+        let listed = service.list_config_sets("t1").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].description, "renamed");
+
+        service.delete_config_set("t1", &set.id).await.unwrap();
+        assert!(service.list_config_sets("t1").await.unwrap().is_empty());
+        // Deleting it again is a NotFound.
+        assert_eq!(
+            service.delete_config_set("t1", &set.id).await.unwrap_err().code(),
+            "NOT_FOUND"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_entry_put_upserts_and_keeps_value_when_absent() {
+        let (_db, service) = setup().await;
+        let set = service.create_config_set("t1", "api", "", "admin1").await.unwrap();
+
+        // New key without a value is a caller bug, not an empty entry.
+        assert_eq!(
+            service
+                .put_config_entry("t1", &set.id, "base_url", None, false)
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+
+        let created = service
+            .put_config_entry("t1", &set.id, "base_url", Some("https://api.acme.com"), false)
+            .await
+            .unwrap();
+        assert_eq!(created.value, "https://api.acme.com");
+        assert!(created.has_value && !created.sensitive);
+
+        // Same key with a value overwrites; without one it keeps the old.
+        let overwritten = service
+            .put_config_entry("t1", &set.id, "base_url", Some("https://api2.acme.com"), false)
+            .await
+            .unwrap();
+        assert_eq!(overwritten.value, "https://api2.acme.com");
+        let kept = service
+            .put_config_entry("t1", &set.id, "base_url", None, false)
+            .await
+            .unwrap();
+        assert_eq!(kept.value, "https://api2.acme.com");
+        assert_eq!(service.list_config_entries("t1", &set.id).await.unwrap().len(), 1);
+
+        // Empty string counts as "absent" (same convention as the other
+        // secrets in this crate); keys are trimmed on the way in.
+        let kept_again = service
+            .put_config_entry("t1", &set.id, "  base_url  ", Some("   "), false)
+            .await
+            .unwrap();
+        assert_eq!(kept_again.value, "https://api2.acme.com");
+        assert_eq!(kept_again.key, "base_url");
+    }
+
+    #[tokio::test]
+    async fn sensitive_entry_is_encrypted_at_rest_and_never_in_dtos() {
+        let (db, service) = setup().await;
+        let set = service.create_config_set("t1", "llm", "", "admin1").await.unwrap();
+
+        let entry = service
+            .put_config_entry("t1", &set.id, "api_key", Some("sk-super-secret-123"), true)
+            .await
+            .unwrap();
+        assert_eq!(entry.value, SENSITIVE_PLACEHOLDER);
+        assert!(entry.sensitive && entry.has_value);
+        // The serialized DTO must not leak the plaintext (or anything shaped
+        // like it) — same redaction assertion as the container secret test.
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(!json.contains("sk-super-secret-123"));
+
+        // The database row is ciphertext, decryptable only with the key.
+        let stored: (String, i64) = sqlx::query_as("SELECT value, sensitive FROM one_config_entries WHERE set_id = ?")
+            .bind(&set.id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(stored.1, 1);
+        assert_ne!(stored.0, "sk-super-secret-123");
+        assert_eq!(
+            dream_core_common::decrypt_string(&stored.0, &[7u8; 32]).unwrap(),
+            "sk-super-secret-123"
+        );
+
+        // Lists are redacted the same way.
+        let listed = service.list_config_entries("t1", &set.id).await.unwrap();
+        assert_eq!(listed[0].value, SENSITIVE_PLACEHOLDER);
+
+        // Updating without a value keeps the stored ciphertext (still
+        // decryptable), and the read surface still shows no plaintext.
+        let kept = service
+            .put_config_entry("t1", &set.id, "api_key", None, true)
+            .await
+            .unwrap();
+        assert_eq!(kept.value, SENSITIVE_PLACEHOLDER);
+        assert!(!serde_json::to_string(&kept).unwrap().contains("sk-super-secret-123"));
+
+        // A non-sensitive entry stays plaintext for the export path.
+        let plain = service
+            .put_config_entry("t1", &set.id, "base_url", Some("https://x.acme.com"), false)
+            .await
+            .unwrap();
+        assert_eq!(plain.value, "https://x.acme.com");
+    }
+
+    /// Flipping the sensitive flag must not leave plaintext behind under
+    /// `sensitive = 1` (fake guarantee) nor ciphertext under `sensitive = 0`
+    /// (unreadable by the export path).
+    #[tokio::test]
+    async fn entry_sensitive_flag_flip_restamps_the_stored_value() {
+        let (db, service) = setup().await;
+        let set = service.create_config_set("t1", "conn", "", "admin1").await.unwrap();
+        service
+            .put_config_entry("t1", &set.id, "dsn", Some("postgres://u:p@h/db"), false)
+            .await
+            .unwrap();
+
+        // Now sensitive: the previously plaintext value is re-encrypted.
+        service
+            .put_config_entry("t1", &set.id, "dsn", None, true)
+            .await
+            .unwrap();
+        let (stored, sensitive): (String, i64) =
+            sqlx::query_as("SELECT value, sensitive FROM one_config_entries WHERE set_id = ?")
+                .bind(&set.id)
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(sensitive, 1);
+        assert_ne!(stored, "postgres://u:p@h/db");
+
+        // Back to non-sensitive: stored as plaintext again.
+        let unmarked = service
+            .put_config_entry("t1", &set.id, "dsn", None, false)
+            .await
+            .unwrap();
+        assert_eq!(unmarked.value, "postgres://u:p@h/db");
+        let (stored_again,): (String,) = sqlx::query_as("SELECT value FROM one_config_entries WHERE set_id = ?")
+            .bind(&set.id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(stored_again, "postgres://u:p@h/db");
+    }
+
+    #[tokio::test]
+    async fn config_sets_and_entries_are_scoped_per_tenant() {
+        let (_db, service) = setup().await;
+        let set = service.create_config_set("t1", "api", "", "admin1").await.unwrap();
+
+        // Another tenant's admin cannot read, update, delete, or fill it.
+        assert_eq!(
+            service.list_config_entries("t2", &set.id).await.unwrap_err().code(),
+            "NOT_FOUND"
+        );
+        assert_eq!(
+            service
+                .put_config_entry("t2", &set.id, "k", Some("v"), false)
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND"
+        );
+        assert_eq!(
+            service
+                .update_config_set("t2", &set.id, "hijacked", "")
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND"
+        );
+        assert_eq!(
+            service.delete_config_set("t2", &set.id).await.unwrap_err().code(),
+            "NOT_FOUND"
+        );
+        assert_eq!(
+            service.config_set_references("t2", &set.id).await.unwrap_err().code(),
+            "NOT_FOUND"
+        );
+
+        // Entry deletion is tenant-checked too.
+        let entry = service
+            .put_config_entry("t1", &set.id, "k", Some("v"), false)
+            .await
+            .unwrap();
+        assert_eq!(
+            service.delete_config_entry("t2", &entry.id).await.unwrap_err().code(),
+            "NOT_FOUND"
+        );
+        service.delete_config_entry("t1", &entry.id).await.unwrap();
+        assert_eq!(
+            service.delete_config_entry("t1", &entry.id).await.unwrap_err().code(),
+            "NOT_FOUND"
+        );
+    }
+
+    #[tokio::test]
+    async fn bulk_import_replace_mode_refuses_a_set_that_already_has_entries() {
+        let (_db, service) = setup().await;
+        let set = service.create_config_set("t1", "api", "", "admin1").await.unwrap();
+
+        // Fresh set: replace mode works.
+        let first = service
+            .bulk_import_config_entries(
+                "t1",
+                &set.id,
+                &[
+                    ConfigImportRow {
+                        key: "base_url".into(),
+                        value: "https://a".into(),
+                        sensitive: false,
+                    },
+                    ConfigImportRow {
+                        key: "token".into(),
+                        value: "t0k3n".into(),
+                        sensitive: true,
+                    },
+                ],
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!((first.imported, first.skipped), (2, 0));
+
+        // Now replace mode must refuse — a silent half-apply would corrupt
+        // the set the admin believes they fully replaced.
+        assert_eq!(
+            service
+                .bulk_import_config_entries(
+                    "t1",
+                    &set.id,
+                    &[ConfigImportRow {
+                        key: "x".into(),
+                        value: "1".into(),
+                        sensitive: false
+                    }],
+                    false
+                )
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+    }
+
+    #[tokio::test]
+    async fn bulk_import_merge_upserts_and_counts_skipped_rows() {
+        let (_db, service) = setup().await;
+        let set = service.create_config_set("t1", "api", "", "admin1").await.unwrap();
+        service
+            .put_config_entry("t1", &set.id, "base_url", Some("https://old"), false)
+            .await
+            .unwrap();
+
+        let result = service
+            .bulk_import_config_entries(
+                "t1",
+                &set.id,
+                &[
+                    ConfigImportRow {
+                        key: "base_url".into(),
+                        value: "https://new".into(),
+                        sensitive: false,
+                    },
+                    ConfigImportRow {
+                        key: "retry".into(),
+                        value: "3".into(),
+                        sensitive: false,
+                    },
+                    // In-batch duplicate: the later row wins, the earlier is skipped.
+                    ConfigImportRow {
+                        key: "retry".into(),
+                        value: "5".into(),
+                        sensitive: false,
+                    },
+                    // Empty key: skipped.
+                    ConfigImportRow {
+                        key: "   ".into(),
+                        value: "junk".into(),
+                        sensitive: false,
+                    },
+                ],
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!((result.imported, result.skipped), (2, 2));
+
+        let entries = service.list_config_entries("t1", &set.id).await.unwrap();
+        assert_eq!(entries.len(), 2);
+        let base_url = entries.iter().find(|e| e.key == "base_url").unwrap();
+        assert_eq!(base_url.value, "https://new");
+        let retry = entries.iter().find(|e| e.key == "retry").unwrap();
+        assert_eq!(retry.value, "5", "the later duplicate row must win");
+    }
+
+    /// The reference scan reads devops' `one_skill_registry.content`, which
+    /// the test seeds with the table's minimal column set (only what the
+    /// scan queries: id, name, content — see the method's boundary notes).
+    async fn seed_skill_registry(pool: &SqlitePool, rows: &[(&str, &str, &str)]) {
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS one_skill_registry (\
+                 id TEXT PRIMARY KEY NOT NULL,\
+                 name TEXT NOT NULL,\
+                 content TEXT NOT NULL DEFAULT '');",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        for (id, name, content) in rows {
+            sqlx::query("INSERT INTO one_skill_registry (id, name, content) VALUES (?, ?, ?)")
+                .bind(id)
+                .bind(name)
+                .bind(content)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn config_references_count_skills_embedding_the_alias() {
+        let (db, service) = setup().await;
+        let set = service.create_config_set("t1", "api", "", "admin1").await.unwrap();
+        seed_skill_registry(
+            db.pool(),
+            &[
+                (
+                    "s1",
+                    "Referrer",
+                    "call {{config.api.base_url}} with {{config.api.token}}",
+                ),
+                ("s2", "Other", "uses {{config.other.key}} instead"),
+                ("s3", "NoRef", "plain text body"),
+            ],
+        )
+        .await;
+
+        let refs = service.config_set_references("t1", &set.id).await.unwrap();
+        // One row per referencing skill (s1 references two keys of the set
+        // and still counts once).
+        assert_eq!(refs.count, 1);
+        assert_eq!(refs.references.len(), 1);
+        assert_eq!(refs.references[0].skill_id, "s1");
+        assert_eq!(refs.set_name, "api");
+
+        // The set list's ref_count agrees, and a differently-aliased set
+        // with the same key names is not confused with it.
+        let other = service.create_config_set("t1", "other", "", "admin1").await.unwrap();
+        let listed = service.list_config_sets("t1").await.unwrap();
+        let api = listed.iter().find(|s| s.id == set.id).unwrap();
+        let other_dto = listed.iter().find(|s| s.id == other.id).unwrap();
+        assert_eq!(api.ref_count, 1);
+        assert_eq!(other_dto.ref_count, 1);
+
+        // Renaming the alias orphans old references — counted as zero, which
+        // is exactly what the admin must see before deleting the old name.
+        service.update_config_set("t1", &set.id, "api-v2", "").await.unwrap();
+        assert_eq!(service.config_set_references("t1", &set.id).await.unwrap().count, 0);
+    }
+
+    /// A standalone database where one-devops was never initialized: the
+    /// reference scan reads as "no references" instead of erroring.
+    #[tokio::test]
+    async fn config_references_read_zero_without_devops_tables() {
+        let (_db, service) = setup().await;
+        let set = service.create_config_set("t1", "api", "", "admin1").await.unwrap();
+        let refs = service.config_set_references("t1", &set.id).await.unwrap();
+        assert_eq!(refs.count, 0);
+        assert!(refs.references.is_empty());
+        assert_eq!(service.list_config_sets("t1").await.unwrap()[0].ref_count, 0);
+    }
+
+    #[tokio::test]
+    async fn delete_config_set_cascades_entries() {
+        let (db, service) = setup().await;
+        let set = service.create_config_set("t1", "api", "", "admin1").await.unwrap();
+        let a = service
+            .put_config_entry("t1", &set.id, "a", Some("1"), false)
+            .await
+            .unwrap();
+        service
+            .put_config_entry("t1", &set.id, "b", Some("2"), true)
+            .await
+            .unwrap();
+
+        service.delete_config_set("t1", &set.id).await.unwrap();
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_config_entries WHERE set_id = ?")
+            .bind(&set.id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(remaining, 0, "entries must not dangle after their set is deleted");
+        // And the entry ids themselves are gone — deleting a stale one is NotFound.
+        assert_eq!(
+            service.delete_config_entry("t1", &a.id).await.unwrap_err().code(),
+            "NOT_FOUND"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_entries_require_an_existing_set() {
+        let (_db, service) = setup().await;
+        assert_eq!(
+            service
+                .put_config_entry("t1", "no-such-set", "k", Some("v"), false)
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND"
+        );
+        assert_eq!(
+            service
+                .list_config_entries("t1", "no-such-set")
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND"
+        );
+        assert_eq!(
+            service
+                .bulk_import_config_entries(
+                    "t1",
+                    "no-such-set",
+                    &[ConfigImportRow {
+                        key: "k".into(),
+                        value: "v".into(),
+                        sensitive: false
+                    }],
+                    true
+                )
                 .await
                 .unwrap_err()
                 .code(),

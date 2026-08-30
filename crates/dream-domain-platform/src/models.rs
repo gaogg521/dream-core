@@ -278,3 +278,76 @@ pub struct FileVaultReconcileEntry {
     /// Ledger rows whose on-disk size differs from `size_bytes`.
     pub size_mismatches: Vec<String>,
 }
+
+/// What a DTO carries instead of a sensitive value. The backend substitutes
+/// this placeholder into the redacted `value` field, so a frontend exporting
+/// the list to CSV needs no special-casing — sensitive cells are already
+/// unreadable placeholders.
+pub const SENSITIVE_PLACEHOLDER: &str = "<sensitive>";
+
+/// One named configuration set (P1-5 config vault) — the alias consumers
+/// write into `{{config.<name>.<key>}}`. `entry_count` is an aggregate for
+/// the admin list; `ref_count` is the runtime-computed number of skill
+/// bodies embedding a reference to this set (see
+/// `PlatformService::config_set_references` for how it is derived and its
+/// boundaries) — never stored.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigSetDto {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub entry_count: i64,
+    pub ref_count: i64,
+}
+
+/// One key/value entry of a config set, as every read surface returns it.
+/// A sensitive entry's `value` is [`SENSITIVE_PLACEHOLDER`] — the plaintext
+/// is encrypted at rest and never crosses a DTO; `has_value` exists so the
+/// UI can distinguish "a value is stored but hidden" from "no value yet"
+/// even though entries are currently always non-empty.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigEntryDto {
+    pub id: String,
+    pub set_id: String,
+    pub key: String,
+    pub value: String,
+    pub sensitive: bool,
+    pub has_value: bool,
+}
+
+/// One consumer found embedding `{{config.<set-alias>.<key>}}` in its body.
+/// Today the only scanned surface is devops' `one_skill_registry.content`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigSetReference {
+    /// The referencing skill's registry id (usable as a devops deep link).
+    pub skill_id: String,
+    pub skill_name: String,
+}
+
+/// The reference report for one config set: who consumes it and how many
+/// references exist — the number an admin checks before deleting a set.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigSetReferencesDto {
+    pub set_id: String,
+    pub set_name: String,
+    pub count: i64,
+    pub references: Vec<ConfigSetReference>,
+}
+
+/// Result of a bulk import (P1-5 "Excel 批量迁移"): `imported` is the number
+/// of entries actually upserted (distinct keys), `skipped` the number of
+/// input rows dropped — in-batch duplicates superseded by a later row with
+/// the same key, and rows with an empty key.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigBulkImportDto {
+    pub imported: i64,
+    pub skipped: i64,
+}

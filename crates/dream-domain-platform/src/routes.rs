@@ -40,11 +40,13 @@ use crate::collaboration::CollaborationStatus;
 use crate::container::ContainerStatus;
 use crate::error::PlatformError;
 use crate::models::{
-    ApiKeyDto, CollaborationConfigDto, ContainerConfigDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto,
-    FileVaultReconcileEntry, IpAllowlistConfigDto, MyNotificationsDto, NewApiKeyDto, NotificationDto,
-    PolicyTemplateBindingDto, ResourceGrantDto, SceneDto, SecurityPolicyDto, SecurityPolicyTemplateDto, SiemConfigDto,
+    ApiKeyDto, CollaborationConfigDto, ConfigBulkImportDto, ConfigEntryDto, ConfigSetDto, ConfigSetReferencesDto,
+    ContainerConfigDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto, FileVaultReconcileEntry,
+    IpAllowlistConfigDto, MyNotificationsDto, NewApiKeyDto, NotificationDto, PolicyTemplateBindingDto,
+    ResourceGrantDto, SceneDto, SecurityPolicyDto, SecurityPolicyTemplateDto, SiemConfigDto,
 };
 use crate::rbac::{RequirePlatformAdmin, RequirePlatformMember};
+use crate::service::ConfigImportRow;
 use crate::siem::SiemStatus;
 use crate::state::OnePlatformRouterState;
 
@@ -169,6 +171,34 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
         .route(
             "/api/one/admin/platform/file-vault/{user_id}/objects",
             get(admin_list_file_vault_objects),
+        )
+        // P1-5 config vault (配置项) — named configuration sets + key/value
+        // entries that skills/tools reference via `{{config.<alias>.<key>}}`.
+        // Sensitive entries are encrypted at rest and every read here returns
+        // a "<sensitive>" placeholder, never the plaintext. All admin-only.
+        .route(
+            "/api/one/admin/platform/config-sets",
+            get(list_config_sets).post(create_config_set),
+        )
+        .route(
+            "/api/one/admin/platform/config-sets/{id}",
+            axum::routing::put(update_config_set).delete(delete_config_set),
+        )
+        .route(
+            "/api/one/admin/platform/config-sets/{id}/entries",
+            get(list_config_entries).post(put_config_entry),
+        )
+        .route(
+            "/api/one/admin/platform/config-entries/{entryId}",
+            delete(delete_config_entry),
+        )
+        .route(
+            "/api/one/admin/platform/config-sets/{id}/bulk-import",
+            post(bulk_import_config_entries),
+        )
+        .route(
+            "/api/one/admin/platform/config-sets/{id}/references",
+            get(config_set_references),
         )
         .with_state(state)
 }
@@ -1132,4 +1162,141 @@ async fn admin_list_file_vault_objects(
             .admin_list_vault_objects(&actor.tenant_id, &user_id)
             .await?,
     )))
+}
+
+// --- P1-5 config vault (配置项) ---
+
+async fn list_config_sets(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<Vec<ConfigSetDto>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_config_sets(&actor.tenant_id).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigSetBody {
+    name: String,
+    #[serde(default)]
+    description: String,
+}
+
+async fn create_config_set(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<ConfigSetBody>,
+) -> Result<Json<ApiResponse<ConfigSetDto>>, PlatformError> {
+    let dto = state
+        .service
+        .create_config_set(&actor.tenant_id, &body.name, &body.description, &user.id)
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn update_config_set(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+    Json(body): Json<ConfigSetBody>,
+) -> Result<Json<ApiResponse<ConfigSetDto>>, PlatformError> {
+    let dto = state
+        .service
+        .update_config_set(&actor.tenant_id, &id, &body.name, &body.description)
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn delete_config_set(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, PlatformError> {
+    state.service.delete_config_set(&actor.tenant_id, &id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn list_config_entries(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<ConfigEntryDto>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_config_entries(&actor.tenant_id, &id).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PutConfigEntryBody {
+    key: String,
+    /// Absent/empty = keep the stored value (same convention as the
+    /// container/collaboration/SIEM secrets) — lets an admin flip the
+    /// sensitive flag without re-pasting a credential.
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default)]
+    sensitive: bool,
+}
+
+async fn put_config_entry(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+    Json(body): Json<PutConfigEntryBody>,
+) -> Result<Json<ApiResponse<ConfigEntryDto>>, PlatformError> {
+    let dto = state
+        .service
+        .put_config_entry(&actor.tenant_id, &id, &body.key, body.value.as_deref(), body.sensitive)
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn delete_config_entry(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(entry_id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, PlatformError> {
+    state.service.delete_config_entry(&actor.tenant_id, &entry_id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+/// Bulk import (P1-5 "Excel 批量迁移"). The frontend parses the CSV/Excel
+/// file into rows (it already reads the file in the browser; the backend
+/// stays free of spreadsheet-parsing deps) and posts the structured rows
+/// here.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BulkImportConfigBody {
+    #[serde(default)]
+    rows: Vec<ConfigImportRow>,
+    #[serde(default)]
+    merge: bool,
+}
+
+async fn bulk_import_config_entries(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+    Json(body): Json<BulkImportConfigBody>,
+) -> Result<Json<ApiResponse<ConfigBulkImportDto>>, PlatformError> {
+    let dto = state
+        .service
+        .bulk_import_config_entries(&actor.tenant_id, &id, &body.rows, body.merge)
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+/// The reference report for one set: which skills embed
+/// `{{config.<alias>.<key>}}` and how many — the number to check before
+/// deleting or renaming a set.
+async fn config_set_references(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<ConfigSetReferencesDto>>, PlatformError> {
+    let dto = state.service.config_set_references(&actor.tenant_id, &id).await?;
+    Ok(Json(ApiResponse::ok(dto)))
 }

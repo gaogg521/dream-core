@@ -27,6 +27,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "009_security_policy_templates",
         include_str!("../migrations/009_security_policy_templates.sql"),
     ),
+    ("010_config_vault", include_str!("../migrations/010_config_vault.sql")),
 ];
 
 /// Run all pending one-platform migrations. Idempotent; call once at startup
