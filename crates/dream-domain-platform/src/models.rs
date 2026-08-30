@@ -176,6 +176,32 @@ pub struct NewApiKeyDto {
     pub secret: String,
 }
 
+/// One member's IM bot channels, for the enterprise oversight view of a
+/// personal-edition feature (`dream-core-channel`). Read-only: an admin sees
+/// who connected a bot on which platform and how many external IM users it
+/// authorized. The bots themselves stay owner-managed in dream-ui.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImChannelMemberDto {
+    pub user_id: String,
+    pub display_name: String,
+    pub plugins: Vec<ImChannelPluginDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImChannelPluginDto {
+    /// `telegram` | `lark` | `dingtalk` | `slack` | `discord` | `weixin` | …
+    pub platform: String,
+    pub name: String,
+    pub enabled: bool,
+    /// The plugin's last connection status string, or `None` if never connected.
+    pub status: Option<String>,
+    pub last_connected: Option<i64>,
+    /// Distinct external IM users this member's bot has authorized.
+    pub authorized_user_count: i64,
+}
+
 /// A scene (E5 "场景管理"): a named bundle of resource grants + descriptive
 /// job-function tags. `member_count` is the current roster size, shown in
 /// the admin UI's scene list without a second round trip.
