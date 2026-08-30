@@ -49,6 +49,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "012_department_directory_map_root",
         include_str!("../migrations/012_department_directory_map_root.sql"),
     ),
+    (
+        "013_runtime_control",
+        include_str!("../migrations/013_runtime_control.sql"),
+    ),
 ];
 
 /// Run all pending one-org migrations. Idempotent; call once at startup

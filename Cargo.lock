@@ -2624,6 +2624,7 @@ dependencies = [
 name = "dream-domain-workflow"
 version = "0.1.70-one.1"
 dependencies = [
+ "async-trait",
  "axum",
  "dream-core-api-types",
  "dream-core-auth",

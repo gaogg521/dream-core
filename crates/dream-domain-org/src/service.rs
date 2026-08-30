@@ -9,7 +9,7 @@
 //! secret makes this strictly scoped to the affected user).
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use serde::Serialize;
 use sqlx::SqlitePool;
@@ -26,10 +26,12 @@ use crate::error::OrgError;
 use crate::integration::{IntegrationCredentials, IntegrationProvider, IntegrationTestResult, StubIntegrationProvider};
 use crate::models::{
     AdminUserDto, AgentAuditEntry, AuditLogRow, DEFAULT_TENANT_ID, DepartmentDto, DirectoryMapReport,
-    EnterpriseTenantDto, IntegrationDto, InviteDto, InviteRow, MyTenantDto, OrgContextDto, ROLE_MEMBER, ROLE_ORG_ADMIN,
-    ROLE_SYSTEM_ADMIN, ResetLocalResult, RuntimeNodeDto, RuntimeNodeRow, SYSTEM_DEFAULT_USER_ID, SmtpConfigDto,
-    TenantRow, UserOrgRow, is_admin_role, is_enterprise_tenant_id, is_system_admin_role,
+    EnterpriseTenantDto, HeartbeatOutcome, IntegrationDto, InviteDto, InviteRow, MyTenantDto, OrgContextDto,
+    ROLE_MEMBER, ROLE_ORG_ADMIN, ROLE_SYSTEM_ADMIN, ResetLocalResult, RuntimeNodeDto, RuntimeNodeRow,
+    SYSTEM_DEFAULT_USER_ID, SmtpConfigDto, TenantRow, UserOrgRow, is_admin_role, is_enterprise_tenant_id,
+    is_system_admin_role,
 };
+use crate::node_review::NodeReviewSink;
 
 pub struct OrgService {
     pool: SqlitePool,
@@ -51,6 +53,13 @@ pub struct OrgService {
     /// channel tokens. Defaults to a no-op (personal installs have none); the
     /// app layer wires the real one. See `credential_revoker`.
     credential_revoker: Arc<dyn CredentialRevoker>,
+    /// Raises the access-review task when a first-seen runtime node checks
+    /// in under an approval-required policy (P1-7). Defaults to none; the
+    /// app layer wires the real one over one-workflow via the `&self` setter
+    /// — `RwLock`-wrapped like conversation's `usage_recorder`, because the
+    /// sink (one-workflow) is itself built around the same pool and the two
+    /// services reference each other's handles here. See `node_review`.
+    node_review_sink: Arc<RwLock<Option<Arc<dyn NodeReviewSink>>>>,
 }
 
 /// Normalize an invite code: strip whitespace/dashes, uppercase.
@@ -99,6 +108,7 @@ impl OrgService {
             email_sender: Arc::new(StubEmailSender),
             integration_provider: Arc::new(StubIntegrationProvider),
             credential_revoker: Arc::new(NoopCredentialRevoker),
+            node_review_sink: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -107,6 +117,15 @@ impl OrgService {
     pub fn with_credential_revoker(mut self, revoker: Arc<dyn CredentialRevoker>) -> Self {
         self.credential_revoker = revoker;
         self
+    }
+
+    /// Wire the access-review task raiser for runtime nodes (P1-7). Takes
+    /// `&self` through the `Arc` so the wiring works no matter which service
+    /// is constructed first — the two sinks here are mutually referencing.
+    pub fn with_node_review_sink(&self, sink: Arc<dyn NodeReviewSink>) {
+        if let Ok(mut guard) = self.node_review_sink.write() {
+            *guard = Some(sink);
+        }
     }
 
     /// Swap in a real `EmailSender` once SMTP is actually configured/wired at
@@ -2372,7 +2391,7 @@ impl OrgService {
     pub async fn list_runtime_nodes(&self, tenant_id: &str) -> Result<Vec<RuntimeNodeDto>, OrgError> {
         let rows = sqlx::query_as::<_, RuntimeNodeRow>(
             "SELECT id, tenant_id, user_id, machine_id, display_name, hostnames, ip_addresses, \
-                    installed_agents, last_seen_at, updated_at \
+                    installed_agents, last_seen_at, updated_at, status, visibility \
              FROM one_runtime_nodes WHERE tenant_id = ? ORDER BY last_seen_at DESC",
         )
         .bind(tenant_id)
@@ -2391,7 +2410,7 @@ impl OrgService {
         hostnames: &serde_json::Value,
         ip_addresses: &serde_json::Value,
         installed_agents: &serde_json::Value,
-    ) -> Result<String, OrgError> {
+    ) -> Result<HeartbeatOutcome, OrgError> {
         let now = now_ms() as i64;
         let hostnames_str = hostnames.to_string();
         let ip_str = ip_addresses.to_string();
@@ -2417,21 +2436,45 @@ impl OrgService {
         .rows_affected();
 
         if updated > 0 {
-            let id: String =
-                sqlx::query_scalar("SELECT id FROM one_runtime_nodes WHERE tenant_id = ? AND machine_id = ?")
+            let (id, status): (String, String) =
+                sqlx::query_as("SELECT id, status FROM one_runtime_nodes WHERE tenant_id = ? AND machine_id = ?")
                     .bind(tenant_id)
                     .bind(machine_id)
                     .fetch_one(&self.pool)
                     .await?;
-            return Ok(id);
+            if status == "blocked" {
+                // The one real enforcement point in the control plane: a
+                // blocked machine cannot keep itself on the roster by
+                // heartbeating. Its row stays (the admin's record of the
+                // block survives), the machine just gets refused.
+                return Err(OrgError::Forbidden(
+                    "this machine has been blocked by an administrator".into(),
+                ));
+            }
+            // A pending node keeps heartbeating: the machine is healthy and
+            // its row should stay fresh — the review is organizational, and
+            // the review task was raised once, at registration.
+            return Ok(HeartbeatOutcome {
+                node_id: id,
+                status,
+                created: false,
+                pending: false,
+            });
         }
+
+        // First-seen machine. Open policy (the default, and every tenant
+        // without a policy row) auto-approves — byte-for-byte the pre-P1-7
+        // behavior. Approval-required registers the machine as `pending`
+        // and asks the app layer to raise the review task (best-effort).
+        let require_approval = self.runtime_requires_approval(tenant_id).await?;
+        let status = if require_approval { "pending" } else { "approved" };
 
         let id = short_id("node");
         sqlx::query(
             "INSERT INTO one_runtime_nodes \
              (id, tenant_id, user_id, machine_id, display_name, hostnames, ip_addresses, \
-              installed_agents, last_seen_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              installed_agents, last_seen_at, updated_at, status, visibility) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'private')",
         )
         .bind(&id)
         .bind(tenant_id)
@@ -2443,9 +2486,136 @@ impl OrgService {
         .bind(&agents_str)
         .bind(now)
         .bind(now)
+        .bind(status)
         .execute(&self.pool)
         .await?;
-        Ok(id)
+
+        if require_approval {
+            if let Some(sink) = self.node_review_sink.read().ok().and_then(|g| g.clone()) {
+                sink.on_node_awaiting_approval(tenant_id, &id, machine_id, display_name, user_id)
+                    .await;
+            }
+        }
+
+        Ok(HeartbeatOutcome {
+            node_id: id,
+            status: status.to_owned(),
+            created: true,
+            pending: require_approval,
+        })
+    }
+
+    /// Whether new runtime nodes must be approved before they count as part
+    /// of the fleet (P1-7). Absent row = open mode = the pre-P1-7 behavior.
+    async fn runtime_requires_approval(&self, tenant_id: &str) -> Result<bool, OrgError> {
+        let row: Option<(i64,)> = sqlx::query_as("SELECT require_approval FROM one_runtime_policy WHERE tenant_id = ?")
+            .bind(tenant_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|(r,)| r != 0).unwrap_or(false))
+    }
+
+    /// The tenant's node-access policy (P1-7 接入审批).
+    pub async fn get_runtime_node_policy(&self, tenant_id: &str) -> Result<bool, OrgError> {
+        self.runtime_requires_approval(tenant_id).await
+    }
+
+    /// Flip the tenant's node-access policy. Flipping to approval-required
+    /// affects only FUTURE first-seen machines — already-registered nodes
+    /// keep their status, and flipping back to open does not auto-approve
+    /// anything still pending (an admin decides those explicitly).
+    pub async fn set_runtime_node_policy(&self, tenant_id: &str, require_approval: bool) -> Result<(), OrgError> {
+        sqlx::query(
+            "INSERT INTO one_runtime_policy (tenant_id, require_approval, updated_at) VALUES (?, ?, ?) \
+             ON CONFLICT(tenant_id) DO UPDATE SET require_approval = excluded.require_approval, \
+                 updated_at = excluded.updated_at",
+        )
+        .bind(tenant_id)
+        .bind(require_approval as i64)
+        .bind(now_ms() as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Approve or block one runtime node (admin, P1-7). Only the two
+    /// deliberate admin transitions are accepted here — `pending` is entered
+    /// exclusively by a first heartbeat under approval-required policy.
+    pub async fn set_runtime_node_status(&self, tenant_id: &str, node_id: &str, status: &str) -> Result<(), OrgError> {
+        if !matches!(status, "approved" | "blocked") {
+            return Err(OrgError::BadRequest(format!(
+                "node status must be 'approved' or 'blocked', got '{status}'"
+            )));
+        }
+        let updated =
+            sqlx::query("UPDATE one_runtime_nodes SET status = ?, updated_at = ? WHERE tenant_id = ? AND id = ?")
+                .bind(status)
+                .bind(now_ms() as i64)
+                .bind(tenant_id)
+                .bind(node_id)
+                .execute(&self.pool)
+                .await?
+                .rows_affected();
+        if updated == 0 {
+            return Err(OrgError::RuntimeNodeNotFound);
+        }
+        Ok(())
+    }
+
+    /// 转私有/转公有 (P1-7). The machine's owner decides for their own node;
+    /// an admin decides for any node in the tenant.
+    pub async fn set_runtime_node_visibility(
+        &self,
+        tenant_id: &str,
+        node_id: &str,
+        user_id: &str,
+        is_admin: bool,
+        visibility: &str,
+    ) -> Result<(), OrgError> {
+        if !matches!(visibility, "private" | "shared") {
+            return Err(OrgError::BadRequest(format!(
+                "node visibility must be 'private' or 'shared', got '{visibility}'"
+            )));
+        }
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT user_id FROM one_runtime_nodes WHERE tenant_id = ? AND id = ?")
+                .bind(tenant_id)
+                .bind(node_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        let Some((owner,)) = row else {
+            return Err(OrgError::RuntimeNodeNotFound);
+        };
+        if !is_admin && owner != user_id {
+            return Err(OrgError::Forbidden(
+                "only the node's owner or an administrator can change its visibility".into(),
+            ));
+        }
+        sqlx::query("UPDATE one_runtime_nodes SET visibility = ?, updated_at = ? WHERE id = ?")
+            .bind(visibility)
+            .bind(now_ms() as i64)
+            .bind(node_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// The member-facing roster (P1-7): the caller's own machines plus every
+    /// `shared` node of the tenant. The admin roster (`list_runtime_nodes`)
+    /// sees everything regardless of visibility.
+    pub async fn list_my_runtime_nodes(&self, tenant_id: &str, user_id: &str) -> Result<Vec<RuntimeNodeDto>, OrgError> {
+        let rows = sqlx::query_as::<_, RuntimeNodeRow>(
+            "SELECT id, tenant_id, user_id, machine_id, display_name, hostnames, ip_addresses, \
+                    installed_agents, last_seen_at, updated_at, status, visibility \
+             FROM one_runtime_nodes \
+             WHERE tenant_id = ? AND (user_id = ? OR visibility = 'shared') \
+             ORDER BY last_seen_at DESC",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     /// Remove a runtime node from the roster. Scoped to `tenant_id` so an
@@ -4143,7 +4313,7 @@ mod tests {
             .unwrap();
         assert_eq!(service.list_runtime_nodes("t1").await.unwrap().len(), 1);
 
-        service.delete_runtime_node("t1", &node_id).await.unwrap();
+        service.delete_runtime_node("t1", &node_id.node_id).await.unwrap();
 
         assert!(service.list_runtime_nodes("t1").await.unwrap().is_empty());
         db.close().await;
@@ -4161,7 +4331,7 @@ mod tests {
 
         // An admin of a DIFFERENT project group must not be able to delete
         // t1's node just by guessing/copying its id.
-        let result = service.delete_runtime_node("t2", &node_id).await;
+        let result = service.delete_runtime_node("t2", &node_id.node_id).await;
         assert!(matches!(result, Err(OrgError::RuntimeNodeNotFound)));
         assert_eq!(service.list_runtime_nodes("t1").await.unwrap().len(), 1);
         db.close().await;
@@ -4172,6 +4342,186 @@ mod tests {
         let (db, service, _user_repo) = setup().await;
         let result = service.delete_runtime_node("t1", "does-not-exist").await;
         assert!(matches!(result, Err(OrgError::RuntimeNodeNotFound)));
+        db.close().await;
+    }
+    // --- P1-7 runtime-node control plane ---
+
+    #[tokio::test]
+    async fn heartbeat_under_open_policy_auto_approves_the_first_seen_machine() {
+        let (db, service, user_repo) = setup().await;
+        let alice = create_user(&user_repo, "alice").await;
+        let empty = serde_json::json!([]);
+
+        let outcome = service
+            .heartbeat_runtime_node("t1", &alice, "m1", "My Machine", &empty, &empty, &empty)
+            .await
+            .unwrap();
+        assert!(outcome.created);
+        assert_eq!(outcome.status, "approved");
+        assert!(
+            !outcome.pending,
+            "open policy (the default) must keep the pre-P1-7 behavior"
+        );
+
+        // A returning machine is an update, not a new registration.
+        let again = service
+            .heartbeat_runtime_node("t1", &alice, "m1", "My Machine", &empty, &empty, &empty)
+            .await
+            .unwrap();
+        assert!(!again.created && !again.pending);
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn approval_required_policy_registers_first_seen_machines_as_pending() {
+        let (db, service, user_repo) = setup().await;
+        let alice = create_user(&user_repo, "alice").await;
+        let empty = serde_json::json!([]);
+
+        service.set_runtime_node_policy("t1", true).await.unwrap();
+        assert!(service.get_runtime_node_policy("t1").await.unwrap());
+
+        let outcome = service
+            .heartbeat_runtime_node("t1", &alice, "m1", "My Machine", &empty, &empty, &empty)
+            .await
+            .unwrap();
+        assert!(outcome.created && outcome.pending);
+        assert_eq!(outcome.status, "pending");
+
+        // The pending machine keeps heartbeating: its row stays fresh, its
+        // status stays pending (the review task was raised once).
+        let again = service
+            .heartbeat_runtime_node("t1", &alice, "m1", "My Machine", &empty, &empty, &empty)
+            .await
+            .unwrap();
+        assert!(
+            !again.created && !again.pending,
+            "the review task is raised exactly once"
+        );
+
+        // Flipping the policy back to open does NOT auto-approve anything.
+        service.set_runtime_node_policy("t1", false).await.unwrap();
+        service
+            .heartbeat_runtime_node("t1", &alice, "m1", "My Machine", &empty, &empty, &empty)
+            .await
+            .unwrap();
+        let roster = service.list_runtime_nodes("t1").await.unwrap();
+        assert_eq!(roster[0].status, "pending");
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_blocked_machine_cannot_rejoin_the_roster_by_heartbeating() {
+        let (db, service, user_repo) = setup().await;
+        let alice = create_user(&user_repo, "alice").await;
+        let empty = serde_json::json!([]);
+        let node_id = service
+            .heartbeat_runtime_node("t1", &alice, "m1", "My Machine", &empty, &empty, &empty)
+            .await
+            .unwrap()
+            .node_id;
+
+        service
+            .set_runtime_node_status("t1", &node_id, "blocked")
+            .await
+            .unwrap();
+        let err = service
+            .heartbeat_runtime_node("t1", &alice, "m1", "My Machine", &empty, &empty, &empty)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, OrgError::Forbidden(_)));
+
+        // The row survives (the admin's record of the block), the machine is refused.
+        let roster = service.list_runtime_nodes("t1").await.unwrap();
+        assert_eq!(roster.len(), 1);
+        assert_eq!(roster[0].status, "blocked");
+
+        // Approving lets it back in; unknown statuses and nodes are rejected.
+        service
+            .set_runtime_node_status("t1", &node_id, "approved")
+            .await
+            .unwrap();
+        assert!(
+            service
+                .heartbeat_runtime_node("t1", &alice, "m1", "My Machine", &empty, &empty, &empty)
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            service
+                .set_runtime_node_status("t1", &node_id, "pending")
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+        assert_eq!(
+            service
+                .set_runtime_node_status("t1", "node_missing", "approved")
+                .await
+                .unwrap_err()
+                .code(),
+            "RUNTIME_NODE_NOT_FOUND"
+        );
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn member_roster_shows_own_and_shared_nodes_only() {
+        let (db, service, user_repo) = setup().await;
+        let alice = create_user(&user_repo, "alice").await;
+        let bob = create_user(&user_repo, "bob").await;
+        let empty = serde_json::json!([]);
+
+        let a1 = service
+            .heartbeat_runtime_node("t1", &alice, "ma1", "Alice 1", &empty, &empty, &empty)
+            .await
+            .unwrap()
+            .node_id;
+        service
+            .heartbeat_runtime_node("t1", &alice, "ma2", "Alice 2", &empty, &empty, &empty)
+            .await
+            .unwrap();
+        let b1 = service
+            .heartbeat_runtime_node("t1", &bob, "mb1", "Bob 1", &empty, &empty, &empty)
+            .await
+            .unwrap()
+            .node_id;
+
+        // Private by default: alice sees her two, not bob's.
+        let alice_view = service.list_my_runtime_nodes("t1", &alice).await.unwrap();
+        assert_eq!(alice_view.len(), 2);
+
+        // Alice shares one of hers; bob then sees his one plus that shared node.
+        service
+            .set_runtime_node_visibility("t1", &a1, &alice, false, "shared")
+            .await
+            .unwrap();
+        let bob_view = service.list_my_runtime_nodes("t1", &bob).await.unwrap();
+        assert_eq!(bob_view.len(), 2, "own + shared: {bob_view:?}");
+        assert!(bob_view.iter().any(|n| n.id == a1));
+
+        // Sharing bob's node to himself is a no-op; alice cannot flip bob's
+        // visibility (not owner, not admin), but an admin can.
+        assert!(matches!(
+            service
+                .set_runtime_node_visibility("t1", &b1, &alice, false, "shared")
+                .await,
+            Err(OrgError::Forbidden(_))
+        ));
+        service
+            .set_runtime_node_visibility("t1", &b1, &alice, true, "shared")
+            .await
+            .unwrap();
+        assert_eq!(service.list_my_runtime_nodes("t1", &alice).await.unwrap().len(), 3);
+        assert_eq!(
+            service
+                .set_runtime_node_visibility("t1", &b1, &alice, true, "public")
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
         db.close().await;
     }
 }

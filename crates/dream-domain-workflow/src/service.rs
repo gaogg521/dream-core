@@ -4,6 +4,8 @@
 //! so a decision made on the admin process is seen by the wait on the main
 //! process on its next poll (T2 verified shared-DB concurrent access).
 
+use std::sync::{Arc, RwLock};
+
 use sqlx::SqlitePool;
 
 use dream_core_common::{generate_prefixed_id, now_ms};
@@ -14,7 +16,17 @@ use crate::models::WorkflowTaskDto;
 /// The five OpenOcta-aligned approval classes (§3 已定口径): 创作 / 资源 /
 /// 安全策略模板申请 / 工具 / Prompt. The service treats them as a validated
 /// vocabulary, nothing more — kind-specific meaning lives with the submitter.
-pub const WORKFLOW_TASK_KINDS: [&str; 5] = ["creation", "resource", "security_policy_template", "tool", "prompt"];
+pub const WORKFLOW_TASK_KINDS: [&str; 6] = [
+    "creation",
+    "resource",
+    "security_policy_template",
+    "tool",
+    "prompt",
+    // P1-7: a first-seen runtime node under an approval-required policy.
+    // The decision's node-status effect crosses the DecisionSink seam the
+    // app layer wires (see decision_sink.rs).
+    "node_access",
+];
 
 /// Terminal-tool approvals block the agent's tool call until this deadline;
 /// on expiry the call is **denied** — the conservative default (§3: OpenOcta
@@ -35,6 +47,12 @@ pub struct WorkflowActor {
 
 pub struct WorkflowService {
     pool: SqlitePool,
+    /// Translates a landed decision into the raising domain's effect (P1-7:
+    /// approving a node-access review flips the node's status). Defaults to
+    /// none; the app layer wires the adapter via the `&self` setter —
+    /// `RwLock`-wrapped, same reasoning as one-org's node-review sink (the
+    /// two services reference each other's handles here).
+    decision_sink: Arc<RwLock<Option<Arc<dyn crate::decision_sink::DecisionSink>>>>,
 }
 
 fn is_admin_role(role: &str) -> bool {
@@ -87,7 +105,18 @@ fn row_to_dto(row: TaskRow) -> WorkflowTaskDto {
 
 impl WorkflowService {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            decision_sink: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Wire the decision-effect translator. Takes `&self` through the `Arc`
+    /// — see the field's doc comment.
+    pub fn with_decision_sink(&self, sink: std::sync::Arc<dyn crate::decision_sink::DecisionSink>) {
+        if let Ok(mut guard) = self.decision_sink.write() {
+            *guard = Some(sink);
+        }
     }
 
     /// Resolve the caller's active-tenant membership (same cross-crate query
@@ -282,9 +311,14 @@ impl WorkflowService {
                 )),
             };
         }
-        self.get_task(tenant_id, id)
+        let task = self
+            .get_task(tenant_id, id)
             .await?
-            .ok_or_else(|| WorkflowError::Internal("workflow task vanished immediately after decision".into()))
+            .ok_or_else(|| WorkflowError::Internal("workflow task vanished immediately after decision".into()))?;
+        if let Some(sink) = self.decision_sink.read().ok().and_then(|g| g.clone()) {
+            sink.on_task_decided(tenant_id, &task, status).await;
+        }
+        Ok(task)
     }
 
     /// Block until the task is decided or `timeout_ms` passes. Polls the
@@ -609,5 +643,70 @@ mod tests {
             service.get_task("t1", &stale.id).await.unwrap().unwrap().status,
             "expired"
         );
+    }
+    struct RecordingDecisionSink {
+        seen: std::sync::Mutex<Vec<(String, String, String)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::decision_sink::DecisionSink for RecordingDecisionSink {
+        async fn on_task_decided(&self, tenant_id: &str, task: &WorkflowTaskDto, decision: &str) {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((tenant_id.to_owned(), task.id.clone(), decision.to_owned()));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_landed_decision_reaches_the_sink_exactly_once() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        crate::migrate::run_one_workflow_migrations(db.pool()).await.unwrap();
+        let service = WorkflowService::new(db.pool().clone());
+        let sink = std::sync::Arc::new(RecordingDecisionSink {
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        service.with_decision_sink(sink.clone());
+
+        let task = service
+            .create_task(
+                "t1",
+                "node_access",
+                "u1",
+                "Node access: lab",
+                "",
+                &serde_json::json!({}),
+                None,
+            )
+            .await
+            .unwrap();
+        service
+            .decide("t1", &task.id, "approved", "admin1", None)
+            .await
+            .unwrap();
+
+        // Lock, assert, and DROP the guard before any further `.await`: an
+        // earlier version held the MutexGuard across the second decide and
+        // the test hung; dropping it before the await fixed it. Whatever the
+        // precise mechanism, a std guard held across an await point is the
+        // one suspect here and the cheap thing to avoid.
+        let decision_count = {
+            let seen = sink.seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].0, "t1");
+            assert_eq!(seen[0].2, "approved");
+            seen.len()
+        };
+
+        // A re-decision attempt never reaches the sink (it errors before the
+        // sink, and the task row is untouched).
+        assert!(
+            service
+                .decide("t1", &task.id, "rejected", "admin1", None)
+                .await
+                .is_err()
+        );
+        assert_eq!(sink.seen.lock().unwrap().len(), decision_count);
+        db.close().await;
     }
 }

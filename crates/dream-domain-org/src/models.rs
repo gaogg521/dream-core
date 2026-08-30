@@ -238,6 +238,11 @@ pub struct RuntimeNodeRow {
     pub installed_agents: String,
     pub last_seen_at: i64,
     pub updated_at: i64,
+    /// `'approved' | 'pending' | 'blocked'` (P1-7). The column defaults to
+    /// `'approved'`, so every pre-existing row reads exactly as it did.
+    pub status: String,
+    /// `'private' | 'shared'` (P1-7 转私有/转公有). Defaults to `'private'`.
+    pub visibility: String,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -253,6 +258,21 @@ pub struct RuntimeNodeDto {
     pub installed_agents: serde_json::Value,
     pub last_seen_at: i64,
     pub updated_at: i64,
+    pub status: String,
+    pub visibility: String,
+}
+
+/// What one heartbeat did (P1-7): `created` distinguishes a first-seen
+/// machine from a returning one, and `pending` is true when the node
+/// registered into (or sits in) the approval queue — the caller raises the
+/// access-review task exactly once, on `created && pending`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeartbeatOutcome {
+    pub node_id: String,
+    pub status: String,
+    pub created: bool,
+    pub pending: bool,
 }
 
 impl From<RuntimeNodeRow> for RuntimeNodeDto {
@@ -269,6 +289,8 @@ impl From<RuntimeNodeRow> for RuntimeNodeDto {
             installed_agents: parse(&row.installed_agents),
             last_seen_at: row.last_seen_at,
             updated_at: row.updated_at,
+            status: row.status,
+            visibility: row.visibility,
         }
     }
 }

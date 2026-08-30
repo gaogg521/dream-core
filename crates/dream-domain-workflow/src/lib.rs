@@ -15,6 +15,7 @@
 //! (own tables, own lifecycle, own route prefix), not platform config — and
 //! the plan's next step (admin-svc split) wants it already separable.
 
+pub mod decision_sink;
 pub mod error;
 pub mod migrate;
 pub mod models;
@@ -23,8 +24,10 @@ pub mod routes;
 pub mod service;
 pub mod state;
 
+pub use decision_sink::DecisionSink;
 pub use error::WorkflowError;
 pub use migrate::run_one_workflow_migrations;
+pub use models::WorkflowTaskDto;
 pub use rbac::{RequireWorkflowAdmin, RequireWorkflowMember};
 pub use routes::one_workflow_routes;
 pub use service::{

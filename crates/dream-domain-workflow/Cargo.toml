@@ -8,6 +8,7 @@ dream-core-api-types.workspace = true
 dream-core-auth.workspace = true
 dream-core-common.workspace = true
 dream-core-db.workspace = true
+async-trait.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true

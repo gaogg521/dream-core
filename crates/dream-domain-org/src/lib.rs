@@ -19,6 +19,7 @@ pub mod error;
 pub mod integration;
 pub mod migrate;
 pub mod models;
+pub mod node_review;
 pub mod rbac;
 pub mod routes;
 pub mod service;
@@ -34,6 +35,7 @@ pub use integration::{
     IntegrationCredentials, IntegrationProvider, IntegrationTestResult, KNOWN_PROVIDERS, StubIntegrationProvider,
 };
 pub use migrate::run_one_migrations;
+pub use node_review::NodeReviewSink;
 pub use rbac::{OrgActor, RequireOrgAdmin, RequireSystemAdmin};
 pub use routes::one_org_routes;
 pub use service::OrgService;

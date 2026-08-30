@@ -1595,6 +1595,79 @@ impl dream_domain_devops::grants::ResourceGrantSource for MatrixGrantSource {
     }
 }
 
+/// org -> workflow side of the P1-7 node-access review: a first-seen machine
+/// under an approval-required policy raises one `node_access` task. The task
+/// never expires — a node awaiting review waits for a human, exactly like a
+/// member-submitted request.
+#[cfg(feature = "enterprise")]
+struct NodeReviewSinkAdapter {
+    workflow: std::sync::Arc<dream_domain_workflow::WorkflowService>,
+}
+
+#[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
+impl dream_domain_org::NodeReviewSink for NodeReviewSinkAdapter {
+    async fn on_node_awaiting_approval(
+        &self,
+        tenant_id: &str,
+        node_id: &str,
+        machine_id: &str,
+        display_name: &str,
+        user_id: &str,
+    ) {
+        let title = format!("Node access: {display_name}");
+        if let Err(e) = self
+            .workflow
+            .create_task(
+                tenant_id,
+                "node_access",
+                user_id,
+                &title,
+                "runtime node awaiting administrator approval",
+                &serde_json::json!({ "nodeId": node_id, "machineId": machine_id, "displayName": display_name }),
+                None,
+            )
+            .await
+        {
+            tracing::warn!(error = %e, node_id, "failed to raise the node-access review task");
+        }
+    }
+}
+
+/// workflow -> org side of the same review (P1-7): a landed `node_access`
+/// decision flips the node's roster status — approved on approve, blocked on
+/// reject — so the approval is an effect, not a number in a table.
+/// Best-effort: a failed flip is logged and recoverable from the registry.
+#[cfg(feature = "enterprise")]
+struct WorkflowDecisionSinkAdapter {
+    org: std::sync::Arc<dream_domain_org::OrgService>,
+}
+
+#[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
+impl dream_domain_workflow::DecisionSink for WorkflowDecisionSinkAdapter {
+    async fn on_task_decided(&self, tenant_id: &str, task: &dream_domain_workflow::WorkflowTaskDto, decision: &str) {
+        if task.kind != "node_access" {
+            return;
+        }
+        let Some(node_id) = task.payload.get("nodeId").and_then(|v| v.as_str()) else {
+            tracing::warn!(task_id = %task.id, "node_access task carries no nodeId; cannot apply the decision");
+            return;
+        };
+        let status = match decision {
+            "approved" => "approved",
+            "rejected" => "blocked",
+            other => {
+                tracing::warn!(decision = other, task_id = %task.id, "unexpected decision for a node_access task");
+                return;
+            }
+        };
+        if let Err(e) = self.org.set_runtime_node_status(tenant_id, node_id, status).await {
+            tracing::warn!(error = %e, node_id, status, "failed to apply the node-access decision to the roster");
+        }
+    }
+}
+
 /// Every route group that exists only when `enterprise` is compiled in.
 ///
 /// Extracted so the full server and the standalone admin binary mount exactly
@@ -1779,6 +1852,10 @@ pub(crate) fn build_governance_plane(
     let password_gate = PasswordChangeGateState {
         user_repo: services.user_repo.clone(),
     };
+    let one_workflow_service = std::sync::Arc::new(dream_domain_workflow::WorkflowService::new(
+        services.database.pool().clone(),
+    ));
+    let one_workflow_state = dream_domain_workflow::OneWorkflowRouterState::new(one_workflow_service.clone());
 
     // one-org enterprise routes (/api/one/*) — RBAC extractors depend on the
     // upstream auth middleware injecting CurrentUser.
@@ -1829,6 +1906,18 @@ pub(crate) fn build_governance_plane(
         .with_company_seat_sync(std::sync::Arc::new(CompanySeatSyncAdapter(
             one_enterprise_service.clone(),
         )));
+    // P1-7 runtime-node control plane, cross-crate seams both directions:
+    // a first-seen machine under an approval-required policy raises its
+    // review task here (org -> workflow), and a landed node-access decision
+    // flips the node's status back in the roster (workflow -> org). Both
+    // adapters are thin translations; each crate stays ignorant of the other.
+    one_org_service.with_node_review_sink(std::sync::Arc::new(NodeReviewSinkAdapter {
+        workflow: one_workflow_service.clone(),
+    }));
+    one_workflow_service.with_decision_sink(std::sync::Arc::new(WorkflowDecisionSinkAdapter {
+        org: one_org_service.clone(),
+    }));
+
     let one_org_authenticated = dream_domain_org::one_org_routes(one_org_state)
         .route_layer(from_fn_with_state(license_gate.clone(), license_module_gate_middleware))
         .route_layer(from_fn_with_state(password_gate.clone(), require_password_changed_gate))
@@ -1917,11 +2006,9 @@ pub(crate) fn build_governance_plane(
     // Members submit and watch their own tasks; the pending queue and every
     // decision belong to the admin group. The service handle is handed back
     // on the plane so the terminal-tool approval gate can block on it (see
-    // `PlatformToolCallSecurityGate`).
-    let one_workflow_service = std::sync::Arc::new(dream_domain_workflow::WorkflowService::new(
-        services.database.pool().clone(),
-    ));
-    let one_workflow_state = dream_domain_workflow::OneWorkflowRouterState::new(one_workflow_service.clone());
+    // `PlatformToolCallSecurityGate`). Built BEFORE one-org (its only
+    // dependency is the pool) because the org service's node-review sink
+    // needs this handle — see the P1-7 adapters just below.
     let one_workflow_authenticated = dream_domain_workflow::one_workflow_routes(one_workflow_state)
         .route_layer(from_fn_with_state(license_gate.clone(), license_module_gate_middleware))
         .route_layer(from_fn_with_state(password_gate.clone(), require_password_changed_gate))

@@ -17,7 +17,7 @@ use crate::integration::IntegrationTestResult;
 use crate::models::{
     AdminUserDto, AgentAuditEntry, AuditLogRow, DepartmentDto, DirectoryMapReport, EnterpriseTenantDto, IntegrationDto,
     InviteDto, MyTenantDto, OrgContextDto, ResetLocalResult, RuntimeNodeDto, SmtpConfigDto, TenantSummaryDto,
-    is_enterprise_tenant_id, is_system_admin_role,
+    is_admin_role, is_enterprise_tenant_id, is_system_admin_role,
 };
 use crate::rbac::{OrgActor, RequireOrgAdmin, RequireSystemAdmin};
 use crate::state::OneOrgRouterState;
@@ -103,6 +103,26 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
         .route("/api/one/admin/runtime/nodes", get(admin_list_runtime_nodes))
         .route("/api/one/admin/runtime/nodes/{id}", delete(admin_delete_runtime_node))
         .route("/api/one/admin/runtime/heartbeat", post(admin_runtime_heartbeat))
+        // P1-7 runtime-node control plane: access-review status transitions,
+        // 转私有/转公有, and the per-tenant approval policy.
+        .route(
+            "/api/one/admin/runtime/nodes/{id}/status",
+            put(admin_set_runtime_node_status),
+        )
+        .route(
+            "/api/one/admin/runtime/nodes/{id}/visibility",
+            put(admin_set_runtime_node_visibility),
+        )
+        .route(
+            "/api/one/admin/runtime/policy",
+            get(admin_get_runtime_policy).put(admin_set_runtime_policy),
+        )
+        // Member-facing roster: the caller's own machines plus shared nodes.
+        .route("/api/one/org/runtime/nodes", get(my_runtime_nodes))
+        .route(
+            "/api/one/org/runtime/nodes/{id}/visibility",
+            put(my_set_runtime_node_visibility),
+        )
         // Direction B: company-scoped project-group management. Gated
         // system_admin OR company-admin of the path `enterprise_id`.
         .route(
@@ -1226,6 +1246,12 @@ struct HeartbeatBody {
 #[serde(rename_all = "camelCase")]
 struct HeartbeatDto {
     node_id: String,
+    /// `'approved' | 'pending' | 'blocked'` — a first-seen machine under an
+    /// approval-required policy registers as `pending` (P1-7).
+    status: String,
+    /// True when this heartbeat registered a NEW machine; the desktop client
+    /// can use it to explain "awaiting administrator approval" to the member.
+    created: bool,
 }
 
 // Any enterprise member's machine reports in here, not just admins' — the
@@ -1245,7 +1271,7 @@ async fn admin_runtime_heartbeat(
     if machine_id.is_empty() {
         return Err(OrgError::BadRequest("machineId is required".into()));
     }
-    let node_id = state
+    let outcome = state
         .service
         .heartbeat_runtime_node(
             &actor.tenant_id,
@@ -1257,5 +1283,121 @@ async fn admin_runtime_heartbeat(
             &body.installed_agents,
         )
         .await?;
-    Ok(Json(ApiResponse::ok(HeartbeatDto { node_id })))
+    Ok(Json(ApiResponse::ok(HeartbeatDto {
+        node_id: outcome.node_id,
+        status: outcome.status,
+        created: outcome.created,
+    })))
+}
+
+/// Approve or block a runtime node (P1-7). Approving a pending node is the
+/// other half of the access review raised on first heartbeat — the workflow
+/// decision lands here through the app-layer adapter, and an admin can also
+/// decide directly in the registry.
+async fn admin_set_runtime_node_status(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Path(id): Path<String>,
+    Json(body): Json<SetNodeStatusBody>,
+) -> Result<Json<ApiResponse<()>>, OrgError> {
+    state
+        .service
+        .set_runtime_node_status(&actor.tenant_id, &id, &body.status)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetNodeStatusBody {
+    /// `'approved' | 'blocked'`.
+    status: String,
+}
+
+/// 转私有/转公有 from the admin roster (P1-7).
+async fn admin_set_runtime_node_visibility(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Path(id): Path<String>,
+    Json(body): Json<SetNodeVisibilityBody>,
+) -> Result<Json<ApiResponse<()>>, OrgError> {
+    state
+        .service
+        .set_runtime_node_visibility(&actor.tenant_id, &id, &actor.user_id, true, &body.visibility)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetNodeVisibilityBody {
+    /// `'private' | 'shared'`.
+    visibility: String,
+}
+
+/// The tenant's node-access policy (P1-7): whether first-seen machines need
+/// approval. Default (no row) = open.
+async fn admin_get_runtime_policy(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+) -> Result<Json<ApiResponse<RuntimePolicyDto>>, OrgError> {
+    Ok(Json(ApiResponse::ok(RuntimePolicyDto {
+        require_approval: state.service.get_runtime_node_policy(&actor.tenant_id).await?,
+    })))
+}
+
+async fn admin_set_runtime_policy(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Json(body): Json<RuntimePolicyDto>,
+) -> Result<Json<ApiResponse<()>>, OrgError> {
+    state
+        .service
+        .set_runtime_node_policy(&actor.tenant_id, body.require_approval)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimePolicyDto {
+    require_approval: bool,
+}
+
+/// The member-facing roster (P1-7): the caller's own machines plus every
+/// node an owner or admin has marked `shared`. Read-only — fleet visibility
+/// without the governance actions.
+async fn my_runtime_nodes(
+    State(state): State<OneOrgRouterState>,
+    actor: OrgActor,
+) -> Result<Json<ApiResponse<Vec<RuntimeNodeDto>>>, OrgError> {
+    if !is_enterprise_tenant_id(&actor.tenant_id) {
+        return Err(OrgError::NotInEnterprise);
+    }
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .list_my_runtime_nodes(&actor.tenant_id, &actor.user_id)
+            .await?,
+    )))
+}
+
+/// 转私有/转公有 by the node's owner (an admin could also come through the
+/// admin route; this one exists so a member does not need admin rights to
+/// share their own machine).
+async fn my_set_runtime_node_visibility(
+    State(state): State<OneOrgRouterState>,
+    actor: OrgActor,
+    Path(id): Path<String>,
+    Json(body): Json<SetNodeVisibilityBody>,
+) -> Result<Json<ApiResponse<()>>, OrgError> {
+    if !is_enterprise_tenant_id(&actor.tenant_id) {
+        return Err(OrgError::NotInEnterprise);
+    }
+    let is_admin = is_admin_role(&actor.role);
+    state
+        .service
+        .set_runtime_node_visibility(&actor.tenant_id, &id, &actor.user_id, is_admin, &body.visibility)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
 }
