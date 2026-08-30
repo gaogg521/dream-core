@@ -42,8 +42,8 @@ use crate::error::PlatformError;
 use crate::models::{
     ApiKeyDto, CollaborationConfigDto, ConfigBulkImportDto, ConfigEntryDto, ConfigSetDto, ConfigSetReferencesDto,
     ContainerConfigDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto, FileVaultReconcileEntry,
-    IpAllowlistConfigDto, MyNotificationsDto, NewApiKeyDto, NotificationDto, PolicyTemplateBindingDto,
-    ResourceGrantDto, SceneDto, SecurityPolicyDto, SecurityPolicyTemplateDto, SiemConfigDto,
+    ImChannelMemberDto, IpAllowlistConfigDto, MyNotificationsDto, NewApiKeyDto, NotificationDto,
+    PolicyTemplateBindingDto, ResourceGrantDto, SceneDto, SecurityPolicyDto, SecurityPolicyTemplateDto, SiemConfigDto,
 };
 use crate::rbac::{RequirePlatformAdmin, RequirePlatformMember};
 use crate::service::ConfigImportRow;
@@ -81,6 +81,7 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
             "/api/one/admin/platform/resource-grants/effective",
             get(effective_resource_grants),
         )
+        .route("/api/one/admin/platform/im-channels", get(list_im_channels))
         .route("/api/one/admin/platform/scenes", get(list_scenes).post(create_scene))
         .route(
             "/api/one/admin/platform/scenes/{id}",
@@ -524,6 +525,17 @@ async fn list_scenes(
 ) -> Result<Json<ApiResponse<Vec<SceneDto>>>, PlatformError> {
     Ok(Json(ApiResponse::ok(
         state.service.list_scenes(&actor.tenant_id).await?,
+    )))
+}
+
+/// Enterprise oversight of the per-member IM bot channels (a personal-edition
+/// `dream-core-channel` feature). Read-only.
+async fn list_im_channels(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<Vec<ImChannelMemberDto>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_im_channels(&actor.tenant_id).await?,
     )))
 }
 

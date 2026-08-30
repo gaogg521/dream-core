@@ -25,9 +25,9 @@ use crate::ip_allowlist::ip_allowed;
 use crate::models::{
     ApiKeyDto, CollaborationConfigDto, ConfigBulkImportDto, ConfigEntryDto, ConfigSetDto, ConfigSetReference,
     ConfigSetReferencesDto, ContainerConfigDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto,
-    FileVaultReconcileEntry, IpAllowlistConfigDto, MyNotificationDto, MyNotificationsDto, NewApiKeyDto,
-    NotificationDto, PolicyTemplateBindingDto, ResourceGrantDto, SENSITIVE_PLACEHOLDER, SceneDto, SecurityPolicyDto,
-    SecurityPolicyTemplateDto, SiemConfigDto,
+    FileVaultReconcileEntry, ImChannelMemberDto, ImChannelPluginDto, IpAllowlistConfigDto, MyNotificationDto,
+    MyNotificationsDto, NewApiKeyDto, NotificationDto, PolicyTemplateBindingDto, ResourceGrantDto,
+    SENSITIVE_PLACEHOLDER, SceneDto, SecurityPolicyDto, SecurityPolicyTemplateDto, SiemConfigDto,
 };
 use crate::siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
 
@@ -1043,6 +1043,66 @@ impl PlatformService {
             created_at: row.6,
             updated_at: row.7,
         })
+    }
+
+    /// Enterprise oversight of the per-user IM bot channels
+    /// (`dream-core-channel`, personal edition). Reads `assistant_plugins` /
+    /// `assistant_users` (dream-core-db's schema, same pool — the same
+    /// cross-crate-read boundary `config_set_references` takes) filtered to
+    /// this tenant's members. Read-only: the bots stay owner-managed.
+    pub async fn list_im_channels(&self, tenant_id: &str) -> Result<Vec<ImChannelMemberDto>, PlatformError> {
+        // (owner_user_id, username, platform, name, enabled, status, last_connected, authorized_count)
+        let result = sqlx::query_as::<
+            _,
+            (
+                String,
+                Option<String>,
+                String,
+                String,
+                i64,
+                Option<String>,
+                Option<i64>,
+                i64,
+            ),
+        >(
+            "SELECT p.owner_user_id, u.username, p.type, p.name, p.enabled, p.status, p.last_connected, \
+                    (SELECT COUNT(*) FROM assistant_users au \
+                     WHERE au.owner_user_id = p.owner_user_id AND au.platform_type = p.type) \
+             FROM assistant_plugins p \
+             JOIN users u ON u.id = p.owner_user_id \
+             WHERE p.owner_user_id IN (SELECT user_id FROM one_user_org WHERE tenant_id = ?) \
+             ORDER BY u.username ASC, p.type ASC",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await;
+        let rows = match result {
+            Ok(rows) => rows,
+            // A deployment where the channel tables were never created (or
+            // one-org never initialized) simply has no IM channels to show.
+            Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => Vec::new(),
+            Err(e) => return Err(e.into()),
+        };
+        let mut members: Vec<ImChannelMemberDto> = Vec::new();
+        for (owner, username, platform, name, enabled, status, last_connected, count) in rows {
+            let plugin = ImChannelPluginDto {
+                platform,
+                name,
+                enabled: enabled != 0,
+                status,
+                last_connected,
+                authorized_user_count: count,
+            };
+            match members.last_mut() {
+                Some(m) if m.user_id == owner => m.plugins.push(plugin),
+                _ => members.push(ImChannelMemberDto {
+                    user_id: owner,
+                    display_name: username.unwrap_or_default(),
+                    plugins: vec![plugin],
+                }),
+            }
+        }
+        Ok(members)
     }
 
     pub async fn list_scenes(&self, tenant_id: &str) -> Result<Vec<SceneDto>, PlatformError> {
@@ -3523,6 +3583,72 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn im_channels_aggregates_per_member_and_scopes_to_tenant() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "m1", "t1", "member").await;
+        seed_membership(db.pool(), "m2", "t1", "member").await;
+        seed_membership(db.pool(), "outsider", "t2", "member").await;
+        for (id, name) in [("m1", "alice"), ("m2", "bob"), ("outsider", "eve")] {
+            sqlx::query(
+                "INSERT INTO users (id, user_type, username, password_hash, created_at, updated_at) \
+                 VALUES (?, 'local', ?, 'x', 0, 0)",
+            )
+            .bind(id)
+            .bind(name)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        }
+        // m1 has a lark bot with 2 authorized IM users; m2 has a disabled slack
+        // bot; the outsider (other tenant) has a bot that must NOT appear.
+        let plug = |owner: &str, ty: &str, enabled: i64| {
+            let (owner, ty) = (owner.to_owned(), ty.to_owned());
+            let pool = db.pool().clone();
+            async move {
+                sqlx::query(
+                    "INSERT INTO assistant_plugins (id, owner_user_id, type, name, enabled, config, status, last_connected, created_at, updated_at) \
+                     VALUES (?, ?, ?, ?, ?, '{}', 'connected', 100, 0, 0)",
+                )
+                .bind(format!("plg_{owner}_{ty}"))
+                .bind(&owner)
+                .bind(&ty)
+                .bind(&ty)
+                .bind(enabled)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        };
+        plug("m1", "lark", 1).await;
+        plug("m2", "slack", 0).await;
+        plug("outsider", "lark", 1).await;
+        for i in 0..2 {
+            sqlx::query(
+                "INSERT INTO assistant_users (id, owner_user_id, platform_user_id, platform_type, display_name, authorized_at, last_active, session_id) \
+                 VALUES (?, 'm1', ?, 'lark', ?, 0, NULL, NULL)",
+            )
+            .bind(format!("au_{i}"))
+            .bind(format!("lark_uid_{i}"))
+            .bind(format!("IM User {i}"))
+            .execute(db.pool())
+            .await
+            .unwrap();
+        }
+
+        let out = service.list_im_channels("t1").await.unwrap();
+        assert_eq!(out.len(), 2, "two tenant members have bots; the outsider is excluded");
+        let alice = out.iter().find(|m| m.user_id == "m1").unwrap();
+        assert_eq!(alice.display_name, "alice");
+        assert_eq!(alice.plugins.len(), 1);
+        assert_eq!(alice.plugins[0].platform, "lark");
+        assert!(alice.plugins[0].enabled);
+        assert_eq!(alice.plugins[0].authorized_user_count, 2);
+        let bob = out.iter().find(|m| m.user_id == "m2").unwrap();
+        assert!(!bob.plugins[0].enabled);
+        assert_eq!(bob.plugins[0].authorized_user_count, 0);
     }
 
     #[tokio::test]
