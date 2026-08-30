@@ -5,7 +5,9 @@ edition.workspace = true
 
 [dependencies]
 dream-core-common.workspace = true
-sqlx = { workspace = true, features = ["migrate", "postgres"] }
+# "postgres" is the dormant first slice of the old PG plan (kept as prep work
+# for a possible future switch); "mysql" is the P3-3 enterprise main storage.
+sqlx = { workspace = true, features = ["migrate", "postgres", "mysql"] }
 async-trait.workspace = true
 fs2.workspace = true
 serde.workspace = true

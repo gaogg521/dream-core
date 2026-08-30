@@ -14,7 +14,7 @@ ldap3.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 serde.workspace = true
 serde_json.workspace = true
-sqlx.workspace = true
+sqlx = { workspace = true, features = ["mysql"] }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
