@@ -1006,6 +1006,155 @@ impl dream_core_conversation::LlmCallTraceRecorder for BillingLlmCallTrace {
     }
 }
 
+/// Default name for the auto-created per-member memory collection the P2-2
+/// extraction pipeline writes into. User-facing (shown in `MemoryTab`);
+/// hardcoded Chinese for the same reason the builtin scene names are
+/// (`BUILTIN_SCENES` in one-platform) — backend seed strings have no i18n path.
+#[cfg(feature = "enterprise")]
+const MEMORY_DEFAULT_COLLECTION_NAME: &str = "个人对话记忆";
+
+/// The one-memory implementation of conversation's post-turn extraction seam
+/// (P2-2). v1 is precision-first: it captures only an **explicit** memory
+/// request ("记住…", "remember that …") from the user's own message —
+/// a broad heuristic that guessed at "facts" would poison every future
+/// turn's injected context, and an LLM extractor (the documented next slice)
+/// needs a tenant-configurable model channel. Fire-and-forget, spawns its
+/// own work, never touches the turn result.
+#[cfg(feature = "enterprise")]
+struct OneMemoryTurnExtractor {
+    memory: std::sync::Arc<dream_domain_memory::MemoryService>,
+}
+
+/// Extract the fact clause from an explicit "remember this" style message,
+/// or `None` when the message is not such a request. Deliberately narrow.
+#[cfg(feature = "enterprise")]
+fn explicit_memory_request(msg: &str) -> Option<String> {
+    const TRIGGERS: &[&str] = &[
+        "记住",
+        "请记住",
+        "帮我记住",
+        "帮我记一下",
+        "记一下",
+        "麻烦记住",
+        "务必记住",
+        "remember that",
+        "remember this",
+        "please remember",
+        "keep in mind that",
+        "note that i",
+    ];
+    let lower = msg.to_lowercase();
+    let trigger = TRIGGERS.iter().find(|t| lower.contains(**t))?;
+    let after = lower.find(trigger)? + trigger.len();
+    // `lower` and `msg` share byte offsets for ASCII + CJK (the scripts that
+    // reach here); `get` rather than index guards the rest.
+    let tail = msg
+        .get(after..)?
+        .trim_start_matches([':', '：', ',', '，', ' ', '，'])
+        .trim();
+    let fact = tail
+        .split(['。', '\n', '.', '!', '！', '?', '？', ';', '；'])
+        .next()
+        .unwrap_or(tail)
+        .trim();
+    let len = fact.chars().count();
+    if !(3..=240).contains(&len) {
+        return None;
+    }
+    Some(fact.to_owned())
+}
+
+#[cfg(feature = "enterprise")]
+impl dream_core_conversation::TurnMemoryExtractor for OneMemoryTurnExtractor {
+    fn extract_from_turn(
+        &self,
+        user_id: String,
+        conversation_id: String,
+        user_message: String,
+        synthetic_prompt: bool,
+    ) {
+        if synthetic_prompt {
+            return;
+        }
+        let Some(fact) = explicit_memory_request(&user_message) else {
+            return;
+        };
+        let memory = self.memory.clone();
+        tokio::spawn(async move {
+            let actor = match memory.resolve_actor(&user_id).await {
+                Ok(Some(a)) => a,
+                _ => return, // not in an enterprise — nothing to write to
+            };
+            let collection = match memory
+                .ensure_personal_collection(&actor.tenant_id, &user_id, &actor.role, MEMORY_DEFAULT_COLLECTION_NAME)
+                .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::debug!(error = %e, "memory extract: ensure collection failed (non-fatal)");
+                    return;
+                }
+            };
+            if let Err(e) = memory
+                .add_item(
+                    &actor.tenant_id,
+                    &user_id,
+                    &actor.role,
+                    &collection,
+                    &fact,
+                    0.7,
+                    Some(&conversation_id),
+                    &[],
+                )
+                .await
+            {
+                tracing::debug!(error = %e, "memory extract: add_item failed (non-fatal)");
+            }
+        });
+    }
+}
+
+/// The one-memory implementation of conversation's turn-start recall seam
+/// (P2-2): tokenised search across the caller's readable collections, hits
+/// prepended to the turn's preset context. Awaited on the turn-start path,
+/// so it stays one indexed query and returns empty on any error.
+#[cfg(feature = "enterprise")]
+struct OneMemoryContextProvider {
+    memory: std::sync::Arc<dream_domain_memory::MemoryService>,
+}
+
+#[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
+impl dream_core_conversation::MemoryContextProvider for OneMemoryContextProvider {
+    async fn recall(&self, user_id: &str, query: &str) -> Vec<String> {
+        let actor = match self.memory.resolve_actor(user_id).await {
+            Ok(Some(a)) => a,
+            _ => return Vec::new(),
+        };
+        match self
+            .memory
+            .search_relevant(&actor.tenant_id, user_id, &actor.role, query, 5)
+            .await
+        {
+            Ok(items) => items
+                .into_iter()
+                .map(|i| {
+                    let c = i.content;
+                    if c.chars().count() > 400 {
+                        c.chars().take(400).collect::<String>() + "…"
+                    } else {
+                        c
+                    }
+                })
+                .collect(),
+            Err(e) => {
+                tracing::debug!(error = %e, "memory recall failed (non-fatal)");
+                Vec::new()
+            }
+        }
+    }
+}
+
 /// Adapts `one_security_policy`'s `destructive_commands_blocked` +
 /// `blocked_command_patterns`, `external_network_denied_by_default`, and
 /// `terminal_tools_require_approval` to `dream-core-ai-agent`'s
@@ -2442,6 +2591,25 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
             .conversation
             .service
             .with_llm_trace_recorder(std::sync::Arc::new(BillingLlmCallTrace(one_billing_service.clone())));
+        // P2-2 memory pipeline, same slot-and-adapter shape: a post-turn
+        // extractor (explicit "记住…" requests → the member's personal
+        // collection) and a turn-start context provider (tokenised recall →
+        // prepended to preset context). Both re-wrap the shared pool rather
+        // than thread `one_memory_service` out of `build_governance_plane` —
+        // `MemoryService::new` is just an `Arc` clone.
+        {
+            let memory = std::sync::Arc::new(dream_domain_memory::MemoryService::new(
+                services.database.pool().clone(),
+            ));
+            states
+                .conversation
+                .service
+                .with_turn_memory_extractor(std::sync::Arc::new(OneMemoryTurnExtractor { memory: memory.clone() }));
+            states
+                .conversation
+                .service
+                .with_memory_context_provider(std::sync::Arc::new(OneMemoryContextProvider { memory }));
+        }
     }
 
     // P1-2 send policy gate (budget/rate; T3), same reasoning and the same
@@ -2932,8 +3100,28 @@ mod tests {
     #[cfg(feature = "enterprise")]
     use super::{
         ENTERPRISE_POLICY_GRACE_MS, PlatformToolCallSecurityGate, PolicyGrace, PolicyVerdict,
-        SecurityPolicySendRateGate, SendRateLimiter, billing_denial,
+        SecurityPolicySendRateGate, SendRateLimiter, billing_denial, explicit_memory_request,
     };
+
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn explicit_memory_request_captures_only_explicit_asks() {
+        // Explicit request → the fact clause, trigger stripped, one sentence.
+        assert_eq!(
+            explicit_memory_request("以后记住：我用 pnpm 不用 npm。还有别的事"),
+            Some("我用 pnpm 不用 npm".to_owned())
+        );
+        assert_eq!(
+            explicit_memory_request("Please remember that the prod DB is read-only."),
+            Some("the prod DB is read-only".to_owned())
+        );
+        // No trigger → nothing (the common case must not be mined).
+        assert_eq!(explicit_memory_request("帮我看下这段代码为什么报错"), None);
+        assert_eq!(explicit_memory_request("what did we decide about the schema?"), None);
+        // Trigger but empty / junk tail → nothing.
+        assert_eq!(explicit_memory_request("记住"), None);
+        assert_eq!(explicit_memory_request("记住:"), None);
+    }
     use super::{
         boundary_error_for_status, create_router_with_runtime, forward_event_bus_to_websocket,
         is_global_websocket_event,

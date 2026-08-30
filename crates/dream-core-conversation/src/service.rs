@@ -366,6 +366,18 @@ pub struct ConversationService {
     /// See [`crate::state::LlmCallTraceRecorder`].
     pub(crate) llm_trace_recorder: Arc<RwLock<Option<Arc<dyn crate::state::LlmCallTraceRecorder>>>>,
 
+    /// Optional post-turn memory extractor (P2-2). Same
+    /// `RwLock`-wrapped-clone-reaching shape and fire-and-forget contract as
+    /// `usage_recorder` above: fired once per completed turn from the
+    /// orchestrator, `None` in personal builds (no extraction).
+    pub(crate) turn_memory_extractor: Arc<RwLock<Option<Arc<dyn crate::state::TurnMemoryExtractor>>>>,
+
+    /// Optional turn-start memory context provider (P2-2). Unlike the
+    /// recorders this one is awaited on the turn-start path — its
+    /// implementation is contractually fast + fail-empty, and the caller
+    /// wraps it in a short timeout. `None` in personal builds.
+    pub(crate) memory_context_provider: Arc<RwLock<Option<Arc<dyn crate::state::MemoryContextProvider>>>>,
+
     /// One background-stream watcher per LIVE Session instance (keyed by
     /// conversation id; value remembers the instance pointer so a rebuilt
     /// instance gets a fresh watcher). See `background_stream.rs` for why:
@@ -450,6 +462,8 @@ impl ConversationService {
             usage_recorder: Arc::new(RwLock::new(None)),
             send_gate: Arc::new(RwLock::new(None)),
             llm_trace_recorder: Arc::new(RwLock::new(None)),
+            turn_memory_extractor: Arc::new(RwLock::new(None)),
+            memory_context_provider: Arc::new(RwLock::new(None)),
             background_watchers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
 
             conversation_repo,
@@ -496,6 +510,22 @@ impl ConversationService {
     pub fn with_send_gate(&self, gate: Arc<dyn crate::state::SendGate>) {
         if let Ok(mut guard) = self.send_gate.write() {
             *guard = Some(gate);
+        }
+    }
+
+    /// Attach the post-turn memory extractor (one-memory; P2-2). Reaches
+    /// every existing clone of this service — see the field's own doc comment.
+    pub fn with_turn_memory_extractor(&self, extractor: Arc<dyn crate::state::TurnMemoryExtractor>) {
+        if let Ok(mut guard) = self.turn_memory_extractor.write() {
+            *guard = Some(extractor);
+        }
+    }
+
+    /// Attach the turn-start memory context provider (one-memory; P2-2).
+    /// Reaches every existing clone of this service.
+    pub fn with_memory_context_provider(&self, provider: Arc<dyn crate::state::MemoryContextProvider>) {
+        if let Ok(mut guard) = self.memory_context_provider.write() {
+            *guard = Some(provider);
         }
     }
 
@@ -4121,6 +4151,7 @@ impl ConversationService {
             stored_workspace,
             turn_id: turn_id.clone(),
             turn_claim,
+            synthetic_prompt: false,
         });
 
         info!(
@@ -4258,6 +4289,9 @@ impl ConversationService {
                 stored_workspace,
                 turn_id: turn_id.clone(),
                 turn_claim,
+                // run_agent_turn is the automation path (cron, team dispatch):
+                // its `content` is a built prompt, not a human's words.
+                synthetic_prompt: true,
             })
             .await;
 

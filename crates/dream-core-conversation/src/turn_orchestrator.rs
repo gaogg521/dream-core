@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use dream_core_ai_agent::types::{BuildTaskOptions, SendMessageData};
 use dream_core_ai_agent::{
-    AgentError, AgentInstance, AgentSendError, AgentSessionKind, IWorkerTaskManager, RequiredFullAutoApplication,
+    AgentError, AgentInstance, AgentSendError, AgentSessionContext, AgentSessionKind, IWorkerTaskManager,
+    RequiredFullAutoApplication,
 };
 use dream_core_common::{AgentType, ConversationStatus, ErrorChain, now_ms};
 use dream_core_db::models::ConversationRow;
@@ -59,6 +60,10 @@ pub(crate) struct TurnStartInput {
     pub stored_workspace: String,
     pub turn_id: String,
     pub turn_claim: TurnClaim,
+    /// True when `content` is an automation-built prompt (cron, team dispatch)
+    /// rather than something a human typed. Consumed only by the P2-2 memory
+    /// extractor, which must not mine a synthetic prompt for "user facts".
+    pub synthetic_prompt: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -518,6 +523,28 @@ impl ConversationTurnOrchestrator {
         let runtime_state = self.service.runtime_state();
         let allowed_skill_names = input.build_options.context.skills.clone();
         let first_turn_msg_id = ConversationService::mint_msg_id();
+
+        // P2-2 memory injection — prepend the caller's relevant readable
+        // memory to this turn's preset context, before any attempt is built.
+        // Best-effort and hard-bounded: an unwired seam, an error, or a slow
+        // lookup all leave the context exactly as it was. `preset_context`
+        // (ACP/agy) only actually reaches the model on a session's first
+        // turn, so in practice this loads accumulated memory when a member
+        // opens a new conversation — the same lifetime as "[Assistant Rules]".
+        let user_message = input.content.clone();
+        if let Some(provider) = self.service.memory_context_provider.read().ok().and_then(|g| g.clone()) {
+            let recall = tokio::time::timeout(
+                std::time::Duration::from_millis(300),
+                provider.recall(&input.user_id, &user_message),
+            )
+            .await
+            .unwrap_or_default();
+            if !recall.is_empty() {
+                let block = format!("[Relevant Memory]\n{}\n[/Relevant Memory]", recall.join("\n"));
+                prepend_preset_context(&mut input.build_options.context, &block);
+            }
+        }
+
         let initial_send = SendMessageData {
             content: input.content,
             msg_id: first_turn_msg_id.clone(),
@@ -699,6 +726,21 @@ impl ConversationTurnOrchestrator {
             .complete_released_turn(&input.user_id, &conv_id, &turn_id, was_deleting)
             .await;
 
+        // P2-2 memory extraction — fire-and-forget on a turn that produced a
+        // reply. The extractor spawns its own work and reads the assistant
+        // side from persistence; a failure here must never touch this turn's
+        // result. Skipped for a synthetic (cron/dispatch) prompt.
+        if !final_failed {
+            if let Some(extractor) = self.service.turn_memory_extractor.read().ok().and_then(|g| g.clone()) {
+                extractor.extract_from_turn(
+                    input.user_id.clone(),
+                    conv_id.clone(),
+                    user_message,
+                    input.synthetic_prompt,
+                );
+            }
+        }
+
         ConversationTurnResult {
             status: if final_failed {
                 ConversationTurnStatus::Failed
@@ -706,6 +748,30 @@ impl ConversationTurnOrchestrator {
                 ConversationTurnStatus::Completed
             },
             error_message: if final_failed { final_error_message } else { None },
+        }
+    }
+}
+
+/// Prepend `block` to whichever preset field this session kind carries —
+/// `preset_context` for ACP / Antigravity, `preset_rules` for DreamEngine —
+/// keeping any existing value after a blank line. Used only by P2-2 memory
+/// injection.
+fn prepend_preset_context(context: &mut AgentSessionContext, block: &str) {
+    fn joined(block: &str, existing: Option<String>) -> Option<String> {
+        Some(match existing {
+            Some(prev) if !prev.trim().is_empty() => format!("{block}\n\n{prev}"),
+            _ => block.to_owned(),
+        })
+    }
+    match &mut context.kind {
+        AgentSessionKind::Acp(c) => {
+            c.config.preset_context = joined(block, c.config.preset_context.take());
+        }
+        AgentSessionKind::Antigravity(c) => {
+            c.config.preset_context = joined(block, c.config.preset_context.take());
+        }
+        AgentSessionKind::DreamEngine(c) => {
+            c.config.preset_rules = joined(block, c.config.preset_rules.take());
         }
     }
 }
@@ -1216,6 +1282,72 @@ mod tests {
 
         // Whitespace-only is as good as absent.
         assert_eq!(channel_id_from_build_options(&context_for("   ")), None);
+    }
+
+    /// P2-2 memory injection helper: hits are prepended to the kind's preset
+    /// field, an existing value is kept after a blank line, and DreamEngine
+    /// uses `preset_rules` not `preset_context`.
+    #[test]
+    fn prepend_preset_context_targets_the_right_field_per_kind() {
+        use dream_core_ai_agent::session_context::{
+            AcpSessionBuildContext, AgentSessionContext, AionrsSessionBuildContext, ConversationContext,
+            WorkspaceContext,
+        };
+        use dream_core_common::ProviderWithModel;
+
+        let base = |kind| AgentSessionContext {
+            conversation: ConversationContext {
+                conversation_id: "c".into(),
+                user_id: "u".into(),
+                agent_type: AgentType::Acp,
+                source: None,
+            },
+            workspace: WorkspaceContext {
+                path: "/w".into(),
+                stored_path: "/w".into(),
+                is_custom: false,
+            },
+            model: ProviderWithModel {
+                provider_id: "p".into(),
+                model: "m".into(),
+                use_model: None,
+            },
+            skills: vec![],
+            runtime_env: vec![],
+            team: None,
+            kind,
+        };
+
+        // ACP with an existing preset — memory goes first, old value kept.
+        let mut acp = base(AgentSessionKind::Acp(Box::new(AcpSessionBuildContext {
+            config: dream_core_api_types::AcpBuildExtra {
+                preset_context: Some("house rules".into()),
+                ..Default::default()
+            },
+            team: None,
+            belongs_to_team: false,
+            session_id: None,
+            session_snapshot: None,
+        })));
+        prepend_preset_context(&mut acp, "[Relevant Memory]\nuses pnpm\n[/Relevant Memory]");
+        let AgentSessionKind::Acp(c) = &acp.kind else {
+            unreachable!()
+        };
+        let ctx = c.config.preset_context.as_deref().unwrap();
+        assert!(ctx.starts_with("[Relevant Memory]"));
+        assert!(ctx.ends_with("house rules"));
+
+        // DreamEngine writes preset_rules, not preset_context.
+        let mut de = base(AgentSessionKind::DreamEngine(Box::new(AionrsSessionBuildContext {
+            config: Default::default(),
+            team: None,
+            belongs_to_team: false,
+        })));
+        prepend_preset_context(&mut de, "mem");
+        let AgentSessionKind::DreamEngine(c) = &de.kind else {
+            unreachable!()
+        };
+        assert_eq!(c.config.preset_rules.as_deref(), Some("mem"));
     }
 
     fn finish_outcome(needs_auth: bool) -> RelayOutcome {
