@@ -58,23 +58,24 @@ pub async fn init_database_mysql(database_url: &str) -> Result<MySqlDatabase, Db
 mod tests {
     use super::*;
 
-    /// Requires a real MySQL 8.0.16+ instance — set `DREAM_TEST_MYSQL_URL` to
-    /// run it (e.g. `mysql://root:test@localhost:13306/dream_test`). The
-    /// database must be created case-sensitively:
-    /// `CREATE DATABASE dream_test CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs`.
-    /// Skipped by default so `cargo test -p dream-core-db` stays hermetic.
+    /// Requires a real MySQL 8.0.16+ server — set `DREAM_TEST_MYSQL_URL`
+    /// (e.g. a throwaway `mysql:8` container; the URL needs no pre-created
+    /// database, the [`crate::testing`] harness provisions a per-test scratch
+    /// database with the case-sensitive collation). Skipped by default so
+    /// `cargo test -p dream-core-db` stays hermetic.
     #[tokio::test]
     async fn migrates_and_round_trips_a_user_row() {
-        let Ok(url) = std::env::var("DREAM_TEST_MYSQL_URL") else {
+        let Some(scratch) = crate::testing::mysql_test_pool().await else {
             eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
             return;
         };
+        let url = scratch.mysql_url();
 
         let db = init_database_mysql(&url).await.expect("connect + migrate");
 
         sqlx::query(
             "INSERT INTO users (id, username, password_hash, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE username = new.username",
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind("test-user-1")
         .bind("alice")
@@ -108,5 +109,6 @@ mod tests {
             .expect("cleanup");
 
         db.close().await;
+        scratch.cleanup().await.expect("drop scratch database");
     }
 }
