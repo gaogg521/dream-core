@@ -886,10 +886,11 @@ impl PlatformService {
 
     // --- Scene management (E5) ---
 
-    /// The 5 reference-product built-ins, seeded as empty templates (name +
-    /// description + job-function tags, no resource grants — see the
-    /// migration's own doc comment for why they can't ship pre-populated).
-    /// An admin fills each in via `grant_resource("scene", scene_id, ...)`.
+    /// The 5 reference-product built-ins, seeded with name + description +
+    /// job-function tags, plus a wildcard authorization package per scene
+    /// (`BUILTIN_SCENE_GRANTS` below) so a scene member reaches the tenant's
+    /// resources of the packaged types without an admin granting them one by
+    /// one.
     const BUILTIN_SCENES: [(&'static str, &'static str, &'static [&'static str]); 5] = [
         ("办公", "日常办公协作场景", &["行政", "文秘"]),
         ("IT运维", "IT 基础设施运维场景", &["运维工程师"]),
@@ -897,6 +898,39 @@ impl PlatformService {
         ("新媒体运营", "内容创作与社媒运营场景", &["内容运营", "社媒运营"]),
         ("市场营销", "市场推广与营销分析场景", &["市场专员"]),
     ];
+
+    /// The authorization package pre-granted to each built-in scene (P1-11
+    /// "场景内置授权包"): scene name → the resource types every member of
+    /// that scene may reach. Keyed by NAME because that is the only stable
+    /// join key — scene ids are generated at seed time and `(tenant_id, name)`
+    /// is the UNIQUE pair the seeder itself reconciles on. (A built-in scene
+    /// that an admin has since renamed stops matching, deliberately: rewriting
+    /// its name is active customization, and its grants — package or handmade
+    /// — are the admin's business now.)
+    ///
+    /// Why a `'*'` wildcard per type instead of an itemized list of resource
+    /// ids: every skill / MCP server / model channel / knowledge document in
+    /// this product is tenant-created at runtime — there is no shipped catalog
+    /// to enumerate, so a "preset package" of concrete ids would have to
+    /// invent rows for resources that do not exist. The wildcard is the honest
+    /// equivalent of the reference product's per-scene preset bundles: members
+    /// of 办公 reach every model channel and skill the tenant has created, and
+    /// every one they create later, with no admin upkeep — which is precisely
+    /// the practical effect those bundles deliver.
+    const BUILTIN_SCENE_GRANTS: [(&'static str, &'static [&'static str]); 5] = [
+        ("办公", &["skill", "model_channel"]),
+        ("IT运维", &["skill", "mcp", "model_channel"]),
+        ("网络安全", &["mcp", "knowledge"]),
+        ("新媒体运营", &["skill"]),
+        ("市场营销", &["skill", "model_channel"]),
+    ];
+
+    /// `granted_by` stamped on every seeded package row. Doubles as the
+    /// "already seeded" marker (see `seed_builtin_scene_grants`) and as what
+    /// an admin sees in the grant matrix: rows attributed to `builtin-scene`
+    /// came with the scene, everything else was added by a human. Regular
+    /// grants carry the acting admin's user id, so the value cannot collide.
+    const BUILTIN_SCENE_GRANTOR: &str = "builtin-scene";
 
     /// Idempotent: `(tenant_id, name)` is UNIQUE, so calling this on a tenant
     /// that already has its built-ins is a no-op. Called from `list_scenes`
@@ -922,6 +956,74 @@ impl PlatformService {
             .bind(now)
             .execute(&self.pool)
             .await?;
+        }
+        self.seed_builtin_scene_grants(tenant_id).await
+    }
+
+    /// Seed each built-in scene's wildcard package (`BUILTIN_SCENE_GRANTS`)
+    /// as `subject_type = 'scene'` grant rows, so scene members inherit them
+    /// through `effective_resource_ids` like any other scene grant.
+    ///
+    /// Runs on every `list_scenes` (tenants that predate this seeder get
+    /// backfilled on their next list), but writes at most once per tenant:
+    /// the presence of ANY `granted_by = BUILTIN_SCENE_GRANTOR` row is the
+    /// "packages were seeded" marker, and once it exists this method returns
+    /// immediately.
+    ///
+    /// The marker is deliberately TENANT-scoped, not per-scene. It has to
+    /// tell apart "old tenant, packages never seeded → backfill" from "an
+    /// admin deleted package rows on purpose → hands off". A per-scene marker
+    /// dies with the last deleted row of that scene, and the next list would
+    /// resurrect the whole package — exactly the silent re-widening the
+    /// admin's deletion says no to. With the tenant-scoped marker, deleting
+    /// one scene's package (or any subset of rows anywhere) stays sticky; an
+    /// admin who wants a package back re-adds it by hand in the grant matrix,
+    /// and those rows carry their own user id so they never re-arm this
+    /// seeder. Accepted residual edge: deleting every seeded row across ALL
+    /// five scenes erases the marker too, and the next list re-seeds — that
+    /// state is indistinguishable from "predates the seeder" using grant rows
+    /// alone (a separate marker table would mean a migration).
+    async fn seed_builtin_scene_grants(&self, tenant_id: &str) -> Result<(), PlatformError> {
+        let seeded: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM one_resource_grants \
+             WHERE tenant_id = ? AND subject_type = 'scene' AND granted_by = ?",
+        )
+        .bind(tenant_id)
+        .bind(Self::BUILTIN_SCENE_GRANTOR)
+        .fetch_one(&self.pool)
+        .await?;
+        if seeded {
+            return Ok(());
+        }
+        for (name, resource_types) in Self::BUILTIN_SCENE_GRANTS {
+            // `built_in = 1` keeps a custom scene that reuses the original
+            // built-in name (possible once the admin renames the built-in
+            // away) from inheriting the package.
+            let scene_id: Option<(String,)> =
+                sqlx::query_as("SELECT id FROM one_scenes WHERE tenant_id = ? AND name = ? AND built_in = 1")
+                    .bind(tenant_id)
+                    .bind(name)
+                    .fetch_optional(&self.pool)
+                    .await?;
+            let Some((scene_id,)) = scene_id else { continue };
+            for resource_type in resource_types {
+                // Idempotent: the table's UNIQUE constraint plus the
+                // existing-row lookup in `grant_resource` make a duplicate
+                // insert impossible, and an identical tuple an admin happened
+                // to create first simply wins (its `granted_by` is kept).
+                // Two truly concurrent first lists could still trip the
+                // UNIQUE constraint and fail one request; a retry is then a
+                // clean no-op.
+                self.grant_resource(
+                    tenant_id,
+                    "scene",
+                    &scene_id,
+                    resource_type,
+                    GRANT_ALL_RESOURCES,
+                    Self::BUILTIN_SCENE_GRANTOR,
+                )
+                .await?;
+            }
         }
         Ok(())
     }
@@ -3872,6 +3974,167 @@ mod tests {
             remaining_grants.is_empty(),
             "grants on the deleted scene must be cleaned up too"
         );
+    }
+
+    // --- P1-11 built-in scene authorization packages ---
+
+    /// First `list_scenes` stamps every built-in scene with exactly its
+    /// role's wildcard package, every row attributed to `builtin-scene`.
+    #[tokio::test]
+    async fn first_list_seeds_each_builtin_scene_its_package() {
+        let (_db, service) = setup().await;
+        let scenes = service.list_scenes("t1").await.unwrap();
+        let id_of = |name: &str| {
+            scenes
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap_or_else(|| panic!("missing built-in scene {name}"))
+                .id
+                .clone()
+        };
+
+        for (name, resource_types) in PlatformService::BUILTIN_SCENE_GRANTS {
+            let grants = service
+                .list_grants("t1", Some("scene"), Some(&id_of(name)), None)
+                .await
+                .unwrap();
+            let mut types: Vec<_> = grants.iter().map(|g| g.resource_type.as_str()).collect();
+            types.sort_unstable();
+            let mut want = resource_types.to_vec();
+            want.sort_unstable();
+            assert_eq!(types, want, "package mismatch for built-in scene {name}");
+            assert!(
+                grants
+                    .iter()
+                    .all(|g| g.resource_id == GRANT_ALL_RESOURCES && g.granted_by == "builtin-scene"),
+                "package rows for {name} must be '*' rows attributed to builtin-scene"
+            );
+        }
+    }
+
+    /// Re-listing neither duplicates nor errors — the marker row short-
+    /// circuits the seeder on later lists, and `grant_resource` dedupes.
+    #[tokio::test]
+    async fn builtin_package_seeding_is_idempotent_across_relists() {
+        let (_db, service) = setup().await;
+        service.list_scenes("t1").await.unwrap();
+        // 2 + 3 + 2 + 1 + 2 = one '*' row per entry of BUILTIN_SCENE_GRANTS.
+        let before = service
+            .list_grants("t1", Some("scene"), None, None)
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(before, 10);
+
+        service.list_scenes("t1").await.unwrap();
+        service.list_scenes("t1").await.unwrap();
+        let after = service.list_grants("t1", Some("scene"), None, None).await.unwrap();
+        assert_eq!(after.len(), before, "re-listing must not duplicate package rows");
+    }
+
+    /// Deleting a built-in package is the admin saying no. The marker is
+    /// tenant-scoped, so it survives one scene's package being emptied and
+    /// the next list must not quietly re-widen that scene — while scenes the
+    /// admin left alone keep theirs.
+    #[tokio::test]
+    async fn deleting_a_builtin_package_does_not_resurrect_on_relist() {
+        let (_db, service) = setup().await;
+        let scenes = service.list_scenes("t1").await.unwrap();
+        let office = scenes.iter().find(|s| s.name == "办公").unwrap();
+        let itops = scenes.iter().find(|s| s.name == "IT运维").unwrap();
+
+        for grant in service
+            .list_grants("t1", Some("scene"), Some(&office.id), None)
+            .await
+            .unwrap()
+        {
+            service.revoke_resource("t1", &grant.id).await.unwrap();
+        }
+        service.list_scenes("t1").await.unwrap();
+
+        let office_after = service
+            .list_grants("t1", Some("scene"), Some(&office.id), None)
+            .await
+            .unwrap();
+        assert!(
+            office_after.is_empty(),
+            "a deleted built-in package must not come back on the next list"
+        );
+        assert_eq!(
+            service
+                .list_grants("t1", Some("scene"), Some(&itops.id), None)
+                .await
+                .unwrap()
+                .len(),
+            3,
+            "other scenes' packages are untouched"
+        );
+    }
+
+    /// Backfill: a tenant whose built-in scene rows predate the seeder gets
+    /// its package on the next list (the pre-existing row is adopted by id);
+    /// a non-built-in scene never receives one, across seeding passes.
+    #[tokio::test]
+    async fn old_tenant_builtin_scenes_are_backfilled_and_custom_scenes_get_nothing() {
+        let (db, service) = setup().await;
+        // Simulate a pre-P1-11 tenant: the 办公 row already exists, no grants.
+        sqlx::query(
+            "INSERT INTO one_scenes (id, tenant_id, name, description, job_functions, built_in, created_at, updated_at) \
+             VALUES ('scene_old', 't1', '办公', NULL, '[]', 1, 1, 1)",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        service.create_scene("t1", "Custom", None, &[]).await.unwrap();
+
+        let scenes = service.list_scenes("t1").await.unwrap();
+        let office = scenes.iter().find(|s| s.name == "办公").unwrap();
+        assert_eq!(
+            office.id, "scene_old",
+            "the pre-existing row must be adopted, not duplicated"
+        );
+        assert_eq!(
+            service
+                .list_grants("t1", Some("scene"), Some("scene_old"), None)
+                .await
+                .unwrap()
+                .len(),
+            2,
+            "the old tenant's built-in scene is backfilled with its package"
+        );
+
+        let custom = scenes.iter().find(|s| s.name == "Custom").unwrap();
+        assert!(
+            service
+                .list_grants("t1", Some("scene"), Some(&custom.id), None)
+                .await
+                .unwrap()
+                .is_empty(),
+            "non-built-in scenes never receive a package"
+        );
+    }
+
+    /// The point of the packages end to end: a scene member's
+    /// `effective_resource_ids` flips to `all` for the packaged types and
+    /// stays empty for types only scenes they are not in carry.
+    #[tokio::test]
+    async fn wildcard_package_reaches_scene_members_through_effective_resource_ids() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "alice", "t1", "member").await;
+        let scenes = service.list_scenes("t1").await.unwrap();
+        let office = scenes.iter().find(|s| s.name == "办公").unwrap().id.clone();
+        service.add_scene_member("t1", &office, "alice").await.unwrap();
+
+        for rt in ["skill", "model_channel"] {
+            let eff = service.effective_resource_ids("t1", "alice", rt).await.unwrap();
+            assert!(eff.all, "an 办公 member must reach every {rt} via the wildcard package");
+            assert!(eff.resource_ids.is_empty(), "all=true makes the id list irrelevant");
+        }
+        for rt in ["mcp", "knowledge"] {
+            let eff = service.effective_resource_ids("t1", "alice", rt).await.unwrap();
+            assert!(!eff.all, "alice is not in a scene carrying the {rt} package");
+            assert!(eff.resource_ids.is_empty());
+        }
     }
 
     // --- E5 security policy baseline ---
