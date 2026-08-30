@@ -33,11 +33,13 @@ use dream_core_cron::types::schedule_from_dto;
 use dream_core_db::{ConversationRowUpdate, IConversationRepository, IProviderRepository};
 use dream_core_team::TeamSessionService;
 
+use crate::catalog;
 use crate::error::EmployeeError;
 use crate::models::{
-    CONTENT_RESOURCE_TYPES, ContentCategoryRow, ContentTagRow, EMPLOYEE_GRANT_ALL, EMPLOYEE_GRANT_SUBJECT_TYPES,
-    EMPLOYEE_PERMISSION_MANAGE, EMPLOYEE_PERMISSION_USE, EmployeeGrantRow, EmployeeRunRow, PersonalAgentDto,
-    PersonalAgentRow, RUN_FAILED, RUN_RUNNING, RUN_SUCCESS, TRIGGER_BREAKDOWN, TRIGGER_CRON, TRIGGER_MANUAL,
+    CONTENT_RESOURCE_TYPES, CatalogEntryDto, ContentCategoryRow, ContentTagRow, EMPLOYEE_GRANT_ALL,
+    EMPLOYEE_GRANT_SUBJECT_TYPES, EMPLOYEE_PERMISSION_MANAGE, EMPLOYEE_PERMISSION_USE, EmployeeGrantRow,
+    EmployeeRunRow, PersonalAgentDto, PersonalAgentRow, RUN_FAILED, RUN_RUNNING, RUN_SUCCESS, TRIGGER_BREAKDOWN,
+    TRIGGER_CRON, TRIGGER_MANUAL,
 };
 
 /// Outcome of a blocking run: the run/conversation linkage plus the agent's
@@ -178,8 +180,9 @@ fn build_run_prompt(agent: &PersonalAgentRow) -> String {
 
 /// Employees a user may *use* (own or shared within their tenant). Free
 /// function so the sharing predicate can be unit-tested against a bare pool
-/// without constructing the full `EmployeeService`.
-async fn select_agent_for_use(
+/// without constructing the full `EmployeeService` — `catalog.rs`'s tests
+/// reuse it for the same reason (hence `pub(crate)`).
+pub(crate) async fn select_agent_for_use(
     pool: &SqlitePool,
     user_id: &str,
     tenant_id: &str,
@@ -412,9 +415,10 @@ async fn effective_employee_permission(
 
 /// Upsert one subject's grant on one employee (or `EMPLOYEE_GRANT_ALL`) — same
 /// `ON CONFLICT ... DO UPDATE` upsert convention as the other four resource
-/// types' matrix.
+/// types' matrix. `pub(crate)` so `catalog.rs`'s tests exercise the same
+/// grant path the routes use.
 #[allow(clippy::too_many_arguments)]
-async fn grant_employee_access(
+pub(crate) async fn grant_employee_access(
     pool: &SqlitePool,
     tenant_id: &str,
     subject_type: &str,
@@ -1097,6 +1101,36 @@ impl EmployeeService {
         published: bool,
     ) -> Result<(), EmployeeError> {
         set_published_batch(&self.pool, tenant_id, ids, published).await
+    }
+
+    // ── digital-employee catalog (P1-2) ───────────────────────────────
+    //
+    // Thin wrappers around `catalog.rs` free functions, same testability
+    // shape as the category/tag wrappers below (bare-pool unit tests, no
+    // full-service construction).
+
+    /// The admin catalog page payload: every catalog entry plus this tenant's
+    /// adoption status. Runs the tenant-lazy seed first — see `catalog.rs`'s
+    /// module docs for the placeholder/instantiate semantics.
+    pub async fn list_catalog(&self, tenant_id: &str) -> Result<Vec<CatalogEntryDto>, EmployeeError> {
+        catalog::list_catalog(&self.pool, tenant_id).await
+    }
+
+    /// Instantiate a catalog entry as this tenant's formal digital employee
+    /// (owner = the initiating admin). Idempotent — re-instantiating returns
+    /// the existing instance. Admin-governed by the caller (routes run
+    /// `require_registry_admin` first, like every other `admin/*` route).
+    pub async fn instantiate_catalog_entry(
+        &self,
+        tenant_id: &str,
+        admin_user_id: &str,
+        catalog_id: &str,
+    ) -> Result<PersonalAgentDto, EmployeeError> {
+        Ok(
+            catalog::instantiate_catalog_entry(&self.pool, tenant_id, admin_user_id, catalog_id)
+                .await?
+                .into(),
+        )
     }
 
     /// Same idiom as `dream_domain_devops::DevopsService::user_org_role`:

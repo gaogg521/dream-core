@@ -36,6 +36,13 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "employee_008_content_origin",
         include_str!("../migrations/008_content_origin.sql"),
     ),
+    // P1-2: the global digital-employee catalog (28 prebuilt ops/office
+    // personas). See the migration's own doc comment and `catalog.rs` for the
+    // seed/instantiate mechanics built on top of it.
+    (
+        "employee_009_employee_catalog",
+        include_str!("../migrations/009_employee_catalog.sql"),
+    ),
 ];
 
 /// Run all pending one-employee migrations. Idempotent.

@@ -9,6 +9,7 @@
 //! route merge in dream-app, and public upstream service APIs
 //! (ConversationService::create / run_agent_turn).
 
+pub mod catalog;
 pub mod error;
 pub mod migrate;
 pub mod models;
@@ -19,6 +20,7 @@ pub mod tenant;
 
 pub use error::EmployeeError;
 pub use migrate::run_one_employee_migrations;
+pub use models::CatalogEntryDto;
 pub use routes::one_employee_routes;
 pub use service::{EmployeeService, RunReply};
 pub use state::OneEmployeeRouterState;

@@ -44,10 +44,11 @@ pub struct PersonalAgentRow {
     pub next_run_at: Option<i64>,
     /// 'private' (owner-only) or 'shared' (usable by any same-tenant member).
     pub visibility: String,
-    /// 'self_built' (admin/owner created it directly) or 'market' (reserved
+    /// `'self_built'` (admin/owner created it directly), `'market'` (reserved
     /// for the not-yet-built remote-sync round — see `origin.rs`… no such
-    /// file; see migration 008's own doc comment). P1-1 round 1 only ever
-    /// writes 'self_built'.
+    /// file; see migration 008's own doc comment), or `'catalog'` (P1-2:
+    /// seeded catalog placeholder — owner is the `'catalog'` sentinel — or a
+    /// formal instance created from a catalog entry; see `catalog.rs`).
     pub origin: String,
     pub category_id: Option<String>,
     /// Whether this employee shows up in listings at all for a non-owner —
@@ -214,4 +215,52 @@ pub struct EmployeeRunRow {
     pub trigger_source: String,
     pub started_at: i64,
     pub finished_at: Option<i64>,
+}
+
+/// One catalog entry (P1-2), straight from the global `one_employee_catalog`
+/// reference table seeded by migration 009. No tenant semantics here —
+/// per-tenant adoption is represented by rows in `one_personal_agents` (see
+/// `catalog.rs`).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CatalogEntryRow {
+    pub id: String,
+    /// Stable slug (`k8s-ops`, `hr-assistant`, …). The catalog's stable
+    /// identifier; the numeric `id` is the migration-assigned row key.
+    pub key: String,
+    pub name: String,
+    pub description: String,
+    /// English system prompt (responsibilities / toolchain / boundaries).
+    /// On seed and instantiate it is stored in
+    /// `one_personal_agents.automation_config.instructions` so the run path
+    /// (`build_run_prompt`) picks it up with no changes.
+    pub persona: String,
+    /// JSON string array — display hints for the catalog UI only; never
+    /// resolved against the skill registry.
+    pub recommended_skills: String,
+    pub created_at: i64,
+}
+
+/// One catalog entry plus THIS tenant's adoption status — the admin catalog
+/// page payload.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogEntryDto {
+    pub id: String,
+    pub key: String,
+    pub name: String,
+    pub description: String,
+    pub persona: String,
+    pub recommended_skills: Vec<String>,
+    /// Whether a formal instance (owner ≠ the `'catalog'` sentinel) exists in
+    /// this tenant for this entry.
+    pub instantiated: bool,
+    /// The formal instance's employee id when instantiated — lets the UI jump
+    /// straight to the registry row.
+    pub instance_id: Option<String>,
+    /// Authorization summary: how many T12 matrix grants
+    /// (`one_employee_grants`) target this entry's seeded placeholder row
+    /// and/or its formal instance. Zero means "visible in the registry but
+    /// authorized to nobody" — the honest "catalog is visible, use is a
+    /// governance action" state.
+    pub grant_count: i64,
 }

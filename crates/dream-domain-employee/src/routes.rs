@@ -41,6 +41,14 @@ pub fn one_employee_routes(state: OneEmployeeRouterState) -> Router {
                 .put(grant_employee_access)
                 .delete(revoke_employee_access),
         )
+        // Digital-employee catalog (P1-2, align-openocta): prebuilt ops/office
+        // personas. Listing is read-only; instantiate is the admin-triggered
+        // governance action (never auto-bulk-seeded as usable employees).
+        .route("/api/one/employee/admin/catalog", get(list_catalog))
+        .route(
+            "/api/one/employee/admin/catalog/{id}/instantiate",
+            post(instantiate_catalog),
+        )
         // Content categories/tags (P1-1 round 1), shared across
         // skill/mcp/employee — see migration 007's own doc comment for why
         // this crate owns the tables even though the routes for skill/mcp
@@ -64,12 +72,25 @@ pub fn one_employee_routes(state: OneEmployeeRouterState) -> Router {
 }
 
 async fn require_registry_admin(state: &OneEmployeeRouterState, user_id: &str) -> Result<(), EmployeeError> {
-    match state.service.user_org_role(user_id).await? {
-        None => Ok(()),
-        Some(role) if role == "org_admin" || role == "system_admin" || role == "admin" => Ok(()),
-        Some(_) => Err(EmployeeError::Forbidden(
+    if role_is_registry_admin(state.service.user_org_role(user_id).await?.as_deref()) {
+        Ok(())
+    } else {
+        Err(EmployeeError::Forbidden(
             "the digital-employee registry and its authorization matrix are admin-only".into(),
-        )),
+        ))
+    }
+}
+
+/// Pure role→decision mapping of the registry-admin gate, split out from
+/// `require_registry_admin` so the bad-path is unit-testable without
+/// constructing the full service (this crate's tests never build one — the
+/// service's constructor pulls in the whole conversation stack). `None` means
+/// one-org isn't initialized at all (personal / standalone deployment): no
+/// org, no gate — same convention `user_org_role` documents.
+fn role_is_registry_admin(role: Option<&str>) -> bool {
+    match role {
+        None => true,
+        Some(role) => matches!(role, "org_admin" | "system_admin" | "admin"),
     }
 }
 
@@ -588,4 +609,61 @@ async fn set_resource_tags(
         .set_resource_tags(&body.resource_type, &body.resource_id, &body.tag_ids)
         .await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+// --- admin: digital-employee catalog (P1-2) ---
+
+/// Every catalog entry plus this tenant's adoption status (instantiated? /
+/// grant summary). Runs the tenant-lazy placeholder seed inside — see
+/// `catalog.rs`'s module docs for why the seed only creates registry-visible,
+/// grant-able placeholder rows and never auto-grants anyone.
+async fn list_catalog(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<crate::models::CatalogEntryDto>>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(state.service.list_catalog(&tenant).await?)))
+}
+
+/// Instantiate a catalog entry as this tenant's formal digital employee,
+/// owned by the initiating admin. Deliberately a per-entry governance action
+/// (not auto-bulk-seeding), and idempotent: re-instantiating returns the
+/// existing instance. Responds with the full employee DTO so the frontend can
+/// jump straight to it in the registry.
+async fn instantiate_catalog(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(catalog_id): Path<String>,
+) -> Result<Json<ApiResponse<PersonalAgentDto>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    let agent = state
+        .service
+        .instantiate_catalog_entry(&tenant, &user.id, &catalog_id)
+        .await?;
+    Ok(Json(ApiResponse::ok(agent)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Bad-path coverage for the registry-admin gate's decision logic (the
+    /// SQL role resolution behind it is `EmployeeService::user_org_role`,
+    /// covered on the devops side of the same convention). Non-admin roles
+    /// must not pass; the personal-edition "no org" case and the three admin
+    /// roles must.
+    #[test]
+    fn registry_admin_gate_rejects_non_admin_roles() {
+        assert!(role_is_registry_admin(None), "no one-org → no gate (personal edition)");
+        assert!(role_is_registry_admin(Some("admin")));
+        assert!(role_is_registry_admin(Some("org_admin")));
+        assert!(role_is_registry_admin(Some("system_admin")));
+
+        assert!(!role_is_registry_admin(Some("member")));
+        assert!(!role_is_registry_admin(Some("developer")));
+        assert!(!role_is_registry_admin(Some("viewer")));
+        assert!(!role_is_registry_admin(Some("")));
+    }
 }
