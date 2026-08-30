@@ -30,6 +30,62 @@ impl EmbeddingConfig {
     }
 }
 
+/// Environment variables that supply the *bundled* embedding endpoint (P3-2).
+/// A deployment shipping an embedding container (see `dream-en/deploy`) sets
+/// these on the backend so RAG / knowledge bases work with zero admin
+/// configuration; an admin who later fills in `one_rag_config` overrides them.
+/// The API key is optional — a co-located text-embeddings-inference container
+/// needs none.
+pub const ENV_EMBEDDING_BASE_URL: &str = "DREAM_EMBEDDING_BASE_URL";
+pub const ENV_EMBEDDING_MODEL: &str = "DREAM_EMBEDDING_MODEL";
+pub const ENV_EMBEDDING_API_KEY: &str = "DREAM_EMBEDDING_API_KEY";
+
+/// Read the three bundled-embedding env vars (`None` for absent / non-UTF-8).
+pub fn env_embedding_config() -> (Option<String>, Option<String>, Option<String>) {
+    (
+        std::env::var(ENV_EMBEDDING_BASE_URL).ok(),
+        std::env::var(ENV_EMBEDDING_MODEL).ok(),
+        std::env::var(ENV_EMBEDDING_API_KEY).ok(),
+    )
+}
+
+/// Resolve the effective embedding config with a clear precedence:
+///
+/// 1. an explicitly stored `one_rag_config` row (both `base_url` and `model`
+///    non-blank) — the admin's own choice always wins;
+/// 2. otherwise the deployment default from `env_*` — the bundled container;
+/// 3. otherwise `None` — the caller reports "not configured", unchanged from
+///    before this fallback existed.
+///
+/// A blank stored row (an admin who cleared the form) must NOT shadow the
+/// bundled default, hence the non-blank guard rather than a plain `is_some`.
+pub fn resolve_embedding_config(
+    stored: Option<(String, String, String)>,
+    env_base_url: Option<String>,
+    env_model: Option<String>,
+    env_api_key: Option<String>,
+) -> Option<EmbeddingConfig> {
+    if let Some((base_url, api_key, model)) = stored {
+        if !base_url.trim().is_empty() && !model.trim().is_empty() {
+            return Some(EmbeddingConfig {
+                base_url,
+                api_key,
+                model,
+            });
+        }
+    }
+    let base_url = env_base_url?;
+    let model = env_model?;
+    if base_url.trim().is_empty() || model.trim().is_empty() {
+        return None;
+    }
+    Some(EmbeddingConfig {
+        base_url,
+        api_key: env_api_key.unwrap_or_default(),
+        model,
+    })
+}
+
 #[derive(Serialize)]
 struct EmbeddingRequest<'a> {
     model: &'a str,
@@ -251,6 +307,59 @@ mod tests {
     fn pack_unpack_roundtrip() {
         let v = vec![0.5f32, -1.25, 3.0, 0.0];
         assert_eq!(unpack_embedding(&pack_embedding(&v)), v);
+    }
+
+    #[test]
+    fn embedding_config_prefers_a_stored_row_over_the_bundled_default() {
+        let cfg = resolve_embedding_config(
+            Some((
+                "https://api.openai.com/v1".to_owned(),
+                "sk-x".to_owned(),
+                "text-embedding-3-small".to_owned(),
+            )),
+            Some("http://embedding:80/v1".to_owned()),
+            Some("Qwen/Qwen3-Embedding-0.6B".to_owned()),
+            None,
+        )
+        .expect("stored row is usable");
+        assert_eq!(cfg.base_url, "https://api.openai.com/v1");
+        assert_eq!(cfg.model, "text-embedding-3-small");
+        assert_eq!(cfg.api_key, "sk-x");
+    }
+
+    #[test]
+    fn embedding_config_falls_back_to_the_bundled_default() {
+        let cfg = resolve_embedding_config(
+            None,
+            Some("http://embedding:80/v1".to_owned()),
+            Some("Qwen/Qwen3-Embedding-0.6B".to_owned()),
+            None,
+        )
+        .expect("env default is usable");
+        assert_eq!(cfg.base_url, "http://embedding:80/v1");
+        assert_eq!(cfg.model, "Qwen/Qwen3-Embedding-0.6B");
+        assert_eq!(cfg.api_key, "");
+    }
+
+    #[test]
+    fn embedding_config_ignores_a_blank_stored_row() {
+        let cfg = resolve_embedding_config(
+            Some(("  ".to_owned(), String::new(), String::new())),
+            Some("http://embedding:80/v1".to_owned()),
+            Some("m".to_owned()),
+            None,
+        )
+        .expect("blank row must not shadow the default");
+        assert_eq!(cfg.base_url, "http://embedding:80/v1");
+    }
+
+    #[test]
+    fn embedding_config_is_none_when_neither_source_is_set() {
+        assert!(resolve_embedding_config(None, None, None, None).is_none());
+        // base url present but model missing → still unusable.
+        assert!(resolve_embedding_config(None, Some("http://embedding:80/v1".to_owned()), None, None).is_none());
+        // blank env values are treated as absent.
+        assert!(resolve_embedding_config(None, Some("  ".to_owned()), Some("m".to_owned()), None).is_none());
     }
 
     #[test]

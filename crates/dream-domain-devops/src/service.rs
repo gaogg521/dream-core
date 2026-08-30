@@ -1541,22 +1541,39 @@ impl DevopsService {
         )
         .fetch_optional(&self.pool)
         .await?;
-        Ok(match row {
-            Some((base_url, api_key, model, dimensions, updated_at)) => RagConfigDto {
-                base_url,
-                model,
-                has_key: !api_key.trim().is_empty(),
-                dimensions,
-                updated_at,
+        if let Some((base_url, api_key, model, dimensions, updated_at)) = &row {
+            if !base_url.trim().is_empty() && !model.trim().is_empty() {
+                return Ok(RagConfigDto {
+                    base_url: base_url.clone(),
+                    model: model.clone(),
+                    has_key: !api_key.trim().is_empty(),
+                    dimensions: *dimensions,
+                    updated_at: *updated_at,
+                });
+            }
+        }
+        // No admin-configured row → surface the bundled default (P3-2) so the
+        // config UI shows the deployment's embedding endpoint instead of a
+        // blank form. `updated_at: 0` marks it as never set by an admin.
+        let (env_base, env_model, env_key) = crate::embedding::env_embedding_config();
+        Ok(
+            match crate::embedding::resolve_embedding_config(None, env_base, env_model, env_key) {
+                Some(cfg) => RagConfigDto {
+                    base_url: cfg.base_url,
+                    model: cfg.model,
+                    has_key: !cfg.api_key.trim().is_empty(),
+                    dimensions: None,
+                    updated_at: 0,
+                },
+                None => RagConfigDto {
+                    base_url: String::new(),
+                    model: String::new(),
+                    has_key: false,
+                    dimensions: None,
+                    updated_at: 0,
+                },
             },
-            None => RagConfigDto {
-                base_url: String::new(),
-                model: String::new(),
-                has_key: false,
-                dimensions: None,
-                updated_at: 0,
-            },
-        })
+        )
     }
 
     /// Upsert the embedding config. `api_key = None` keeps the stored key
@@ -1596,13 +1613,9 @@ impl DevopsService {
             sqlx::query_as("SELECT base_url, api_key, model FROM one_rag_config WHERE id = 'default'")
                 .fetch_optional(&self.pool)
                 .await?;
-        let (base_url, api_key, model) =
-            row.ok_or_else(|| DevopsError::BadRequest("RAG embedding endpoint not configured".into()))?;
-        Ok(EmbeddingConfig {
-            base_url,
-            api_key,
-            model,
-        })
+        let (env_base, env_model, env_key) = crate::embedding::env_embedding_config();
+        crate::embedding::resolve_embedding_config(row, env_base, env_model, env_key)
+            .ok_or_else(|| DevopsError::BadRequest("RAG embedding endpoint not configured".into()))
     }
 
     /// Set a document's inline content (the text to embed on process).
