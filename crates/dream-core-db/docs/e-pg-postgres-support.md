@@ -1,5 +1,11 @@
 # E-PG: PostgreSQL support for the enterprise deployment
 
+> **2026-08-31 更新：企业版主存储改走 MySQL**，不是 Postgres（用户拍板——运维栈现成是 MySQL，
+> 移植工作量更小：MySQL 占位符跟 SQLite 一样是 `?`，省掉 ~200 处 `?`→`$1` 重写）。
+> P3-3 的实施方案见 [`enterprise-db-p3-3-implementation-plan.zh-CN.md`](enterprise-db-p3-3-implementation-plan.zh-CN.md)。
+> **本文件描述的 PG 第一片（`src/postgres.rs` + `migrations_postgres/001_users.sql` + sqlx `postgres` feature）
+> 保留、休眠**——一共约 150 行 + 1 个迁移文件，删了没意义，当「以后若要换 PG」的前置工作留着。
+
 Status as of 2026-08-25: **first slice landed and verified against a real
 Postgres instance**; full parity is not done. This doc is the honest map of
 what exists, what doesn't, and why the chosen approach looks the way it does.
