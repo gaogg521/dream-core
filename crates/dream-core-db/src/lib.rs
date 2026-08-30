@@ -3,11 +3,15 @@
 //! SQLite database layer: init, migrations, repository traits, and implementations.
 mod agent_binding;
 mod database;
+mod dialect;
 mod error;
 mod instance_lock;
 mod legacy_handoff;
 mod migrate_repair;
+mod migrate_runner;
 pub mod models;
+mod mysql;
+mod pool;
 mod postgres;
 mod repository;
 
@@ -20,11 +24,13 @@ pub use database::{
     init_database_memory, init_database_staged, init_database_staged_with_options, init_database_with_options,
     latest_known_migration_version, maybe_copy_legacy_database,
 };
+pub use dialect::{DbValue, day_bucket_expr};
 pub use error::{
     DbError, SQLITE_BUSY_MESSAGE_MARKERS, SQLITE_UNIQUE_VIOLATION_MARKER, message_indicates_busy,
     message_indicates_unique_violation,
 };
 pub use instance_lock::{DataDirInstanceGuard, instance_lock_path};
+pub use migrate_runner::{MigrationSet, run_ledgered_migrations};
 pub use models::{
     AgentMetadataRow, AssistantDefinitionRow, AssistantOverlayRow, AssistantOverrideRow, AssistantPreferenceRow,
     AssistantRow, ClaudeBridgeConfig, CodexBridgeConfig, ConversationArtifactRow, ConversationAssistantSnapshotRow,
@@ -34,6 +40,8 @@ pub use models::{
     UpsertAssistantOverlayParams, UpsertAssistantPreferenceParams, UpsertConversationAssistantSnapshotParams,
     UpsertMarketplacePersonaParams, UpsertOverrideParams, UserStatus, UserType,
 };
+pub use mysql::{MySqlDatabase, init_database_mysql};
+pub use pool::{DbBackend, DbPool};
 pub use postgres::{PgDatabase, init_database_postgres};
 pub use repository::channel::UpdatePluginStatusParams;
 pub use repository::conversation::{
