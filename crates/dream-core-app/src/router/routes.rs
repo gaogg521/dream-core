@@ -1563,6 +1563,32 @@ struct MatrixGrantSource {
     org: std::sync::Arc<dream_domain_org::OrgService>,
 }
 
+/// P1-5 config-vault consumption seam: expands `{{config.<set>.<key>}}` in
+/// distributed skill bodies for a member's team-sync fetch. Resolves the
+/// viewer's tenant, then hands the content to the platform vault. Unreadable
+/// tenant / vault => content passes through untouched (a member's skills must
+/// not vanish because the enterprise plane hiccuped).
+#[cfg(feature = "enterprise")]
+struct PlatformConfigResolver {
+    platform: std::sync::Arc<dream_domain_platform::PlatformService>,
+    org: std::sync::Arc<dream_domain_org::OrgService>,
+}
+
+#[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
+impl dream_domain_devops::config_resolver::ConfigResolver for PlatformConfigResolver {
+    async fn resolve(&self, viewer_user_id: &str, content: &str) -> String {
+        let tenant_id = match self.org.tenant_of(viewer_user_id).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(user_id = viewer_user_id, error = %e, "config resolver: no tenant for viewer; leaving tokens unexpanded");
+                return content.to_owned();
+            }
+        };
+        self.platform.resolve_config_content(&tenant_id, content).await
+    }
+}
+
 #[async_trait::async_trait]
 #[cfg(feature = "enterprise")]
 impl dream_domain_devops::grants::ResourceGrantSource for MatrixGrantSource {
@@ -1690,6 +1716,10 @@ pub(crate) struct GovernancePlane {
     /// Same reason: the matrix needs both the platform service and the org
     /// service, and this is the only place that holds both.
     pub grant_source: std::sync::Arc<dyn dream_domain_devops::grants::ResourceGrantSource>,
+    /// P1-5 config-vault resolver, wired into one-devops next to `grant_source`
+    /// (same both-services-here reason). Expands `{{config.…}}` in a member's
+    /// team-synced skills.
+    pub config_resolver: std::sync::Arc<dyn dream_domain_devops::config_resolver::ConfigResolver>,
     /// Handed back so the terminal-tool approval gate (`PlatformToolCallSecurityGate`)
     /// can create tasks and block on decisions without a second service over
     /// the same pool.
@@ -2001,6 +2031,11 @@ pub(crate) fn build_governance_plane(
             platform: one_platform_service.clone(),
             org: one_org_service.clone(),
         });
+    let config_resolver: std::sync::Arc<dyn dream_domain_devops::config_resolver::ConfigResolver> =
+        std::sync::Arc::new(PlatformConfigResolver {
+            platform: one_platform_service.clone(),
+            org: one_org_service.clone(),
+        });
 
     // one-workflow routes (/api/workflow/*) — the approval subsystem (P2-1).
     // Members submit and watch their own tasks; the pending queue and every
@@ -2038,6 +2073,7 @@ pub(crate) fn build_governance_plane(
         sso_admin: one_sso_admin,
         tenant_resolver,
         grant_source,
+        config_resolver,
         workflow_service: one_workflow_service,
         license_gate,
         password_gate,
@@ -2177,6 +2213,7 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
     // the matrix too, or an admin would be shown a different set of skills here
     // than the members they granted them to actually get.
     one_devops_service.set_grants(governance.grant_source.clone());
+    one_devops_service.set_config_resolver(governance.config_resolver.clone());
 
     let one_devops_state = dream_domain_devops::OneDevopsRouterState::new(one_devops_service)
         .with_tenant_resolver(governance.tenant_resolver.clone());
@@ -2558,6 +2595,8 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // shared handle rather than a builder.
     #[cfg(feature = "enterprise")]
     one_devops_service.set_grants(governance.grant_source.clone());
+    #[cfg(feature = "enterprise")]
+    one_devops_service.set_config_resolver(governance.config_resolver.clone());
 
     // one-employee digital employee routes (/api/one/employee/*).
     // Wire the team session service so /run-team can drive existing team

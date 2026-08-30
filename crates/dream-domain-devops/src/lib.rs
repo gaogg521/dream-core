@@ -21,6 +21,7 @@
 
 pub mod api_assets;
 pub mod breakdown;
+pub mod config_resolver;
 pub mod dlp_service;
 pub mod embedding;
 pub mod error;

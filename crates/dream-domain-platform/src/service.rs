@@ -3309,6 +3309,88 @@ impl PlatformService {
             Err(e) => Err(e.into()),
         }
     }
+
+    /// P1-5 consumption side: expand `{{config.<set-alias>.<key>}}` tokens in
+    /// `content` using `tenant_id`'s vault. Sensitive entries are decrypted
+    /// here (the one place a plaintext value is allowed to leave this crate —
+    /// bound for the member's SKILL.md, which is exactly what the reference
+    /// syntax is for). An unknown set or key is left verbatim.
+    ///
+    /// Called from the devops seam only for the member (non-privileged)
+    /// registry read, so an admin console list still shows the raw tokens.
+    pub async fn resolve_config_content(&self, tenant_id: &str, content: &str) -> String {
+        if !content.contains("{{config.") {
+            return content.to_owned();
+        }
+        // One query for the tenant's whole vault: a skill rarely references
+        // more than a couple of keys, but this keeps it to a single round
+        // trip regardless of token count.
+        let rows: Vec<(String, String, String, bool)> = sqlx::query_as(
+            "SELECT s.name, e.key, e.value, e.sensitive \
+             FROM one_config_entries e JOIN one_config_sets s ON s.id = e.set_id \
+             WHERE s.tenant_id = ?",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+        let mut lookup: std::collections::HashMap<(String, String), String> = std::collections::HashMap::new();
+        for (set_name, key, stored, sensitive) in rows {
+            let value = if sensitive {
+                match decrypt_string(&stored, &self.encryption_key) {
+                    Ok(v) => v,
+                    // A row that cannot be decrypted is left unresolved
+                    // rather than substituted with garbage.
+                    Err(_) => continue,
+                }
+            } else {
+                stored
+            };
+            lookup.insert((set_name, key), value);
+        }
+        expand_config_tokens(content, |set, key| {
+            lookup.get(&(set.to_owned(), key.to_owned())).cloned()
+        })
+    }
+}
+
+/// Rewrite `{{config.<set>.<key>}}` tokens in `content`, calling `lookup` for
+/// each `(set, key)` pair — `None` leaves the token untouched. The set alias
+/// is the first dotted segment, the key is the remainder (so
+/// `{{config.api.base.url}}` splits as set `api`, key `base.url`), matching
+/// the `{{config.<name>.` needle the reference-count query uses. Pure and
+/// synchronous so the scanning rules are unit-testable in isolation.
+pub fn expand_config_tokens(content: &str, mut lookup: impl FnMut(&str, &str) -> Option<String>) -> String {
+    const OPEN: &str = "{{config.";
+    if !content.contains(OPEN) {
+        return content.to_owned();
+    }
+    let mut out = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(start) = rest.find(OPEN) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + OPEN.len()..];
+        let Some(end) = after.find("}}") else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let inner = &after[..end];
+        let replaced = match inner.split_once('.') {
+            Some((set, key)) if !set.is_empty() && !key.is_empty() => lookup(set, key),
+            _ => None,
+        };
+        match replaced {
+            Some(value) => out.push_str(&value),
+            None => {
+                out.push_str(OPEN);
+                out.push_str(inner);
+                out.push_str("}}");
+            }
+        }
+        rest = &after[end + 2..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Keep only the final path component of an uploaded file name and strip
@@ -5801,6 +5883,61 @@ mod tests {
         // is exactly what the admin must see before deleting the old name.
         service.update_config_set("t1", &set.id, "api-v2", "").await.unwrap();
         assert_eq!(service.config_set_references("t1", &set.id).await.unwrap().count, 0);
+    }
+
+    #[test]
+    fn expand_config_tokens_substitutes_known_and_keeps_unknown() {
+        let out = expand_config_tokens(
+            "base={{config.api.base_url}} key={{config.api.token}} miss={{config.api.absent}} bad={{config.noset}}",
+            |set, key| match (set, key) {
+                ("api", "base_url") => Some("https://x".to_owned()),
+                ("api", "token") => Some("sk-1".to_owned()),
+                _ => None,
+            },
+        );
+        assert_eq!(
+            out,
+            "base=https://x key=sk-1 miss={{config.api.absent}} bad={{config.noset}}"
+        );
+    }
+
+    #[test]
+    fn expand_config_tokens_key_is_the_remainder_after_the_first_dot() {
+        let out = expand_config_tokens("{{config.api.base.url}}", |set, key| {
+            assert_eq!(set, "api");
+            assert_eq!(key, "base.url");
+            Some("ok".to_owned())
+        });
+        assert_eq!(out, "ok");
+    }
+
+    #[tokio::test]
+    async fn resolve_config_content_expands_plain_and_decrypts_sensitive() {
+        let (_db, service) = setup().await;
+        let set = service.create_config_set("t1", "api", "", "admin1").await.unwrap();
+        service
+            .put_config_entry("t1", &set.id, "base_url", Some("https://api.example.com"), false)
+            .await
+            .unwrap();
+        service
+            .put_config_entry("t1", &set.id, "token", Some("sk-live-secret"), true)
+            .await
+            .unwrap();
+
+        let resolved = service
+            .resolve_config_content(
+                "t1",
+                "curl {{config.api.base_url}} -H \"Authorization: Bearer {{config.api.token}}\"",
+            )
+            .await;
+        assert_eq!(
+            resolved,
+            "curl https://api.example.com -H \"Authorization: Bearer sk-live-secret\""
+        );
+
+        // A different tenant's identically-named set does not leak in.
+        let cross = service.resolve_config_content("t2", "{{config.api.base_url}}").await;
+        assert_eq!(cross, "{{config.api.base_url}}");
     }
 
     /// A standalone database where one-devops was never initialized: the
