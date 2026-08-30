@@ -130,10 +130,21 @@ jobs:
             echo "Using RUSTFLAGS=${RUSTFLAGS}"
           fi
           if [[ "${{ matrix.use_cross }}" == "true" ]]; then
-            cross build --release --target ${{ matrix.target }} -p aionui-app
+            cross build --release --target ${{ matrix.target }} -p dream-core-app
           else
-            cargo build --release --target ${{ matrix.target }} -p aionui-app
+            cargo build --release --target ${{ matrix.target }} -p dream-core-app
           fi
+
+      - name: Normalize binary name
+        # The crate builds `dreamcore` (dream-core-app's [[bin]]); the release
+        # assets and dream-ui's prepare-aioncore.js downloader are keyed on the
+        # historical `aioncore` name. Rename in place so the matrix
+        # `binary_name` and every downstream step stay `aioncore`.
+        shell: bash
+        run: |
+          BIN_DIR="target/${{ matrix.target }}/release"
+          [ -f "$BIN_DIR/dreamcore" ] && mv "$BIN_DIR/dreamcore" "$BIN_DIR/aioncore" || true
+          [ -f "$BIN_DIR/dreamcore.exe" ] && mv "$BIN_DIR/dreamcore.exe" "$BIN_DIR/aioncore.exe" || true
 
       - name: Verify Linux ARM64 GLIBC baseline
         if: matrix.target == 'aarch64-unknown-linux-gnu'
