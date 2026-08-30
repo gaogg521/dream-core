@@ -294,6 +294,11 @@ impl ConversationTurnOrchestrator {
         let mut aggregate_summary = TurnAttemptSummary::default();
 
         while let Some((current_send, msg_id)) = pending_send.take() {
+            // P1-3 latency collection: each loop pass is one real model call
+            // (the same granularity `meter_attempt` bills at), so the wall
+            // clock starts here — covering build reuse, the send, and the full
+            // stream drain — and is read at the `trace_attempt` call below.
+            let attempt_started = std::time::Instant::now();
             let lifecycle = runtime_state.lifecycle_for(&input.conv_id);
             let defer_clean_terminal_errors = input.defer_clean_terminal_errors
                 && agent.agent_type() == AgentType::Acp
@@ -461,7 +466,8 @@ impl ConversationTurnOrchestrator {
             // the per-turn aggregate folds away.
             let trace_recorder = self.service.llm_trace_recorder.read().ok().and_then(|g| g.clone());
             if let Some(recorder) = trace_recorder {
-                trace_attempt(recorder.as_ref(), &input.user_id, &input.conv_id, &outcome);
+                let duration_ms = i64::try_from(attempt_started.elapsed().as_millis()).ok();
+                trace_attempt(recorder.as_ref(), &input.user_id, &input.conv_id, &outcome, duration_ms);
             }
 
             if let Some(session_key) = agent.get_session_key() {
@@ -957,11 +963,19 @@ fn meter_attempt(
 /// per-call counterpart of [`meter_attempt`]. A failed attempt is still a
 /// row (`error` set): a retry storm is exactly what this trace exists to
 /// expose, and folding failures away would hide it.
+///
+/// `duration_ms` is the attempt's wall-clock time (P1-3), applied ONLY to the
+/// attempt's own row. Delegate rows get `None` on purpose:
+/// `DelegateUsageEventData` carries no timing, so no honest duration exists
+/// for a borrowed model call — inheriting the attempt's would fabricate the
+/// latency distribution the enterprise report's P50/P95 is computed from.
+/// (Same honesty rule as the delegate's `channel_id = None` above.)
 fn trace_attempt(
     recorder: &dyn crate::state::LlmCallTraceRecorder,
     user_id: &str,
     conv_id: &str,
     outcome: &RelayOutcome,
+    duration_ms: Option<i64>,
 ) {
     recorder.record_call(
         user_id.to_owned(),
@@ -970,6 +984,7 @@ fn trace_attempt(
             model: outcome.model.clone(),
             input_tokens: outcome.input_tokens,
             output_tokens: outcome.output_tokens,
+            duration_ms,
             error: outcome.attempt.terminal_error.as_ref().map(|e| {
                 if e.message.is_empty() {
                     "agent stream ended with an error".to_owned()
@@ -987,6 +1002,9 @@ fn trace_attempt(
                 model: Some(delegate.model.clone()),
                 input_tokens: Some(delegate.input_tokens),
                 output_tokens: Some(delegate.output_tokens),
+                // See the doc comment: no independent timing exists for a
+                // delegate call, so it stays None rather than a guess.
+                duration_ms: None,
                 error: None,
             },
         );
@@ -1000,10 +1018,20 @@ mod tests {
 
     use crate::stream_relay::RelayTerminal;
 
-    /// Captures what the per-call trace plane would have been told (P2-5).
+    /// Captures what the per-call trace plane would have been told (P2-5,
+    /// P1-3 added the duration slot).
     #[derive(Default)]
     struct RecordingLlmTraceRecorder(
-        std::sync::Mutex<Vec<(String, Option<String>, Option<i64>, Option<i64>, Option<String>)>>,
+        std::sync::Mutex<
+            Vec<(
+                String,
+                Option<String>,
+                Option<i64>,
+                Option<i64>,
+                Option<i64>,
+                Option<String>,
+            )>,
+        >,
     );
 
     impl crate::state::LlmCallTraceRecorder for RecordingLlmTraceRecorder {
@@ -1013,6 +1041,7 @@ mod tests {
                 trace.model,
                 trace.input_tokens,
                 trace.output_tokens,
+                trace.duration_ms,
                 trace.error,
             ));
         }
@@ -1334,12 +1363,13 @@ mod tests {
         outcome.input_tokens = Some(50);
         outcome.output_tokens = Some(0);
 
-        trace_attempt(&recorder, "user-1", "conv-1", &outcome);
+        trace_attempt(&recorder, "user-1", "conv-1", &outcome, Some(1500));
 
         let rows = recorder.0.lock().unwrap().clone();
         assert_eq!(rows.len(), 1, "the failure is one trace row, not zero: {rows:?}");
         assert_eq!(rows[0].1.as_deref(), Some("deepseek-v4-flash"));
-        assert_eq!(rows[0].4.as_deref(), Some("upstream 429"));
+        assert_eq!(rows[0].4, Some(1500), "the attempt's wall-clock lands on its own row");
+        assert_eq!(rows[0].5.as_deref(), Some("upstream 429"));
     }
 
     #[test]
@@ -1357,12 +1387,31 @@ mod tests {
             ..finish_outcome(true)
         };
 
-        trace_attempt(&recorder, "user-1", "conv-1", &outcome);
+        trace_attempt(&recorder, "user-1", "conv-1", &outcome, Some(1500));
 
         let rows = recorder.0.lock().unwrap().clone();
         assert_eq!(rows.len(), 2, "attempt + delegate: {rows:?}");
         assert_eq!(rows[0].1.as_deref(), Some("deepseek-v4-flash"));
+        assert_eq!(rows[0].4, Some(1500), "the attempt keeps its own wall-clock");
         assert_eq!(rows[1].1.as_deref(), Some("kimi-k2-6"));
         assert_eq!(rows[1].2, Some(1200));
+        assert_eq!(
+            rows[1].4, None,
+            "a delegate has no independent timer — it must stay None, not inherit the attempt's duration"
+        );
+    }
+
+    /// P1-3: a duration the caller could not measure honestly (`None`) stays
+    /// `None` on the row — no zero-substitution, which would drag the latency
+    /// percentiles toward 0ms and make the report lie.
+    #[test]
+    fn an_unmeasured_attempt_traces_null_duration() {
+        let recorder = RecordingLlmTraceRecorder::default();
+
+        trace_attempt(&recorder, "user-1", "conv-1", &finish_outcome(false), None);
+
+        let rows = recorder.0.lock().unwrap().clone();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].4, None);
     }
 }

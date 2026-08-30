@@ -993,7 +993,10 @@ impl dream_core_conversation::LlmCallTraceRecorder for BillingLlmCallTrace {
                 tool_name: None,
                 input_tokens: trace.input_tokens.unwrap_or(0),
                 output_tokens: trace.output_tokens.unwrap_or(0),
-                duration_ms: None,
+                // P1-3 latency collection: the orchestrator times the whole
+                // attempt; delegates arrive as None (no honest timer) and stay
+                // NULL in the table so percentiles only see measured calls.
+                duration_ms: trace.duration_ms,
                 error: trace.error,
             };
             if let Err(e) = service.record_llm_call(call).await {

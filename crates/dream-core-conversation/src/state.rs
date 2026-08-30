@@ -44,6 +44,12 @@ pub struct LlmCallTrace {
     pub model: Option<String>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
+    /// Wall-clock duration of the whole attempt (build + send + stream drain),
+    /// in ms — P1-3 latency collection. `None` when the caller has no honest
+    /// timer for this call: a tool's delegated model call has no independent
+    /// timing today, and fabricating one (e.g. inheriting the attempt's
+    /// duration) would poison the P50/P95 the enterprise report computes.
+    pub duration_ms: Option<i64>,
     /// `None` = the call succeeded; otherwise the terminal error message.
     pub error: Option<String>,
 }

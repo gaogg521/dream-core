@@ -216,6 +216,78 @@ pub struct LlmCallPurgeResultDto {
     pub deleted: u64,
 }
 
+/// One day of the P1-3 enterprise report's latency trend: that day's P50/P95
+/// over the measured `one_llm_calls.duration_ms` rows, in ms.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LatencyTrendPointDto {
+    /// `YYYY-MM-DD`, UTC (same bucketing as `usage_summary`'s `by_day`).
+    pub day: String,
+    pub p50: i64,
+    pub p95: i64,
+    /// How many measured calls this day's percentiles were computed from, so
+    /// the frontend can render quiet-day noise as such instead of as fact.
+    pub samples: i64,
+}
+
+/// One row of the enterprise report's "user token Top10".
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TopUserDto {
+    /// Opaque — same posture as `DepartmentBudgetDto.department_id`: this
+    /// crate does not depend on one-org, so display-name resolution is the
+    /// admin frontend's job.
+    pub user_id: String,
+    pub total_tokens: i64,
+    pub estimated_cost_micros: i64,
+}
+
+/// P1-3 enterprise report: the §1 metric list that is NOT already covered by
+/// `usage_summary` (that endpoint owns by-user / by-model / by-channel /
+/// by-day / by-department buckets; the frontend report page calls both and
+/// never double-fetches a dimension).
+///
+/// Adoption rate is deliberately NOT computed here: the denominator is the
+/// company's member count, which lives in `one_user_org` (one-enterprise /
+/// one-org), and billing must not cross-join another crate's tables. Same
+/// precedent as the channel dimension (P1-4): the backend ships the honest
+/// numerators (`wau`, `mau`), the frontend fetches the member count via
+/// `oneAdmin.listUsers` and divides.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnterpriseReportDto {
+    pub since: i64,
+    /// DISTINCT users with at least one usage event in the trailing 7 days
+    /// (fixed window from now, independent of `since`).
+    pub wau: i64,
+    /// Same, trailing 30 days.
+    pub mau: i64,
+    /// Window tokens / window active users; 0 when nobody was active (no
+    /// invented per-user average from an empty set).
+    pub avg_tokens_per_user: f64,
+    /// P50 of `one_llm_calls.duration_ms` in the window. `null` when fewer
+    /// than [`crate::service::MIN_LATENCY_SAMPLES`] measured calls exist —
+    /// too small a sample to claim a distribution.
+    pub latency_p50: Option<i64>,
+    /// P95, same sample-size rule as `latency_p50`.
+    pub latency_p95: Option<i64>,
+    /// Per-day P50/P95 over the window's measured rows. Days with no calls
+    /// are absent (the frontend renders the gap, not a zero).
+    pub latency_trend: Vec<LatencyTrendPointDto>,
+    /// Share of window `one_llm_calls` rows with `error IS NULL`, as a
+    /// fraction [0, 1]. 口径: this is a "model call completed without error"
+    /// rate — the §1 "工具成功率目标 ≥95%" KPI is approximated by it, since
+    /// per-TOOL success is not recorded anywhere yet. `null` when the window
+    /// has zero calls (no rate exists to report).
+    pub tool_success_rate: Option<f64>,
+    /// Top 10 users by window total tokens (DESC).
+    pub top_users: Vec<TopUserDto>,
+    /// Window `one_llm_calls` row count.
+    pub llm_call_count: i64,
+    /// Window rows with a non-NULL `error`.
+    pub llm_error_count: i64,
+}
+
 /// One agent session (E5 "可观测" / 智能体会话), derived purely from
 /// `one_usage_events` grouped by `conversation_id` — no new capture
 /// mechanism, and (same reasoning as `UsageEventDto`) no message content:

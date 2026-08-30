@@ -15,8 +15,9 @@ use dream_core_common::now_ms;
 
 use crate::error::BillingError;
 use crate::models::{
-    AgentSessionPageDto, CheckoutResultDto, ConversationCostDto, DepartmentBudgetDto, LicenseInfoDto, LlmCallPageDto,
-    LlmCallPurgeResultDto, MediaAssetDto, MediaLedgerSettingsDto, PlanDto, UsageEventPageDto, UsageSummaryDto,
+    AgentSessionPageDto, CheckoutResultDto, ConversationCostDto, DepartmentBudgetDto, EnterpriseReportDto,
+    LicenseInfoDto, LlmCallPageDto, LlmCallPurgeResultDto, MediaAssetDto, MediaLedgerSettingsDto, PlanDto,
+    UsageEventPageDto, UsageSummaryDto,
 };
 use crate::service::{LLM_CALL_RETENTION_DAYS, MediaAssetFilters, MediaUsage};
 use crate::state::OneBillingRouterState;
@@ -25,6 +26,7 @@ pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
     Router::new()
         .route("/api/one/billing/plan", get(billing_plan))
         .route("/api/one/billing/usage", get(billing_usage))
+        .route("/api/one/billing/enterprise-report", get(billing_enterprise_report))
         .route("/api/one/billing/usage-events", get(billing_usage_events))
         .route("/api/one/billing/llm-calls", get(billing_llm_calls))
         .route("/api/one/billing/llm-calls/purge", post(billing_purge_llm_calls))
@@ -230,6 +232,36 @@ async fn billing_usage(
     const THIRTY_DAYS_MS: i64 = 30 * 24 * 3600 * 1000;
     let since = q.since.unwrap_or_else(|| now_ms() - THIRTY_DAYS_MS);
     Ok(Json(ApiResponse::ok(state.service.usage_summary(&eid, since).await?)))
+}
+
+/// P1-3 enterprise report (`GET /api/one/billing/enterprise-report?since=`):
+/// the §1 metric list not already covered by `billing_usage` — WAU/MAU,
+/// per-capita tokens, latency percentiles + trend, call success rate, and the
+/// user token Top10. Admin-only, same gate as `billing_usage`: it exposes
+/// per-user token rankings, which no plain member should see.
+///
+/// `since` scopes the spend/token/latency dimensions; WAU/MAU are fixed
+/// trailing 7d/30d windows (see `enterprise_report`). Adoption rate is
+/// computed by the frontend: it needs the company member count from
+/// `oneAdmin.listUsers`, and billing does not cross-join one-org's tables.
+async fn billing_enterprise_report(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(q): Query<UsageQuery>,
+) -> Result<Json<ApiResponse<EnterpriseReportDto>>, BillingError> {
+    if !state.service.is_billing_admin(&user.id).await? {
+        return Err(BillingError::Forbidden("enterprise report is admin-only".into()));
+    }
+    let eid = state
+        .service
+        .resolve_enterprise_id(&user.id)
+        .await?
+        .ok_or(BillingError::EnterpriseNotFound)?;
+    const THIRTY_DAYS_MS: i64 = 30 * 24 * 3600 * 1000;
+    let since = q.since.unwrap_or_else(|| now_ms() - THIRTY_DAYS_MS);
+    Ok(Json(ApiResponse::ok(
+        state.service.enterprise_report(&eid, since).await?,
+    )))
 }
 
 #[derive(Deserialize)]

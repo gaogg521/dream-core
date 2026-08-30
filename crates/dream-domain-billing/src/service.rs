@@ -16,9 +16,9 @@ use sqlx::SqlitePool;
 
 use crate::error::BillingError;
 use crate::models::{
-    AgentSessionDto, AgentSessionPageDto, CheckoutResultDto, DepartmentBudgetDto, EntitlementDto, LicenseInfoDto,
-    LlmCallDto, LlmCallPageDto, MediaAssetDto, PlanDto, UsageBucketDto, UsageEventDto, UsageEventPageDto,
-    UsageSummaryDto,
+    AgentSessionDto, AgentSessionPageDto, CheckoutResultDto, DepartmentBudgetDto, EnterpriseReportDto, EntitlementDto,
+    LatencyTrendPointDto, LicenseInfoDto, LlmCallDto, LlmCallPageDto, MediaAssetDto, PlanDto, TopUserDto,
+    UsageBucketDto, UsageEventDto, UsageEventPageDto, UsageSummaryDto,
 };
 
 /// Pluggable payment backend. The default `ManualBillingProvider` is a stub
@@ -90,6 +90,13 @@ pub struct NewLlmCall {
 /// (`purge_llm_calls_older_than` / the admin endpoint), not a background
 /// sweeper — scheduling is the wiring layer's decision.
 pub const LLM_CALL_RETENTION_DAYS: i64 = 30;
+
+/// P1-3: minimum number of measured `duration_ms` rows below which the
+/// enterprise report reports NO percentile at all. A distribution computed
+/// from two or three calls is a statistic in name only — it would render as a
+/// stable-looking latency the very next day's burst disproves. Honest gap:
+/// `null` ("not enough data") beats a confidently wrong number.
+pub const MIN_LATENCY_SAMPLES: i64 = 10;
 
 #[derive(Clone)]
 pub struct BillingService {
@@ -1461,6 +1468,169 @@ impl BillingService {
         Ok(result.rows_affected())
     }
 
+    /// P1-3 enterprise report: the §1 metric list NOT already covered by
+    /// [`Self::usage_summary`]. Dimension split between the two endpoints is
+    /// deliberate and documented on [`EnterpriseReportDto`]: the frontend
+    /// report page calls both — per-user / per-department buckets stay on
+    /// `usage`, adoption-rate and latency/rollup fields live here — so no
+    /// number is ever computed twice from two different code paths.
+    ///
+    /// Empty-table tolerant: a personal-tier or freshly installed company has
+    /// no `one_llm_calls` rows (and maybe no `one_usage_events` rows at all);
+    /// every derived field degrades to `null` / `0` rather than erroring.
+    pub async fn enterprise_report(
+        &self,
+        enterprise_id: &str,
+        since_ms: i64,
+    ) -> Result<EnterpriseReportDto, BillingError> {
+        let now = now_ms();
+        const SEVEN_DAYS_MS: i64 = 7 * 24 * 3600 * 1000;
+
+        // WAU / MAU: DISTINCT users over FIXED trailing windows from now —
+        // deliberately independent of `since`, which scopes the spend/token
+        // dimensions: an admin paging back to last quarter still wants
+        // "who is active this week" to mean this week.
+        let wau: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT user_id) FROM one_usage_events \
+             WHERE enterprise_id = ? AND created_at >= ?",
+        )
+        .bind(enterprise_id)
+        .bind(now - SEVEN_DAYS_MS)
+        .fetch_one(&self.pool)
+        .await?;
+        let mau: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT user_id) FROM one_usage_events \
+             WHERE enterprise_id = ? AND created_at >= ?",
+        )
+        .bind(enterprise_id)
+        .bind(now - BUDGET_WINDOW_MS)
+        .fetch_one(&self.pool)
+        .await?;
+
+        // Per-capita tokens: window total / window active users. Division by
+        // zero yields 0 — an average over zero active users is not 0, it is
+        // undefined, but the report page renders "no activity either way", so
+        // 0 with no special UI state is the honest-enough contract.
+        let (active_users, window_tokens): (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(DISTINCT user_id), COALESCE(SUM(total_tokens), 0) \
+             FROM one_usage_events WHERE enterprise_id = ? AND created_at >= ?",
+        )
+        .bind(enterprise_id)
+        .bind(since_ms)
+        .fetch_one(&self.pool)
+        .await?;
+        let avg_tokens_per_user = if active_users > 0 {
+            window_tokens as f64 / active_users as f64
+        } else {
+            0.0
+        };
+
+        // Top users by tokens. Same table and same user dimension as
+        // `usage_summary`'s by_user bucket — but that bucket is ordered by
+        // call count and unbounded, so the Top10 ordering is computed here
+        // rather than re-sorted (and re-fetched in full) client-side.
+        let top_rows: Vec<(String, i64, i64)> = sqlx::query_as(
+            "SELECT user_id, COALESCE(SUM(total_tokens), 0), COALESCE(SUM(estimated_cost_micros), 0) \
+             FROM one_usage_events WHERE enterprise_id = ? AND created_at >= ? \
+             GROUP BY user_id ORDER BY 2 DESC LIMIT 10",
+        )
+        .bind(enterprise_id)
+        .bind(since_ms)
+        .fetch_all(&self.pool)
+        .await?;
+        let top_users = top_rows
+            .into_iter()
+            .map(|(user_id, total_tokens, cost)| TopUserDto {
+                user_id,
+                total_tokens,
+                estimated_cost_micros: cost,
+            })
+            .collect();
+
+        // Call counts + success rate. `COUNT(error)` counts non-NULL errors
+        // only — the "model call completed without error" rate OpenOcta's
+        // "tool success rate ≥ 95%" KPI is approximated by (see the DTO doc).
+        let (llm_call_count, llm_error_count): (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*), COUNT(error) FROM one_llm_calls \
+             WHERE enterprise_id = ? AND created_at >= ?",
+        )
+        .bind(enterprise_id)
+        .bind(since_ms)
+        .fetch_one(&self.pool)
+        .await?;
+        let tool_success_rate = if llm_call_count > 0 {
+            Some((llm_call_count - llm_error_count) as f64 / llm_call_count as f64)
+        } else {
+            None
+        };
+
+        // Percentiles are computed in Rust, not SQL: SQLite has no percentile
+        // function, and a GROUP_CONCAT hack would be both slower and far
+        // harder to state a correctness claim about. One indexed scan pulls
+        // every measured duration with its day already bucketed in SQL (same
+        // strftime expression as `usage_summary`'s by_day), then Rust does
+        // the sorting once for the window total and once per day group.
+        type DurationRow = (String, i64);
+        let duration_rows: Vec<DurationRow> = sqlx::query_as(
+            "SELECT strftime('%Y-%m-%d', created_at / 1000, 'unixepoch') AS day, duration_ms \
+             FROM one_llm_calls \
+             WHERE enterprise_id = ? AND created_at >= ? AND duration_ms IS NOT NULL",
+        )
+        .bind(enterprise_id)
+        .bind(since_ms)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut all_durations: Vec<i64> = duration_rows.iter().map(|(_, d)| *d).collect();
+        all_durations.sort_unstable();
+        // The n>=10 honesty rule applies ONLY to the window-wide figures: per
+        // day, any day with at least one measured call reports what was
+        // actually measured (`samples` carries the n so the chart can show
+        // thin days as thin) — nulling most days would blank the trend for
+        // exactly the smaller deployments the report is for.
+        let latency_p50 = if all_durations.len() as i64 >= MIN_LATENCY_SAMPLES {
+            percentile_of_sorted(&all_durations, 0.5)
+        } else {
+            None
+        };
+        let latency_p95 = if all_durations.len() as i64 >= MIN_LATENCY_SAMPLES {
+            percentile_of_sorted(&all_durations, 0.95)
+        } else {
+            None
+        };
+
+        let mut by_day: std::collections::BTreeMap<String, Vec<i64>> = std::collections::BTreeMap::new();
+        for (day, duration) in duration_rows {
+            by_day.entry(day).or_default().push(duration);
+        }
+        let latency_trend = by_day
+            .into_iter()
+            .map(|(day, mut durations)| {
+                durations.sort_unstable();
+                LatencyTrendPointDto {
+                    day,
+                    p50: percentile_of_sorted(&durations, 0.5).unwrap_or_default(),
+                    p95: percentile_of_sorted(&durations, 0.95).unwrap_or_default(),
+                    samples: durations.len() as i64,
+                }
+            })
+            .collect();
+
+        Ok(EnterpriseReportDto {
+            since: since_ms,
+            wau,
+            mau,
+            avg_tokens_per_user,
+            latency_p50,
+            latency_p95,
+            latency_trend,
+            tool_success_rate,
+            top_users,
+            llm_call_count,
+            llm_error_count,
+        })
+    }
+
     /// One page of agent sessions (E5 "可观测" / 智能体会话), derived by
     /// grouping `one_usage_events` on `conversation_id` — rows with no
     /// conversation id (never attributed to a specific session) are excluded
@@ -1568,6 +1738,24 @@ impl BillingService {
         .await
         .unwrap_or(None);
         Ok(org_role.as_deref() == Some("system_admin"))
+    }
+}
+
+/// Percentile of a PRE-SORTED slice, floored index (`((n-1) * p).floor()`).
+/// No linear interpolation on purpose: the floored index always lands on an
+/// actually observed duration — "this many ms were measured" — rather than an
+/// invented value between two observations, and the rule is trivially
+/// reproducible by any client re-checking the report. `None` only for an
+/// empty slice; the sample-size honesty gate lives at the caller
+/// (`MIN_LATENCY_SAMPLES`), which decides whether ANY percentile is published.
+fn percentile_of_sorted(sorted: &[i64], p: f64) -> Option<i64> {
+    match sorted.len() {
+        0 => None,
+        1 => Some(sorted[0]),
+        n => {
+            let idx = (((n - 1) as f64) * p).floor() as usize;
+            Some(sorted[idx.min(n - 1)])
+        }
     }
 }
 
@@ -1921,6 +2109,225 @@ mod tests {
             event.channel_id.is_none(),
             "None channel must read back as NULL, not 'unknown'"
         );
+    }
+
+    /// Raw-row fixtures for the P1-3 report tests. The report is a READ
+    /// surface; its write path (`record_llm_call` / `record_turn`) is covered
+    /// by its own tests, so these bypass enterprise resolution and place rows
+    /// with exact timestamps — percentile and window math needs that control.
+    async fn add_usage_event_at(
+        svc: &BillingService,
+        enterprise_id: &str,
+        user_id: &str,
+        total_tokens: i64,
+        created_at: i64,
+    ) {
+        sqlx::query(
+            "INSERT INTO one_usage_events (id, user_id, enterprise_id, total_tokens, created_at) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(generate_prefixed_id("evt"))
+        .bind(user_id)
+        .bind(enterprise_id)
+        .bind(total_tokens)
+        .bind(created_at)
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+    }
+
+    async fn add_llm_call_at(
+        svc: &BillingService,
+        enterprise_id: &str,
+        duration_ms: Option<i64>,
+        error: Option<&str>,
+        created_at: i64,
+    ) {
+        sqlx::query(
+            "INSERT INTO one_llm_calls (id, enterprise_id, user_id, duration_ms, error, created_at) \
+             VALUES (?, ?, 'u1', ?, ?, ?)",
+        )
+        .bind(generate_prefixed_id("llmcall"))
+        .bind(enterprise_id)
+        .bind(duration_ms)
+        .bind(error)
+        .bind(created_at)
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+    }
+
+    /// WAU/MAU are FIXED trailing windows from now (not scoped by `since`):
+    /// a user active only 6 days ago is weekly-active even when the report's
+    /// spend window reaches further back, and a 40-day-old user is neither.
+    /// Other companies' rows never leak into the count.
+    #[tokio::test]
+    async fn wau_and_mau_count_distinct_users_over_their_fixed_windows() {
+        let svc = service().await;
+        let now = now_ms();
+        const DAY: i64 = 24 * 3600 * 1000;
+        add_usage_event_at(&svc, "ent1", "u-now", 10, now).await;
+        add_usage_event_at(&svc, "ent1", "u-6d", 10, now - 6 * DAY).await;
+        add_usage_event_at(&svc, "ent1", "u-10d", 10, now - 10 * DAY).await;
+        add_usage_event_at(&svc, "ent1", "u-40d", 10, now - 40 * DAY).await;
+        // Another company's active user must not be counted for ent1.
+        add_usage_event_at(&svc, "ent2", "u-other", 10, now).await;
+
+        let report = svc.enterprise_report("ent1", 0).await.unwrap();
+        assert_eq!(report.wau, 2, "now + 6d ago");
+        assert_eq!(report.mau, 3, "now + 6d + 10d ago; 40d falls outside");
+    }
+
+    /// Per-capita tokens divide by ACTIVE users in the window; a company with
+    /// no activity reports 0 (there is no average to average).
+    #[tokio::test]
+    async fn avg_tokens_per_user_divides_by_active_users_and_survives_zero() {
+        let svc = service().await;
+        let now = now_ms();
+        add_usage_event_at(&svc, "ent1", "alice", 100, now).await;
+        add_usage_event_at(&svc, "ent1", "bob", 300, now).await;
+        add_usage_event_at(&svc, "ent1", "bob", 100, now).await;
+
+        let report = svc.enterprise_report("ent1", 0).await.unwrap();
+        assert_eq!(report.avg_tokens_per_user, 250.0, "500 tokens / 2 users");
+
+        let empty = svc.enterprise_report("ent_empty", 0).await.unwrap();
+        assert_eq!(empty.avg_tokens_per_user, 0.0, "no active users → 0, not NaN");
+        assert_eq!(empty.wau, 0);
+        assert_eq!(empty.mau, 0);
+    }
+
+    /// Top10 ranks by window tokens DESC and truncates at 10 — a token-heavy
+    /// single user must outrank a chatty but lightweight one.
+    #[tokio::test]
+    async fn top_users_are_token_ranked_and_truncated_to_ten() {
+        let svc = service().await;
+        let now = now_ms();
+        for i in 0..12_i64 {
+            // 12 users, tokens 100..1200; one user gets a second turn so the
+            // ranking demonstrably aggregates, not just sorts rows.
+            add_usage_event_at(&svc, "ent1", &format!("user{i}"), i * 100, now).await;
+            if i == 11 {
+                add_usage_event_at(&svc, "ent1", "user11", 50, now).await;
+            }
+        }
+
+        let report = svc.enterprise_report("ent1", 0).await.unwrap();
+        assert_eq!(report.top_users.len(), 10, "truncated to ten");
+        assert_eq!(report.top_users[0].user_id, "user11");
+        assert_eq!(report.top_users[0].total_tokens, 1100 + 50);
+        assert_eq!(report.top_users[1].user_id, "user10");
+        assert_eq!(report.top_users[9].user_id, "user2", "user0/user1 fall off the list");
+        assert_eq!(
+            report.top_users[0].estimated_cost_micros, 0,
+            "raw inserts carry no cost"
+        );
+    }
+
+    /// Hand-computable percentiles: 10 measured durations [100..1900 step 200]
+    /// → P50 = sorted[floor(9*0.5)] = 900, P95 = sorted[floor(9*0.95)] = 1700.
+    /// Same window also feeds the call counts and the success rate.
+    #[tokio::test]
+    async fn latency_percentiles_success_rate_and_counts_on_a_hand_computable_sample() {
+        let svc = service().await;
+        let now = now_ms();
+        for i in 0..10_i64 {
+            let error = if i < 2 { Some("boom") } else { None };
+            add_llm_call_at(&svc, "ent1", Some(100 + 200 * i), error, now).await;
+        }
+
+        let report = svc.enterprise_report("ent1", 0).await.unwrap();
+        assert_eq!(report.latency_p50, Some(900));
+        assert_eq!(report.latency_p95, Some(1700));
+        assert_eq!(report.llm_call_count, 10);
+        assert_eq!(report.llm_error_count, 2);
+        assert_eq!(report.tool_success_rate, Some(0.8), "8 of 10 completed without error");
+    }
+
+    /// The honesty gate: 9 measured calls is below [`MIN_LATENCY_SAMPLES`], so
+    /// both percentiles publish as `null` — but the trend still reports what
+    /// was measured that day, and the success rate still exists (it is a
+    /// ratio, not a distribution).
+    #[tokio::test]
+    async fn latency_percentiles_are_null_below_ten_samples_but_the_rest_still_reports() {
+        let svc = service().await;
+        let now = now_ms();
+        for i in 0..9_i64 {
+            add_llm_call_at(&svc, "ent1", Some(100 + i), None, now).await;
+        }
+
+        let report = svc.enterprise_report("ent1", 0).await.unwrap();
+        assert_eq!(report.latency_p50, None);
+        assert_eq!(report.latency_p95, None);
+        assert_eq!(report.tool_success_rate, Some(1.0));
+        assert_eq!(report.llm_call_count, 9);
+        assert_eq!(report.latency_trend.len(), 1);
+        assert_eq!(report.latency_trend[0].samples, 9);
+    }
+
+    /// NULL durations (delegates, unmeasured attempts) are excluded from the
+    /// percentile inputs — they are "not measured", not "measured at 0".
+    #[tokio::test]
+    async fn null_durations_do_not_count_as_zero_in_percentiles() {
+        let svc = service().await;
+        let now = now_ms();
+        for i in 0..9_i64 {
+            add_llm_call_at(&svc, "ent1", Some(100 + 200 * i), None, now).await;
+        }
+        // One delegate/unmeasured row on top: with it the table has 10 calls
+        // but still only 9 measured durations, so the gate must stay shut.
+        add_llm_call_at(&svc, "ent1", None, None, now).await;
+
+        let report = svc.enterprise_report("ent1", 0).await.unwrap();
+        assert_eq!(report.llm_call_count, 10);
+        assert_eq!(report.latency_p50, None, "9 measured < 10 measured");
+    }
+
+    /// The trend buckets per UTC day and each day reports ITS OWN percentiles
+    /// from exactly the samples it contains.
+    #[tokio::test]
+    async fn latency_trend_buckets_by_utc_day() {
+        let svc = service().await;
+        let now = now_ms();
+        const DAY: i64 = 24 * 3600 * 1000;
+        add_llm_call_at(&svc, "ent1", Some(100), None, now).await;
+        add_llm_call_at(&svc, "ent1", Some(300), None, now).await;
+        add_llm_call_at(&svc, "ent1", Some(1000), None, now - DAY).await;
+
+        let report = svc.enterprise_report("ent1", 0).await.unwrap();
+        assert_eq!(report.latency_trend.len(), 2, "two distinct days");
+        let today = report.latency_trend.iter().find(|p| p.samples == 2).unwrap();
+        assert_eq!(today.p50, 100, "sorted[0] of a 2-sample day");
+        assert_eq!(today.p95, 100);
+        let yesterday = report.latency_trend.iter().find(|p| p.samples == 1).unwrap();
+        assert_eq!(yesterday.p50, 1000);
+        assert_eq!(yesterday.p95, 1000);
+        assert!(
+            report
+                .latency_trend
+                .iter()
+                .all(|p| p.day.len() == 10 && p.day.as_bytes()[4] == b'-'),
+            "day keys are YYYY-MM-DD"
+        );
+    }
+
+    /// A brand-new company (personal install, empty tables) must get a
+    /// well-formed report — every percentile null, every count zero, no 500.
+    #[tokio::test]
+    async fn empty_tables_report_nulls_and_zeros_without_erroring() {
+        let svc = service().await;
+
+        let report = svc.enterprise_report("ent1", 0).await.unwrap();
+        assert_eq!(report.wau, 0);
+        assert_eq!(report.mau, 0);
+        assert_eq!(report.avg_tokens_per_user, 0.0);
+        assert_eq!(report.latency_p50, None);
+        assert_eq!(report.latency_p95, None);
+        assert!(report.latency_trend.is_empty());
+        assert_eq!(report.tool_success_rate, None, "no calls → no rate");
+        assert!(report.top_users.is_empty());
+        assert_eq!(report.llm_call_count, 0);
+        assert_eq!(report.llm_error_count, 0);
     }
 
     #[tokio::test]
