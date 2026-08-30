@@ -382,7 +382,7 @@ mod tests {
 
     async fn setup() -> (dream_core_db::Database, WorkflowService) {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_workflow_migrations(db.pool()).await.unwrap();
+        crate::migrate::run_one_workflow_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let service = WorkflowService::new(db.pool().clone());
         (db, service)
     }
@@ -661,7 +661,7 @@ mod tests {
     #[tokio::test]
     async fn a_landed_decision_reaches_the_sink_exactly_once() {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_workflow_migrations(db.pool()).await.unwrap();
+        crate::migrate::run_one_workflow_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let service = WorkflowService::new(db.pool().clone());
         let sink = std::sync::Arc::new(RecordingDecisionSink {
             seen: std::sync::Mutex::new(Vec::new()),

@@ -269,7 +269,7 @@ mod tests {
 
     async fn test_pool() -> sqlx::SqlitePool {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        run_one_employee_migrations(db.pool()).await.unwrap();
+        run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         db.pool().clone()
     }
 

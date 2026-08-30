@@ -940,7 +940,7 @@ mod tests {
 
     async fn service() -> EnterpriseService {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_enterprise_migrations(db.pool()).await.unwrap();
+        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         EnterpriseService::new(db.pool().clone())
     }
 
@@ -1292,7 +1292,7 @@ mod tests {
     // init_database_memory). Mirrors the real multi-crate DB.
     async fn service_with_governance() -> EnterpriseService {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_enterprise_migrations(db.pool()).await.unwrap();
+        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         sqlx::query(
             "CREATE TABLE one_user_org (user_id TEXT, tenant_id TEXT, role TEXT NOT NULL DEFAULT 'member', \
              created_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, tenant_id))",
@@ -1421,7 +1421,7 @@ mod tests {
     async fn removing_a_company_member_cuts_off_their_access() {
         let revoker = std::sync::Arc::new(RecordingRevoker::default());
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_enterprise_migrations(db.pool()).await.unwrap();
+        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let svc = EnterpriseService::new(db.pool().clone()).with_session_revoker(revoker.clone());
 
         svc.sync_member("u1", "feishu", "co", "", None, None, None)
@@ -1445,7 +1445,7 @@ mod tests {
     async fn a_rejected_removal_revokes_nothing() {
         let revoker = std::sync::Arc::new(RecordingRevoker::default());
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_enterprise_migrations(db.pool()).await.unwrap();
+        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let svc = EnterpriseService::new(db.pool().clone()).with_session_revoker(revoker.clone());
 
         svc.sync_member("u1", "feishu", "co", "", None, None, None)
@@ -1471,7 +1471,7 @@ mod tests {
     async fn leave_company_releases_the_members_own_seat() {
         let revoker = std::sync::Arc::new(RecordingRevoker::default());
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_enterprise_migrations(db.pool()).await.unwrap();
+        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let svc = EnterpriseService::new(db.pool().clone()).with_session_revoker(revoker.clone());
 
         svc.sync_member("u1", "feishu", "co", "", None, None, None)
@@ -1498,7 +1498,7 @@ mod tests {
     #[tokio::test]
     async fn leave_company_refuses_the_last_admin() {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_enterprise_migrations(db.pool()).await.unwrap();
+        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let svc = EnterpriseService::new(db.pool().clone());
 
         svc.sync_member("u1", "feishu", "co", "", None, None, None)
@@ -1538,7 +1538,7 @@ mod tests {
         let revoker = std::sync::Arc::new(RecordingRevoker::default());
         let cascade = std::sync::Arc::new(RecordingDisbandCascade::default());
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_enterprise_migrations(db.pool()).await.unwrap();
+        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         sqlx::query(
             "CREATE TABLE one_user_org (user_id TEXT, tenant_id TEXT, role TEXT NOT NULL DEFAULT 'member', \
              created_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, tenant_id))",

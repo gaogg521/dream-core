@@ -39,6 +39,15 @@ impl DbPool {
             _ => panic!("SQLite-only path reached under MySQL"),
         }
     }
+
+    /// MySQL handle or panic — the mirror of [`DbPool::sqlite`] for
+    /// MySQL-only call sites (e.g. dialect-specific probes).
+    pub fn mysql(&self) -> &MySqlPool {
+        match self {
+            Self::MySql(pool) => pool,
+            _ => panic!("MySQL-only path reached under SQLite"),
+        }
+    }
 }
 
 impl From<SqlitePool> for DbPool {

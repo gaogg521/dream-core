@@ -416,7 +416,7 @@ mod tests {
 
     async fn sso_with_provider(config: Option<&str>) -> crate::service::SsoService {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_sso_migrations(db.pool()).await.unwrap();
+        crate::migrate::run_one_sso_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         if let Some(config) = config {
             sqlx::query(
                 "INSERT INTO one_sso_providers (provider, enabled, config, updated_at) VALUES ('feishu', 1, ?, 0)",

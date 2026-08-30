@@ -2323,7 +2323,7 @@ mod tests {
     #[tokio::test]
     async fn sharing_requires_an_explicit_grant_now() {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        run_one_employee_migrations(db.pool()).await.unwrap();
+        run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let pool = db.pool();
         // A: a1 private/t1, a2 shared/t1. B: b1 shared/t1. C: c1 shared/t2.
         insert_agent(pool, "a1", "A", "t1", "private").await;
@@ -2364,7 +2364,7 @@ mod tests {
     #[tokio::test]
     async fn wildcard_grant_covers_every_shared_employee() {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        run_one_employee_migrations(db.pool()).await.unwrap();
+        run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let pool = db.pool();
         insert_agent(pool, "a1", "A", "t1", "shared").await;
         insert_agent(pool, "a2", "A", "t1", "shared").await;
@@ -2383,7 +2383,7 @@ mod tests {
     #[tokio::test]
     async fn permission_resolves_via_department_ancestry() {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        run_one_employee_migrations(db.pool()).await.unwrap();
+        run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let pool = db.pool();
         insert_agent(pool, "a1", "A", "t1", "shared").await;
 
@@ -2418,7 +2418,7 @@ mod tests {
     #[tokio::test]
     async fn permission_resolves_via_scene_membership() {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        run_one_employee_migrations(db.pool()).await.unwrap();
+        run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let pool = db.pool();
         insert_agent(pool, "a1", "A", "t1", "shared").await;
 
@@ -2444,7 +2444,7 @@ mod tests {
         assert!(EmployeePermission::Manage > EmployeePermission::Use);
 
         let db = dream_core_db::init_database_memory().await.unwrap();
-        run_one_employee_migrations(db.pool()).await.unwrap();
+        run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let pool = db.pool();
         insert_agent(pool, "a1", "A", "t1", "shared").await;
         insert_employee_grant(pool, "t1", "member", "B", "a1", "manage").await;
@@ -2460,7 +2460,7 @@ mod tests {
     #[tokio::test]
     async fn grant_employee_access_upserts_and_validates_input() {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        run_one_employee_migrations(db.pool()).await.unwrap();
+        run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let pool = db.pool();
 
         grant_employee_access(pool, "t1", "member", "B", "a1", EMPLOYEE_PERMISSION_USE, "admin1")
@@ -2559,7 +2559,7 @@ mod tests {
     #[tokio::test]
     async fn unpublished_shared_employee_is_invisible_even_with_a_grant() {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        run_one_employee_migrations(db.pool()).await.unwrap();
+        run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let pool = db.pool();
         insert_agent_with_published(pool, "a1", "A", "t1", "shared", 0).await;
         insert_employee_grant(pool, "t1", "member", "B", "a1", "manage").await;
@@ -2580,7 +2580,7 @@ mod tests {
     #[tokio::test]
     async fn category_tree_crud_and_delete_rejects_with_children() {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        run_one_employee_migrations(db.pool()).await.unwrap();
+        run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let pool = db.pool();
 
         let root = create_category(pool, "t1", "skill", None, "  运维  ", 0).await.unwrap();
@@ -2623,7 +2623,7 @@ mod tests {
     #[tokio::test]
     async fn tag_create_is_idempotent_by_name_and_delete_cascades_links() {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        run_one_employee_migrations(db.pool()).await.unwrap();
+        run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let pool = db.pool();
 
         let tag1 = create_tag(pool, "t1", "skill", "生产力").await.unwrap();
@@ -2644,7 +2644,7 @@ mod tests {
     #[tokio::test]
     async fn set_resource_tags_fully_replaces_the_previous_set() {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        run_one_employee_migrations(db.pool()).await.unwrap();
+        run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let pool = db.pool();
         let a = create_tag(pool, "t1", "skill", "a").await.unwrap();
         let b = create_tag(pool, "t1", "skill", "b").await.unwrap();
@@ -2665,7 +2665,7 @@ mod tests {
     #[tokio::test]
     async fn list_tags_for_resources_batches_without_n_plus_one() {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        run_one_employee_migrations(db.pool()).await.unwrap();
+        run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let pool = db.pool();
         let tag = create_tag(pool, "t1", "skill", "热门").await.unwrap();
         set_resource_tags(pool, "skill", "sk_1", std::slice::from_ref(&tag.id))
@@ -2690,7 +2690,7 @@ mod tests {
     #[tokio::test]
     async fn set_published_batch_is_scoped_to_tenant() {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        run_one_employee_migrations(db.pool()).await.unwrap();
+        run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let pool = db.pool();
         insert_agent(pool, "a1", "A", "t1", "shared").await;
         insert_agent(pool, "a2", "A", "t2", "shared").await;

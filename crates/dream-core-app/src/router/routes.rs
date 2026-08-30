@@ -1491,14 +1491,14 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
     // decoupled from the upstream sqlx migrator — see crates/one-org.
     #[cfg(feature = "enterprise")]
     {
-        dream_domain_org::run_one_migrations(services.database.pool())
+        dream_domain_org::run_one_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
             .await
             .map_err(|e| {
                 RouterBuildError::new("router.dream_domain_org.migrate", "failed to run one-org migrations")
                     .with_source(e)
             })?;
     }
-    dream_domain_employee::run_one_employee_migrations(services.database.pool())
+    dream_domain_employee::run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
         .await
         .map_err(|e| {
             RouterBuildError::new(
@@ -1509,14 +1509,14 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
         })?;
     #[cfg(feature = "enterprise")]
     {
-        dream_domain_sso::run_one_sso_migrations(services.database.pool())
+        dream_domain_sso::run_one_sso_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
             .await
             .map_err(|e| {
                 RouterBuildError::new("router.dream_domain_sso.migrate", "failed to run one-sso migrations")
                     .with_source(e)
             })?;
     }
-    dream_domain_devops::run_one_devops_migrations(services.database.pool())
+    dream_domain_devops::run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
         .await
         .map_err(|e| {
             RouterBuildError::new(
@@ -1527,7 +1527,7 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
         })?;
     #[cfg(feature = "enterprise")]
     {
-        dream_domain_enterprise::run_one_enterprise_migrations(services.database.pool())
+        dream_domain_enterprise::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
             .await
             .map_err(|e| {
                 RouterBuildError::new(
@@ -1541,7 +1541,7 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
     // one_enterprises rows to the top tier.
     #[cfg(feature = "enterprise")]
     {
-        dream_domain_billing::run_one_billing_migrations(services.database.pool())
+        dream_domain_billing::run_one_billing_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
             .await
             .map_err(|e| {
                 RouterBuildError::new(
@@ -1554,7 +1554,7 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
     // one-platform: deployment infra config (P1-3 container + P2-2 collab).
     #[cfg(feature = "enterprise")]
     {
-        dream_domain_platform::run_one_platform_migrations(services.database.pool())
+        dream_domain_platform::run_one_platform_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
             .await
             .map_err(|e| {
                 RouterBuildError::new(
@@ -1567,7 +1567,7 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
     // one-workflow: approval tasks (P2-1).
     #[cfg(feature = "enterprise")]
     {
-        dream_domain_workflow::run_one_workflow_migrations(services.database.pool())
+        dream_domain_workflow::run_one_workflow_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
             .await
             .map_err(|e| {
                 RouterBuildError::new(
@@ -1580,7 +1580,7 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
     // one-memory: collections / items / refine jobs / grants (P2-2).
     #[cfg(feature = "enterprise")]
     {
-        dream_domain_memory::run_one_memory_migrations(services.database.pool())
+        dream_domain_memory::run_one_memory_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
             .await
             .map_err(|e| {
                 RouterBuildError::new(
@@ -2247,17 +2247,17 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
     // why billing must come after enterprise). `dream_domain_employee` is
     // deliberately not run here: admin never touches its tables — see
     // dream-en's docs/roadmap.zh-CN.md, E1.5's per-route survey.
-    dream_domain_org::run_one_migrations(services.database.pool())
+    dream_domain_org::run_one_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
         .await
         .map_err(|e| {
             RouterBuildError::new("router.dream_domain_org.migrate", "failed to run one-org migrations").with_source(e)
         })?;
-    dream_domain_sso::run_one_sso_migrations(services.database.pool())
+    dream_domain_sso::run_one_sso_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
         .await
         .map_err(|e| {
             RouterBuildError::new("router.dream_domain_sso.migrate", "failed to run one-sso migrations").with_source(e)
         })?;
-    dream_domain_devops::run_one_devops_migrations(services.database.pool())
+    dream_domain_devops::run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
         .await
         .map_err(|e| {
             RouterBuildError::new(
@@ -2266,7 +2266,7 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
             )
             .with_source(e)
         })?;
-    dream_domain_enterprise::run_one_enterprise_migrations(services.database.pool())
+    dream_domain_enterprise::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
         .await
         .map_err(|e| {
             RouterBuildError::new(
@@ -2277,7 +2277,7 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
         })?;
     // MUST run after one-enterprise: billing_001_init grandfathers existing
     // one_enterprises rows to the top tier.
-    dream_domain_billing::run_one_billing_migrations(services.database.pool())
+    dream_domain_billing::run_one_billing_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
         .await
         .map_err(|e| {
             RouterBuildError::new(
@@ -2286,7 +2286,7 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
             )
             .with_source(e)
         })?;
-    dream_domain_platform::run_one_platform_migrations(services.database.pool())
+    dream_domain_platform::run_one_platform_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
         .await
         .map_err(|e| {
             RouterBuildError::new(
@@ -2295,7 +2295,7 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
             )
             .with_source(e)
         })?;
-    dream_domain_workflow::run_one_workflow_migrations(services.database.pool())
+    dream_domain_workflow::run_one_workflow_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
         .await
         .map_err(|e| {
             RouterBuildError::new(
@@ -2304,7 +2304,7 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
             )
             .with_source(e)
         })?;
-    dream_domain_memory::run_one_memory_migrations(services.database.pool())
+    dream_domain_memory::run_one_memory_migrations(&dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
         .await
         .map_err(|e| {
             RouterBuildError::new(
@@ -3247,10 +3247,10 @@ mod tests {
             std::sync::Arc<dream_domain_billing::BillingService>,
         ) {
             let db = dream_core_db::init_database_memory().await.unwrap();
-            dream_domain_enterprise::run_one_enterprise_migrations(db.pool())
+            dream_domain_enterprise::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
                 .await
                 .unwrap();
-            dream_domain_billing::run_one_billing_migrations(db.pool())
+            dream_domain_billing::run_one_billing_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
                 .await
                 .unwrap();
             let billing = std::sync::Arc::new(dream_domain_billing::BillingService::new(
@@ -3664,7 +3664,7 @@ mod tests {
     #[cfg(feature = "enterprise")]
     async fn platform_service_for_test() -> (dream_core_db::Database, Arc<dream_domain_platform::PlatformService>) {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        dream_domain_platform::run_one_platform_migrations(db.pool())
+        dream_domain_platform::run_one_platform_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
             .await
             .unwrap();
         let service = Arc::new(dream_domain_platform::PlatformService::new(
