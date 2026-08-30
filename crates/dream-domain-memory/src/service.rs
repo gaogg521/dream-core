@@ -708,6 +708,111 @@ impl MemoryService {
         Ok(rows.into_iter().map(item_row_to_dto).collect())
     }
 
+    /// Relevance search for turn-start context injection (P2-2). Unlike
+    /// [`Self::search_items`], which takes one substring, this tokenises
+    /// `text` on whitespace and ORs the words, then ranks by how many
+    /// distinct words a row matched — feeding a whole user message to a bare
+    /// `LIKE '%…%'` would essentially never match. Active items only, capped
+    /// at `limit`, across every collection the caller can read.
+    pub async fn search_relevant(
+        &self,
+        tenant_id: &str,
+        caller_id: &str,
+        caller_role: &str,
+        text: &str,
+        limit: i64,
+    ) -> Result<Vec<MemoryItemDto>, MemoryError> {
+        // Words worth matching on: 2+ chars, deduped, capped so a long
+        // paste can't build a monster query. CJK has no spaces, so also
+        // keep the trimmed whole string as one term.
+        let mut terms: Vec<String> = text
+            .split_whitespace()
+            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+            .filter(|w| w.chars().count() >= 2)
+            .collect();
+        let whole = text.trim().to_lowercase();
+        if whole.chars().count() >= 2 && !terms.contains(&whole) {
+            terms.push(whole);
+        }
+        terms.sort();
+        terms.dedup();
+        terms.truncate(16);
+        if terms.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let collection_ids = self.readable_collection_ids(tenant_id, caller_id, caller_role).await?;
+        if collection_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let coll_ph = vec!["?"; collection_ids.len()].join(", ");
+        let score = terms
+            .iter()
+            .map(|_| "(CASE WHEN LOWER(content) LIKE '%' || ? || '%' THEN 1 ELSE 0 END)")
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let where_any = terms
+            .iter()
+            .map(|_| "LOWER(content) LIKE '%' || ? || '%'")
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let sql = format!(
+            "SELECT {ITEM_COLUMNS} FROM one_memory_items \
+             WHERE tenant_id = ? AND status = 'active' AND collection_id IN ({coll_ph}) AND ({where_any}) \
+             ORDER BY ({score}) DESC, importance DESC, created_at DESC LIMIT ?"
+        );
+        let mut q = sqlx::query_as::<_, ItemRow>(&sql).bind(tenant_id);
+        for id in &collection_ids {
+            q = q.bind(id);
+        }
+        for t in &terms {
+            q = q.bind(t); // WHERE (…OR…)
+        }
+        for t in &terms {
+            q = q.bind(t); // ORDER BY score
+        }
+        let rows = q.bind(limit).fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(item_row_to_dto).collect())
+    }
+
+    /// The caller's own `personal` collection id, creating it on first use.
+    /// The auto-write target for the P2-2 extraction pipeline — a member
+    /// never has to create a collection by hand before memory starts
+    /// accumulating.
+    pub async fn ensure_personal_collection(
+        &self,
+        tenant_id: &str,
+        caller_id: &str,
+        caller_role: &str,
+        default_name: &str,
+    ) -> Result<String, MemoryError> {
+        let existing: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM one_memory_collections \
+             WHERE tenant_id = ? AND scope = 'personal' AND owner_user_id = ? \
+             ORDER BY created_at ASC LIMIT 1",
+        )
+        .bind(tenant_id)
+        .bind(caller_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+        let dto = self
+            .create_collection(
+                tenant_id,
+                caller_id,
+                caller_role,
+                "personal",
+                None,
+                Some(caller_id),
+                default_name,
+                "",
+            )
+            .await?;
+        Ok(dto.id)
+    }
+
     /// Merge duplicates and trim low-value items in one collection, then
     /// record the run. Synchronous by design in v1: the counts are the
     /// product of the run, not a promise of one.
@@ -1550,6 +1655,70 @@ mod tests {
                 .unwrap_err()
                 .code(),
             "NOT_FOUND"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_personal_collection_creates_once_then_reuses() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "m1", "t1", "member").await;
+
+        let a = service
+            .ensure_personal_collection("t1", "m1", "member", "对话记忆")
+            .await
+            .unwrap();
+        let b = service
+            .ensure_personal_collection("t1", "m1", "member", "对话记忆")
+            .await
+            .unwrap();
+        assert_eq!(a, b, "second call must reuse the same collection");
+
+        // It is a real personal collection owned by m1.
+        let cols = service.list_collections("t1", "m1", "member").await.unwrap();
+        let c = cols.iter().find(|c| c.id == a).unwrap();
+        assert_eq!(c.scope, "personal");
+        assert_eq!(c.owner_user_id.as_deref(), Some("m1"));
+
+        // And add_item into it works (the extraction pipeline's write).
+        service
+            .add_item("t1", "m1", "member", &a, "我用 pnpm 不用 npm", 0.7, Some("conv_1"), &[])
+            .await
+            .unwrap();
+        assert_eq!(service.list_items("t1", "m1", "member", &a, 10).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn search_relevant_tokenises_and_ranks_by_hit_count() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "admin1", "t1", "org_admin").await;
+        seed_membership(db.pool(), "m1", "t1", "member").await;
+        let global = make_collection(&service, "admin1", "global", None, "kb").await;
+        add_item(
+            &service,
+            "admin1",
+            &global.id,
+            "deploy uses the blue-green pipeline",
+            0.5,
+        )
+        .await;
+        add_item(&service, "admin1", &global.id, "the staging database is read-only", 0.5).await;
+        add_item(&service, "admin1", &global.id, "unrelated note about lunch", 0.5).await;
+
+        // A whole-sentence query never matches as one LIKE, but tokenised it does.
+        let hits = service
+            .search_relevant("t1", "m1", "member", "how does deploy work with the pipeline", 5)
+            .await
+            .unwrap();
+        assert!(!hits.is_empty(), "tokenised search must find the deploy note");
+        assert_eq!(hits[0].content, "deploy uses the blue-green pipeline");
+
+        // Empty / whitespace query → nothing, no error.
+        assert!(
+            service
+                .search_relevant("t1", "m1", "member", "   ", 5)
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 

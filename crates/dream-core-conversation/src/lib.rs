@@ -37,8 +37,8 @@ pub use service::{
     ConversationAgentTurnStartedCallback, ConversationAgentTurnStatus, ConversationService,
 };
 pub use state::{
-    ContentInspector, ConversationRouterState, LlmCallTrace, LlmCallTraceRecorder, PolicyDenial, SendGate,
-    UsageRecorder,
+    ContentInspector, ConversationRouterState, LlmCallTrace, LlmCallTraceRecorder, MemoryContextProvider, PolicyDenial,
+    SendGate, TurnMemoryExtractor, UsageRecorder,
 };
 
 #[cfg(test)]

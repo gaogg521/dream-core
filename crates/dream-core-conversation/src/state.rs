@@ -62,6 +62,37 @@ pub trait LlmCallTraceRecorder: Send + Sync {
     fn record_call(&self, user_id: String, conversation_id: String, trace: LlmCallTrace);
 }
 
+/// One completed conversation turn, handed to the enterprise memory pipeline
+/// (P2-2) for salient-fact extraction. Same fire-and-forget contract as
+/// [`UsageRecorder`] / [`LlmCallTraceRecorder`]: the implementation spawns
+/// its own async work and MUST NOT block or fail the turn. Wired to
+/// one-memory in dream-app; `None` in personal builds (no extraction, no
+/// rows — bit-for-bit the pre-memory behaviour).
+///
+/// Fired only for a turn that completed without a terminal failure.
+/// `user_message` is the exact text of the turn that just finished; the
+/// implementation reads the matching assistant reply from persistence
+/// itself. `synthetic_prompt` is true when `user_message` is a
+/// cron/automation-built prompt rather than something a human typed — such
+/// turns must not be mined for "user facts".
+pub trait TurnMemoryExtractor: Send + Sync {
+    fn extract_from_turn(&self, user_id: String, conversation_id: String, user_message: String, synthetic_prompt: bool);
+}
+
+/// Retrieves the caller's readable enterprise memory (P2-2) for injection
+/// into an agent turn's context. `None` in personal builds, exactly like the
+/// other seams. Unlike the fire-and-forget recorders this one IS awaited on
+/// the turn-start path, so the implementation MUST be fast (one indexed
+/// query) and MUST degrade to an empty `Vec` on any error or slowness — a
+/// memory lookup that fails or stalls must never delay or block a turn (the
+/// caller wraps it in a short timeout regardless).
+#[async_trait::async_trait]
+pub trait MemoryContextProvider: Send + Sync {
+    /// Memory snippets relevant to `query` that `user_id` may read, most
+    /// relevant first, already length-bounded. Empty = inject nothing.
+    async fn recall(&self, user_id: &str, query: &str) -> Vec<String>;
+}
+
 /// Why the product refused an action, in a shape the HTTP layer can hand to a
 /// client that wants to say it in the reader's own language.
 ///
