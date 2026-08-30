@@ -98,7 +98,7 @@ mod tests {
                 "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?",
             )
             .bind(table)
-            .fetch_one(&db.pool)
+            .fetch_one(db.pool.mysql())
             .await
             .unwrap();
             assert_eq!(exists, 1, "table {table} should exist");

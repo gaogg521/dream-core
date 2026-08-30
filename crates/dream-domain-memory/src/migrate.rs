@@ -67,7 +67,7 @@ mod tests {
         run_one_memory_migrations(&db.pool).await.unwrap();
 
         let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _one_memory_migrations")
-            .fetch_one(&db.pool)
+            .fetch_one(db.pool.mysql())
             .await
             .unwrap();
         assert_eq!(applied, MIGRATIONS_MYSQL.len() as i64);

@@ -60,6 +60,11 @@ impl From<&str> for DbValue {
         DbValue::Text(v.to_owned())
     }
 }
+impl From<&String> for DbValue {
+    fn from(v: &String) -> Self {
+        DbValue::Text(v.clone())
+    }
+}
 
 impl From<String> for DbValue {
     fn from(v: String) -> Self {
@@ -191,6 +196,21 @@ impl DbPool {
                     .fetch_optional(pool)
                     .await
             }
+        }
+    }
+
+    /// Runs a query returning exactly one row decoded via `FromRow` on both
+    /// backends (errors if no row).
+    pub async fn fetch_one_as<T>(&self, sql: &str, params: &[DbValue]) -> Result<T, sqlx::Error>
+    where
+        T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow>
+            + for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>
+            + Send
+            + Unpin,
+    {
+        match self.fetch_optional_as::<T>(sql, params).await? {
+            Some(v) => Ok(v),
+            None => Err(sqlx::Error::RowNotFound),
         }
     }
 
@@ -346,6 +366,146 @@ impl DbTx<'_> {
                 }
                 let rows = sqlx::query_with(sql, args).execute(&mut **tx).await?.rows_affected();
                 Ok(rows)
+            }
+        }
+    }
+
+    /// Fetches at most one row via `FromRow` on both backends.
+    pub async fn fetch_optional_as<T>(&mut self, sql: &str, params: &[DbValue]) -> Result<Option<T>, sqlx::Error>
+    where
+        T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow>
+            + for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>
+            + Send
+            + Unpin,
+    {
+        match &mut self.inner {
+            DbTxInner::Sqlite(tx) => {
+                let mut args = SqliteArguments::default();
+                for p in params {
+                    p.push_sqlite(&mut args);
+                }
+                sqlx::query_as_with::<Sqlite, T, SqliteArguments>(sql, args)
+                    .fetch_optional(&mut **tx)
+                    .await
+            }
+            DbTxInner::MySql(tx) => {
+                let mut args = MySqlArguments::default();
+                for p in params {
+                    p.push_mysql(&mut args);
+                }
+                sqlx::query_as_with::<MySql, T, MySqlArguments>(sql, args)
+                    .fetch_optional(&mut **tx)
+                    .await
+            }
+        }
+    }
+
+    /// Fetches every row via `FromRow` on both backends.
+    pub async fn fetch_all_as<T>(&mut self, sql: &str, params: &[DbValue]) -> Result<Vec<T>, sqlx::Error>
+    where
+        T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow>
+            + for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>
+            + Send
+            + Unpin,
+    {
+        match &mut self.inner {
+            DbTxInner::Sqlite(tx) => {
+                let mut args = SqliteArguments::default();
+                for p in params {
+                    p.push_sqlite(&mut args);
+                }
+                sqlx::query_as_with::<Sqlite, T, SqliteArguments>(sql, args)
+                    .fetch_all(&mut **tx)
+                    .await
+            }
+            DbTxInner::MySql(tx) => {
+                let mut args = MySqlArguments::default();
+                for p in params {
+                    p.push_mysql(&mut args);
+                }
+                sqlx::query_as_with::<MySql, T, MySqlArguments>(sql, args)
+                    .fetch_all(&mut **tx)
+                    .await
+            }
+        }
+    }
+
+    /// Fetches at most one scalar value.
+    pub async fn fetch_optional_scalar<S>(&mut self, sql: &str, params: &[DbValue]) -> Result<Option<S>, sqlx::Error>
+    where
+        S: for<'r> sqlx::Decode<'r, Sqlite>
+            + sqlx::Type<Sqlite>
+            + for<'r> sqlx::Decode<'r, MySql>
+            + sqlx::Type<MySql>
+            + Send
+            + Unpin,
+    {
+        match &mut self.inner {
+            DbTxInner::Sqlite(tx) => {
+                let mut args = SqliteArguments::default();
+                for p in params {
+                    p.push_sqlite(&mut args);
+                }
+                sqlx::query_scalar_with::<Sqlite, S, SqliteArguments>(sql, args)
+                    .fetch_optional(&mut **tx)
+                    .await
+            }
+            DbTxInner::MySql(tx) => {
+                let mut args = MySqlArguments::default();
+                for p in params {
+                    p.push_mysql(&mut args);
+                }
+                sqlx::query_scalar_with::<MySql, S, MySqlArguments>(sql, args)
+                    .fetch_optional(&mut **tx)
+                    .await
+            }
+        }
+    }
+
+    /// Fetches exactly one scalar value (errors if no row).
+    pub async fn fetch_one_scalar<S>(&mut self, sql: &str, params: &[DbValue]) -> Result<S, sqlx::Error>
+    where
+        S: for<'r> sqlx::Decode<'r, Sqlite>
+            + sqlx::Type<Sqlite>
+            + for<'r> sqlx::Decode<'r, MySql>
+            + sqlx::Type<MySql>
+            + Send
+            + Unpin,
+    {
+        match self.fetch_optional_scalar::<S>(sql, params).await? {
+            Some(v) => Ok(v),
+            None => Err(sqlx::Error::RowNotFound),
+        }
+    }
+
+    /// Fetches one scalar per row.
+    pub async fn fetch_all_scalar<S>(&mut self, sql: &str, params: &[DbValue]) -> Result<Vec<S>, sqlx::Error>
+    where
+        S: for<'r> sqlx::Decode<'r, Sqlite>
+            + sqlx::Type<Sqlite>
+            + for<'r> sqlx::Decode<'r, MySql>
+            + sqlx::Type<MySql>
+            + Send
+            + Unpin,
+    {
+        match &mut self.inner {
+            DbTxInner::Sqlite(tx) => {
+                let mut args = SqliteArguments::default();
+                for p in params {
+                    p.push_sqlite(&mut args);
+                }
+                sqlx::query_scalar_with::<Sqlite, S, SqliteArguments>(sql, args)
+                    .fetch_all(&mut **tx)
+                    .await
+            }
+            DbTxInner::MySql(tx) => {
+                let mut args = MySqlArguments::default();
+                for p in params {
+                    p.push_mysql(&mut args);
+                }
+                sqlx::query_scalar_with::<MySql, S, MySqlArguments>(sql, args)
+                    .fetch_all(&mut **tx)
+                    .await
             }
         }
     }

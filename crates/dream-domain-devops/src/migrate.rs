@@ -354,7 +354,7 @@ mod tests {
         run_one_devops_migrations(&db.pool).await.unwrap();
 
         let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _one_devops_migrations")
-            .fetch_one(&db.pool)
+            .fetch_one(db.pool.mysql())
             .await
             .unwrap();
         assert_eq!(applied, MIGRATIONS_MYSQL.len() as i64);
@@ -362,7 +362,7 @@ mod tests {
         // The 5-column ledger key of `one_market_imports` and the case-sensitive
         // registry lookup, the two most dialect-sensitive spots here.
         let skills: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_skill_registry")
-            .fetch_one(&db.pool)
+            .fetch_one(db.pool.mysql())
             .await
             .unwrap();
         assert_eq!(skills, 0);

@@ -181,7 +181,7 @@ mod tests {
         run_one_migrations(&db.pool).await.unwrap();
 
         let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _one_migrations")
-            .fetch_one(&db.pool)
+            .fetch_one(db.pool.mysql())
             .await
             .unwrap();
         assert_eq!(applied, MIGRATIONS_MYSQL.len() as i64);
@@ -198,7 +198,7 @@ mod tests {
                 "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?",
             )
             .bind(table)
-            .fetch_one(&db.pool)
+            .fetch_one(db.pool.mysql())
             .await
             .unwrap();
             assert_eq!(exists, 1, "table {table} should exist");
@@ -211,13 +211,13 @@ mod tests {
             .bind("API")
             .bind(1_756_000_000_000_i64)
             .bind(1_756_000_000_000_i64)
-            .execute(&db.pool)
+            .execute(db.pool.mysql())
             .await
             .unwrap();
         let miss: Option<String> =
             sqlx::query_scalar("SELECT name FROM one_tenants WHERE name = ?")
                 .bind("api")
-                .fetch_optional(&db.pool)
+                .fetch_optional(db.pool.mysql())
                 .await
                 .unwrap();
         assert_eq!(miss, None, "one_* tables must be case-sensitive");

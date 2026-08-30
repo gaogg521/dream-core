@@ -151,14 +151,14 @@ pub(crate) mod tests {
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS one_enterprises (id VARCHAR(255) PRIMARY KEY, provider VARCHAR(64) NULL, external_id VARCHAR(255) NULL, display_name VARCHAR(255) NULL, created_at BIGINT NULL, updated_at BIGINT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_as_cs;",
         )
-        .execute(&db.pool)
+        .execute(db.pool.mysql())
         .await
         .unwrap();
         run_one_billing_migrations(&db.pool).await.unwrap();
         run_one_billing_migrations(&db.pool).await.unwrap();
 
         let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _one_migrations WHERE name LIKE 'billing_%'")
-            .fetch_one(&db.pool)
+            .fetch_one(db.pool.mysql())
             .await
             .unwrap();
         assert_eq!(applied, MIGRATIONS_MYSQL.len() as i64);

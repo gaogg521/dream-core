@@ -26,6 +26,12 @@ pub struct MySqlTestDb {
 }
 
 impl MySqlTestDb {
+    /// URL addressing this test's database — for code under test that takes
+    /// a connection URL (e.g. [`crate::init_database_mysql`]) instead of a pool.
+    pub fn mysql_url(&self) -> String {
+        format!("{}/{}", self.server_url, self.name)
+    }
+
     /// `DROP DATABASE` for this test's database and close the pool. Call at
     /// the end of the test; on error paths after cleanup, the database stays
     /// behind (harmless on an ephemeral server).

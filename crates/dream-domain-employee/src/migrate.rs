@@ -175,13 +175,13 @@ mod tests {
         run_one_employee_migrations(&db.pool).await.unwrap();
 
         let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _one_migrations WHERE name LIKE 'employee_%'")
-            .fetch_one(&db.pool)
+            .fetch_one(db.pool.mysql())
             .await
             .unwrap();
         assert_eq!(applied, MIGRATIONS_MYSQL.len() as i64);
 
         let seeded: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_employee_catalog")
-            .fetch_one(&db.pool)
+            .fetch_one(db.pool.mysql())
             .await
             .unwrap();
         assert_eq!(seeded, 28, "catalog seed must land exactly once");
