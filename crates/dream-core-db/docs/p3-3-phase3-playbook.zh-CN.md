@@ -74,3 +74,38 @@
 建企业 → 邀请成员 → 场景 → 授权矩阵 → 审批 → 记忆（对齐 handoff-2026-08-30b 清单）。
 收尾：`just check-editions` + `cargo nextest run --workspace`（红线：不跑
 `-p dream-core-app` e2e）+ align 文档 P3-3 标完成。
+
+---
+
+## 补记（2026-08-31 深夜）：阶段 3 启动前的工具与实战教训
+
+### 已就绪的工具
+
+- **`DbTx` 已补齐 fetch 系 helper**（`fetch_optional_as` / `fetch_all_as` /
+  `fetch_optional_scalar` / `fetch_one_scalar` / `fetch_all_scalar`）——事务内读行不再需要
+  手写两臂。`DbPool` 补了 `fetch_one_as`，`DbValue` 补了 `From<&String>`。
+- **codemod**：`D:\dream\scratchpad\dbpool_codemod.py`（括号感知，dry-run 默认，
+  `--apply` 落盘）。只处理完全规则的链：
+  `sqlx::query[_as|_scalar][::<_,T>](SQL)[.bind(E)]*.(execute|fetch_optional|fetch_one|fetch_all)(&self.pool)`
+  → 对应 `self.db.*` helper。链内含注释、`&mut *tx`、非 self 池、动态 builder 一律跳过
+  （输出里报 "left for manual review" 数）。**用法**：先 dry-run 看转换数，再 apply，
+  然后 `cargo check -p dream-domain-X` 逐个清尾。
+
+### 编译器抓出来的三类真实错误（写 MySQL 用例时别再犯）
+
+1. **`DbPool` 不是 `Executor`**：对它 `.close()`、或把它传给裸 `sqlx::query(...).fetch_*(...)`
+   都编译不过。裸 sqlx 调用要用具体池（MySQL 测试里是 `db.pool.mysql()`）；
+   传给 `run_*_migrations` / helper 的才用 `&db.pool`。
+2. **upsert 的 `AS new` 别名**必须显式声明 `INSERT ... VALUES (...) AS new ON DUPLICATE
+   KEY UPDATE x = new.x`，且要求 MySQL 8.0.19+（比方案定的 8.0.16 下限高）。测试里
+   能免则免（scratch 库每次全新，不需要防御性 upsert）。
+3. **`mysql_test_pool()` 建的是随机 scratch 库**，URL 不需要预建 `dream_test`；
+   需要 URL 的被测代码用 `scratch.mysql_url()`。
+
+### 状态（本节写时）
+
+- `just check-editions` ✅、`just test-mysql`（设 `DREAM_TEST_MYSQL_URL`）**1227/1227 ✅**
+  ——9 个 crate 的 MySQL 迁移在真 mysql:8.0.46 上验证过（含幂等、collation 大小写、
+  28 条 catalog 种子、backfill 探测）。
+- 全仓 `cargo nextest run --workspace` 回归待跑（上一轮被会话暂停打断）。
+- 阶段 3 尚未动任何 service：memory 是第一个目标（~35 个查询点，含 2 处事务块）。
