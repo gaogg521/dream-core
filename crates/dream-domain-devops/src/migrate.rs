@@ -40,6 +40,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/013_content_origin.sql"),
     ),
     ("014_api_assets", include_str!("../migrations/014_api_assets.sql")),
+    ("015_market_sync", include_str!("../migrations/015_market_sync.sql")),
 ];
 
 /// Run all pending one-devops migrations. Idempotent; call once at startup

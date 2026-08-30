@@ -13,6 +13,7 @@ use dream_core_auth::CurrentUser;
 use crate::api_assets::{ApiAssetDetailDto, ApiAssetDto};
 use crate::dlp_service::{DlpEventDto, DlpEventInput, DlpRuleDto, DlpSummaryDto};
 use crate::error::DevopsError;
+use crate::market_sync::{MarketSourceDto, MarketSyncReportDto};
 use crate::models::{
     McpRegistryDto, MilestoneDto, PipelineDto, PipelineRunDto, ProviderChannelDto, RagConfigDto, RagDocumentDto,
     RagSearchHit, RequirementCommentDto, RequirementDto, SkillRegistryDto, TestCaseDto, TestPlanDto,
@@ -58,6 +59,20 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
         .route(
             "/api/one/devops/api-assets/{id}/publish",
             axum::routing::post(publish_api_asset),
+        )
+        // P1-1 round 2: remote content market — admin-curated HTTP(S)
+        // sources synced into the skill/MCP registries (origin='market').
+        .route(
+            "/api/one/devops/market/sources",
+            get(list_market_sources).post(create_market_source),
+        )
+        .route(
+            "/api/one/devops/market/sources/{id}",
+            axum::routing::put(update_market_source).delete(delete_market_source),
+        )
+        .route(
+            "/api/one/devops/market/sources/{id}/sync",
+            axum::routing::post(sync_market_source),
         )
         .route("/api/one/devops/mcp-registry", get(list_mcp).post(upsert_mcp))
         .route("/api/one/devops/mcp-registry/{id}", axum::routing::delete(delete_mcp))
@@ -1970,4 +1985,102 @@ mod tests {
         assert_eq!(json["data"]["totalEvents"], 0);
         assert_eq!(json["data"]["totalBlocked"], 0);
     }
+}
+
+// --- P1-1 round 2: remote content market ---
+
+async fn list_market_sources(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<MarketSourceDto>>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .list_market_sources(&state.tenant_of(&user.id).await)
+            .await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateMarketSourceBody {
+    name: String,
+    /// Absolute http(s) URL of the source's index.json.
+    url: String,
+}
+
+async fn create_market_source(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<CreateMarketSourceBody>,
+) -> Result<Json<ApiResponse<MarketSourceDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    let dto = state
+        .service
+        .create_market_source(&state.tenant_of(&user.id).await, &body.name, &body.url, &user.id)
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateMarketSourceBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    enabled: Option<bool>,
+}
+
+async fn update_market_source(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateMarketSourceBody>,
+) -> Result<Json<ApiResponse<MarketSourceDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    let dto = state
+        .service
+        .update_market_source(
+            &state.tenant_of(&user.id).await,
+            &id,
+            body.name.as_deref(),
+            body.url.as_deref(),
+            body.enabled,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn delete_market_source(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    state
+        .service
+        .delete_market_source(&state.tenant_of(&user.id).await, &id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+/// Synchronous sync: fetch the manifest, pull changed items, return the
+/// report. Per-item failures ride in the report; only source-level failures
+/// (fetch/manifest) surface as request errors.
+async fn sync_market_source(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<MarketSyncReportDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    let fetcher = crate::market_sync::ReqwestFetcher::new();
+    let report = state
+        .service
+        .sync_market_source(&state.tenant_of(&user.id).await, &id, &fetcher)
+        .await?;
+    audit(&state, &user.id, "devops.market.sync", Some(&id)).await;
+    Ok(Json(ApiResponse::ok(report)))
 }
