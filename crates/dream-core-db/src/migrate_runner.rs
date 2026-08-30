@@ -32,11 +32,7 @@ pub struct MigrationSet {
 /// Idempotent; call once at startup, serially (the routes layer runs the
 /// crates in FK order, which also guarantees the first runner creates any
 /// shared ledger table before the others use it).
-pub async fn run_ledgered_migrations(
-    pool: &DbPool,
-    ledger: &str,
-    set: MigrationSet,
-) -> Result<(), sqlx::Error> {
+pub async fn run_ledgered_migrations(pool: &DbPool, ledger: &str, set: MigrationSet) -> Result<(), sqlx::Error> {
     match pool {
         DbPool::Sqlite(pool) => run_sqlite(pool, ledger, set.sqlite).await,
         DbPool::MySql(pool) => run_mysql(pool, ledger, set.mysql).await,
@@ -54,11 +50,10 @@ async fn run_sqlite(pool: &SqlitePool, ledger: &str, migrations: &[(&str, &str)]
     .await?;
 
     for (name, sql) in migrations {
-        let applied: bool =
-            sqlx::query_scalar(&format!("SELECT COUNT(*) > 0 FROM {ledger} WHERE name = ?"))
-                .bind(name)
-                .fetch_one(pool)
-                .await?;
+        let applied: bool = sqlx::query_scalar(&format!("SELECT COUNT(*) > 0 FROM {ledger} WHERE name = ?"))
+            .bind(name)
+            .fetch_one(pool)
+            .await?;
         if applied {
             continue;
         }
@@ -118,7 +113,10 @@ mod tests {
     use super::*;
 
     const TEST_MIGRATIONS: &[(&str, &str)] = &[
-        ("001_first", "CREATE TABLE IF NOT EXISTS runner_test (id TEXT PRIMARY KEY, n INTEGER NOT NULL);"),
+        (
+            "001_first",
+            "CREATE TABLE IF NOT EXISTS runner_test (id TEXT PRIMARY KEY, n INTEGER NOT NULL);",
+        ),
         ("002_second", "ALTER TABLE runner_test ADD COLUMN extra TEXT;"),
     ];
 
@@ -127,17 +125,25 @@ mod tests {
         let db = crate::init_database_memory().await.unwrap();
         let pool = DbPool::Sqlite(db.pool().clone());
 
-        run_ledgered_migrations(&pool, "_test_runner_ledger", MigrationSet {
-            sqlite: TEST_MIGRATIONS,
-            mysql: &[],
-        })
+        run_ledgered_migrations(
+            &pool,
+            "_test_runner_ledger",
+            MigrationSet {
+                sqlite: TEST_MIGRATIONS,
+                mysql: &[],
+            },
+        )
         .await
         .unwrap();
         // Second run is a no-op, not an error (ALTER TABLE would fail if re-applied).
-        run_ledgered_migrations(&pool, "_test_runner_ledger", MigrationSet {
-            sqlite: TEST_MIGRATIONS,
-            mysql: &[],
-        })
+        run_ledgered_migrations(
+            &pool,
+            "_test_runner_ledger",
+            MigrationSet {
+                sqlite: TEST_MIGRATIONS,
+                mysql: &[],
+            },
+        )
         .await
         .unwrap();
 
@@ -147,12 +153,11 @@ mod tests {
             .unwrap();
         assert_eq!(applied, TEST_MIGRATIONS.len() as i64);
 
-        let has_column: bool = sqlx::query_scalar(
-            "SELECT COUNT(*) > 0 FROM pragma_table_info('runner_test') WHERE name = 'extra'",
-        )
-        .fetch_one(db.pool())
-        .await
-        .unwrap();
+        let has_column: bool =
+            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM pragma_table_info('runner_test') WHERE name = 'extra'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
         assert!(has_column);
     }
 }
