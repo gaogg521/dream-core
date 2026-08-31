@@ -12,7 +12,7 @@ use dream_core_common::license::{
     Feature, Tier, estimate_cost_micros, estimate_media_cost_micros, tier_allows, tier_seat_limit,
 };
 use dream_core_common::{generate_prefixed_id, now_ms};
-use sqlx::SqlitePool;
+use dream_core_db::{day_bucket_expr, DbBackend, DbPool, db_params};
 
 use crate::error::BillingError;
 use crate::models::{
@@ -100,7 +100,7 @@ pub const MIN_LATENCY_SAMPLES: i64 = 10;
 
 #[derive(Clone)]
 pub struct BillingService {
-    pool: SqlitePool,
+    db: DbPool,
     provider: Arc<dyn BillingProvider>,
 }
 
@@ -213,17 +213,31 @@ fn parse_allowed_models(json: Option<&str>) -> Vec<String> {
 }
 
 impl BillingService {
-    pub fn new(pool: SqlitePool, provider: Arc<dyn BillingProvider>) -> Self {
-        Self { pool, provider }
+    pub fn new(db: DbPool, provider: Arc<dyn BillingProvider>) -> Self {
+        Self { db, provider }
+    }
+
+
+    /// Runs `sqlite_sql` or `mysql_sql` by backend — the two dialects
+    /// diverge on upsert syntax only; params are shared.
+    async fn upsert(
+        &self,
+        sqlite_sql: &str,
+        mysql_sql: &str,
+        params: &[dream_core_db::DbValue],
+    ) -> Result<u64, BillingError> {
+        let sql = match self.db.backend() {
+            dream_core_db::DbBackend::Sqlite => sqlite_sql,
+            dream_core_db::DbBackend::MySql => mysql_sql,
+        };
+        Ok(self.db.execute(sql, params).await?)
     }
 
     /// The caller's SSO company, or `None` for personal / standalone users
     /// (who are outside the billing system entirely).
     pub async fn resolve_enterprise_id(&self, user_id: &str) -> Result<Option<String>, BillingError> {
         let row: Option<String> =
-            sqlx::query_scalar("SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?")
-                .bind(user_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?", &db_params![user_id])
                 .await
                 .unwrap_or(None);
         Ok(row)
@@ -241,9 +255,7 @@ impl BillingService {
     /// would silently restore the exact bug this column exists to close.
     async fn has_active_seat(&self, user_id: &str) -> Result<bool, BillingError> {
         let status: Option<String> =
-            sqlx::query_scalar("SELECT seat_status FROM one_enterprise_members WHERE user_id = ?")
-                .bind(user_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT seat_status FROM one_enterprise_members WHERE user_id = ?", &db_params![user_id])
                 .await
                 .unwrap_or(None);
         // No row → not a company member at all, handled by `resolve_enterprise_id`
@@ -264,9 +276,7 @@ impl BillingService {
         // this would need the column decode to fail for a NULL department_id,
         // which is not an error, it is the overwhelmingly common case.
         let row: Option<Option<String>> =
-            sqlx::query_scalar("SELECT department_id FROM one_user_org WHERE user_id = ?")
-                .bind(user_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT department_id FROM one_user_org WHERE user_id = ?", &db_params![user_id])
                 .await
                 .unwrap_or(None);
         Ok(row.flatten())
@@ -275,12 +285,10 @@ impl BillingService {
     async fn license_of(&self, enterprise_id: &str) -> Result<License, BillingError> {
         // tier, seat_limit, expires_at, cost_cap_micros, allowed_models(json)
         type LicenseRow = (String, Option<i64>, Option<i64>, Option<i64>, Option<String>);
-        let row: Option<LicenseRow> = sqlx::query_as(
+        let row: Option<LicenseRow> = self.db.fetch_optional_as::<LicenseRow>(
             "SELECT tier, seat_limit, expires_at, monthly_cost_cap_micros, allowed_models \
              FROM one_enterprise_license WHERE enterprise_id = ?",
-        )
-        .bind(enterprise_id)
-        .fetch_optional(&self.pool)
+        &db_params![enterprise_id])
         .await?;
         Ok(match row {
             Some((tier, seat_limit, expires_at, cost_cap_micros, allowed_models_json)) => {
@@ -322,11 +330,9 @@ impl BillingService {
 
     /// ACTIVE seats only — what `seat_limit` caps. See `PlanDto::seat_used`.
     async fn seat_used(&self, enterprise_id: &str) -> Result<i64, BillingError> {
-        let used: i64 = sqlx::query_scalar(
+        let used: i64 = self.db.fetch_one_scalar(
             "SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND seat_status = 'active'",
-        )
-        .bind(enterprise_id)
-        .fetch_one(&self.pool)
+        &db_params![enterprise_id])
         .await
         .unwrap_or(0);
         Ok(used)
@@ -334,11 +340,9 @@ impl BillingService {
 
     /// Members waiting on a seat. See `PlanDto::seat_pending`.
     async fn seat_pending(&self, enterprise_id: &str) -> Result<i64, BillingError> {
-        let pending: i64 = sqlx::query_scalar(
+        let pending: i64 = self.db.fetch_one_scalar(
             "SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND seat_status = 'pending'",
-        )
-        .bind(enterprise_id)
-        .fetch_one(&self.pool)
+        &db_params![enterprise_id])
         .await
         .unwrap_or(0);
         Ok(pending)
@@ -384,17 +388,17 @@ impl BillingService {
         // A downgrade also clears any license expiry/seat override: the plan is
         // now whatever the admin chose, not what a (possibly still-valid) key
         // said. Re-activating the key restores it.
-        sqlx::query(
+        self.upsert(
             "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at) \
              VALUES (?, ?, ?, NULL, ?) \
              ON CONFLICT(enterprise_id) DO UPDATE SET tier = excluded.tier, seat_limit = excluded.seat_limit, \
                  expires_at = NULL, updated_at = excluded.updated_at",
+            "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at) \
+             VALUES (?, ?, ?, NULL, ?) \
+             ON DUPLICATE KEY UPDATE tier = new.tier, seat_limit = new.seat_limit, \
+                 expires_at = NULL, updated_at = new.updated_at",
+            &db_params![enterprise_id, tier.as_str(), seat_limit, now_ms()],
         )
-        .bind(enterprise_id)
-        .bind(tier.as_str())
-        .bind(seat_limit)
-        .bind(now_ms())
-        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -420,51 +424,42 @@ impl BillingService {
         let modules_json =
             serde_json::to_string(&payload.modules).map_err(|e| BillingError::Internal(e.to_string()))?;
 
-        let mut tx = self.pool.begin().await?;
-        sqlx::query(
-            "INSERT INTO one_license_activation \
-                 (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by, \
-                  tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(license_id) DO UPDATE SET enterprise_id = excluded.enterprise_id, \
-                 activated_at = excluded.activated_at, activated_by = excluded.activated_by, \
-                 tenant_cap = excluded.tenant_cap, agent_node_cap = excluded.agent_node_cap, \
-                 cpu_cores_cap = excluded.cpu_cores_cap, memory_mb_cap = excluded.memory_mb_cap, \
-                 modules = excluded.modules, serial = excluded.serial, app_id = excluded.app_id, \
-                 file_name = excluded.file_name",
+        let mut tx = self.db.begin().await?;
+        let activation_sql = match self.db.backend() {
+            dream_core_db::DbBackend::Sqlite => "INSERT INTO one_license_activation                  (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by,                   tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)              ON CONFLICT(license_id) DO UPDATE SET enterprise_id = excluded.enterprise_id,                  activated_at = excluded.activated_at, activated_by = excluded.activated_by,                  tenant_cap = excluded.tenant_cap, agent_node_cap = excluded.agent_node_cap,                  cpu_cores_cap = excluded.cpu_cores_cap, memory_mb_cap = excluded.memory_mb_cap,                  modules = excluded.modules, serial = excluded.serial, app_id = excluded.app_id,                  file_name = excluded.file_name",
+            dream_core_db::DbBackend::MySql => "INSERT INTO one_license_activation                  (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by,                   tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)              ON DUPLICATE KEY UPDATE enterprise_id = new.enterprise_id,                  activated_at = new.activated_at, activated_by = new.activated_by,                  tenant_cap = new.tenant_cap, agent_node_cap = new.agent_node_cap,                  cpu_cores_cap = new.cpu_cores_cap, memory_mb_cap = new.memory_mb_cap,                  modules = new.modules, serial = new.serial, app_id = new.app_id,                  file_name = new.file_name",
+        };
+        tx.execute(
+            activation_sql,
+            &db_params![
+                &payload.lid,
+                enterprise_id,
+                &payload.customer,
+                &payload.tier,
+                payload.seats,
+                payload.exp,
+                payload.iat,
+                now_ms(),
+                activated_by,
+                payload.tenant_cap,
+                payload.agent_node_cap,
+                payload.cpu_cores_cap,
+                payload.memory_mb_cap,
+                &modules_json,
+                &payload.serial,
+                &payload.app_id,
+                &payload.file_name
+            ],
         )
-        .bind(&payload.lid)
-        .bind(enterprise_id)
-        .bind(&payload.customer)
-        .bind(&payload.tier)
-        .bind(payload.seats)
-        .bind(payload.exp)
-        .bind(payload.iat)
-        .bind(now_ms())
-        .bind(activated_by)
-        .bind(payload.tenant_cap)
-        .bind(payload.agent_node_cap)
-        .bind(payload.cpu_cores_cap)
-        .bind(payload.memory_mb_cap)
-        .bind(&modules_json)
-        .bind(&payload.serial)
-        .bind(&payload.app_id)
-        .bind(&payload.file_name)
-        .execute(&mut *tx)
         .await?;
-
-        sqlx::query(
-            "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?) \
-             ON CONFLICT(enterprise_id) DO UPDATE SET tier = excluded.tier, seat_limit = excluded.seat_limit, \
-                 expires_at = excluded.expires_at, updated_at = excluded.updated_at",
+        let license_sql = match self.db.backend() {
+            dream_core_db::DbBackend::Sqlite => "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at)              VALUES (?, ?, ?, ?, ?)              ON CONFLICT(enterprise_id) DO UPDATE SET tier = excluded.tier, seat_limit = excluded.seat_limit,                  expires_at = excluded.expires_at, updated_at = excluded.updated_at",
+            dream_core_db::DbBackend::MySql => "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at)              VALUES (?, ?, ?, ?, ?)              ON DUPLICATE KEY UPDATE tier = new.tier, seat_limit = new.seat_limit,                  expires_at = new.expires_at, updated_at = new.updated_at",
+        };
+        tx.execute(
+            license_sql,
+            &db_params![enterprise_id, &payload.tier, payload.seats, payload.exp, now_ms()],
         )
-        .bind(enterprise_id)
-        .bind(&payload.tier)
-        .bind(payload.seats)
-        .bind(payload.exp)
-        .bind(now_ms())
-        .execute(&mut *tx)
         .await?;
         tx.commit().await?;
 
@@ -498,13 +493,11 @@ impl BillingService {
             Option<String>,
             Option<String>,
         );
-        let row: Option<Row> = sqlx::query_as(
+        let row: Option<Row> = self.db.fetch_optional_as::<Row>(
             "SELECT license_id, customer, tier, seats, expires_at, activated_at, \
                     tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name \
              FROM one_license_activation WHERE enterprise_id = ? ORDER BY activated_at DESC LIMIT 1",
-        )
-        .bind(enterprise_id)
-        .fetch_optional(&self.pool)
+        &db_params![enterprise_id])
         .await?;
         Ok(row.map(
             |(
@@ -561,17 +554,17 @@ impl BillingService {
             Some(serde_json::to_string(allowed_models).unwrap_or_else(|_| "[]".to_owned()))
         };
         // Upsert onto the (existing or default) license row.
-        sqlx::query(
+        self.upsert(
             "INSERT INTO one_enterprise_license (enterprise_id, tier, monthly_cost_cap_micros, allowed_models, updated_at) \
              VALUES (?, 'free', ?, ?, ?) \
              ON CONFLICT(enterprise_id) DO UPDATE SET monthly_cost_cap_micros = excluded.monthly_cost_cap_micros, \
                  allowed_models = excluded.allowed_models, updated_at = excluded.updated_at",
+            "INSERT INTO one_enterprise_license (enterprise_id, tier, monthly_cost_cap_micros, allowed_models, updated_at) \
+             VALUES (?, 'free', ?, ?, ?) \
+             ON DUPLICATE KEY UPDATE monthly_cost_cap_micros = new.monthly_cost_cap_micros, \
+                 allowed_models = new.allowed_models, updated_at = new.updated_at",
+            &db_params![enterprise_id, cost_cap_micros, allowed_json, now_ms()],
         )
-        .bind(enterprise_id)
-        .bind(cost_cap_micros)
-        .bind(allowed_json)
-        .bind(now_ms())
-        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -580,13 +573,10 @@ impl BillingService {
     /// window.
     async fn budget_used_micros(&self, enterprise_id: &str) -> Result<i64, BillingError> {
         let since = now_ms() - BUDGET_WINDOW_MS;
-        let used: i64 = sqlx::query_scalar(
+        let used: i64 = self.db.fetch_one_scalar(
             "SELECT COALESCE(SUM(estimated_cost_micros), 0) FROM one_usage_events \
              WHERE enterprise_id = ? AND created_at >= ?",
-        )
-        .bind(enterprise_id)
-        .bind(since)
-        .fetch_one(&self.pool)
+        &db_params![enterprise_id, since])
         .await
         .unwrap_or(0);
         Ok(used)
@@ -602,13 +592,10 @@ impl BillingService {
     /// admins). Backends that never write a row here (a brand-new
     /// conversation with no turns yet) return 0, not an error.
     pub async fn conversation_cost(&self, user_id: &str, conversation_id: &str) -> Result<i64, BillingError> {
-        let used: i64 = sqlx::query_scalar(
+        let used: i64 = self.db.fetch_one_scalar(
             "SELECT COALESCE(SUM(estimated_cost_micros), 0) FROM one_usage_events \
              WHERE user_id = ? AND conversation_id = ?",
-        )
-        .bind(user_id)
-        .bind(conversation_id)
-        .fetch_one(&self.pool)
+        &db_params![user_id, conversation_id])
         .await
         .unwrap_or(0);
         Ok(used)
@@ -625,26 +612,24 @@ impl BillingService {
         department_id: &str,
         cost_cap_micros: Option<i64>,
     ) -> Result<(), BillingError> {
-        sqlx::query(
+        self.upsert(
             "INSERT INTO one_department_budgets (department_id, enterprise_id, cost_cap_micros, updated_at) \
              VALUES (?, ?, ?, ?) \
              ON CONFLICT(department_id) DO UPDATE SET \
                  cost_cap_micros = excluded.cost_cap_micros, updated_at = excluded.updated_at",
+            "INSERT INTO one_department_budgets (department_id, enterprise_id, cost_cap_micros, updated_at) \
+             VALUES (?, ?, ?, ?) \
+             ON DUPLICATE KEY UPDATE \
+                 cost_cap_micros = new.cost_cap_micros, updated_at = new.updated_at",
+            &db_params![department_id, enterprise_id, cost_cap_micros, now_ms()],
         )
-        .bind(department_id)
-        .bind(enterprise_id)
-        .bind(cost_cap_micros)
-        .bind(now_ms())
-        .execute(&self.pool)
         .await?;
         Ok(())
     }
 
     async fn department_budget_cap(&self, department_id: &str) -> Result<Option<i64>, BillingError> {
         let cap: Option<Option<i64>> =
-            sqlx::query_scalar("SELECT cost_cap_micros FROM one_department_budgets WHERE department_id = ?")
-                .bind(department_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT cost_cap_micros FROM one_department_budgets WHERE department_id = ?", &db_params![department_id])
                 .await
                 .unwrap_or(None);
         Ok(cap.flatten())
@@ -656,13 +641,10 @@ impl BillingService {
     /// denormalized rather than resolved live from `one_user_org`.
     async fn department_budget_used_micros(&self, department_id: &str) -> Result<i64, BillingError> {
         let since = now_ms() - BUDGET_WINDOW_MS;
-        let used: i64 = sqlx::query_scalar(
+        let used: i64 = self.db.fetch_one_scalar(
             "SELECT COALESCE(SUM(estimated_cost_micros), 0) FROM one_usage_events \
              WHERE department_id = ? AND created_at >= ?",
-        )
-        .bind(department_id)
-        .bind(since)
-        .fetch_one(&self.pool)
+        &db_params![department_id, since])
         .await
         .unwrap_or(0);
         Ok(used)
@@ -672,12 +654,10 @@ impl BillingService {
     /// with current-window spend (T7 dashboard). Departments with no cap and
     /// no spend simply do not appear — nothing to show an admin about them.
     pub async fn list_department_budgets(&self, enterprise_id: &str) -> Result<Vec<DepartmentBudgetDto>, BillingError> {
-        let rows: Vec<(String, Option<i64>)> = sqlx::query_as(
+        let rows: Vec<(String, Option<i64>)> = self.db.fetch_all_as::<(String, Option<i64>)>(
             "SELECT department_id, cost_cap_micros FROM one_department_budgets \
              WHERE enterprise_id = ? ORDER BY updated_at DESC",
-        )
-        .bind(enterprise_id)
-        .fetch_all(&self.pool)
+        &db_params![enterprise_id])
         .await?;
         let mut out = Vec::with_capacity(rows.len());
         for (department_id, cost_cap_micros) in rows {
@@ -695,9 +675,7 @@ impl BillingService {
     /// Absent row = default = never store them.
     pub async fn media_ledger_retain_prompts(&self, enterprise_id: &str) -> Result<bool, BillingError> {
         let retain: Option<bool> =
-            sqlx::query_scalar("SELECT retain_prompts FROM one_media_ledger_settings WHERE enterprise_id = ?")
-                .bind(enterprise_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT retain_prompts FROM one_media_ledger_settings WHERE enterprise_id = ?", &db_params![enterprise_id])
                 .await?;
         Ok(retain.unwrap_or(false))
     }
@@ -708,16 +686,17 @@ impl BillingService {
         enterprise_id: &str,
         retain_prompts: bool,
     ) -> Result<(), BillingError> {
-        sqlx::query(
+        self.upsert(
             "INSERT INTO one_media_ledger_settings (enterprise_id, retain_prompts, updated_at) \
              VALUES (?, ?, ?) \
              ON CONFLICT(enterprise_id) DO UPDATE SET \
                  retain_prompts = excluded.retain_prompts, updated_at = excluded.updated_at",
+            "INSERT INTO one_media_ledger_settings (enterprise_id, retain_prompts, updated_at) \
+             VALUES (?, ?, ?) \
+             ON DUPLICATE KEY UPDATE \
+                 retain_prompts = new.retain_prompts, updated_at = new.updated_at",
+            &db_params![enterprise_id, retain_prompts, now_ms()],
         )
-        .bind(enterprise_id)
-        .bind(retain_prompts)
-        .bind(now_ms())
-        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -749,22 +728,11 @@ impl BillingService {
         } else {
             None
         };
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_media_assets \
                 (id, user_id, enterprise_id, department_id, conversation_id, kind, model, file_path, prompt, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(generate_prefixed_id("media"))
-        .bind(user_id)
-        .bind(&enterprise_id)
-        .bind(department_id)
-        .bind(conversation_id)
-        .bind(kind)
-        .bind(model)
-        .bind(file_path)
-        .bind(retained_prompt)
-        .bind(now_ms())
-        .execute(&self.pool)
+        &db_params![generate_prefixed_id("media"), user_id, &enterprise_id, department_id, conversation_id, kind, model, file_path, retained_prompt, now_ms()])
         .await?;
         Ok(())
     }
@@ -799,25 +767,25 @@ impl BillingService {
         }
         sql.push_str(" ORDER BY created_at DESC LIMIT ?");
 
-        let mut query = sqlx::query_as::<_, MediaAssetRow>(&sql).bind(enterprise_id);
+        let mut params = db_params![enterprise_id];
         if let Some(kind) = filters.kind {
-            query = query.bind(kind);
+            params.push(kind.into());
         }
         if let Some(model) = filters.model {
-            query = query.bind(model);
+            params.push(model.into());
         }
         if let Some(user_id) = filters.user_id {
-            query = query.bind(user_id);
+            params.push(user_id.into());
         }
         if let Some(since) = filters.since {
-            query = query.bind(since);
+            params.push(since.into());
         }
         if let Some(needle) = filters.prompt_contains {
-            query = query.bind(format!("%{}%", needle.replace('%', "\\%").replace('_', "\\_")));
+            params.push(format!("%{}%", needle.replace('%', "\\%").replace('_', "\\_")).into());
         }
-        query = query.bind(filters.limit.unwrap_or(200).clamp(1, 1000));
+        params.push(filters.limit.unwrap_or(200).clamp(1, 1000).into());
 
-        let rows = query.fetch_all(&self.pool).await?;
+        let rows = self.db.fetch_all_as::<MediaAssetRow>(&sql, &params).await?;
         Ok(rows.into_iter().map(MediaAssetRow::into_dto).collect())
     }
 
@@ -958,20 +926,11 @@ impl BillingService {
                  price was configured, so it does not count against the company's spend cap"
             );
         }
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_usage_events \
                 (id, user_id, enterprise_id, department_id, conversation_id, model, input_tokens, output_tokens, total_tokens, estimated_cost_micros, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)",
-        )
-        .bind(generate_prefixed_id("usage"))
-        .bind(user_id)
-        .bind(enterprise_id)
-        .bind(department_id)
-        .bind(conversation_id)
-        .bind(model)
-        .bind(cost)
-        .bind(now_ms())
-        .execute(&self.pool)
+        &db_params![generate_prefixed_id("usage"), user_id, enterprise_id, department_id, conversation_id, model, cost, now_ms()])
         .await?;
         Ok(())
     }
@@ -1043,24 +1002,11 @@ impl BillingService {
                 "turn usage recorded at zero cost: no built-in rate matched this model, so it does not count                  against the company's spend cap"
             );
         }
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_usage_events \
                 (id, user_id, enterprise_id, department_id, conversation_id, model, channel_id, input_tokens, output_tokens, total_tokens, estimated_cost_micros, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(generate_prefixed_id("usage"))
-        .bind(user_id)
-        .bind(enterprise_id)
-        .bind(department_id)
-        .bind(conversation_id)
-        .bind(model)
-        .bind(channel_id)
-        .bind(input_tokens)
-        .bind(output_tokens)
-        .bind(total_tokens)
-        .bind(cost)
-        .bind(now_ms())
-        .execute(&self.pool)
+        &db_params![generate_prefixed_id("usage"), user_id, enterprise_id, department_id, conversation_id, model, channel_id, input_tokens, output_tokens, total_tokens, cost, now_ms()])
         .await?;
         Ok(())
     }
@@ -1073,35 +1019,26 @@ impl BillingService {
     /// `dream-app` (same layer, no direct dependency). Authorization is
     /// enforced by that caller; this trusts the `enterprise_id` it is given.
     pub async fn delete_enterprise_billing_data(&self, enterprise_id: &str) -> Result<(), BillingError> {
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM one_enterprise_license WHERE enterprise_id = ?")
-            .bind(enterprise_id)
-            .execute(&mut *tx)
+        let mut tx = self.db.begin().await?;
+        for table in [
+            "one_enterprise_license",
+            "one_usage_events",
+            "one_llm_calls",
+            "one_department_budgets",
+        ] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE enterprise_id = ?"),
+                &db_params![enterprise_id],
+            )
             .await?;
-        sqlx::query("DELETE FROM one_usage_events WHERE enterprise_id = ?")
-            .bind(enterprise_id)
-            .execute(&mut *tx)
+        }
+        for table in ["one_media_assets", "one_media_ledger_settings", "one_license_activation"] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE enterprise_id = ?"),
+                &db_params![enterprise_id],
+            )
             .await?;
-        sqlx::query("DELETE FROM one_llm_calls WHERE enterprise_id = ?")
-            .bind(enterprise_id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM one_department_budgets WHERE enterprise_id = ?")
-            .bind(enterprise_id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM one_media_assets WHERE enterprise_id = ?")
-            .bind(enterprise_id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM one_media_ledger_settings WHERE enterprise_id = ?")
-            .bind(enterprise_id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM one_license_activation WHERE enterprise_id = ?")
-            .bind(enterprise_id)
-            .execute(&mut *tx)
-            .await?;
+        }
         tx.commit().await?;
         tracing::warn!(enterprise_id, "enterprise billing history deleted (企业注销级联)");
         Ok(())
@@ -1121,36 +1058,33 @@ impl BillingService {
             .buckets(
                 enterprise_id,
                 since_ms,
-                "strftime('%Y-%m-%d', created_at / 1000, 'unixepoch')",
+                &day_bucket_expr(self.db.backend(), "created_at"),
             )
             .await?;
         let by_department = self
             .buckets(enterprise_id, since_ms, "COALESCE(department_id, 'unassigned')")
             .await?;
 
-        let (total_turns, total_tokens, total_cost): (i64, i64, i64) = sqlx::query_as(
-            "SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(estimated_cost_micros), 0) \
-             FROM one_usage_events WHERE enterprise_id = ? AND created_at >= ?",
-        )
-        .bind(enterprise_id)
-        .bind(since_ms)
-        .fetch_one(&self.pool)
-        .await?;
+        let (total_turns, total_tokens, total_cost): (i64, i64, i64) = self
+            .db
+            .fetch_one_as(
+                "SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(estimated_cost_micros), 0)              FROM one_usage_events WHERE enterprise_id = ? AND created_at >= ?",
+                &db_params![enterprise_id, since_ms],
+            )
+            .await?;
 
         // Media rows are the ones with no token counts (media is metered per
         // asset, never per token), so `total_tokens IS NULL` identifies them
         // without a schema change. A zero cost among those means nothing priced
         // the call — neither the built-in table nor a unit price the admin
         // entered — and it therefore consumed none of the spend cap.
-        let (unpriced_media_calls, unpriced_models): (i64, Option<String>) = sqlx::query_as(
-            "SELECT COUNT(*), GROUP_CONCAT(DISTINCT model) FROM one_usage_events \
-             WHERE enterprise_id = ? AND created_at >= ? \
-               AND total_tokens IS NULL AND model IS NOT NULL AND estimated_cost_micros = 0",
-        )
-        .bind(enterprise_id)
-        .bind(since_ms)
-        .fetch_one(&self.pool)
-        .await?;
+        let (unpriced_media_calls, unpriced_models): (i64, Option<String>) = self
+            .db
+            .fetch_one_as(
+                "SELECT COUNT(*), GROUP_CONCAT(DISTINCT model) FROM one_usage_events              WHERE enterprise_id = ? AND created_at >= ?                AND total_tokens IS NULL AND model IS NOT NULL AND estimated_cost_micros = 0",
+                &db_params![enterprise_id, since_ms],
+            )
+            .await?;
 
         Ok(UsageSummaryDto {
             since: since_ms,
@@ -1186,10 +1120,7 @@ impl BillingService {
              FROM one_usage_events WHERE enterprise_id = ? AND created_at >= ? \
              GROUP BY k ORDER BY COUNT(*) DESC"
         );
-        let rows: Vec<(String, i64, i64, i64)> = sqlx::query_as(&sql)
-            .bind(enterprise_id)
-            .bind(since_ms)
-            .fetch_all(&self.pool)
+        let rows: Vec<(String, i64, i64, i64)> = self.db.fetch_all_as::<(String, i64, i64, i64)>(&sql, &db_params![enterprise_id, since_ms])
             .await?;
         Ok(rows
             .into_iter()
@@ -1228,21 +1159,17 @@ impl BillingService {
         }
 
         let count_sql = format!("SELECT COUNT(*) FROM one_usage_events {where_sql}");
-        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql)
-            .bind(enterprise_id)
-            .bind(since_ms);
+        let mut params = db_params![enterprise_id, since_ms];
         if let Some(u) = user_id {
-            count_query = count_query.bind(u);
+            params.push(u.into());
         }
         if let Some(m) = model {
-            count_query = count_query.bind(m);
+            params.push(m.into());
         }
-        let total = count_query.fetch_one(&self.pool).await?;
+        let total: i64 = self.db.fetch_one_scalar(&count_sql, &params).await?;
 
         let list_sql = format!(
-            "SELECT id, user_id, conversation_id, model, channel_id, input_tokens, output_tokens, total_tokens, \
-                    estimated_cost_micros, created_at \
-             FROM one_usage_events {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            "SELECT id, user_id, conversation_id, model, channel_id, input_tokens, output_tokens, total_tokens,                     estimated_cost_micros, created_at              FROM one_usage_events {where_sql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
         );
         type Row = (
             String,
@@ -1256,14 +1183,10 @@ impl BillingService {
             i64,
             i64,
         );
-        let mut list_query = sqlx::query_as::<_, Row>(&list_sql).bind(enterprise_id).bind(since_ms);
-        if let Some(u) = user_id {
-            list_query = list_query.bind(u);
-        }
-        if let Some(m) = model {
-            list_query = list_query.bind(m);
-        }
-        let rows = list_query.bind(limit).bind(offset).fetch_all(&self.pool).await?;
+        let mut list_params = params.clone();
+        list_params.push(limit.into());
+        list_params.push(offset.into());
+        let rows = self.db.fetch_all_as::<Row>(&list_sql, &list_params).await?;
 
         let events = rows
             .into_iter()
@@ -1329,25 +1252,12 @@ impl BillingService {
         let Some(enterprise_id) = self.resolve_enterprise_id(&user_id).await? else {
             return Ok(());
         };
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_llm_calls \
                 (id, enterprise_id, user_id, conversation_id, model, provider, tool_name, \
                  input_tokens, output_tokens, duration_ms, error, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(generate_prefixed_id("llmcall"))
-        .bind(&enterprise_id)
-        .bind(&user_id)
-        .bind(conversation_id)
-        .bind(model)
-        .bind(provider)
-        .bind(tool_name)
-        .bind(input_tokens)
-        .bind(output_tokens)
-        .bind(duration_ms)
-        .bind(error)
-        .bind(now_ms())
-        .execute(&self.pool)
+        &db_params![generate_prefixed_id("llmcall"), &enterprise_id, &user_id, conversation_id, model, provider, tool_name, input_tokens, output_tokens, duration_ms, error, now_ms()])
         .await?;
         Ok(())
     }
@@ -1379,22 +1289,15 @@ impl BillingService {
         }
 
         let count_sql = format!("SELECT COUNT(*) FROM one_llm_calls {where_sql}");
-        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql)
-            .bind(enterprise_id)
-            .bind(since_ms);
+                let mut params = db_params![enterprise_id, since_ms];
         if let Some(u) = user_id {
-            count_query = count_query.bind(u);
+            params.push(u.into());
         }
         if let Some(m) = model {
-            count_query = count_query.bind(m);
+            params.push(m.into());
         }
-        let total = count_query.fetch_one(&self.pool).await?;
+        let total: i64 = self.db.fetch_one_scalar(&count_sql, &params).await?;
 
-        let list_sql = format!(
-            "SELECT id, user_id, conversation_id, model, provider, tool_name, input_tokens, output_tokens, \
-                    duration_ms, error, created_at \
-             FROM one_llm_calls {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?"
-        );
         type Row = (
             String,
             String,
@@ -1408,14 +1311,13 @@ impl BillingService {
             Option<String>,
             i64,
         );
-        let mut list_query = sqlx::query_as::<_, Row>(&list_sql).bind(enterprise_id).bind(since_ms);
-        if let Some(u) = user_id {
-            list_query = list_query.bind(u);
-        }
-        if let Some(m) = model {
-            list_query = list_query.bind(m);
-        }
-        let rows = list_query.bind(limit).bind(offset).fetch_all(&self.pool).await?;
+        let list_sql = format!(
+            "SELECT id, user_id, conversation_id, model, provider, tool_name, input_tokens, output_tokens,                     duration_ms, error, created_at              FROM one_llm_calls {where_sql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+        );
+        let mut list_params = params.clone();
+        list_params.push(limit.into());
+        list_params.push(offset.into());
+        let rows = self.db.fetch_all_as::<Row>(&list_sql, &list_params).await?;
 
         let calls = rows
             .into_iter()
@@ -1460,12 +1362,9 @@ impl BillingService {
     /// pass `now_ms() - LLM_CALL_RETENTION_DAYS * 24 * 3600 * 1000` (the admin
     /// endpoint does this when `beforeMs` is omitted).
     pub async fn purge_llm_calls_older_than(&self, enterprise_id: &str, before_ms: i64) -> Result<u64, BillingError> {
-        let result = sqlx::query("DELETE FROM one_llm_calls WHERE enterprise_id = ? AND created_at < ?")
-            .bind(enterprise_id)
-            .bind(before_ms)
-            .execute(&self.pool)
+        let result = self.db.execute("DELETE FROM one_llm_calls WHERE enterprise_id = ? AND created_at < ?", &db_params![enterprise_id, before_ms])
             .await?;
-        Ok(result.rows_affected())
+        Ok(result)
     }
 
     /// P1-3 enterprise report: the §1 metric list NOT already covered by
@@ -1490,35 +1389,29 @@ impl BillingService {
         // deliberately independent of `since`, which scopes the spend/token
         // dimensions: an admin paging back to last quarter still wants
         // "who is active this week" to mean this week.
-        let wau: i64 = sqlx::query_scalar(
+        let wau: i64 = self.db.fetch_one_scalar(
             "SELECT COUNT(DISTINCT user_id) FROM one_usage_events \
              WHERE enterprise_id = ? AND created_at >= ?",
-        )
-        .bind(enterprise_id)
-        .bind(now - SEVEN_DAYS_MS)
-        .fetch_one(&self.pool)
+        &db_params![enterprise_id, now - SEVEN_DAYS_MS])
         .await?;
-        let mau: i64 = sqlx::query_scalar(
+        let mau: i64 = self.db.fetch_one_scalar(
             "SELECT COUNT(DISTINCT user_id) FROM one_usage_events \
              WHERE enterprise_id = ? AND created_at >= ?",
-        )
-        .bind(enterprise_id)
-        .bind(now - BUDGET_WINDOW_MS)
-        .fetch_one(&self.pool)
+        &db_params![enterprise_id, now - BUDGET_WINDOW_MS])
         .await?;
 
         // Per-capita tokens: window total / window active users. Division by
         // zero yields 0 — an average over zero active users is not 0, it is
         // undefined, but the report page renders "no activity either way", so
         // 0 with no special UI state is the honest-enough contract.
-        let (active_users, window_tokens): (i64, i64) = sqlx::query_as(
-            "SELECT COUNT(DISTINCT user_id), COALESCE(SUM(total_tokens), 0) \
+        let (active_users, window_tokens): (i64, i64) = self
+            .db
+            .fetch_one_as(
+                "SELECT COUNT(DISTINCT user_id), COALESCE(SUM(total_tokens), 0) \
              FROM one_usage_events WHERE enterprise_id = ? AND created_at >= ?",
-        )
-        .bind(enterprise_id)
-        .bind(since_ms)
-        .fetch_one(&self.pool)
-        .await?;
+                &db_params![enterprise_id, since_ms],
+            )
+            .await?;
         let avg_tokens_per_user = if active_users > 0 {
             window_tokens as f64 / active_users as f64
         } else {
@@ -1529,14 +1422,11 @@ impl BillingService {
         // `usage_summary`'s by_user bucket — but that bucket is ordered by
         // call count and unbounded, so the Top10 ordering is computed here
         // rather than re-sorted (and re-fetched in full) client-side.
-        let top_rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        let top_rows: Vec<(String, i64, i64)> = self.db.fetch_all_as::<(String, i64, i64)>(
             "SELECT user_id, COALESCE(SUM(total_tokens), 0), COALESCE(SUM(estimated_cost_micros), 0) \
              FROM one_usage_events WHERE enterprise_id = ? AND created_at >= ? \
              GROUP BY user_id ORDER BY 2 DESC LIMIT 10",
-        )
-        .bind(enterprise_id)
-        .bind(since_ms)
-        .fetch_all(&self.pool)
+        &db_params![enterprise_id, since_ms])
         .await?;
         let top_users = top_rows
             .into_iter()
@@ -1550,14 +1440,14 @@ impl BillingService {
         // Call counts + success rate. `COUNT(error)` counts non-NULL errors
         // only — the "model call completed without error" rate OpenOcta's
         // "tool success rate ≥ 95%" KPI is approximated by (see the DTO doc).
-        let (llm_call_count, llm_error_count): (i64, i64) = sqlx::query_as(
-            "SELECT COUNT(*), COUNT(error) FROM one_llm_calls \
+        let (llm_call_count, llm_error_count): (i64, i64) = self
+            .db
+            .fetch_one_as(
+                "SELECT COUNT(*), COUNT(error) FROM one_llm_calls \
              WHERE enterprise_id = ? AND created_at >= ?",
-        )
-        .bind(enterprise_id)
-        .bind(since_ms)
-        .fetch_one(&self.pool)
-        .await?;
+                &db_params![enterprise_id, since_ms],
+            )
+            .await?;
         let tool_success_rate = if llm_call_count > 0 {
             Some((llm_call_count - llm_error_count) as f64 / llm_call_count as f64)
         } else {
@@ -1571,14 +1461,11 @@ impl BillingService {
         // strftime expression as `usage_summary`'s by_day), then Rust does
         // the sorting once for the window total and once per day group.
         type DurationRow = (String, i64);
-        let duration_rows: Vec<DurationRow> = sqlx::query_as(
+        let duration_rows: Vec<DurationRow> = self.db.fetch_all_as::<DurationRow>(
             "SELECT strftime('%Y-%m-%d', created_at / 1000, 'unixepoch') AS day, duration_ms \
              FROM one_llm_calls \
              WHERE enterprise_id = ? AND created_at >= ? AND duration_ms IS NOT NULL",
-        )
-        .bind(enterprise_id)
-        .bind(since_ms)
-        .fetch_all(&self.pool)
+        &db_params![enterprise_id, since_ms])
         .await?;
 
         let mut all_durations: Vec<i64> = duration_rows.iter().map(|(_, d)| *d).collect();
@@ -1646,39 +1533,28 @@ impl BillingService {
         let limit = limit.clamp(1, 200);
         let offset = offset.max(0);
 
-        let total: i64 = sqlx::query_scalar(
+        let total: i64 = self.db.fetch_one_scalar(
             "SELECT COUNT(DISTINCT conversation_id) FROM one_usage_events \
              WHERE enterprise_id = ? AND created_at >= ? AND conversation_id IS NOT NULL",
-        )
-        .bind(enterprise_id)
-        .bind(since_ms)
-        .fetch_one(&self.pool)
+        &db_params![enterprise_id, since_ms])
         .await?;
 
         type Row = (String, String, i64, i64, i64, i64, i64);
-        let rows: Vec<Row> = sqlx::query_as(
+        let rows: Vec<Row> = self.db.fetch_all_as::<Row>(
             "SELECT conversation_id, MIN(user_id), COUNT(*), COALESCE(SUM(total_tokens), 0), \
                     COALESCE(SUM(estimated_cost_micros), 0), MIN(created_at), MAX(created_at) \
              FROM one_usage_events \
              WHERE enterprise_id = ? AND created_at >= ? AND conversation_id IS NOT NULL \
              GROUP BY conversation_id ORDER BY MAX(created_at) DESC LIMIT ? OFFSET ?",
-        )
-        .bind(enterprise_id)
-        .bind(since_ms)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
+        &db_params![enterprise_id, since_ms, limit, offset])
         .await?;
 
         let mut sessions = Vec::with_capacity(rows.len());
         for (conversation_id, user_id, turn_count, total_tokens, cost, first_seen_at, last_seen_at) in rows {
-            let models: Vec<String> = sqlx::query_scalar(
+            let models: Vec<String> = self.db.fetch_all_scalar(
                 "SELECT DISTINCT model FROM one_usage_events \
                  WHERE enterprise_id = ? AND conversation_id = ? AND model IS NOT NULL",
-            )
-            .bind(enterprise_id)
-            .bind(&conversation_id)
-            .fetch_all(&self.pool)
+            &db_params![enterprise_id, &conversation_id])
             .await?;
             sessions.push(AgentSessionDto {
                 conversation_id,
@@ -1719,9 +1595,7 @@ impl BillingService {
     /// read, which itself tolerates a missing `one_user_org`).
     pub async fn is_billing_admin(&self, user_id: &str) -> Result<bool, BillingError> {
         let company_role: Option<String> =
-            sqlx::query_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ?")
-                .bind(user_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ?", &db_params![user_id])
                 .await
                 .unwrap_or(None);
         if company_role.as_deref() == Some("admin") {
@@ -1729,12 +1603,10 @@ impl BillingService {
         }
         // Server admin: active-tenant-aware role read, mirroring the cross-crate
         // role resolution in one-devops / one-sso.
-        let org_role: Option<String> = sqlx::query_scalar(
+        let org_role: Option<String> = self.db.fetch_optional_scalar(
             "SELECT uo.role FROM one_user_org uo WHERE uo.user_id = ? \
              ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC LIMIT 1",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
+        &db_params![user_id])
         .await
         .unwrap_or(None);
         Ok(org_role.as_deref() == Some("system_admin"))
@@ -1763,23 +1635,26 @@ fn percentile_of_sorted(sorted: &[i64], p: f64) -> Option<i64> {
 mod tests {
     use super::*;
 
-    async fn service() -> BillingService {
+    async fn service() -> (BillingService, sqlx::SqlitePool) {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
             .await
             .unwrap();
         crate::migrate::tests::one_enterprise_tables(&pool).await;
-        crate::migrate::run_one_billing_migrations(&dream_core_db::DbPool::Sqlite(pool.clone())).await.unwrap();
-        BillingService::new(pool, Arc::new(ManualBillingProvider))
+        crate::migrate::run_one_billing_migrations(&dream_core_db::DbPool::Sqlite(pool.clone()))
+            .await
+            .unwrap();
+        let svc = BillingService::new(dream_core_db::DbPool::Sqlite(pool.clone()), Arc::new(ManualBillingProvider));
+        (svc, pool)
     }
 
-    async fn add_members(svc: &BillingService, enterprise_id: &str, n: usize) {
+    async fn add_members(svc: &BillingService, sqlite: &sqlx::SqlitePool, enterprise_id: &str, n: usize) {
         for i in 0..n {
             sqlx::query("INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) VALUES (?, ?, 'member', 0, 0)")
                 .bind(format!("u{enterprise_id}{i}"))
                 .bind(enterprise_id)
-                .execute(&svc.pool)
+                .execute(sqlite)
                 .await
                 .unwrap();
         }
@@ -1791,13 +1666,13 @@ mod tests {
     /// history in the same tables must survive untouched.
     #[tokio::test]
     async fn deleting_enterprise_billing_data_clears_every_table_for_that_company_only() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         for ent in ["ent1", "ent2"] {
             sqlx::query(
                 "INSERT INTO one_enterprise_license (enterprise_id, tier, updated_at) VALUES (?, 'enterprise', 0)",
             )
             .bind(ent)
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
             sqlx::query(
@@ -1806,7 +1681,7 @@ mod tests {
             )
             .bind(format!("evt-{ent}"))
             .bind(ent)
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
             sqlx::query(
@@ -1815,7 +1690,7 @@ mod tests {
             )
             .bind(format!("dep-{ent}"))
             .bind(ent)
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
             sqlx::query(
@@ -1824,14 +1699,14 @@ mod tests {
             )
             .bind(format!("asset-{ent}"))
             .bind(ent)
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
             sqlx::query(
                 "INSERT INTO one_media_ledger_settings (enterprise_id, retain_prompts, updated_at) VALUES (?, 1, 0)",
             )
             .bind(ent)
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
             sqlx::query(
@@ -1841,13 +1716,13 @@ mod tests {
             )
             .bind(format!("lic-{ent}"))
             .bind(ent)
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
             sqlx::query("INSERT INTO one_llm_calls (id, enterprise_id, user_id, created_at) VALUES (?, ?, 'u1', 0)")
                 .bind(format!("llmcall-{ent}"))
                 .bind(ent)
-                .execute(&svc.pool)
+                .execute(&sqlite)
                 .await
                 .unwrap();
         }
@@ -1864,12 +1739,12 @@ mod tests {
             ("one_license_activation", "enterprise_id"),
         ] {
             let gone: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table} WHERE {column} = 'ent1'"))
-                .fetch_one(&svc.pool)
+                .fetch_one(&sqlite)
                 .await
                 .unwrap();
             assert_eq!(gone, 0, "{table} must have no ent1 rows left");
             let survives: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table} WHERE {column} = 'ent2'"))
-                .fetch_one(&svc.pool)
+                .fetch_one(&sqlite)
                 .await
                 .unwrap();
             assert_eq!(survives, 1, "{table} must not have touched ent2's row");
@@ -1878,7 +1753,7 @@ mod tests {
 
     #[tokio::test]
     async fn personal_no_enterprise_allows_all_and_unlimited_seats() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         // No enterprise → every feature allowed, seats always addable.
         assert!(svc.resolve_enterprise_id("nobody").await.unwrap().is_none());
         assert!(svc.can_add_seat(None).await.unwrap());
@@ -1898,27 +1773,27 @@ mod tests {
     /// raising a tier is covered separately by
     /// `set_tier_refuses_upgrade_without_license`.
     async fn force_tier(svc: &BillingService, enterprise_id: &str, tier: Tier, expires_at: Option<i64>) {
-        sqlx::query(
+        svc.upsert(
             "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at) \
              VALUES (?, ?, NULL, ?, 0) \
              ON CONFLICT(enterprise_id) DO UPDATE SET tier = excluded.tier, expires_at = excluded.expires_at",
+            "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at) \
+             VALUES (?, ?, NULL, ?, 0) \
+             ON DUPLICATE KEY UPDATE tier = new.tier, expires_at = new.expires_at",
+            &db_params![enterprise_id, tier.as_str(), expires_at],
         )
-        .bind(enterprise_id)
-        .bind(tier.as_str())
-        .bind(expires_at)
-        .execute(&svc.pool)
         .await
         .unwrap();
     }
 
     #[tokio::test]
     async fn free_tier_gates_features_and_caps_seats() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         force_tier(&svc, "ent_free", Tier::Free, None).await;
         // Free: SSO disallowed.
         assert!(!svc.entitlement(Some("ent_free"), Feature::Sso).await.unwrap());
         // Seat cap 3: three ok, fourth blocked.
-        add_members(&svc, "ent_free", 3).await;
+        add_members(&svc, &sqlite, "ent_free", 3).await;
         assert!(!svc.can_add_seat(Some("ent_free")).await.unwrap());
         // On team → SSO allowed, cap 25.
         force_tier(&svc, "ent_free", Tier::Team, None).await;
@@ -1931,7 +1806,7 @@ mod tests {
     /// scheme is decorative.
     #[tokio::test]
     async fn set_tier_refuses_upgrade_without_license() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         force_tier(&svc, "ent_x", Tier::Free, None).await;
 
         for target in [Tier::Team, Tier::Enterprise] {
@@ -1957,12 +1832,12 @@ mod tests {
     /// dropping any seat override it granted.
     #[tokio::test]
     async fn expired_license_degrades_to_free() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         let past = dream_core_common::now_ms() - 1000;
         force_tier(&svc, "ent_exp", Tier::Enterprise, Some(past)).await;
         // Give it an explicit generous seat override too.
         sqlx::query("UPDATE one_enterprise_license SET seat_limit = 500 WHERE enterprise_id = 'ent_exp'")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
 
@@ -1970,7 +1845,7 @@ mod tests {
         assert!(!svc.entitlement(Some("ent_exp"), Feature::AuditLog).await.unwrap());
         assert!(!svc.entitlement(Some("ent_exp"), Feature::Sso).await.unwrap());
         // ...and the seat cap falls back to free's 3, not the 500 override.
-        add_members(&svc, "ent_exp", 3).await;
+        add_members(&svc, &sqlite, "ent_exp", 3).await;
         assert!(
             !svc.can_add_seat(Some("ent_exp")).await.unwrap(),
             "an expired license must not keep its seat override"
@@ -1984,18 +1859,20 @@ mod tests {
 
     #[tokio::test]
     async fn existing_enterprise_grandfathered_to_top_tier() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         // Simulate a pre-billing company, then re-run migration (grandfather).
         sqlx::query("INSERT INTO one_enterprises (id, provider, external_id, created_at, updated_at) VALUES ('ent_old', 'feishu', 'x', 0, 0)")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
         // Wipe ledger entry so the backfill re-runs against the new row.
         sqlx::query("DELETE FROM _one_migrations WHERE name = 'billing_001_init'")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
-        crate::migrate::run_one_billing_migrations(&dream_core_db::DbPool::Sqlite(svc.pool.clone())).await.unwrap();
+        crate::migrate::run_one_billing_migrations(&dream_core_db::DbPool::Sqlite(sqlite.clone()))
+            .await
+            .unwrap();
         // Grandfathered to enterprise: all features on, unlimited seats.
         assert!(svc.entitlement(Some("ent_old"), Feature::AuditLog).await.unwrap());
         let plan = svc.plan("ent_old").await.unwrap();
@@ -2005,11 +1882,11 @@ mod tests {
 
     #[tokio::test]
     async fn usage_summary_aggregates() {
-        let svc = service().await;
-        add_members(&svc, "ent1", 1).await;
+        let (svc, sqlite) = service().await;
+        add_members(&svc, &sqlite, "ent1", 1).await;
         // Map the recording user to ent1 so record_turn resolves it.
         sqlx::query("UPDATE one_enterprise_members SET user_id = 'alice' WHERE enterprise_id = 'ent1'")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
         svc.record_turn("alice", Some("c1"), Some("claude-opus-4-8"), None, Some(100), Some(200))
@@ -2036,10 +1913,10 @@ mod tests {
     /// undercounts the rest.
     #[tokio::test]
     async fn usage_summary_buckets_channel_and_never_mixes_sources() {
-        let svc = service().await;
-        add_members(&svc, "ent1", 1).await;
+        let (svc, sqlite) = service().await;
+        add_members(&svc, &sqlite, "ent1", 1).await;
         sqlx::query("UPDATE one_enterprise_members SET user_id = 'alice' WHERE enterprise_id = 'ent1'")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
         svc.record_turn(
@@ -2115,7 +1992,7 @@ mod tests {
     /// surface; its write path (`record_llm_call` / `record_turn`) is covered
     /// by its own tests, so these bypass enterprise resolution and place rows
     /// with exact timestamps — percentile and window math needs that control.
-    async fn add_usage_event_at(
+    async fn add_usage_event_at(sqlite: &sqlx::SqlitePool, 
         svc: &BillingService,
         enterprise_id: &str,
         user_id: &str,
@@ -2131,12 +2008,12 @@ mod tests {
         .bind(enterprise_id)
         .bind(total_tokens)
         .bind(created_at)
-        .execute(&svc.pool)
+        .execute(sqlite)
         .await
         .unwrap();
     }
 
-    async fn add_llm_call_at(
+    async fn add_llm_call_at(sqlite: &sqlx::SqlitePool, 
         svc: &BillingService,
         enterprise_id: &str,
         duration_ms: Option<i64>,
@@ -2152,7 +2029,7 @@ mod tests {
         .bind(duration_ms)
         .bind(error)
         .bind(created_at)
-        .execute(&svc.pool)
+        .execute(sqlite)
         .await
         .unwrap();
     }
@@ -2163,15 +2040,15 @@ mod tests {
     /// Other companies' rows never leak into the count.
     #[tokio::test]
     async fn wau_and_mau_count_distinct_users_over_their_fixed_windows() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         let now = now_ms();
         const DAY: i64 = 24 * 3600 * 1000;
-        add_usage_event_at(&svc, "ent1", "u-now", 10, now).await;
-        add_usage_event_at(&svc, "ent1", "u-6d", 10, now - 6 * DAY).await;
-        add_usage_event_at(&svc, "ent1", "u-10d", 10, now - 10 * DAY).await;
-        add_usage_event_at(&svc, "ent1", "u-40d", 10, now - 40 * DAY).await;
+        add_usage_event_at(&sqlite, &svc, "ent1", "u-now", 10, now).await;
+        add_usage_event_at(&sqlite, &svc, "ent1", "u-6d", 10, now - 6 * DAY).await;
+        add_usage_event_at(&sqlite, &svc, "ent1", "u-10d", 10, now - 10 * DAY).await;
+        add_usage_event_at(&sqlite, &svc, "ent1", "u-40d", 10, now - 40 * DAY).await;
         // Another company's active user must not be counted for ent1.
-        add_usage_event_at(&svc, "ent2", "u-other", 10, now).await;
+        add_usage_event_at(&sqlite, &svc, "ent2", "u-other", 10, now).await;
 
         let report = svc.enterprise_report("ent1", 0).await.unwrap();
         assert_eq!(report.wau, 2, "now + 6d ago");
@@ -2182,11 +2059,11 @@ mod tests {
     /// no activity reports 0 (there is no average to average).
     #[tokio::test]
     async fn avg_tokens_per_user_divides_by_active_users_and_survives_zero() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         let now = now_ms();
-        add_usage_event_at(&svc, "ent1", "alice", 100, now).await;
-        add_usage_event_at(&svc, "ent1", "bob", 300, now).await;
-        add_usage_event_at(&svc, "ent1", "bob", 100, now).await;
+        add_usage_event_at(&sqlite, &svc, "ent1", "alice", 100, now).await;
+        add_usage_event_at(&sqlite, &svc, "ent1", "bob", 300, now).await;
+        add_usage_event_at(&sqlite, &svc, "ent1", "bob", 100, now).await;
 
         let report = svc.enterprise_report("ent1", 0).await.unwrap();
         assert_eq!(report.avg_tokens_per_user, 250.0, "500 tokens / 2 users");
@@ -2201,14 +2078,14 @@ mod tests {
     /// single user must outrank a chatty but lightweight one.
     #[tokio::test]
     async fn top_users_are_token_ranked_and_truncated_to_ten() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         let now = now_ms();
         for i in 0..12_i64 {
             // 12 users, tokens 100..1200; one user gets a second turn so the
             // ranking demonstrably aggregates, not just sorts rows.
-            add_usage_event_at(&svc, "ent1", &format!("user{i}"), i * 100, now).await;
+            add_usage_event_at(&sqlite, &svc, "ent1", &format!("user{i}"), i * 100, now).await;
             if i == 11 {
-                add_usage_event_at(&svc, "ent1", "user11", 50, now).await;
+                add_usage_event_at(&sqlite, &svc, "ent1", "user11", 50, now).await;
             }
         }
 
@@ -2229,11 +2106,11 @@ mod tests {
     /// Same window also feeds the call counts and the success rate.
     #[tokio::test]
     async fn latency_percentiles_success_rate_and_counts_on_a_hand_computable_sample() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         let now = now_ms();
         for i in 0..10_i64 {
             let error = if i < 2 { Some("boom") } else { None };
-            add_llm_call_at(&svc, "ent1", Some(100 + 200 * i), error, now).await;
+            add_llm_call_at(&sqlite, &svc, "ent1", Some(100 + 200 * i), error, now).await;
         }
 
         let report = svc.enterprise_report("ent1", 0).await.unwrap();
@@ -2250,10 +2127,10 @@ mod tests {
     /// ratio, not a distribution).
     #[tokio::test]
     async fn latency_percentiles_are_null_below_ten_samples_but_the_rest_still_reports() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         let now = now_ms();
         for i in 0..9_i64 {
-            add_llm_call_at(&svc, "ent1", Some(100 + i), None, now).await;
+            add_llm_call_at(&sqlite, &svc, "ent1", Some(100 + i), None, now).await;
         }
 
         let report = svc.enterprise_report("ent1", 0).await.unwrap();
@@ -2269,14 +2146,14 @@ mod tests {
     /// percentile inputs — they are "not measured", not "measured at 0".
     #[tokio::test]
     async fn null_durations_do_not_count_as_zero_in_percentiles() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         let now = now_ms();
         for i in 0..9_i64 {
-            add_llm_call_at(&svc, "ent1", Some(100 + 200 * i), None, now).await;
+            add_llm_call_at(&sqlite, &svc, "ent1", Some(100 + 200 * i), None, now).await;
         }
         // One delegate/unmeasured row on top: with it the table has 10 calls
         // but still only 9 measured durations, so the gate must stay shut.
-        add_llm_call_at(&svc, "ent1", None, None, now).await;
+        add_llm_call_at(&sqlite, &svc, "ent1", None, None, now).await;
 
         let report = svc.enterprise_report("ent1", 0).await.unwrap();
         assert_eq!(report.llm_call_count, 10);
@@ -2287,12 +2164,12 @@ mod tests {
     /// from exactly the samples it contains.
     #[tokio::test]
     async fn latency_trend_buckets_by_utc_day() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         let now = now_ms();
         const DAY: i64 = 24 * 3600 * 1000;
-        add_llm_call_at(&svc, "ent1", Some(100), None, now).await;
-        add_llm_call_at(&svc, "ent1", Some(300), None, now).await;
-        add_llm_call_at(&svc, "ent1", Some(1000), None, now - DAY).await;
+        add_llm_call_at(&sqlite, &svc, "ent1", Some(100), None, now).await;
+        add_llm_call_at(&sqlite, &svc, "ent1", Some(300), None, now).await;
+        add_llm_call_at(&sqlite, &svc, "ent1", Some(1000), None, now - DAY).await;
 
         let report = svc.enterprise_report("ent1", 0).await.unwrap();
         assert_eq!(report.latency_trend.len(), 2, "two distinct days");
@@ -2315,7 +2192,7 @@ mod tests {
     /// well-formed report — every percentile null, every count zero, no 500.
     #[tokio::test]
     async fn empty_tables_report_nulls_and_zeros_without_erroring() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
 
         let report = svc.enterprise_report("ent1", 0).await.unwrap();
         assert_eq!(report.wau, 0);
@@ -2332,10 +2209,10 @@ mod tests {
 
     #[tokio::test]
     async fn list_usage_events_filters_and_paginates() {
-        let svc = service().await;
-        add_members(&svc, "ent1", 1).await;
+        let (svc, sqlite) = service().await;
+        add_members(&svc, &sqlite, "ent1", 1).await;
         sqlx::query("UPDATE one_enterprise_members SET user_id = 'alice' WHERE enterprise_id = 'ent1'")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
         for i in 0..3 {
@@ -2382,15 +2259,15 @@ mod tests {
 
     #[tokio::test]
     async fn list_usage_events_is_scoped_per_enterprise() {
-        let svc = service().await;
-        add_members(&svc, "ent1", 1).await;
-        add_members(&svc, "ent2", 1).await;
+        let (svc, sqlite) = service().await;
+        add_members(&svc, &sqlite, "ent1", 1).await;
+        add_members(&svc, &sqlite, "ent2", 1).await;
         sqlx::query("UPDATE one_enterprise_members SET user_id = 'alice' WHERE enterprise_id = 'ent1'")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
         sqlx::query("UPDATE one_enterprise_members SET user_id = 'bob' WHERE enterprise_id = 'ent2'")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
         svc.record_turn("alice", Some("c1"), Some("claude-opus-4-8"), None, Some(10), Some(10))
@@ -2407,10 +2284,10 @@ mod tests {
 
     #[tokio::test]
     async fn list_sessions_groups_by_conversation_and_lists_every_model_used() {
-        let svc = service().await;
-        add_members(&svc, "ent1", 1).await;
+        let (svc, sqlite) = service().await;
+        add_members(&svc, &sqlite, "ent1", 1).await;
         sqlx::query("UPDATE one_enterprise_members SET user_id = 'alice' WHERE enterprise_id = 'ent1'")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
         svc.record_turn("alice", Some("c1"), Some("claude-opus-4-8"), None, Some(100), Some(100))
@@ -2449,7 +2326,7 @@ mod tests {
     /// scoped by `user_id`, not by company membership.
     #[tokio::test]
     async fn conversation_cost_sums_every_turn_for_that_conversation() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         svc.record_turn(
             "solo",
             Some("conv_x"),
@@ -2494,7 +2371,7 @@ mod tests {
 
     #[tokio::test]
     async fn conversation_cost_is_zero_for_a_conversation_with_no_turns_yet() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         assert_eq!(svc.conversation_cost("solo", "brand_new_conv").await.unwrap(), 0);
     }
 
@@ -2505,10 +2382,10 @@ mod tests {
     /// inventing a fallback rate.
     #[tokio::test]
     async fn usage_summary_names_the_media_models_nothing_priced() {
-        let svc = service().await;
-        add_members(&svc, "ent1", 1).await;
+        let (svc, sqlite) = service().await;
+        add_members(&svc, &sqlite, "ent1", 1).await;
         sqlx::query("UPDATE one_enterprise_members SET user_id = 'alice' WHERE enterprise_id = 'ent1'")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
 
@@ -2547,10 +2424,10 @@ mod tests {
     /// the warning becomes noise everyone learns to ignore.
     #[tokio::test]
     async fn a_fully_priced_company_sees_no_warning() {
-        let svc = service().await;
-        add_members(&svc, "ent1", 1).await;
+        let (svc, sqlite) = service().await;
+        add_members(&svc, &sqlite, "ent1", 1).await;
         sqlx::query("UPDATE one_enterprise_members SET user_id = 'alice' WHERE enterprise_id = 'ent1'")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
         svc.record_media_usage(MediaUsage {
@@ -2572,7 +2449,7 @@ mod tests {
 
     #[tokio::test]
     async fn manual_checkout_is_stubbed() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         let result = svc.create_checkout("ent1", "team");
         assert_eq!(result.status, "manual");
         assert!(result.checkout_url.is_none());
@@ -2580,13 +2457,13 @@ mod tests {
 
     #[tokio::test]
     async fn model_control_gates_send_by_allowlist_and_budget() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         // Red line: no company → always allowed.
         assert!(svc.check_send_allowed("nobody", Some("gpt-4")).await.is_ok());
 
-        add_members(&svc, "entX", 1).await;
+        add_members(&svc, &sqlite, "entX", 1).await;
         sqlx::query("UPDATE one_enterprise_members SET user_id = 'zoe' WHERE enterprise_id = 'entX'")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
 
@@ -2629,14 +2506,14 @@ mod tests {
         assert!(plan.cost_used_micros >= 100);
     }
 
-    async fn add_pending_member(svc: &BillingService, enterprise_id: &str, user_id: &str) {
+    async fn add_pending_member(svc: &BillingService, sqlite: &sqlx::SqlitePool, enterprise_id: &str, user_id: &str) {
         sqlx::query(
             "INSERT INTO one_enterprise_members (user_id, enterprise_id, role, seat_status, joined_at, updated_at) \
              VALUES (?, ?, 'member', 'pending', 0, 0)",
         )
         .bind(user_id)
         .bind(enterprise_id)
-        .execute(&svc.pool)
+        .execute(sqlite)
         .await
         .unwrap();
     }
@@ -2650,8 +2527,8 @@ mod tests {
     /// green result here can only mean the seat check itself is doing its job.
     #[tokio::test]
     async fn a_pending_member_is_denied_even_with_no_allowlist_or_cap_configured() {
-        let svc = service().await;
-        add_pending_member(&svc, "entP", "waiting").await;
+        let (svc, sqlite) = service().await;
+        add_pending_member(&svc, &sqlite, "entP", "waiting").await;
 
         assert_eq!(
             svc.check_send_allowed("waiting", Some("gpt-4"))
@@ -2674,9 +2551,9 @@ mod tests {
 
         // An ACTIVE member in the very same, still-unconfigured company passes
         // — the denial is about this one user's seat, not a company-wide lock.
-        add_members(&svc, "entP", 1).await;
+        add_members(&svc, &sqlite, "entP", 1).await;
         sqlx::query("UPDATE one_enterprise_members SET user_id = 'seated' WHERE enterprise_id = 'entP' AND user_id != 'waiting'")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
         assert!(svc.check_send_allowed("seated", Some("gpt-4")).await.is_ok());
@@ -2689,15 +2566,15 @@ mod tests {
     /// own.
     #[tokio::test]
     async fn seat_used_and_pending_are_reported_and_counted_separately() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         force_tier(&svc, "entP", Tier::Free, None).await;
         sqlx::query("UPDATE one_enterprise_license SET seat_limit = 2 WHERE enterprise_id = 'entP'")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
-        add_members(&svc, "entP", 2).await; // both default to 'active'
-        add_pending_member(&svc, "entP", "waiting1").await;
-        add_pending_member(&svc, "entP", "waiting2").await;
+        add_members(&svc, &sqlite, "entP", 2).await; // both default to 'active'
+        add_pending_member(&svc, &sqlite, "entP", "waiting1").await;
+        add_pending_member(&svc, &sqlite, "entP", "waiting2").await;
 
         let plan = svc.plan("entP").await.unwrap();
         assert_eq!(plan.seat_used, 2, "pending rows must not inflate the billed seat count");
@@ -2719,7 +2596,7 @@ mod tests {
     /// no company row exists at all.
     #[tokio::test]
     async fn billing_admin_is_enterprise_scoped_not_project_group_scoped() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         sqlx::raw_sql(
             "CREATE TABLE one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL, PRIMARY KEY (user_id, tenant_id));
              CREATE TABLE one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL);
@@ -2728,7 +2605,7 @@ mod tests {
              INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('plain', 't1', 'member');
              INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) VALUES ('company_admin', 'entA', 'admin', 0, 0);",
         )
-        .execute(&svc.pool)
+        .execute(&sqlite)
         .await
         .unwrap();
 
@@ -2751,10 +2628,10 @@ mod tests {
     /// priciest calls in the product ran outside the allowlist and the cap.
     #[tokio::test]
     async fn media_generation_obeys_the_same_allowlist_and_budget_as_chat() {
-        let svc = service().await;
-        add_members(&svc, "entM", 1).await;
+        let (svc, sqlite) = service().await;
+        add_members(&svc, &sqlite, "entM", 1).await;
         sqlx::query("UPDATE one_enterprise_members SET user_id = 'mia' WHERE enterprise_id = 'entM'")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
 
@@ -2804,7 +2681,7 @@ mod tests {
     /// under, so it must win.
     #[tokio::test]
     async fn a_user_supplied_price_overrides_the_built_in_rate_table() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
 
         // Video: priced per second, so 4s at 2 USD-micros/s is 8.
         svc.record_media_usage(MediaUsage {
@@ -2821,7 +2698,7 @@ mod tests {
         let cost: i64 = sqlx::query_scalar(
             "SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo' ORDER BY created_at DESC LIMIT 1",
         )
-        .fetch_one(&svc.pool)
+        .fetch_one(&sqlite)
         .await
         .unwrap();
         // Without a price this model is unknown to the table and would cost 0.
@@ -2841,7 +2718,7 @@ mod tests {
         .unwrap();
         let cost2: i64 =
             sqlx::query_scalar("SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo2' LIMIT 1")
-                .fetch_one(&svc.pool)
+                .fetch_one(&sqlite)
                 .await
                 .unwrap();
         assert_eq!(cost2, 21);
@@ -2860,7 +2737,7 @@ mod tests {
         .unwrap();
         let cost3: i64 =
             sqlx::query_scalar("SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo3' LIMIT 1")
-                .fetch_one(&svc.pool)
+                .fetch_one(&sqlite)
                 .await
                 .unwrap();
         assert_eq!(cost3, 40_000);
@@ -2870,7 +2747,7 @@ mod tests {
     /// and let the most expensive calls sit invisibly under any cap.
     #[tokio::test]
     async fn media_usage_is_priced_even_though_it_has_no_tokens() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         svc.record_media_usage(MediaUsage {
             user_id: "solo",
             kind: "image",
@@ -2885,7 +2762,7 @@ mod tests {
         let cost: i64 = sqlx::query_scalar(
             "SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo' ORDER BY created_at DESC LIMIT 1",
         )
-        .fetch_one(&svc.pool)
+        .fetch_one(&sqlite)
         .await
         .unwrap();
         assert_eq!(cost, 3 * 40_000);
@@ -2893,7 +2770,7 @@ mod tests {
         // Token columns stay NULL: media is metered per asset, not per token.
         let tokens: Option<i64> =
             sqlx::query_scalar("SELECT total_tokens FROM one_usage_events WHERE user_id = 'solo' LIMIT 1")
-                .fetch_one(&svc.pool)
+                .fetch_one(&sqlite)
                 .await
                 .unwrap();
         assert!(tokens.is_none());
@@ -2905,7 +2782,7 @@ mod tests {
     /// own naming — the common case — misses every entry.
     #[tokio::test]
     async fn an_unrecognised_media_model_costs_nothing_against_the_cap() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         svc.record_media_usage(MediaUsage {
             user_id: "solo",
             kind: "image",
@@ -2920,7 +2797,7 @@ mod tests {
         let cost: i64 = sqlx::query_scalar(
             "SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo' ORDER BY created_at DESC LIMIT 1",
         )
-        .fetch_one(&svc.pool)
+        .fetch_one(&sqlite)
         .await
         .unwrap();
         assert_eq!(
@@ -2943,7 +2820,7 @@ mod tests {
         let priced: i64 = sqlx::query_scalar(
             "SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo' ORDER BY created_at DESC LIMIT 1",
         )
-        .fetch_one(&svc.pool)
+        .fetch_one(&sqlite)
         .await
         .unwrap();
         assert_eq!(priced, 60_000);
@@ -2955,7 +2832,7 @@ mod tests {
     /// be hard-coded NULL for every media row.
     #[tokio::test]
     async fn media_usage_is_attributed_to_its_conversation() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         svc.record_media_usage(MediaUsage {
             user_id: "solo",
             kind: "video",
@@ -2970,7 +2847,7 @@ mod tests {
         let conversation: Option<String> = sqlx::query_scalar(
             "SELECT conversation_id FROM one_usage_events WHERE user_id = 'solo' ORDER BY created_at DESC LIMIT 1",
         )
-        .fetch_one(&svc.pool)
+        .fetch_one(&sqlite)
         .await
         .unwrap();
         assert_eq!(conversation.as_deref(), Some("conv_abc"));
@@ -2991,7 +2868,7 @@ mod tests {
         let none_conversation: Option<String> = sqlx::query_scalar(
             "SELECT conversation_id FROM one_usage_events WHERE user_id = 'solo2' ORDER BY created_at DESC LIMIT 1",
         )
-        .fetch_one(&svc.pool)
+        .fetch_one(&sqlite)
         .await
         .unwrap();
         assert!(none_conversation.is_none());
@@ -3002,17 +2879,17 @@ mod tests {
     /// tests exercising department resolution must stand up their own copy,
     /// same as `billing_admin_is_enterprise_scoped_not_project_group_scoped`
     /// already does for role resolution.
-    async fn add_user_org(svc: &BillingService, user_id: &str, department_id: Option<&str>) {
+    async fn add_user_org(svc: &BillingService, sqlite: &sqlx::SqlitePool, user_id: &str, department_id: Option<&str>) {
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL, department_id TEXT, PRIMARY KEY (user_id, tenant_id))",
         )
-        .execute(&svc.pool)
+        .execute(sqlite)
         .await
         .unwrap();
         sqlx::query("INSERT INTO one_user_org (user_id, tenant_id, role, department_id) VALUES (?, 't1', 'member', ?)")
             .bind(user_id)
             .bind(department_id)
-            .execute(&svc.pool)
+            .execute(sqlite)
             .await
             .unwrap();
     }
@@ -3024,8 +2901,8 @@ mod tests {
     /// one-org table at all.
     #[tokio::test]
     async fn department_id_is_stamped_at_record_time() {
-        let svc = service().await;
-        add_user_org(&svc, "dana", Some("deptA")).await;
+        let (svc, sqlite) = service().await;
+        add_user_org(&svc, &sqlite, "dana", Some("deptA")).await;
 
         svc.record_turn("dana", None, Some("gpt-4"), None, Some(10), Some(10))
             .await
@@ -3044,7 +2921,7 @@ mod tests {
 
         let depts: Vec<Option<String>> =
             sqlx::query_scalar("SELECT department_id FROM one_usage_events WHERE user_id = 'dana' ORDER BY created_at")
-                .fetch_all(&svc.pool)
+                .fetch_all(&sqlite)
                 .await
                 .unwrap();
         assert_eq!(depts, vec![Some("deptA".to_owned()), Some("deptA".to_owned())]);
@@ -3055,7 +2932,7 @@ mod tests {
             .unwrap();
         let none_dept: Option<String> =
             sqlx::query_scalar("SELECT department_id FROM one_usage_events WHERE user_id = 'no_org_row' LIMIT 1")
-                .fetch_one(&svc.pool)
+                .fetch_one(&sqlite)
                 .await
                 .unwrap();
         assert!(none_dept.is_none());
@@ -3067,14 +2944,14 @@ mod tests {
     /// with no department) untouched.
     #[tokio::test]
     async fn department_budget_gates_sends_independently_of_company_wide_budget() {
-        let svc = service().await;
-        add_members(&svc, "entD", 1).await;
+        let (svc, sqlite) = service().await;
+        add_members(&svc, &sqlite, "entD", 1).await;
         sqlx::query("UPDATE one_enterprise_members SET user_id = 'dana' WHERE enterprise_id = 'entD'")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
-        add_user_org(&svc, "dana", Some("deptA")).await;
-        add_user_org(&svc, "gio", None).await; // same company, no department
+        add_user_org(&svc, &sqlite, "dana", Some("deptA")).await;
+        add_user_org(&svc, &sqlite, "gio", None).await; // same company, no department
 
         // No company-wide cap anywhere; only a department cap.
         svc.set_department_budget("entD", "deptA", Some(100)).await.unwrap();
@@ -3106,8 +2983,8 @@ mod tests {
 
     #[tokio::test]
     async fn list_department_budgets_reports_cap_and_usage() {
-        let svc = service().await;
-        add_user_org(&svc, "dana", Some("deptA")).await;
+        let (svc, sqlite) = service().await;
+        add_user_org(&svc, &sqlite, "dana", Some("deptA")).await;
         svc.set_department_budget("entD", "deptA", Some(500)).await.unwrap();
         svc.record_turn(
             "dana",
@@ -3138,8 +3015,8 @@ mod tests {
     /// department's cap.
     #[tokio::test]
     async fn reassigning_a_users_department_does_not_reshuffle_past_spend() {
-        let svc = service().await;
-        add_user_org(&svc, "dana", Some("deptA")).await;
+        let (svc, sqlite) = service().await;
+        add_user_org(&svc, &sqlite, "dana", Some("deptA")).await;
         svc.record_turn(
             "dana",
             Some("c1"),
@@ -3153,7 +3030,7 @@ mod tests {
 
         // Move dana to deptB going forward.
         sqlx::query("UPDATE one_user_org SET department_id = 'deptB' WHERE user_id = 'dana'")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
         svc.record_turn(
@@ -3169,7 +3046,7 @@ mod tests {
 
         let depts: Vec<Option<String>> =
             sqlx::query_scalar("SELECT department_id FROM one_usage_events WHERE user_id = 'dana' ORDER BY created_at")
-                .fetch_all(&svc.pool)
+                .fetch_all(&sqlite)
                 .await
                 .unwrap();
         assert_eq!(depts, vec![Some("deptA".to_owned()), Some("deptB".to_owned())]);
@@ -3180,7 +3057,7 @@ mod tests {
     /// surface in this crate honors.
     #[tokio::test]
     async fn record_media_asset_is_a_noop_for_personal_users() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         svc.record_media_asset(
             "nobody",
             "image",
@@ -3192,7 +3069,7 @@ mod tests {
         .await
         .unwrap();
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_media_assets")
-            .fetch_one(&svc.pool)
+            .fetch_one(&sqlite)
             .await
             .unwrap();
         assert_eq!(count, 0);
@@ -3203,13 +3080,13 @@ mod tests {
     /// decides whether it lands in the column.
     #[tokio::test]
     async fn media_asset_prompt_is_retained_only_after_company_opts_in() {
-        let svc = service().await;
-        add_members(&svc, "entL", 1).await;
+        let (svc, sqlite) = service().await;
+        add_members(&svc, &sqlite, "entL", 1).await;
         sqlx::query("UPDATE one_enterprise_members SET user_id = 'lee' WHERE enterprise_id = 'entL'")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
-        add_user_org(&svc, "lee", Some("deptL")).await;
+        add_user_org(&svc, &sqlite, "lee", Some("deptL")).await;
 
         // Default: prompt is dropped even though the caller sent one.
         svc.record_media_asset(
@@ -3224,7 +3101,7 @@ mod tests {
         .unwrap();
         let prompt_before: Option<String> =
             sqlx::query_scalar("SELECT prompt FROM one_media_assets WHERE file_path = '/w/a.png'")
-                .fetch_one(&svc.pool)
+                .fetch_one(&sqlite)
                 .await
                 .unwrap();
         assert!(prompt_before.is_none());
@@ -3244,7 +3121,7 @@ mod tests {
         .unwrap();
         let prompt_after: Option<String> =
             sqlx::query_scalar("SELECT prompt FROM one_media_assets WHERE file_path = '/w/b.png'")
-                .fetch_one(&svc.pool)
+                .fetch_one(&sqlite)
                 .await
                 .unwrap();
         assert_eq!(prompt_after.as_deref(), Some("a blue fox"));
@@ -3252,7 +3129,7 @@ mod tests {
         // Department was resolved and attached, same as T7's usage rows.
         let department: Option<String> =
             sqlx::query_scalar("SELECT department_id FROM one_media_assets WHERE file_path = '/w/b.png'")
-                .fetch_one(&svc.pool)
+                .fetch_one(&sqlite)
                 .await
                 .unwrap();
         assert_eq!(department.as_deref(), Some("deptL"));
@@ -3260,7 +3137,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_media_assets_filters_by_kind_model_user_since_and_prompt() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         svc.set_media_ledger_retain_prompts("entS", true).await.unwrap();
         // `record_media_asset` requires a real enterprise membership row to
         // attribute to (T7/T8 both no-op for personal users) — seeding rows
@@ -3286,7 +3163,7 @@ mod tests {
             .bind(path)
             .bind(prompt)
             .bind(now + i as i64)
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
         }
@@ -3364,7 +3241,7 @@ mod tests {
     /// one (billing_006's E4 columns included).
     #[tokio::test]
     async fn active_license_reads_back_e4_quotas_and_modules() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         sqlx::query(
             "INSERT INTO one_license_activation \
                  (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by, \
@@ -3373,7 +3250,7 @@ mod tests {
                      10, 20, 64, 131072, '[{\"module\":\"/admin/*\",\"startsAt\":null,\"expiresAt\":null}]', \
                      'SN-0001', 'one-work', 'acme.lic')",
         )
-        .execute(&svc.pool)
+        .execute(&sqlite)
         .await
         .unwrap();
 
@@ -3395,13 +3272,13 @@ mod tests {
     /// resolve to "no restriction", not an error swallowing the whole license.
     #[tokio::test]
     async fn active_license_tolerates_a_pre_e4_row_with_no_quota_columns() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         sqlx::query(
             "INSERT INTO one_license_activation \
                  (license_id, enterprise_id, customer, tier, issued_at, activated_at, activated_by) \
              VALUES ('lic1', 'ent1', 'Acme', 'enterprise', 0, 0, 'admin1')",
         )
-        .execute(&svc.pool)
+        .execute(&sqlite)
         .await
         .unwrap();
 
@@ -3414,14 +3291,14 @@ mod tests {
 
     /// Map one user onto a company, so `record_llm_call`'s tenancy resolution
     /// finds them (same fixture pattern the usage-events tests use).
-    async fn seed_llm_member(svc: &BillingService, enterprise_id: &str, user_id: &str) {
+    async fn seed_llm_member(svc: &BillingService, sqlite: &sqlx::SqlitePool, enterprise_id: &str, user_id: &str) {
         sqlx::query(
             "INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) \
              VALUES (?, ?, 'member', 0, 0)",
         )
         .bind(user_id)
         .bind(enterprise_id)
-        .execute(&svc.pool)
+        .execute(sqlite)
         .await
         .unwrap();
     }
@@ -3446,8 +3323,8 @@ mod tests {
     /// user / model / since filters each narrow the page on their own.
     #[tokio::test]
     async fn llm_call_roundtrip_with_user_model_and_since_filters() {
-        let svc = service().await;
-        seed_llm_member(&svc, "ent1", "alice").await;
+        let (svc, sqlite) = service().await;
+        seed_llm_member(&svc, &sqlite, "ent1", "alice").await;
         svc.record_llm_call(llm_call("alice", "claude-opus-4-8")).await.unwrap();
         svc.record_llm_call(llm_call("alice", "claude-opus-4-8")).await.unwrap();
         svc.record_llm_call(llm_call("alice", "gpt-4")).await.unwrap();
@@ -3476,7 +3353,7 @@ mod tests {
         // backs off a minute so the two just-written rows (stamped at record
         // time, a few ms before now) are safely inside the window.
         sqlx::query("UPDATE one_llm_calls SET created_at = 1 WHERE model = 'gpt-4'")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
         let recent = svc
@@ -3490,8 +3367,8 @@ mod tests {
     /// whole filtered set, pages don't overlap.
     #[tokio::test]
     async fn llm_calls_paginate_like_usage_events() {
-        let svc = service().await;
-        seed_llm_member(&svc, "ent1", "alice").await;
+        let (svc, sqlite) = service().await;
+        seed_llm_member(&svc, &sqlite, "ent1", "alice").await;
         for _ in 0..4 {
             svc.record_llm_call(llm_call("alice", "claude-opus-4-8")).await.unwrap();
         }
@@ -3510,9 +3387,9 @@ mod tests {
     /// before the cutoff, reporting how many it deleted.
     #[tokio::test]
     async fn purge_llm_calls_removes_only_rows_before_the_window() {
-        let svc = service().await;
-        seed_llm_member(&svc, "ent1", "alice").await;
-        seed_llm_member(&svc, "ent2", "bob").await;
+        let (svc, sqlite) = service().await;
+        seed_llm_member(&svc, &sqlite, "ent1", "alice").await;
+        seed_llm_member(&svc, &sqlite, "ent2", "bob").await;
         svc.record_llm_call(llm_call("alice", "claude-opus-4-8")).await.unwrap();
         svc.record_llm_call(llm_call("alice", "claude-opus-4-8")).await.unwrap();
         svc.record_llm_call(llm_call("bob", "claude-opus-4-8")).await.unwrap();
@@ -3526,7 +3403,7 @@ mod tests {
                  WHERE id = (SELECT id FROM one_llm_calls WHERE enterprise_id = ? ORDER BY created_at LIMIT 1)",
             )
             .bind(ent)
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
         }
@@ -3539,19 +3416,19 @@ mod tests {
 
         let stale_ent1: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM one_llm_calls WHERE enterprise_id = 'ent1' AND created_at = 1")
-                .fetch_one(&svc.pool)
+                .fetch_one(&sqlite)
                 .await
                 .unwrap();
         assert_eq!(stale_ent1, 0);
         // The fresh ent1 row survives the purge.
         let fresh_ent1: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_llm_calls WHERE enterprise_id = 'ent1'")
-            .fetch_one(&svc.pool)
+            .fetch_one(&sqlite)
             .await
             .unwrap();
         assert_eq!(fresh_ent1, 1);
         // ent2's stale row is a different tenant's history — untouched.
         let ent2_left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_llm_calls WHERE enterprise_id = 'ent2'")
-            .fetch_one(&svc.pool)
+            .fetch_one(&sqlite)
             .await
             .unwrap();
         assert_eq!(ent2_left, 1, "a purge of ent1 must never touch ent2");
@@ -3562,8 +3439,8 @@ mod tests {
     /// successful ones, carrying the reason and their own duration.
     #[tokio::test]
     async fn failed_llm_calls_are_queryable_like_successful_ones() {
-        let svc = service().await;
-        seed_llm_member(&svc, "ent1", "alice").await;
+        let (svc, sqlite) = service().await;
+        seed_llm_member(&svc, &sqlite, "ent1", "alice").await;
         svc.record_llm_call(llm_call("alice", "claude-opus-4-8")).await.unwrap();
         svc.record_llm_call(NewLlmCall {
             error: Some("429 rate limited".to_owned()),
@@ -3592,12 +3469,12 @@ mod tests {
     /// it to on a personal install.
     #[tokio::test]
     async fn llm_calls_are_not_recorded_for_personal_users() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         svc.record_llm_call(llm_call("nobody", "claude-opus-4-8"))
             .await
             .unwrap();
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_llm_calls")
-            .fetch_one(&svc.pool)
+            .fetch_one(&sqlite)
             .await
             .unwrap();
         assert_eq!(count, 0);
