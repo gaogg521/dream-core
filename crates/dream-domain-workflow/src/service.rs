@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use sqlx::SqlitePool;
+use dream_core_db::{DbPool, db_params};
 
 use dream_core_common::{generate_prefixed_id, now_ms};
 
@@ -46,7 +46,7 @@ pub struct WorkflowActor {
 }
 
 pub struct WorkflowService {
-    pool: SqlitePool,
+    db: DbPool,
     /// Translates a landed decision into the raising domain's effect (P1-7:
     /// approving a node-access review flips the node's status). Defaults to
     /// none; the app layer wires the adapter via the `&self` setter —
@@ -104,9 +104,9 @@ fn row_to_dto(row: TaskRow) -> WorkflowTaskDto {
 }
 
 impl WorkflowService {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(db: DbPool) -> Self {
         Self {
-            pool,
+            db,
             decision_sink: Arc::new(RwLock::new(None)),
         }
     }
@@ -122,14 +122,15 @@ impl WorkflowService {
     /// Resolve the caller's active-tenant membership (same cross-crate query
     /// as one-platform's `resolve_actor`).
     pub async fn resolve_actor(&self, user_id: &str) -> Result<Option<WorkflowActor>, WorkflowError> {
-        let result = sqlx::query_as::<_, (String, String)>(
-            "SELECT uo.tenant_id, uo.role FROM one_user_org uo WHERE uo.user_id = ? \
+        let result = self
+            .db
+            .fetch_optional_as::<(String, String)>(
+                "SELECT uo.tenant_id, uo.role FROM one_user_org uo WHERE uo.user_id = ? \
              ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC, \
                       uo.created_at DESC, uo.tenant_id ASC LIMIT 1",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
-        .await;
+                &db_params![user_id],
+            )
+            .await;
         match result {
             Ok(Some((tenant_id, role))) => Ok(Some(WorkflowActor { tenant_id, role })),
             Ok(None) => Ok(None),
@@ -180,22 +181,14 @@ impl WorkflowService {
         }
         let id = generate_prefixed_id("wft");
         let now = now_ms();
-        sqlx::query(
-            "INSERT INTO one_workflow_tasks \
+        self.db
+            .execute(
+                "INSERT INTO one_workflow_tasks \
                  (id, tenant_id, kind, title, detail, payload, requester_id, status, created_at, expires_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
-        )
-        .bind(&id)
-        .bind(tenant_id)
-        .bind(kind)
-        .bind(title)
-        .bind(detail.trim())
-        .bind(payload.to_string())
-        .bind(requester_id)
-        .bind(now)
-        .bind(expires_at)
-        .execute(&self.pool)
-        .await?;
+                &db_params![&id, tenant_id, kind, title, detail.trim(), payload.to_string(), requester_id, now, expires_at],
+            )
+            .await?;
         self.get_task(tenant_id, &id)
             .await?
             .ok_or_else(|| WorkflowError::Internal("workflow task vanished immediately after insert".into()))
@@ -205,14 +198,14 @@ impl WorkflowService {
     /// deadline-passed task as still `pending`.
     pub async fn get_task(&self, tenant_id: &str, id: &str) -> Result<Option<WorkflowTaskDto>, WorkflowError> {
         self.expire_stale().await?;
-        let row: Option<TaskRow> = sqlx::query_as(
-            "SELECT id, kind, title, detail, payload, requester_id, status, decided_by, decided_at, note, expires_at, created_at \
+        let row: Option<TaskRow> = self
+            .db
+            .fetch_optional_as(
+                "SELECT id, kind, title, detail, payload, requester_id, status, decided_by, decided_at, note, expires_at, created_at \
              FROM one_workflow_tasks WHERE tenant_id = ? AND id = ?",
-        )
-        .bind(tenant_id)
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
+                &db_params![tenant_id, id],
+            )
+            .await?;
         Ok(row.map(row_to_dto))
     }
 
@@ -220,13 +213,13 @@ impl WorkflowService {
     /// Lazy by design — the terminal-tool wait loop and every list read keep
     /// the status truthful without a scheduler process.
     async fn expire_stale(&self) -> Result<(), WorkflowError> {
-        sqlx::query(
-            "UPDATE one_workflow_tasks SET status = 'expired' \
+        self.db
+            .execute(
+                "UPDATE one_workflow_tasks SET status = 'expired' \
              WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at < ?",
-        )
-        .bind(now_ms())
-        .execute(&self.pool)
-        .await?;
+                &db_params![now_ms()],
+            )
+            .await?;
         Ok(())
     }
 
@@ -258,11 +251,12 @@ impl WorkflowService {
              FROM one_workflow_tasks WHERE tenant_id = ? AND {status_filter} \
              ORDER BY created_at DESC LIMIT ?"
         );
-        let mut query = sqlx::query_as::<_, TaskRow>(&sql).bind(tenant_id);
+        let mut params = db_params![tenant_id];
         if view == "mine" {
-            query = query.bind(requester_id.unwrap_or_default());
+            params.push(requester_id.unwrap_or_default().into());
         }
-        let rows = query.bind(limit).fetch_all(&self.pool).await?;
+        params.push(limit.into());
+        let rows = self.db.fetch_all_as::<TaskRow>(&sql, &params).await?;
         Ok(rows.into_iter().map(row_to_dto).collect())
     }
 
@@ -285,25 +279,29 @@ impl WorkflowService {
         };
         self.expire_stale().await?;
         let now = now_ms();
-        let result = sqlx::query(
-            "UPDATE one_workflow_tasks SET status = ?, decided_by = ?, decided_at = ?, note = ? \
+        let rows = self
+            .db
+            .execute(
+                "UPDATE one_workflow_tasks SET status = ?, decided_by = ?, decided_at = ?, note = ? \
              WHERE tenant_id = ? AND id = ? AND status = 'pending'",
-        )
-        .bind(status)
-        .bind(decided_by)
-        .bind(now)
-        .bind(note.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()))
-        .bind(tenant_id)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-        if result.rows_affected() == 0 {
-            let exists: Option<(String,)> =
-                sqlx::query_as("SELECT id FROM one_workflow_tasks WHERE tenant_id = ? AND id = ?")
-                    .bind(tenant_id)
-                    .bind(id)
-                    .fetch_optional(&self.pool)
-                    .await?;
+                &db_params![
+                    status,
+                    decided_by,
+                    now,
+                    note.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()),
+                    tenant_id,
+                    id
+                ],
+            )
+            .await?;
+        if rows == 0 {
+            let exists: Option<(String,)> = self
+                .db
+                .fetch_optional_as(
+                    "SELECT id FROM one_workflow_tasks WHERE tenant_id = ? AND id = ?",
+                    &db_params![tenant_id, id],
+                )
+                .await?;
             return match exists {
                 None => Err(WorkflowError::NotFound("workflow task not found".into())),
                 Some(_) => Err(WorkflowError::BadRequest(
@@ -360,13 +358,13 @@ impl WorkflowService {
             if now_ms() >= deadline {
                 // Expire it ourselves so the queue stops showing a task whose
                 // agent already moved on with the denial.
-                sqlx::query(
-                    "UPDATE one_workflow_tasks SET status = 'expired' \
+                self.db
+                    .execute(
+                        "UPDATE one_workflow_tasks SET status = 'expired' \
                      WHERE id = ? AND status = 'pending'",
-                )
-                .bind(task_id)
-                .execute(&self.pool)
-                .await?;
+                        &db_params![task_id],
+                    )
+                    .await?;
                 return Ok(ApprovalOutcome::Denied {
                     reason: "approval timed out — denied by default".into(),
                 });
@@ -383,7 +381,7 @@ mod tests {
     async fn setup() -> (dream_core_db::Database, WorkflowService) {
         let db = dream_core_db::init_database_memory().await.unwrap();
         crate::migrate::run_one_workflow_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let service = WorkflowService::new(db.pool().clone());
+        let service = WorkflowService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()));
         (db, service)
     }
 
@@ -662,7 +660,7 @@ mod tests {
     async fn a_landed_decision_reaches_the_sink_exactly_once() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         crate::migrate::run_one_workflow_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let service = WorkflowService::new(db.pool().clone());
+        let service = WorkflowService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()));
         let sink = std::sync::Arc::new(RecordingDecisionSink {
             seen: std::sync::Mutex::new(Vec::new()),
         });
