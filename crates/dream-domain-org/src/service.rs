@@ -16,7 +16,7 @@ use serde::Serialize;
 use dream_core_auth::{generate_random_secret_string, hash_password, verify_password};
 use dream_core_common::license::{Feature, Tier, tier_allows};
 use dream_core_common::{decrypt_string, encrypt_string, now_ms};
-use dream_core_db::{DbBackend, DbPool, DbValue, db_params, IUserRepository};
+use dream_core_db::{DbBackend, DbPool, DbValue, db_params, IConversationRepository, IUserRepository};
 
 use crate::credential_revoker::{CredentialRevoker, NoopCredentialRevoker};
 use crate::directory_bridge::DirectoryDepartmentRef;
@@ -35,6 +35,10 @@ use crate::node_review::NodeReviewSink;
 pub struct OrgService {
     db: DbPool,
     user_repo: Arc<dyn IUserRepository>,
+    /// P3-3 decision (a): `messages` is main-schema (SQLite-only in a MySQL
+    /// enterprise deployment), so agent-audit reads tool-call rows through the
+    /// conversation repository instead of joining across schemas.
+    message_repo: Arc<dyn IConversationRepository>,
     data_dir: PathBuf,
     /// Encrypts the stored SMTP password (P2-4 onboarding), same key/helper as
     /// provider API keys and SSO client secrets elsewhere in the app.
@@ -108,14 +112,21 @@ impl OrgService {
         Ok(self.db.execute(sql, params).await?)
     }
 
+    /// P3-3 decision (a): `message_repo` lets agent-audit read `messages`
+    /// (main schema, SQLite-only in a MySQL enterprise deployment) through the
+    /// conversation repository instead of joining across schemas.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         db: DbPool,
         user_repo: Arc<dyn IUserRepository>,
+        message_repo: Arc<dyn IConversationRepository>,
         data_dir: PathBuf,
         encryption_key: [u8; 32],
     ) -> Self {
-        Self { db,
+        Self {
+            db,
             user_repo,
+            message_repo,
             data_dir,
             encryption_key,
             email_sender: Arc::new(StubEmailSender),
@@ -1594,6 +1605,13 @@ impl OrgService {
     /// rows joined to the owning conversation. Server-wide (one instance = one
     /// company); admin-only + AuditLog-gated at the route. Optional filters by
     /// user, tool name, and time; newest first.
+    ///
+    /// P3-3 decision (a): `messages`/`conversations` are main-schema
+    /// (SQLite-only in a MySQL enterprise deployment), so this pulls tool-call
+    /// rows through the conversation repository — one paged read per member —
+    /// and re-scopes in Rust. The repository has no tenant filter and no
+    /// tool-name/time filters, so filtering happens here; limits are applied
+    /// after re-scoping so the admin always sees up to `limit` of THEIR rows.
     pub async fn list_agent_audit(
         &self,
         tenant_id: &str,
@@ -1602,62 +1620,99 @@ impl OrgService {
         since_ms: Option<i64>,
         limit: i64,
     ) -> Result<Vec<AgentAuditEntry>, OrgError> {
-        let limit = limit.clamp(1, 2000);
-        // Tool name / target vary by backend (dream vs ACP) — extract
-        // best-effort from a few well-known JSON shapes.
-        let name_expr = "COALESCE(json_extract(m.content,'$.name'), json_extract(m.content,'$.toolName'), \
-                         json_extract(m.content,'$.tool'), '')";
-        // What the call was *about*, in whichever shape the backend used. The
-        // prompt keys matter for media generation: without them an image or
-        // video call showed a tool name and an empty detail column, which tells
-        // an auditor that something expensive ran and nothing about what it was.
-        let detail_expr = "COALESCE(json_extract(m.content,'$.args.command'), json_extract(m.content,'$.args.path'), \
-                          json_extract(m.content,'$.args.file_path'), json_extract(m.content,'$.args.pattern'), \
-                          json_extract(m.content,'$.args.url'), json_extract(m.content,'$.args.prompt'), \
-                          json_extract(m.content,'$.input.command'), json_extract(m.content,'$.input.path'), \
-                          json_extract(m.content,'$.input.prompt'), json_extract(m.content,'$.description'))";
-        // `conversations` carries no tenant_id of its own (a conversation is
-        // purely user-owned, local data — see the module docs on why the
-        // directory mirror and the seat table are kept apart for the same
-        // reason). The only way to scope this to "my tenant's activity" is to
-        // join through current `one_user_org` membership, same as
-        // `list_users` above. BUG this fixes: without this join, any
-        // org_admin on ANY tenant of a server hosting multiple tenants could
-        // read every other tenant's tool-call history (commands run, files
-        // touched, media prompts sent) — `RequireOrgAdmin` only checks the
-        // caller is an admin of *some* tenant, never that the rows returned
-        // belong to it.
-        let mut sql = format!(
-            "SELECT m.id AS id, m.conversation_id AS conversation_id, c.user_id AS user_id, \
-                    {name_expr} AS tool_name, {detail_expr} AS detail, m.status AS status, m.created_at AS created_at \
-             FROM messages m \
-             JOIN conversations c ON c.id = m.conversation_id \
-             JOIN one_user_org uo ON uo.user_id = c.user_id \
-             WHERE uo.tenant_id = ? AND m.type IN ('tool_call', 'acp_tool_call')"
-        );
-        if user_filter.is_some() {
-            sql.push_str(" AND c.user_id = ?");
+        let limit = limit.clamp(1, 2000) as u32;
+        // The tenant's current members (the seat table) — audit scope follows
+        // membership, same as `list_users`.
+        let members: Vec<String> = self
+            .db
+            .fetch_all_scalar(
+                "SELECT user_id FROM one_user_org WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?;
+        // Per-member page size: `limit` each is the simple cap; the merged
+        // result is re-truncated after filtering anyway.
+        let page = dream_core_db::MessagePageParams {
+            limit,
+            direction: dream_core_db::MessagePageDirection::InitialLatest,
+        };
+        let mut entries: Vec<AgentAuditEntry> = Vec::new();
+        let conv_filters = dream_core_db::ConversationFilters {
+            cursor: None,
+            limit: 10_000,
+            source: None,
+            cron_job_id: None,
+            pinned: None,
+        };
+        for member in &members {
+            if let Some(u) = user_filter {
+                if member != u {
+                    continue;
+                }
+            }
+            // The repository has no cross-member "all tool calls" query, so
+            // walk the member's conversations and page each one's messages.
+            let Ok(convs) = self.message_repo.list_paginated(member, &conv_filters).await else {
+                continue;
+            };
+            for conv in convs.items {
+                let Ok(page) =
+                    self.message_repo.list_messages_page(member, &conv.id, &page).await
+                else {
+                    continue;
+                };
+                    for row in page.items {
+                    if row.r#type != "tool_call" && row.r#type != "acp_tool_call" {
+                        continue;
+                    }
+                    if let Some(since) = since_ms {
+                        if row.created_at < since {
+                            continue;
+                        }
+                    }
+                    let content = serde_json::from_str::<serde_json::Value>(&row.content).unwrap_or_default();
+                    let tool_name = content
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| content.get("toolName").and_then(|v| v.as_str()))
+                        .or_else(|| content.get("tool").and_then(|v| v.as_str()))
+                        .unwrap_or("")
+                        .to_owned();
+                    if let Some(tool) = tool_filter {
+                        if &tool_name != tool {
+                            continue;
+                        }
+                    }
+                    let detail = ["args.command", "args.path", "args.file_path", "args.pattern", "args.url",
+                                  "args.prompt", "input.command", "input.path", "input.prompt", "description"]
+                        .iter()
+                        .find_map(|path| {
+                            let mut v = Some(&content);
+                            for key in path.split('.') {
+                                v = v.and_then(|x| x.get(key));
+                            }
+                            v.and_then(|x| x.as_str()).map(str::to_owned)
+                        });
+                    entries.push(AgentAuditEntry {
+                        id: row.id.clone(),
+                        conversation_id: row.conversation_id.clone(),
+                        user_id: Some(member.clone()),
+                        tool_name,
+                        detail,
+                        status: row.status.clone(),
+                        created_at: row.created_at,
+                    });
+                    if entries.len() >= limit as usize {
+                        entries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                        entries.truncate(limit as usize);
+                        return Ok(entries);
+                    }
+                }
+            }
         }
-        if tool_filter.is_some() {
-            sql.push_str(&format!(" AND {name_expr} = ?"));
-        }
-        if since_ms.is_some() {
-            sql.push_str(" AND m.created_at >= ?");
-        }
-        sql.push_str(" ORDER BY m.created_at DESC LIMIT ?");
-
-        let mut params = db_params![tenant_id];
-        if let Some(u) = user_filter {
-            params.push(u.into());
-        }
-        if let Some(tool) = tool_filter {
-            params.push(tool.into());
-        }
-        if let Some(s) = since_ms {
-            params.push(s.into());
-        }
-        params.push(limit.into());
-        Ok(self.db.fetch_all_as::<AgentAuditEntry>(&sql, &params).await?)
+        entries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        entries.truncate(limit as usize);
+        Ok(entries)
     }
 
     // --- admin: users ---
@@ -2326,6 +2381,7 @@ mod tests {
         let service = Arc::new(OrgService::new(
             dream_core_db::DbPool::Sqlite(db.pool().clone()),
             user_repo.clone(),
+            std::sync::Arc::new(dream_core_db::SqliteConversationRepository::new(db.pool().clone())),
             data_dir,
             [7u8; 32],
         ));
