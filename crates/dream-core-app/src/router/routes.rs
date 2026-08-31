@@ -2771,7 +2771,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // slots; spawn the 30s schedule scanner for cron-driven runs.
     let one_employee_service = std::sync::Arc::new(
         dream_domain_employee::EmployeeService::new(
-            services.database.pool().clone(),
+            dream_core_db::DbPool::Sqlite(services.database.pool().clone()),
             std::sync::Arc::new(services.conversation_service.clone()),
             std::sync::Arc::new(dream_core_db::SqliteConversationRepository::new(
                 services.database.pool().clone(),
