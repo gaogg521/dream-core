@@ -1666,7 +1666,7 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
     ));
     #[cfg(feature = "enterprise")]
     let directory_sink: Arc<dyn dream_domain_sso::DirectorySink> = Arc::new(DirectorySinkAdapter(Arc::new(
-        dream_domain_enterprise::EnterpriseService::new(services.database.pool().clone()),
+        dream_domain_enterprise::EnterpriseService::new(dream_core_db::DbPool::Sqlite(services.database.pool().clone())),
     )));
     Ok((
         router,
@@ -2054,7 +2054,7 @@ pub(crate) fn build_governance_plane(
     // company-admin bridges can be wired into one-org and one-sso below, and so
     // it can borrow one-org's credential revocation (built just above).
     let one_enterprise_service = std::sync::Arc::new(
-        dream_domain_enterprise::EnterpriseService::new(services.database.pool().clone())
+        dream_domain_enterprise::EnterpriseService::new(dream_core_db::DbPool::Sqlite(services.database.pool().clone()))
             .with_session_revoker(std::sync::Arc::new(OrgSessionRevoker(one_org_service.clone())))
             .with_disband_cascade(std::sync::Arc::new(CompanyDisbandCascadeImpl {
                 org: one_org_service.clone(),

@@ -1,7 +1,7 @@
 //! Business logic for the enterprise-org dimension. No axum imports.
 
 use dream_core_common::now_ms;
-use sqlx::SqlitePool;
+use dream_core_db::{DbPool, db_params};
 
 use crate::disband_cascade::{CompanyDisbandCascade, NoopCompanyDisbandCascade};
 use crate::error::EnterpriseError;
@@ -18,7 +18,7 @@ const SYSTEM_DEFAULT_USER_ID: &str = "system_default_user";
 const ROLE_SYSTEM_ADMIN: &str = "system_admin";
 
 pub struct EnterpriseService {
-    pool: SqlitePool,
+    pub(crate) db: DbPool,
     session_revoker: std::sync::Arc<dyn SessionRevoker>,
     disband_cascade: std::sync::Arc<dyn CompanyDisbandCascade>,
 }
@@ -35,9 +35,8 @@ struct UpsertMemberInput<'a> {
 }
 
 impl EnterpriseService {
-    pub fn new(pool: SqlitePool) -> Self {
-        Self {
-            pool,
+    pub fn new(db: DbPool) -> Self {
+        Self { db,
             session_revoker: std::sync::Arc::new(NoopSessionRevoker),
             disband_cascade: std::sync::Arc::new(NoopCompanyDisbandCascade),
         }
@@ -61,8 +60,8 @@ impl EnterpriseService {
 
     /// Pool access for sibling modules in this crate (`directory`), so their
     /// `impl EnterpriseService` blocks do not need the field to be public.
-    pub(crate) fn pool_ref(&self) -> &SqlitePool {
-        &self.pool
+    pub(crate) fn pool_ref(&self) -> &DbPool {
+        &self.db
     }
 
     /// Attach the caller's membership to the deployment's company at SSO login
@@ -113,13 +112,9 @@ impl EnterpriseService {
         // "invited" card out of the Members tab now that they have a real one.
         let personal_external_id = personal_external_id.trim();
         if !personal_external_id.is_empty() {
-            sqlx::query(
+            self.db.execute(
                 "DELETE FROM one_enterprise_invites WHERE enterprise_id = ? AND provider = ? AND external_id = ?",
-            )
-            .bind(&enterprise_id)
-            .bind(provider)
-            .bind(personal_external_id)
-            .execute(&self.pool)
+            &db_params![&enterprise_id, provider, personal_external_id])
             .await?;
         }
         tracing::info!(
@@ -207,9 +202,7 @@ impl EnterpriseService {
     /// mechanism and it has to actually work.
     async fn resolve_seat_status(&self, user_id: &str, enterprise_id: &str) -> Result<&'static str, EnterpriseError> {
         let existing: Option<(String, String)> =
-            sqlx::query_as("SELECT enterprise_id, seat_status FROM one_enterprise_members WHERE user_id = ?")
-                .bind(user_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_as::<(String, String)>("SELECT enterprise_id, seat_status FROM one_enterprise_members WHERE user_id = ?", &db_params![user_id])
                 .await?;
         if let Some((existing_enterprise, existing_status)) = existing
             && existing_enterprise == enterprise_id
@@ -232,12 +225,13 @@ impl EnterpriseService {
     async fn active_seat_available(&self, enterprise_id: &str) -> Result<bool, EnterpriseError> {
         // Distinguish table-missing (skip) from row-absent (new company → free
         // default).
-        let tier = match sqlx::query_as::<_, (String, Option<i64>)>(
-            "SELECT tier, seat_limit FROM one_enterprise_license WHERE enterprise_id = ?",
-        )
-        .bind(enterprise_id)
-        .fetch_optional(&self.pool)
-        .await
+        let tier = match self
+            .db
+            .fetch_optional_as::<(String, Option<i64>)>(
+                "SELECT tier, seat_limit FROM one_enterprise_license WHERE enterprise_id = ?",
+                &db_params![enterprise_id],
+            )
+            .await
         {
             Err(_) => return Ok(true), // billing not installed → no enforcement
             Ok(Some((tier, Some(override_limit)))) => {
@@ -254,21 +248,20 @@ impl EnterpriseService {
     }
 
     async fn active_seat_count_below(&self, enterprise_id: &str, limit: i64) -> Result<bool, EnterpriseError> {
-        let used: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND seat_status = ?",
-        )
-        .bind(enterprise_id)
-        .bind(SEAT_STATUS_ACTIVE)
-        .fetch_one(&self.pool)
-        .await?;
+        let used: i64 = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND seat_status = ?",
+                &db_params![enterprise_id, SEAT_STATUS_ACTIVE],
+            )
+            .await?;
         Ok(used < limit)
     }
 
     /// The explicitly-set-up ("manual") company on this server, if any.
     async fn manual_company_id(&self) -> Result<Option<String>, EnterpriseError> {
         Ok(
-            sqlx::query_scalar("SELECT id FROM one_enterprises WHERE origin = 'manual' LIMIT 1")
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT id FROM one_enterprises WHERE origin = 'manual' LIMIT 1", &[])
                 .await?,
         )
     }
@@ -284,8 +277,7 @@ impl EnterpriseService {
             return Ok(Some(id));
         }
         Ok(
-            sqlx::query_scalar("SELECT id FROM one_enterprises ORDER BY created_at ASC LIMIT 1")
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT id FROM one_enterprises ORDER BY created_at ASC LIMIT 1", &[])
                 .await?,
         )
     }
@@ -293,25 +285,16 @@ impl EnterpriseService {
     /// Find-or-create the SSO-derived company for `(provider, external_id)`.
     async fn upsert_sso_company(&self, provider: &str, external_id: &str, now: i64) -> Result<String, EnterpriseError> {
         if let Some(id) =
-            sqlx::query_scalar::<_, String>("SELECT id FROM one_enterprises WHERE provider = ? AND external_id = ?")
-                .bind(provider)
-                .bind(external_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar::<String>("SELECT id FROM one_enterprises WHERE provider = ? AND external_id = ?", &db_params![provider, external_id])
                 .await?
         {
             return Ok(id);
         }
         let id = uuid::Uuid::now_v7().simple().to_string();
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_enterprises (id, provider, external_id, display_name, origin, created_at, updated_at) \
              VALUES (?, ?, ?, NULL, 'sso', ?, ?)",
-        )
-        .bind(&id)
-        .bind(provider)
-        .bind(external_id)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, provider, external_id, now, now])
         .await?;
         Ok(id)
     }
@@ -335,7 +318,7 @@ impl EnterpriseService {
         let display_name = display_name.map(str::trim).filter(|s| !s.is_empty());
         let department = department.map(str::trim).filter(|s| !s.is_empty());
         let job_title = job_title.map(str::trim).filter(|s| !s.is_empty());
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_enterprise_members \
              (user_id, enterprise_id, display_name, department, job_title, role, seat_status, joined_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, 'member', ?, ?, ?) \
@@ -343,16 +326,7 @@ impl EnterpriseService {
                  display_name = excluded.display_name, department = excluded.department, \
                  job_title = excluded.job_title, seat_status = excluded.seat_status, \
                  updated_at = excluded.updated_at",
-        )
-        .bind(user_id)
-        .bind(enterprise_id)
-        .bind(display_name)
-        .bind(department)
-        .bind(job_title)
-        .bind(seat_status)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![user_id, enterprise_id, display_name, department, job_title, seat_status, now, now])
         .await?;
         Ok(())
     }
@@ -365,18 +339,12 @@ impl EnterpriseService {
         role: &str,
         now: i64,
     ) -> Result<(), EnterpriseError> {
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) \
              VALUES (?, ?, ?, ?, ?) \
              ON CONFLICT(user_id) DO UPDATE SET enterprise_id = excluded.enterprise_id, \
                  role = excluded.role, updated_at = excluded.updated_at",
-        )
-        .bind(user_id)
-        .bind(enterprise_id)
-        .bind(role)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![user_id, enterprise_id, role, now, now])
         .await?;
         Ok(())
     }
@@ -390,13 +358,11 @@ impl EnterpriseService {
     /// multi-membership: role is scoped to the caller's *active* tenant (active
     /// membership first, else most-recently-joined).
     async fn caller_is_system_admin(&self, user_id: &str) -> Result<bool, EnterpriseError> {
-        let role: Option<String> = sqlx::query_scalar(
+        let role: Option<String> = self.db.fetch_optional_scalar(
             "SELECT uo.role FROM one_user_org uo WHERE uo.user_id = ? \
              ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC, \
                       uo.created_at DESC, uo.tenant_id ASC LIMIT 1",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
+        &db_params![user_id])
         .await?;
         Ok(match role {
             Some(r) => r == ROLE_SYSTEM_ADMIN,
@@ -407,18 +373,14 @@ impl EnterpriseService {
     /// The company the caller belongs to (`one_enterprise_members.enterprise_id`).
     pub async fn company_of(&self, user_id: &str) -> Result<Option<String>, EnterpriseError> {
         Ok(
-            sqlx::query_scalar("SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?")
-                .bind(user_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?", &db_params![user_id])
                 .await?,
         )
     }
 
     async fn member_role(&self, user_id: &str) -> Result<Option<String>, EnterpriseError> {
         Ok(
-            sqlx::query_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ?")
-                .bind(user_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ?", &db_params![user_id])
                 .await?,
         )
     }
@@ -430,8 +392,7 @@ impl EnterpriseService {
     /// config, not any random project group's org_admin". Without this
     /// distinction the SSO admin gate could not tell those two cases apart.
     pub async fn company_exists(&self) -> Result<bool, EnterpriseError> {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprises")
-            .fetch_one(&self.pool)
+        let count: i64 = self.db.fetch_one_scalar("SELECT COUNT(*) FROM one_enterprises", &[])
             .await?;
         Ok(count > 0)
     }
@@ -450,10 +411,7 @@ impl EnterpriseService {
     /// True when the caller is an admin of the specific `enterprise_id`.
     pub async fn is_company_admin_of(&self, user_id: &str, enterprise_id: &str) -> Result<bool, EnterpriseError> {
         let role: Option<String> =
-            sqlx::query_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?")
-                .bind(user_id)
-                .bind(enterprise_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?", &db_params![user_id, enterprise_id])
                 .await?;
         Ok(role.as_deref().map(is_company_admin_role).unwrap_or(false))
     }
@@ -477,29 +435,18 @@ impl EnterpriseService {
         }
         let now = now_ms() as i64;
         let existing: Option<String> =
-            sqlx::query_scalar("SELECT id FROM one_enterprises ORDER BY created_at ASC LIMIT 1")
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT id FROM one_enterprises ORDER BY created_at ASC LIMIT 1", &[])
                 .await?;
         let enterprise_id = if let Some(id) = existing {
-            sqlx::query("UPDATE one_enterprises SET display_name = ?, origin = 'manual', updated_at = ? WHERE id = ?")
-                .bind(name)
-                .bind(now)
-                .bind(&id)
-                .execute(&self.pool)
+            self.db.execute("UPDATE one_enterprises SET display_name = ?, origin = 'manual', updated_at = ? WHERE id = ?", &db_params![name, now, &id])
                 .await?;
             id
         } else {
             let id = uuid::Uuid::now_v7().simple().to_string();
-            sqlx::query(
+            self.db.execute(
                 "INSERT INTO one_enterprises (id, provider, external_id, display_name, origin, created_at, updated_at) \
                  VALUES (?, 'manual', ?, ?, 'manual', ?, ?)",
-            )
-            .bind(&id)
-            .bind(&id)
-            .bind(name)
-            .bind(now)
-            .bind(now)
-            .execute(&self.pool)
+            &db_params![&id, &id, name, now, now])
             .await?;
             id
         };
@@ -525,11 +472,7 @@ impl EnterpriseService {
             return Err(EnterpriseError::NameRequired);
         }
         let now = now_ms() as i64;
-        sqlx::query("UPDATE one_enterprises SET display_name = ?, updated_at = ? WHERE id = ?")
-            .bind(name)
-            .bind(now)
-            .bind(enterprise_id)
-            .execute(&self.pool)
+        self.db.execute("UPDATE one_enterprises SET display_name = ?, updated_at = ? WHERE id = ?", &db_params![name, now, enterprise_id])
             .await?;
         tracing::info!(user_id, enterprise_id, "company renamed");
         self.company_overview(user_id)
@@ -548,17 +491,13 @@ impl EnterpriseService {
             return Ok(None);
         };
         let row: Option<(Option<String>, String)> =
-            sqlx::query_as("SELECT display_name, origin FROM one_enterprises WHERE id = ?")
-                .bind(&company_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_as::<(Option<String>, String)>("SELECT display_name, origin FROM one_enterprises WHERE id = ?", &db_params![&company_id])
                 .await?;
         let Some((name, origin)) = row else {
             return Ok(None);
         };
         let member_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ?")
-                .bind(&company_id)
-                .fetch_one(&self.pool)
+            self.db.fetch_one_scalar("SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ?", &db_params![&company_id])
                 .await?;
         let viewer_role = self.member_role(user_id).await?;
         Ok(Some(CompanyOverviewDto {
@@ -573,24 +512,11 @@ impl EnterpriseService {
     /// All members of a company, for the admin console (LEFT JOIN upstream
     /// `users` for the login username).
     pub async fn list_members(&self, enterprise_id: &str) -> Result<Vec<CompanyMemberDto>, EnterpriseError> {
-        let rows = sqlx::query_as::<
-            _,
-            (
-                String,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                String,
-                String,
-            ),
-        >(
+        let rows = self.db.fetch_all_as(
             "SELECT m.user_id, u.username, m.display_name, m.department, m.job_title, m.role, m.seat_status \
              FROM one_enterprise_members m LEFT JOIN users u ON u.id = m.user_id \
              WHERE m.enterprise_id = ? ORDER BY m.joined_at ASC",
-        )
-        .bind(enterprise_id)
-        .fetch_all(&self.pool)
+        &db_params![enterprise_id])
         .await?;
         Ok(rows
             .into_iter()
@@ -621,34 +547,23 @@ impl EnterpriseService {
             return Err(EnterpriseError::InvalidRole(role.to_string()));
         }
         let current: Option<String> =
-            sqlx::query_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?")
-                .bind(target_user_id)
-                .bind(enterprise_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?", &db_params![target_user_id, enterprise_id])
                 .await?;
         let Some(current) = current else {
             return Err(EnterpriseError::MemberNotFound);
         };
         if is_company_admin_role(&current) && role != ROLE_COMPANY_ADMIN {
             let admin_count: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND role = ?")
-                    .bind(enterprise_id)
-                    .bind(ROLE_COMPANY_ADMIN)
-                    .fetch_one(&self.pool)
+                self.db.fetch_one_scalar("SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND role = ?", &db_params![enterprise_id, ROLE_COMPANY_ADMIN])
                     .await?;
             if admin_count <= 1 {
                 return Err(EnterpriseError::LastCompanyAdmin);
             }
         }
         let now = now_ms() as i64;
-        sqlx::query(
+        self.db.execute(
             "UPDATE one_enterprise_members SET role = ?, updated_at = ? WHERE user_id = ? AND enterprise_id = ?",
-        )
-        .bind(role)
-        .bind(now)
-        .bind(target_user_id)
-        .bind(enterprise_id)
-        .execute(&self.pool)
+        &db_params![role, now, target_user_id, enterprise_id])
         .await?;
         Ok(())
     }
@@ -705,10 +620,7 @@ impl EnterpriseService {
     /// zero admins" rule regardless of who initiated the departure.
     async fn release_member(&self, enterprise_id: &str, target_user_id: &str) -> Result<(), EnterpriseError> {
         let current: Option<String> =
-            sqlx::query_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?")
-                .bind(target_user_id)
-                .bind(enterprise_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?", &db_params![target_user_id, enterprise_id])
                 .await?;
         let Some(current) = current else {
             return Err(EnterpriseError::MemberNotFound);
@@ -717,19 +629,13 @@ impl EnterpriseService {
         // can never be administered again.
         if is_company_admin_role(&current) {
             let admin_count: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND role = ?")
-                    .bind(enterprise_id)
-                    .bind(ROLE_COMPANY_ADMIN)
-                    .fetch_one(&self.pool)
+                self.db.fetch_one_scalar("SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND role = ?", &db_params![enterprise_id, ROLE_COMPANY_ADMIN])
                     .await?;
             if admin_count <= 1 {
                 return Err(EnterpriseError::LastCompanyAdmin);
             }
         }
-        sqlx::query("DELETE FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?")
-            .bind(target_user_id)
-            .bind(enterprise_id)
-            .execute(&self.pool)
+        self.db.execute("DELETE FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?", &db_params![target_user_id, enterprise_id])
             .await?;
         // After the delete, never before: a guard rejection above must not cost
         // somebody their session, and a revocation failure must not leave the
@@ -763,24 +669,14 @@ impl EnterpriseService {
         }
         let now = now_ms() as i64;
         let id = uuid::Uuid::now_v7().simple().to_string();
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_enterprise_invites \
              (id, enterprise_id, provider, external_id, display_name, department, job_title, created_by, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(enterprise_id, provider, external_id) DO UPDATE SET \
                  id = excluded.id, display_name = excluded.display_name, department = excluded.department, \
                  job_title = excluded.job_title, created_by = excluded.created_by, created_at = excluded.created_at",
-        )
-        .bind(&id)
-        .bind(enterprise_id)
-        .bind(provider)
-        .bind(external_id)
-        .bind(display_name)
-        .bind(department)
-        .bind(job_title)
-        .bind(created_by)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, enterprise_id, provider, external_id, display_name, department, job_title, created_by, now])
         .await?;
         Ok(CompanyInviteDto {
             id,
@@ -794,23 +690,10 @@ impl EnterpriseService {
     }
 
     pub async fn list_invites(&self, enterprise_id: &str) -> Result<Vec<CompanyInviteDto>, EnterpriseError> {
-        let rows = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                String,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                i64,
-            ),
-        >(
+        let rows = self.db.fetch_all_as(
             "SELECT id, provider, external_id, display_name, department, job_title, created_at \
              FROM one_enterprise_invites WHERE enterprise_id = ? ORDER BY created_at DESC",
-        )
-        .bind(enterprise_id)
-        .fetch_all(&self.pool)
+        &db_params![enterprise_id])
         .await?;
         Ok(rows
             .into_iter()
@@ -829,12 +712,11 @@ impl EnterpriseService {
     }
 
     pub async fn revoke_invite(&self, enterprise_id: &str, invite_id: &str) -> Result<(), EnterpriseError> {
-        let result = sqlx::query("DELETE FROM one_enterprise_invites WHERE id = ? AND enterprise_id = ?")
-            .bind(invite_id)
-            .bind(enterprise_id)
-            .execute(&self.pool)
+        let rows = self
+            .db
+            .execute("DELETE FROM one_enterprise_invites WHERE id = ? AND enterprise_id = ?", &db_params![invite_id, enterprise_id])
             .await?;
-        if result.rows_affected() == 0 {
+        if rows == 0 {
             return Err(EnterpriseError::InviteNotFound);
         }
         Ok(())
@@ -860,9 +742,7 @@ impl EnterpriseService {
             ));
         }
         let member_ids: Vec<String> =
-            sqlx::query_scalar("SELECT user_id FROM one_enterprise_members WHERE enterprise_id = ?")
-                .bind(enterprise_id)
-                .fetch_all(&self.pool)
+            self.db.fetch_all_scalar("SELECT user_id FROM one_enterprise_members WHERE enterprise_id = ?", &db_params![enterprise_id])
                 .await?;
 
         // one-org (project groups) + one-billing (usage/license history)
@@ -870,13 +750,9 @@ impl EnterpriseService {
         // this member's own admin access to retry — stays in place.
         let deleted_project_groups = self.disband_cascade.disband(enterprise_id).await;
 
-        sqlx::query("DELETE FROM one_enterprise_members WHERE enterprise_id = ?")
-            .bind(enterprise_id)
-            .execute(&self.pool)
+        self.db.execute("DELETE FROM one_enterprise_members WHERE enterprise_id = ?", &db_params![enterprise_id])
             .await?;
-        sqlx::query("DELETE FROM one_enterprises WHERE id = ?")
-            .bind(enterprise_id)
-            .execute(&self.pool)
+        self.db.execute("DELETE FROM one_enterprises WHERE id = ?", &db_params![enterprise_id])
             .await?;
 
         for member_id in &member_ids {
@@ -900,25 +776,12 @@ impl EnterpriseService {
     /// enterprise membership (local/LDAP account, or hasn't logged in via an
     /// SSO company since this feature landed).
     pub async fn identity_of(&self, user_id: &str) -> Result<Option<EnterpriseIdentityDto>, EnterpriseError> {
-        let row = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                String,
-            ),
-        >(
+        let row = self.db.fetch_optional_as(
             "SELECT e.provider, e.external_id, e.display_name, m.display_name, m.department, m.job_title, m.role \
              FROM one_enterprise_members m \
              JOIN one_enterprises e ON e.id = m.enterprise_id \
              WHERE m.user_id = ?",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
+        &db_params![user_id])
         .await?;
         Ok(row.map(
             |(provider, company_id, company_name, display_name, department, job_title, role)| EnterpriseIdentityDto {
@@ -938,15 +801,21 @@ impl EnterpriseService {
 mod tests {
     use super::*;
 
-    async fn service() -> EnterpriseService {
+    async fn service() -> (EnterpriseService, sqlx::SqlitePool) {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        EnterpriseService::new(db.pool().clone())
+        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
+        let sqlite = db.pool().clone();
+        (
+            EnterpriseService::new(dream_core_db::DbPool::Sqlite(db.pool().clone())),
+            sqlite,
+        )
     }
 
     #[tokio::test]
     async fn sync_member_then_identity_of_roundtrips() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         svc.sync_member(
             "u1",
             "feishu",
@@ -972,12 +841,12 @@ mod tests {
 
     #[tokio::test]
     async fn free_tier_seat_cap_blocks_new_members_but_not_relogin() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         // Simulate one-billing installed with a free-tier license (cap 3).
         sqlx::raw_sql(
             "CREATE TABLE one_enterprise_license (enterprise_id TEXT PRIMARY KEY, tier TEXT NOT NULL DEFAULT 'free', seat_limit INTEGER, expires_at INTEGER, updated_at INTEGER NOT NULL);",
         )
-        .execute(&svc.pool)
+        .execute(&sqlite)
         .await
         .unwrap();
 
@@ -986,12 +855,12 @@ mod tests {
             .await
             .unwrap();
         let eid: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
-            .fetch_one(&svc.pool)
+            .fetch_one(&sqlite)
             .await
             .unwrap();
         sqlx::query("INSERT INTO one_enterprise_license (enterprise_id, tier, updated_at) VALUES (?, 'free', 0)")
             .bind(&eid)
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
 
@@ -1009,30 +878,30 @@ mod tests {
         svc.sync_member("u4", "feishu", "co", "", None, None, None)
             .await
             .unwrap();
-        assert_eq!(seat_status_of(&svc, "u4").await, SEAT_STATUS_PENDING);
-        assert_eq!(active_seat_count(&svc, &eid).await, 3);
+        assert_eq!(seat_status_of(&sqlite, "u4").await, SEAT_STATUS_PENDING);
+        assert_eq!(active_seat_count(&sqlite, &eid).await, 3);
 
         // An existing ACTIVE member re-logging in is never blocked or
         // re-evaluated, even at the cap.
         svc.sync_member("u1", "feishu", "co", "", Some("赵高"), None, None)
             .await
             .unwrap();
-        assert_eq!(seat_status_of(&svc, "u1").await, SEAT_STATUS_ACTIVE);
+        assert_eq!(seat_status_of(&sqlite, "u1").await, SEAT_STATUS_ACTIVE);
 
         // Upgrading the plan does NOT retroactively promote a pending member —
         // there is no background job, only "try again next login".
         sqlx::query("UPDATE one_enterprise_license SET tier = 'team' WHERE enterprise_id = ?")
             .bind(&eid)
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
-        assert_eq!(seat_status_of(&svc, "u4").await, SEAT_STATUS_PENDING);
+        assert_eq!(seat_status_of(&sqlite, "u4").await, SEAT_STATUS_PENDING);
 
         // u4's NEXT login re-checks the cap and promotes them.
         svc.sync_member("u4", "feishu", "co", "", None, None, None)
             .await
             .unwrap();
-        assert_eq!(seat_status_of(&svc, "u4").await, SEAT_STATUS_ACTIVE);
+        assert_eq!(seat_status_of(&sqlite, "u4").await, SEAT_STATUS_ACTIVE);
     }
 
     /// ⚠️ The point of the whole column. If a pending row were never written
@@ -1042,25 +911,25 @@ mod tests {
     /// AND deny them, not find nothing and wave them through.
     #[tokio::test]
     async fn a_member_over_the_seat_cap_still_gets_a_row_one_billing_can_find() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         sqlx::raw_sql(
             "CREATE TABLE one_enterprise_license (enterprise_id TEXT PRIMARY KEY, tier TEXT NOT NULL DEFAULT 'free', seat_limit INTEGER, expires_at INTEGER, updated_at INTEGER NOT NULL);",
         )
-        .execute(&svc.pool)
+        .execute(&sqlite)
         .await
         .unwrap();
         svc.sync_member("u1", "feishu", "co", "", None, None, None)
             .await
             .unwrap();
         let eid: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
-            .fetch_one(&svc.pool)
+            .fetch_one(&sqlite)
             .await
             .unwrap();
         sqlx::query(
             "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, updated_at) VALUES (?, 'free', 1, 0)",
         )
         .bind(&eid)
-        .execute(&svc.pool)
+        .execute(&sqlite)
         .await
         .unwrap();
 
@@ -1070,7 +939,7 @@ mod tests {
 
         let row: Option<(String, String)> =
             sqlx::query_as("SELECT enterprise_id, seat_status FROM one_enterprise_members WHERE user_id = 'u2'")
-                .fetch_optional(&svc.pool)
+                .fetch_optional(&sqlite)
                 .await
                 .unwrap();
         let (row_eid, status) = row.expect("a row must exist for one-billing to find, or governance is bypassed");
@@ -1082,36 +951,36 @@ mod tests {
     /// de-govern people who already had a working seat.
     #[tokio::test]
     async fn lowering_the_cap_never_demotes_an_existing_active_member() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         sqlx::raw_sql(
             "CREATE TABLE one_enterprise_license (enterprise_id TEXT PRIMARY KEY, tier TEXT NOT NULL DEFAULT 'free', seat_limit INTEGER, expires_at INTEGER, updated_at INTEGER NOT NULL);",
         )
-        .execute(&svc.pool)
+        .execute(&sqlite)
         .await
         .unwrap();
         svc.sync_member("u1", "feishu", "co", "", None, None, None)
             .await
             .unwrap();
         let eid: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
-            .fetch_one(&svc.pool)
+            .fetch_one(&sqlite)
             .await
             .unwrap();
         sqlx::query(
             "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, updated_at) VALUES (?, 'free', 5, 0)",
         )
         .bind(&eid)
-        .execute(&svc.pool)
+        .execute(&sqlite)
         .await
         .unwrap();
         svc.sync_member("u2", "feishu", "co", "", None, None, None)
             .await
             .unwrap();
-        assert_eq!(seat_status_of(&svc, "u2").await, SEAT_STATUS_ACTIVE);
+        assert_eq!(seat_status_of(&sqlite, "u2").await, SEAT_STATUS_ACTIVE);
 
         // Cap dropped to 1 — below the current headcount of 2.
         sqlx::query("UPDATE one_enterprise_license SET seat_limit = 1 WHERE enterprise_id = ?")
             .bind(&eid)
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
 
@@ -1119,7 +988,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            seat_status_of(&svc, "u2").await,
+            seat_status_of(&sqlite, "u2").await,
             SEAT_STATUS_ACTIVE,
             "an already-active member must never be re-evaluated against a later, lower cap"
         );
@@ -1131,37 +1000,37 @@ mod tests {
     /// member the same way an SSO login does, respecting the same seat cap.
     #[tokio::test]
     async fn ensure_member_respects_the_seat_cap_like_sso_sync() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         sqlx::raw_sql(
             "CREATE TABLE one_enterprise_license (enterprise_id TEXT PRIMARY KEY, tier TEXT NOT NULL DEFAULT 'free', seat_limit INTEGER, expires_at INTEGER, updated_at INTEGER NOT NULL);",
         )
-        .execute(&svc.pool)
+        .execute(&sqlite)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, updated_at) VALUES ('ent_test1', 'free', 1, 0)",
         )
-        .execute(&svc.pool)
+        .execute(&sqlite)
         .await
         .unwrap();
 
         svc.ensure_member("u1", "ent_test1", Some("张三")).await.unwrap();
-        assert_eq!(seat_status_of(&svc, "u1").await, SEAT_STATUS_ACTIVE);
+        assert_eq!(seat_status_of(&sqlite, "u1").await, SEAT_STATUS_ACTIVE);
 
         // Cap of 1 is already full — the second joiner gets a row (so
         // one-billing's governance can find and deny them) but pending, not
         // silently dropped.
         svc.ensure_member("u2", "ent_test1", Some("李四")).await.unwrap();
-        assert_eq!(seat_status_of(&svc, "u2").await, SEAT_STATUS_PENDING);
+        assert_eq!(seat_status_of(&sqlite, "u2").await, SEAT_STATUS_PENDING);
 
         // Idempotent: calling it again for an already-ACTIVE member changes
         // nothing (never re-evaluated, mirroring `sync_member`).
         svc.ensure_member("u1", "ent_test1", Some("张三")).await.unwrap();
-        assert_eq!(seat_status_of(&svc, "u1").await, SEAT_STATUS_ACTIVE);
+        assert_eq!(seat_status_of(&sqlite, "u1").await, SEAT_STATUS_ACTIVE);
 
         let row: Option<(String, Option<String>)> =
             sqlx::query_as("SELECT enterprise_id, display_name FROM one_enterprise_members WHERE user_id = 'u1'")
-                .fetch_optional(&svc.pool)
+                .fetch_optional(&sqlite)
                 .await
                 .unwrap();
         let (eid, name) = row.expect("membership row must exist");
@@ -1169,27 +1038,27 @@ mod tests {
         assert_eq!(name.as_deref(), Some("张三"));
     }
 
-    async fn seat_status_of(svc: &EnterpriseService, user_id: &str) -> String {
+    async fn seat_status_of(sqlite: &sqlx::SqlitePool, user_id: &str) -> String {
         sqlx::query_scalar("SELECT seat_status FROM one_enterprise_members WHERE user_id = ?")
             .bind(user_id)
-            .fetch_one(&svc.pool)
+            .fetch_one(sqlite)
             .await
             .unwrap()
     }
 
-    async fn active_seat_count(svc: &EnterpriseService, enterprise_id: &str) -> i64 {
+    async fn active_seat_count(sqlite: &sqlx::SqlitePool, enterprise_id: &str) -> i64 {
         sqlx::query_scalar(
             "SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND seat_status = 'active'",
         )
         .bind(enterprise_id)
-        .fetch_one(&svc.pool)
+        .fetch_one(sqlite)
         .await
         .unwrap()
     }
 
     #[tokio::test]
     async fn same_company_logins_converge_on_one_enterprise_row() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         svc.sync_member("u1", "feishu", "tenant_huanle", "", None, Some("研发"), None)
             .await
             .unwrap();
@@ -1198,7 +1067,7 @@ mod tests {
             .unwrap();
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprises")
-            .fetch_one(&svc.pool)
+            .fetch_one(&sqlite)
             .await
             .unwrap();
         assert_eq!(count, 1, "same (provider, tenant_key) is one enterprise");
@@ -1214,7 +1083,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_company_id_is_a_noop() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         svc.sync_member("u1", "feishu", "  ", "", Some("x"), None, None)
             .await
             .unwrap();
@@ -1223,13 +1092,13 @@ mod tests {
 
     #[tokio::test]
     async fn identity_of_is_none_without_membership() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         assert!(svc.identity_of("nobody").await.unwrap().is_none());
     }
 
     // --- Direction B: company tier ---
 
-    async fn insert_manual_company(svc: &EnterpriseService, id: &str, name: &str) {
+    async fn insert_manual_company(svc: &EnterpriseService, sqlite: &sqlx::SqlitePool, id: &str, name: &str) {
         sqlx::query(
             "INSERT INTO one_enterprises (id, provider, external_id, display_name, origin, created_at, updated_at) \
              VALUES (?, 'manual', ?, ?, 'manual', 1, 1)",
@@ -1237,7 +1106,7 @@ mod tests {
         .bind(id)
         .bind(id)
         .bind(name)
-        .execute(&svc.pool)
+        .execute(sqlite)
         .await
         .unwrap();
     }
@@ -1246,15 +1115,15 @@ mod tests {
     async fn sync_member_attaches_to_manual_company_without_tenant_key() {
         // An explicitly set-up company makes every SSO login join it, even when
         // the IdP returned NO company id (the tenant_key-missing scenario).
-        let svc = service().await;
-        insert_manual_company(&svc, "ent1", "Acme").await;
+        let (svc, sqlite) = service().await;
+        insert_manual_company(&svc, &sqlite, "ent1", "Acme").await;
         svc.sync_member("u1", "feishu", "", "", Some("赵高"), None, None)
             .await
             .unwrap();
         assert_eq!(svc.company_of("u1").await.unwrap().as_deref(), Some("ent1"));
         // No spurious SSO-derived company was created.
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprises")
-            .fetch_one(&svc.pool)
+            .fetch_one(&sqlite)
             .await
             .unwrap();
         assert_eq!(count, 1);
@@ -1262,8 +1131,8 @@ mod tests {
 
     #[tokio::test]
     async fn sync_member_never_downgrades_admin() {
-        let svc = service().await;
-        insert_manual_company(&svc, "ent1", "Acme").await;
+        let (svc, sqlite) = service().await;
+        insert_manual_company(&svc, &sqlite, "ent1", "Acme").await;
         // Seed the operator as company admin, then a later SSO login must not
         // downgrade them to member.
         svc.upsert_member_role("op", "ent1", ROLE_COMPANY_ADMIN, 1)
@@ -1279,7 +1148,7 @@ mod tests {
     async fn sync_member_without_company_is_noop() {
         // Lock-in: no explicit company AND no tenant_key → nothing written. This
         // is the personal / standalone path (which never reaches SSO anyway).
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         svc.sync_member("u1", "feishu", "", "", Some("x"), None, None)
             .await
             .unwrap();
@@ -1290,7 +1159,7 @@ mod tests {
     // Governance-aware setup: adds the cross-domain `one_user_org` table so the
     // system_admin check resolves (the `users` table is created by
     // init_database_memory). Mirrors the real multi-crate DB.
-    async fn service_with_governance() -> EnterpriseService {
+    async fn service_with_governance() -> (EnterpriseService, sqlx::SqlitePool) {
         let db = dream_core_db::init_database_memory().await.unwrap();
         crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         sqlx::query(
@@ -1308,12 +1177,16 @@ mod tests {
         .execute(db.pool())
         .await
         .unwrap();
-        EnterpriseService::new(db.pool().clone())
+        let sqlite = db.pool().clone();
+        (
+            EnterpriseService::new(dream_core_db::DbPool::Sqlite(db.pool().clone())),
+            sqlite,
+        )
     }
 
     #[tokio::test]
     async fn setup_company_seeds_creator_as_admin() {
-        let svc = service_with_governance().await;
+        let (svc, sqlite) = service_with_governance().await;
         // system_default_user is system_admin by default (no one_user_org row).
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         assert_eq!(overview.name.as_deref(), Some("Acme"));
@@ -1325,9 +1198,9 @@ mod tests {
 
     #[tokio::test]
     async fn setup_company_rejected_for_non_admin() {
-        let svc = service_with_governance().await;
+        let (svc, sqlite) = service_with_governance().await;
         sqlx::query("INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('bob', 't1', 'member')")
-            .execute(&svc.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
         let err = svc.setup_company("bob", "Acme").await.unwrap_err();
@@ -1336,7 +1209,7 @@ mod tests {
 
     #[tokio::test]
     async fn rename_company_updates_display_name() {
-        let svc = service_with_governance().await;
+        let (svc, sqlite) = service_with_governance().await;
         svc.setup_company("system_default_user", "Acme").await.unwrap();
         let enterprise_id = svc.company_of("system_default_user").await.unwrap().unwrap();
 
@@ -1368,7 +1241,7 @@ mod tests {
 
     #[tokio::test]
     async fn second_company_rejected() {
-        let svc = service_with_governance().await;
+        let (svc, sqlite) = service_with_governance().await;
         svc.setup_company("system_default_user", "Acme").await.unwrap();
         let err = svc.setup_company("system_default_user", "Beta").await.unwrap_err();
         assert_eq!(err.code(), "COMPANY_ALREADY_EXISTS");
@@ -1376,7 +1249,7 @@ mod tests {
 
     #[tokio::test]
     async fn members_listed_and_role_managed_with_last_admin_guard() {
-        let svc = service_with_governance().await;
+        let (svc, sqlite) = service_with_governance().await;
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         let ent = overview.company_id;
         // A second SSO member joins the (manual) company.
@@ -1422,7 +1295,7 @@ mod tests {
         let revoker = std::sync::Arc::new(RecordingRevoker::default());
         let db = dream_core_db::init_database_memory().await.unwrap();
         crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let svc = EnterpriseService::new(db.pool().clone()).with_session_revoker(revoker.clone());
+        let svc = EnterpriseService::new(dream_core_db::DbPool::Sqlite(db.pool().clone())).with_session_revoker(revoker.clone());
 
         svc.sync_member("u1", "feishu", "co", "", None, None, None)
             .await
@@ -1431,7 +1304,7 @@ mod tests {
             .await
             .unwrap();
         let ent: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
-            .fetch_one(&svc.pool)
+            .fetch_one(db.pool())
             .await
             .unwrap();
 
@@ -1446,13 +1319,13 @@ mod tests {
         let revoker = std::sync::Arc::new(RecordingRevoker::default());
         let db = dream_core_db::init_database_memory().await.unwrap();
         crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let svc = EnterpriseService::new(db.pool().clone()).with_session_revoker(revoker.clone());
+        let svc = EnterpriseService::new(dream_core_db::DbPool::Sqlite(db.pool().clone())).with_session_revoker(revoker.clone());
 
         svc.sync_member("u1", "feishu", "co", "", None, None, None)
             .await
             .unwrap();
         let ent: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
-            .fetch_one(&svc.pool)
+            .fetch_one(db.pool())
             .await
             .unwrap();
 
@@ -1472,7 +1345,7 @@ mod tests {
         let revoker = std::sync::Arc::new(RecordingRevoker::default());
         let db = dream_core_db::init_database_memory().await.unwrap();
         crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let svc = EnterpriseService::new(db.pool().clone()).with_session_revoker(revoker.clone());
+        let svc = EnterpriseService::new(dream_core_db::DbPool::Sqlite(db.pool().clone())).with_session_revoker(revoker.clone());
 
         svc.sync_member("u1", "feishu", "co", "", None, None, None)
             .await
@@ -1481,7 +1354,7 @@ mod tests {
             .await
             .unwrap();
         let ent: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
-            .fetch_one(&svc.pool)
+            .fetch_one(db.pool())
             .await
             .unwrap();
 
@@ -1499,13 +1372,13 @@ mod tests {
     async fn leave_company_refuses_the_last_admin() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let svc = EnterpriseService::new(db.pool().clone());
+        let svc = EnterpriseService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()));
 
         svc.sync_member("u1", "feishu", "co", "", None, None, None)
             .await
             .unwrap();
         let ent: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
-            .fetch_one(&svc.pool)
+            .fetch_one(db.pool())
             .await
             .unwrap();
         // sync_member always inserts as plain 'member' — promote u1 so
@@ -1550,7 +1423,7 @@ mod tests {
             .execute(db.pool())
             .await
             .unwrap();
-        let svc = EnterpriseService::new(db.pool().clone())
+        let svc = EnterpriseService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()))
             .with_session_revoker(revoker.clone())
             .with_disband_cascade(cascade.clone());
 
@@ -1576,14 +1449,14 @@ mod tests {
         assert!(svc.company_overview("system_default_user").await.unwrap().is_none());
         let ent_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprises WHERE id = ?")
             .bind(&ent)
-            .fetch_one(&svc.pool)
+            .fetch_one(db.pool())
             .await
             .unwrap();
         assert_eq!(ent_count, 0, "the enterprise row must not survive its own disband");
         let member_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ?")
                 .bind(&ent)
-                .fetch_one(&svc.pool)
+                .fetch_one(db.pool())
                 .await
                 .unwrap();
         assert_eq!(
@@ -1598,7 +1471,8 @@ mod tests {
     #[tokio::test]
     async fn disband_company_rejected_for_non_admin() {
         let cascade = std::sync::Arc::new(RecordingDisbandCascade::default());
-        let svc = service_with_governance().await.with_disband_cascade(cascade.clone());
+        let (svc, _sqlite) = service_with_governance().await;
+        let svc = svc.with_disband_cascade(cascade.clone());
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         let ent = overview.company_id;
         svc.sync_member("bob", "feishu", "", "", Some("Bob"), None, None)
@@ -1616,7 +1490,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_invite_then_list_shows_it() {
-        let svc = service_with_governance().await;
+        let (svc, sqlite) = service_with_governance().await;
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         let ent = overview.company_id;
 
@@ -1641,7 +1515,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_invite_rejects_empty_external_id() {
-        let svc = service_with_governance().await;
+        let (svc, sqlite) = service_with_governance().await;
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         let err = svc
             .create_invite(
@@ -1660,7 +1534,7 @@ mod tests {
 
     #[tokio::test]
     async fn re_inviting_the_same_person_replaces_not_duplicates() {
-        let svc = service_with_governance().await;
+        let (svc, sqlite) = service_with_governance().await;
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         let ent = overview.company_id;
 
@@ -1694,7 +1568,7 @@ mod tests {
 
     #[tokio::test]
     async fn revoke_invite_removes_it_and_rejects_unknown_id() {
-        let svc = service_with_governance().await;
+        let (svc, sqlite) = service_with_governance().await;
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         let ent = overview.company_id;
         let invite = svc
@@ -1718,7 +1592,7 @@ mod tests {
     /// locks down with a negative case.
     #[tokio::test]
     async fn sso_login_consumes_the_matching_invite() {
-        let svc = service_with_governance().await;
+        let (svc, sqlite) = service_with_governance().await;
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         let ent = overview.company_id;
         svc.create_invite(
@@ -1763,7 +1637,7 @@ mod tests {
         // Negative case for the product decision: a totally uninvited login
         // still auto-joins (unchanged existing behavior) — invites are
         // pre-registration, never a gate.
-        let svc = service_with_governance().await;
+        let (svc, sqlite) = service_with_governance().await;
         svc.setup_company("system_default_user", "Acme").await.unwrap();
 
         svc.sync_member(

@@ -27,6 +27,7 @@
 use dream_core_common::now_ms;
 
 use crate::error::EnterpriseError;
+use dream_core_db::db_params;
 use crate::service::EnterpriseService;
 
 /// One department, as handed over by the fetch side.
@@ -133,7 +134,7 @@ impl EnterpriseService {
         enterprise_id: &str,
         input: &DirectorySyncInput,
     ) -> Result<DirectorySyncReport, EnterpriseError> {
-        let pool = self.pool_ref();
+        let pool = &self.db;
         // Computed once and reused by every chunk below. The completeness pass
         // identifies absent people by `last_seen_at < now`, which is only exact
         // because every row this run touches carries this same stamp — so the
@@ -143,23 +144,23 @@ impl EnterpriseService {
         for chunk in input.departments.chunks(DIRECTORY_WRITE_CHUNK) {
             let mut tx = pool.begin().await?;
             for department in chunk {
-                sqlx::query(
-                    "INSERT INTO one_directory_departments \
-                   (enterprise_id, external_id, parent_external_id, name, first_seen_at, last_seen_at) \
-                 VALUES (?, ?, ?, ?, ?, ?) \
-                 ON CONFLICT(enterprise_id, external_id) DO UPDATE SET \
-                   parent_external_id = excluded.parent_external_id, \
-                   name = excluded.name, \
-                   last_seen_at = excluded.last_seen_at",
+                let params = db_params![enterprise_id, &department.external_id, department.parent_external_id.as_deref(), &department.name, now, now];
+                match pool.backend() {
+                    dream_core_db::DbBackend::Sqlite => {
+                tx.execute(
+                    "INSERT INTO one_directory_departments                    (enterprise_id, external_id, parent_external_id, name, first_seen_at, last_seen_at)                  VALUES (?, ?, ?, ?, ?, ?)                  ON CONFLICT(enterprise_id, external_id) DO UPDATE SET                    parent_external_id = excluded.parent_external_id,                    name = excluded.name,                    last_seen_at = excluded.last_seen_at",
+                    &params,
                 )
-                .bind(enterprise_id)
-                .bind(&department.external_id)
-                .bind(department.parent_external_id.as_deref())
-                .bind(&department.name)
-                .bind(now)
-                .bind(now)
-                .execute(&mut *tx)
                 .await?;
+                    }
+                    dream_core_db::DbBackend::MySql => {
+                tx.execute(
+                    "INSERT INTO one_directory_departments                    (enterprise_id, external_id, parent_external_id, name, first_seen_at, last_seen_at)                  VALUES (?, ?, ?, ?, ?, ?)                  ON DUPLICATE KEY UPDATE                    parent_external_id = new.parent_external_id,                    name = new.name,                    last_seen_at = new.last_seen_at",
+                    &params,
+                )
+                .await?;
+                    }
+                }
             }
             tx.commit().await?;
         }
@@ -167,28 +168,23 @@ impl EnterpriseService {
         for chunk in input.people.chunks(DIRECTORY_WRITE_CHUNK) {
             let mut tx = pool.begin().await?;
             for person in chunk {
-                sqlx::query(
-                    "INSERT INTO one_directory_people \
-                   (enterprise_id, external_id, name, job_title, department_external_id, active, \
-                    first_seen_at, last_seen_at, missing_since) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL) \
-                 ON CONFLICT(enterprise_id, external_id) DO UPDATE SET \
-                   name = excluded.name, \
-                   job_title = excluded.job_title, \
-                   department_external_id = excluded.department_external_id, \
-                   active = excluded.active, \
-                   last_seen_at = excluded.last_seen_at",
+                let params = db_params![enterprise_id, &person.external_id, person.name.as_deref(), person.job_title.as_deref(), person.department_external_id.as_deref(), i64::from(person.active), now, now];
+                match pool.backend() {
+                    dream_core_db::DbBackend::Sqlite => {
+                tx.execute(
+                    "INSERT INTO one_directory_people                    (enterprise_id, external_id, name, job_title, department_external_id, active,                     first_seen_at, last_seen_at, missing_since)                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)                  ON CONFLICT(enterprise_id, external_id) DO UPDATE SET                    name = excluded.name,                    job_title = excluded.job_title,                    department_external_id = excluded.department_external_id,                    active = excluded.active,                    last_seen_at = excluded.last_seen_at",
+                    &params,
                 )
-                .bind(enterprise_id)
-                .bind(&person.external_id)
-                .bind(person.name.as_deref())
-                .bind(person.job_title.as_deref())
-                .bind(person.department_external_id.as_deref())
-                .bind(i64::from(person.active))
-                .bind(now)
-                .bind(now)
-                .execute(&mut *tx)
                 .await?;
+                    }
+                    dream_core_db::DbBackend::MySql => {
+                tx.execute(
+                    "INSERT INTO one_directory_people                    (enterprise_id, external_id, name, job_title, department_external_id, active,                     first_seen_at, last_seen_at, missing_since)                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)                  ON CONFLICT(enterprise_id, external_id) DO UPDATE SET                    name = excluded.name,                    job_title = excluded.job_title,                    department_external_id = excluded.department_external_id,                    active = excluded.active,                    last_seen_at = excluded.last_seen_at",
+                    &params,
+                )
+                .await?;
+                    }
+                }
             }
             tx.commit().await?;
         }
@@ -208,61 +204,45 @@ impl EnterpriseService {
             // Anyone not touched by this run is genuinely absent — the pull saw
             // the whole directory. `last_seen_at < now` is the marker; it is
             // exact because every row above was stamped with this same `now`.
-            let newly_missing = sqlx::query(
-                "UPDATE one_directory_people SET missing_since = ? \
-                 WHERE enterprise_id = ? AND missing_since IS NULL \
-                   AND (last_seen_at < ? OR active = 0)",
-            )
-            .bind(now)
-            .bind(enterprise_id)
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
+            let newly_missing = tx
+                .execute(
+                    "UPDATE one_directory_people SET missing_since = ?                  WHERE enterprise_id = ? AND missing_since IS NULL                    AND (last_seen_at < ? OR active = 0)",
+                    &db_params![now, enterprise_id, now],
+                )
+                .await?;
 
             // Somebody who came back (rehired, un-resigned, or a fixed IdP
             // record) must lose the flag, or the console keeps proposing to
             // offboard a current employee.
-            let returned = sqlx::query(
-                "UPDATE one_directory_people SET missing_since = NULL \
-                 WHERE enterprise_id = ? AND missing_since IS NOT NULL \
-                   AND last_seen_at = ? AND active = 1",
-            )
-            .bind(enterprise_id)
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
+            let returned = tx
+                .execute(
+                    "UPDATE one_directory_people SET missing_since = NULL                  WHERE enterprise_id = ? AND missing_since IS NOT NULL                    AND last_seen_at = ? AND active = 1",
+                    &db_params![enterprise_id, now],
+                )
+                .await?;
 
-            report.newly_missing = newly_missing.rows_affected() as usize;
-            report.returned = returned.rows_affected() as usize;
+            report.newly_missing = newly_missing as usize;
+            report.returned = returned as usize;
         }
 
         let status = if input.complete { "ok" } else { "partial" };
-        sqlx::query(
-            "INSERT INTO one_directory_sync_state \
-               (enterprise_id, provider, external_id_field, last_run_at, last_status, last_error, \
-                department_count, people_count, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(enterprise_id) DO UPDATE SET \
-               provider = excluded.provider, \
-               external_id_field = excluded.external_id_field, \
-               last_run_at = excluded.last_run_at, \
-               last_status = excluded.last_status, \
-               last_error = excluded.last_error, \
-               department_count = excluded.department_count, \
-               people_count = excluded.people_count, \
-               updated_at = excluded.updated_at",
+        let params = db_params![enterprise_id, &input.provider, &input.external_id_field, now, status, input.error.as_deref(), input.departments.len() as i64, input.people.len() as i64, now];
+        match pool.backend() {
+            dream_core_db::DbBackend::Sqlite => {
+        tx.execute(
+            "INSERT INTO one_directory_sync_state                (enterprise_id, provider, external_id_field, last_run_at, last_status, last_error,                 department_count, people_count, updated_at)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)              ON CONFLICT(enterprise_id) DO UPDATE SET                provider = excluded.provider,                external_id_field = excluded.external_id_field,                last_run_at = excluded.last_run_at,                last_status = excluded.last_status,                last_error = excluded.last_error,                department_count = excluded.department_count,                people_count = excluded.people_count,                updated_at = excluded.updated_at",
+            &db_params![enterprise_id, &input.provider, &input.external_id_field, now, status, input.error.as_deref(), input.departments.len() as i64, input.people.len() as i64, now],
         )
-        .bind(enterprise_id)
-        .bind(&input.provider)
-        .bind(&input.external_id_field)
-        .bind(now)
-        .bind(status)
-        .bind(input.error.as_deref())
-        .bind(input.departments.len() as i64)
-        .bind(input.people.len() as i64)
-        .bind(now)
-        .execute(&mut *tx)
         .await?;
+            }
+            dream_core_db::DbBackend::MySql => {
+        tx.execute(
+            "INSERT INTO one_directory_sync_state                (enterprise_id, provider, external_id_field, last_run_at, last_status, last_error,                 department_count, people_count, updated_at)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)              ON DUPLICATE KEY UPDATE                provider = new.provider,                external_id_field = new.external_id_field,                last_run_at = new.last_run_at,                last_status = new.last_status,                last_error = new.last_error,                department_count = new.department_count,                people_count = new.people_count,                updated_at = new.updated_at",
+            &db_params![enterprise_id, &input.provider, &input.external_id_field, now, status, input.error.as_deref(), input.departments.len() as i64, input.people.len() as i64, now],
+        )
+        .await?;
+            }
+        }
 
         tx.commit().await?;
         Ok(report)
@@ -276,19 +256,13 @@ impl EnterpriseService {
     /// therefore never proposed — a locally-created account is not a Feishu
     /// employee who left.
     pub async fn list_departed_members(&self, enterprise_id: &str) -> Result<Vec<DepartedMemberDto>, EnterpriseError> {
-        let rows = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, i64)>(
-            "SELECT m.user_id, p.external_id, m.display_name, m.department, p.missing_since \
-             FROM one_directory_people p \
-             JOIN one_sso_identities i \
-               ON i.external_id = p.external_id \
-             JOIN one_enterprise_members m \
-               ON m.user_id = i.user_id AND m.enterprise_id = p.enterprise_id \
-             WHERE p.enterprise_id = ? AND p.missing_since IS NOT NULL \
-             ORDER BY p.missing_since DESC",
-        )
-        .bind(enterprise_id)
-        .fetch_all(self.pool_ref())
-        .await?;
+        let rows = self
+            .db
+            .fetch_all_as::<(String, String, Option<String>, Option<String>, i64)>(
+                "SELECT m.user_id, p.external_id, m.display_name, m.department, p.missing_since              FROM one_directory_people p              JOIN one_sso_identities i                ON i.external_id = p.external_id              JOIN one_enterprise_members m                ON m.user_id = i.user_id AND m.enterprise_id = p.enterprise_id              WHERE p.enterprise_id = ? AND p.missing_since IS NOT NULL              ORDER BY p.missing_since DESC",
+                &db_params![enterprise_id],
+            )
+            .await?;
 
         let mut members: Vec<DepartedMemberDto> = rows
             .into_iter()
@@ -335,11 +309,9 @@ impl EnterpriseService {
              WHERE o.user_id IN ({placeholders}) \
              ORDER BY o.user_id, t.name, o.tenant_id"
         );
-        let mut query = sqlx::query_as::<_, (String, String, Option<String>)>(&sql);
-        for user_id in user_ids {
-            query = query.bind(user_id);
-        }
-        let rows = match query.fetch_all(self.pool_ref()).await {
+        let params: Vec<dream_core_db::DbValue> =
+            user_ids.iter().map(|u| dream_core_db::DbValue::from(u.as_str())).collect();
+        let rows = match self.db.fetch_all_as::<(String, String, Option<String>)>(&sql, &params).await {
             Ok(rows) => rows,
             Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => return Ok(out),
             Err(e) => return Err(e.into()),
@@ -360,7 +332,9 @@ impl EnterpriseService {
     /// `list_agent_audit` — a company with several thousand directory rows
     /// should not be able to make this endpoint unbounded.
     pub async fn list_directory_people(&self, enterprise_id: &str) -> Result<Vec<DirectoryPersonDto>, EnterpriseError> {
-        let rows = sqlx::query_as::<_, DirectoryPersonDto>(
+        let rows = self
+            .db
+            .fetch_all_as::<DirectoryPersonDto>(
             "SELECT p.external_id, p.name, p.job_title, d.name AS department, p.active \
              FROM one_directory_people p \
              LEFT JOIN one_directory_departments d \
@@ -368,9 +342,8 @@ impl EnterpriseService {
              WHERE p.enterprise_id = ? AND p.missing_since IS NULL \
              ORDER BY d.name ASC, p.name ASC \
              LIMIT 5000",
+            &db_params![enterprise_id],
         )
-        .bind(enterprise_id)
-        .fetch_all(self.pool_ref())
         .await?;
         Ok(rows)
     }
@@ -382,12 +355,13 @@ impl EnterpriseService {
         &self,
         enterprise_id: &str,
     ) -> Result<Vec<DirectoryDepartmentDto>, EnterpriseError> {
-        let rows = sqlx::query_as::<_, DirectoryDepartmentDto>(
+        let rows = self
+            .db
+            .fetch_all_as::<DirectoryDepartmentDto>(
             "SELECT external_id, parent_external_id, name \
              FROM one_directory_departments WHERE enterprise_id = ? ORDER BY name ASC",
+            &db_params![enterprise_id],
         )
-        .bind(enterprise_id)
-        .fetch_all(self.pool_ref())
         .await?;
         Ok(rows)
     }
@@ -397,12 +371,13 @@ impl EnterpriseService {
         &self,
         enterprise_id: &str,
     ) -> Result<Option<DirectorySyncStateDto>, EnterpriseError> {
-        let row = sqlx::query_as::<_, DirectorySyncStateDto>(
+        let row = self
+            .db
+            .fetch_optional_as::<DirectorySyncStateDto>(
             "SELECT provider, last_run_at, last_status, last_error, department_count, people_count \
              FROM one_directory_sync_state WHERE enterprise_id = ?",
+            &db_params![enterprise_id],
         )
-        .bind(enterprise_id)
-        .fetch_optional(self.pool_ref())
         .await?;
         Ok(row)
     }
@@ -445,7 +420,7 @@ mod tests {
 
     /// one-sso owns `one_sso_identities`; stand up just enough of it here so
     /// the join can be exercised without depending on that crate.
-    async fn service() -> EnterpriseService {
+    async fn service() -> (EnterpriseService, sqlx::SqlitePool) {
         let db = dream_core_db::init_database_memory().await.unwrap();
         crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         sqlx::query(
@@ -455,7 +430,11 @@ mod tests {
         .execute(db.pool())
         .await
         .unwrap();
-        EnterpriseService::new(db.pool().clone())
+        let sqlite = db.pool().clone();
+        (
+            EnterpriseService::new(dream_core_db::DbPool::Sqlite(db.pool().clone())),
+            sqlite,
+        )
     }
 
     fn person(external_id: &str, active: bool) -> DirectoryPersonInput {
@@ -480,7 +459,8 @@ mod tests {
     async fn snapshot_spanning_several_chunks_is_written_whole() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         crate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let svc = EnterpriseService::new(db.pool().clone());
+        let sqlite = db.pool().clone();
+        let svc = EnterpriseService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()));
 
         let people: Vec<_> = (0..DIRECTORY_WRITE_CHUNK * 2 + 7)
             .map(|i| person(&format!("od_p{i}"), true))
@@ -524,63 +504,63 @@ mod tests {
     /// one-org owns the project-group tables. Stand up just enough of them to
     /// exercise the join; tests that skip this are the standalone deployment,
     /// where the tables genuinely do not exist.
-    async fn with_project_groups(svc: &EnterpriseService) {
+    async fn with_project_groups(svc: &EnterpriseService, sqlite: &sqlx::SqlitePool) {
         sqlx::query("CREATE TABLE one_tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL)")
-            .execute(svc.pool_ref())
+            .execute(sqlite)
             .await
             .unwrap();
         sqlx::query("CREATE TABLE one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL)")
-            .execute(svc.pool_ref())
+            .execute(sqlite)
             .await
             .unwrap();
     }
 
-    async fn join_group(svc: &EnterpriseService, user_id: &str, tenant_id: &str, name: &str) {
+    async fn join_group(svc: &EnterpriseService, sqlite: &sqlx::SqlitePool, user_id: &str, tenant_id: &str, name: &str) {
         sqlx::query("INSERT OR IGNORE INTO one_tenants (id, name) VALUES (?, ?)")
             .bind(tenant_id)
             .bind(name)
-            .execute(svc.pool_ref())
+            .execute(sqlite)
             .await
             .unwrap();
         sqlx::query("INSERT INTO one_user_org (user_id, tenant_id, role) VALUES (?, ?, 'member')")
             .bind(user_id)
             .bind(tenant_id)
-            .execute(svc.pool_ref())
+            .execute(sqlite)
             .await
             .unwrap();
     }
 
-    async fn make_departed(svc: &EnterpriseService, external_id: &str, user_id: &str) {
+    async fn make_departed(svc: &EnterpriseService, sqlite: &sqlx::SqlitePool, external_id: &str, user_id: &str) {
         svc.apply_directory_snapshot("ent1", &snapshot(vec![person(external_id, true)], true))
             .await
             .unwrap();
         svc.apply_directory_snapshot("ent1", &snapshot(vec![], true))
             .await
             .unwrap();
-        bind_identity(svc, external_id, user_id).await;
+        bind_identity(svc, &sqlite, external_id, user_id).await;
         sqlx::query(
             "INSERT INTO one_enterprise_members (user_id, enterprise_id, display_name, role, joined_at, updated_at) \
              VALUES (?, 'ent1', ?, 'member', 0, 0)",
         )
         .bind(user_id)
         .bind(user_id)
-        .execute(svc.pool_ref())
+        .execute(sqlite)
         .await
         .unwrap();
     }
 
-    async fn bind_identity(svc: &EnterpriseService, external_id: &str, user_id: &str) {
+    async fn bind_identity(svc: &EnterpriseService, sqlite: &sqlx::SqlitePool, external_id: &str, user_id: &str) {
         sqlx::query("INSERT INTO one_sso_identities (provider, external_id, user_id) VALUES ('feishu', ?, ?)")
             .bind(external_id)
             .bind(user_id)
-            .execute(svc.pool_ref())
+            .execute(sqlite)
             .await
             .unwrap();
     }
 
     #[tokio::test]
     async fn a_complete_pull_flags_whoever_stopped_appearing() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         svc.apply_directory_snapshot(
             "ent1",
             &snapshot(vec![person("ou_a", true), person("ou_b", true)], true),
@@ -603,7 +583,7 @@ mod tests {
     /// access and reassign their work.
     #[tokio::test]
     async fn an_incomplete_pull_never_flags_anyone() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         svc.apply_directory_snapshot(
             "ent1",
             &snapshot(vec![person("ou_a", true), person("ou_b", true)], true),
@@ -620,7 +600,7 @@ mod tests {
         assert_eq!(report.newly_missing, 0, "an incomplete pull must not flag departures");
         assert!(!report.complete);
 
-        bind_identity(&svc, "ou_b", "u_b").await;
+        bind_identity(&svc, &sqlite, "ou_b", "u_b").await;
         svc.sync_member("u_b", "feishu", "ent-ext", "", None, None, None)
             .await
             .unwrap();
@@ -634,7 +614,7 @@ mod tests {
     /// is not "still employed".
     #[tokio::test]
     async fn a_resigned_person_is_flagged_even_though_still_listed() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         svc.apply_directory_snapshot("ent1", &snapshot(vec![person("ou_a", true)], true))
             .await
             .unwrap();
@@ -649,7 +629,7 @@ mod tests {
     /// somebody who is back at work.
     #[tokio::test]
     async fn someone_who_comes_back_is_unflagged() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         svc.apply_directory_snapshot(
             "ent1",
             &snapshot(vec![person("ou_a", true), person("ou_b", true)], true),
@@ -675,7 +655,7 @@ mod tests {
     /// row on its own is not a member of anything here.
     #[tokio::test]
     async fn only_bound_members_are_proposed_for_offboarding() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         svc.apply_directory_snapshot(
             "ent1",
             &snapshot(vec![person("ou_a", true), person("ou_b", true)], true),
@@ -695,12 +675,12 @@ mod tests {
         // Now give them one. Inserted directly rather than via `sync_member`,
         // which resolves the company itself — this test is about the join, not
         // about company resolution.
-        bind_identity(&svc, "ou_b", "u_b").await;
+        bind_identity(&svc, &sqlite, "ou_b", "u_b").await;
         sqlx::query(
             "INSERT INTO one_enterprise_members (user_id, enterprise_id, display_name, role, joined_at, updated_at) \
              VALUES ('u_b', 'ent1', '李四', 'member', 0, 0)",
         )
-        .execute(svc.pool_ref())
+        .execute(&sqlite)
         .await
         .unwrap();
 
@@ -714,13 +694,13 @@ mod tests {
     /// which groups they are in before it can offer to do it.
     #[tokio::test]
     async fn a_departure_carries_the_project_groups_the_person_is_still_in() {
-        let svc = service().await;
-        with_project_groups(&svc).await;
-        make_departed(&svc, "ou_b", "u_b").await;
-        join_group(&svc, "u_b", "t_1", "研发组").await;
-        join_group(&svc, "u_b", "t_2", "市场组").await;
+        let (svc, sqlite) = service().await;
+        with_project_groups(&svc, &sqlite).await;
+        make_departed(&svc, &sqlite, "ou_b", "u_b").await;
+        join_group(&svc, &sqlite, "u_b", "t_1", "研发组").await;
+        join_group(&svc, &sqlite, "u_b", "t_2", "市场组").await;
         // Somebody else's membership must not leak onto this row.
-        join_group(&svc, "u_other", "t_3", "财务组").await;
+        join_group(&svc, &sqlite, "u_other", "t_3", "财务组").await;
 
         let departed = svc.list_departed_members("ent1").await.unwrap();
         assert_eq!(departed.len(), 1);
@@ -738,9 +718,9 @@ mod tests {
     /// answer, not a missing one.
     #[tokio::test]
     async fn a_member_in_no_project_group_reports_an_empty_group_list() {
-        let svc = service().await;
-        with_project_groups(&svc).await;
-        make_departed(&svc, "ou_b", "u_b").await;
+        let (svc, sqlite) = service().await;
+        with_project_groups(&svc, &sqlite).await;
+        make_departed(&svc, &sqlite, "ou_b", "u_b").await;
 
         let departed = svc.list_departed_members("ent1").await.unwrap();
         assert_eq!(departed.len(), 1);
@@ -751,8 +731,8 @@ mod tests {
     /// The departed list must still render rather than 500.
     #[tokio::test]
     async fn a_deployment_without_project_group_tables_still_lists_departures() {
-        let svc = service().await;
-        make_departed(&svc, "ou_b", "u_b").await;
+        let (svc, sqlite) = service().await;
+        make_departed(&svc, &sqlite, "ou_b", "u_b").await;
 
         let departed = svc.list_departed_members("ent1").await.unwrap();
         assert_eq!(departed.len(), 1);
@@ -763,7 +743,7 @@ mod tests {
     /// adapter) read this flat list.
     #[tokio::test]
     async fn list_directory_departments_returns_the_flat_mirror() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         svc.apply_directory_snapshot(
             "ent1",
             &DirectorySyncInput {
@@ -810,7 +790,7 @@ mod tests {
     /// "the directory really is empty".
     #[tokio::test]
     async fn a_failed_pull_is_recorded_as_partial_with_its_reason() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         let mut input = snapshot(vec![], false);
         input.error = Some("tenant token: HTTP 500".into());
         svc.apply_directory_snapshot("ent1", &input).await.unwrap();
@@ -823,14 +803,14 @@ mod tests {
     /// Red line: the mirror must never touch the seat table.
     #[tokio::test]
     async fn syncing_a_directory_creates_no_members_and_therefore_no_seats() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         let people: Vec<DirectoryPersonInput> = (0..50).map(|i| person(&format!("ou_{i}"), true)).collect();
         svc.apply_directory_snapshot("ent1", &snapshot(people, true))
             .await
             .unwrap();
 
         let seats: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprise_members")
-            .fetch_one(svc.pool_ref())
+            .fetch_one(&sqlite)
             .await
             .unwrap();
         assert_eq!(seats, 0, "a directory pull must not consume licensed seats");
@@ -841,7 +821,7 @@ mod tests {
     /// — not just a headcount, and not just the departed-diff.
     #[tokio::test]
     async fn list_directory_people_returns_present_members_with_department_names() {
-        let svc = service().await;
+        let (svc, sqlite) = service().await;
         svc.apply_directory_snapshot(
             "ent1",
             &snapshot(vec![person("ou_a", true), person("ou_b", true)], true),
