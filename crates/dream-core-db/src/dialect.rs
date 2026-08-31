@@ -108,6 +108,12 @@ impl From<Vec<u8>> for DbValue {
     }
 }
 
+impl From<&bool> for DbValue {
+    fn from(v: &bool) -> Self {
+        DbValue::Bool(*v)
+    }
+}
+
 impl From<Option<&str>> for DbValue {
     fn from(v: Option<&str>) -> Self {
         match v {
