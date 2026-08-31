@@ -221,12 +221,15 @@ async fn export_table(pool: &DbPool, table: &str) -> Result<Option<TableRows>, O
         // JSON but returns a JSON value, not text with the same shape); export
         // the row as JSON via JSON_OBJECT too but cast to CHAR for a text read.
         DbBackend::MySql => {
+            // `JSON_OBJECT` accepts native column values directly (no
+            // `TO_JSON_STRING` wrapper — that's a BigQuery function, not
+            // MySQL), same as the SQLite branch's `json_object` above.
             let pairs = columns
                 .iter()
-                .map(|c| format!("'{c}', TO_JSON_STRING(`{c}`)"))
+                .map(|c| format!("'{c}', `{c}`"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("SELECT JSON_OBJECT({pairs}) AS row_json FROM {table}")
+            format!("SELECT CAST(JSON_OBJECT({pairs}) AS CHAR) AS row_json FROM {table}")
         }
     };
     let raw_rows: Vec<String> = match pool.backend() {
@@ -347,18 +350,22 @@ pub async fn import_bundle(pool: &DbPool, bundle: &BackupBundle) -> Result<Impor
                 continue;
             }
             let placeholders = vec!["?"; columns.len()].join(", ");
-            let column_list = columns
-                .iter()
-                .map(|c| format!("\"{c}\""))
-                .collect::<Vec<_>>()
-                .join(", ");
             // SQLite: INSERT OR REPLACE; MySQL: REPLACE INTO (same delete+insert
             // semantics on the PK/unique key). Values ride as DbValues.
+            //
+            // Identifier quoting diverges too: MySQL's default sql_mode (no
+            // ANSI_QUOTES) treats a double-quoted token as a string literal,
+            // not an identifier, so `"col"` in `REPLACE INTO t ("col") ...`
+            // is a syntax error there — backticks are required.
             let statement = match tx.backend() {
                 DbBackend::MySql => {
+                    let column_list = columns.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ");
                     format!("REPLACE INTO {table} ({column_list}) VALUES ({placeholders})")
                 }
-                _ => format!("INSERT OR REPLACE INTO {table} ({column_list}) VALUES ({placeholders})"),
+                _ => {
+                    let column_list = columns.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", ");
+                    format!("INSERT OR REPLACE INTO {table} ({column_list}) VALUES ({placeholders})")
+                }
             };
             let mut params: Vec<DbValue> = Vec::with_capacity(columns.len());
             for column in &columns {
@@ -389,6 +396,9 @@ pub async fn import_bundle(pool: &DbPool, bundle: &BackupBundle) -> Result<Impor
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use dream_core_db::{IUserRepository, SqliteUserRepository};
+    use crate::service::OrgService;
 
     async fn pool() -> sqlx::SqlitePool {
         let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
@@ -413,6 +423,65 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+    }
+
+    /// Real MySQL, both ends: exports from one MySQL-backed tenant and
+    /// restores into a second, separate MySQL database — the two real bugs
+    /// review found (`export_table`'s MySQL branch calling the nonexistent
+    /// `TO_JSON_STRING` BigQuery function, and `import_bundle` quoting
+    /// column names with `"double quotes"`, which MySQL's default sql_mode
+    /// treats as a string literal rather than an identifier) would each make
+    /// this fail immediately. Requires `DREAM_TEST_MYSQL_URL`; skipped when
+    /// unset.
+    #[tokio::test]
+    async fn export_and_import_round_trip_on_mysql() {
+        let Some(source_db) = dream_core_db::testing::mysql_test_pool().await else {
+            eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
+            return;
+        };
+        let Some(dest_db) = dream_core_db::testing::mysql_test_pool().await else {
+            eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
+            return;
+        };
+        crate::migrate::run_one_migrations(&source_db.pool).await.unwrap();
+        crate::migrate::run_one_migrations(&dest_db.pool).await.unwrap();
+
+        let sqlite_db = dream_core_db::init_database_memory().await.unwrap();
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(SqliteUserRepository::new(sqlite_db.pool().clone()));
+        let source_service = Arc::new(OrgService::new(
+            source_db.pool.clone(),
+            user_repo.clone(),
+            std::sync::Arc::new(dream_core_db::SqliteConversationRepository::new(sqlite_db.pool().clone())),
+            std::env::temp_dir().join(format!("one-org-backup-src-{}", uuid::Uuid::now_v7())),
+            [7u8; 32],
+        ));
+        let (tenant_id, _) = source_service.create_tenant("system_default_user", "Acme Backup Co").await.unwrap();
+
+        let bundle = export_bundle(&source_db.pool, &tenant_id, 1000).await.unwrap();
+        assert!(bundle.tables["one_tenants"].len() == 1, "the export's JSON_OBJECT read must actually return the row");
+
+        let report = import_bundle(&dest_db.pool, &bundle).await.unwrap();
+        assert!(report.rows_applied > 0);
+
+        let restored_name: String = sqlx::query_scalar("SELECT name FROM one_tenants WHERE id = ?")
+            .bind(&tenant_id)
+            .fetch_one(dest_db.pool.mysql())
+            .await
+            .unwrap();
+        assert_eq!(restored_name, "Acme Backup Co");
+
+        // Idempotent: importing the same bundle again must not error or duplicate.
+        import_bundle(&dest_db.pool, &bundle).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_tenants WHERE id = ?")
+            .bind(&tenant_id)
+            .fetch_one(dest_db.pool.mysql())
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+
+        sqlite_db.close().await;
+        source_db.cleanup().await.unwrap();
+        dest_db.cleanup().await.unwrap();
     }
 
     #[tokio::test]

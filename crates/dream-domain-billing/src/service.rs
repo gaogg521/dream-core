@@ -394,7 +394,7 @@ impl BillingService {
              ON CONFLICT(enterprise_id) DO UPDATE SET tier = excluded.tier, seat_limit = excluded.seat_limit, \
                  expires_at = NULL, updated_at = excluded.updated_at",
             "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at) \
-             VALUES (?, ?, ?, NULL, ?) \
+             VALUES (?, ?, ?, NULL, ?) AS new \
              ON DUPLICATE KEY UPDATE tier = new.tier, seat_limit = new.seat_limit, \
                  expires_at = NULL, updated_at = new.updated_at",
             &db_params![enterprise_id, tier.as_str(), seat_limit, now_ms()],
@@ -427,7 +427,7 @@ impl BillingService {
         let mut tx = self.db.begin().await?;
         let activation_sql = match self.db.backend() {
             dream_core_db::DbBackend::Sqlite => "INSERT INTO one_license_activation                  (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by,                   tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)              ON CONFLICT(license_id) DO UPDATE SET enterprise_id = excluded.enterprise_id,                  activated_at = excluded.activated_at, activated_by = excluded.activated_by,                  tenant_cap = excluded.tenant_cap, agent_node_cap = excluded.agent_node_cap,                  cpu_cores_cap = excluded.cpu_cores_cap, memory_mb_cap = excluded.memory_mb_cap,                  modules = excluded.modules, serial = excluded.serial, app_id = excluded.app_id,                  file_name = excluded.file_name",
-            dream_core_db::DbBackend::MySql => "INSERT INTO one_license_activation                  (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by,                   tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)              ON DUPLICATE KEY UPDATE enterprise_id = new.enterprise_id,                  activated_at = new.activated_at, activated_by = new.activated_by,                  tenant_cap = new.tenant_cap, agent_node_cap = new.agent_node_cap,                  cpu_cores_cap = new.cpu_cores_cap, memory_mb_cap = new.memory_mb_cap,                  modules = new.modules, serial = new.serial, app_id = new.app_id,                  file_name = new.file_name",
+            dream_core_db::DbBackend::MySql => "INSERT INTO one_license_activation                  (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by,                   tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new              ON DUPLICATE KEY UPDATE enterprise_id = new.enterprise_id,                  activated_at = new.activated_at, activated_by = new.activated_by,                  tenant_cap = new.tenant_cap, agent_node_cap = new.agent_node_cap,                  cpu_cores_cap = new.cpu_cores_cap, memory_mb_cap = new.memory_mb_cap,                  modules = new.modules, serial = new.serial, app_id = new.app_id,                  file_name = new.file_name",
         };
         tx.execute(
             activation_sql,
@@ -454,7 +454,7 @@ impl BillingService {
         .await?;
         let license_sql = match self.db.backend() {
             dream_core_db::DbBackend::Sqlite => "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at)              VALUES (?, ?, ?, ?, ?)              ON CONFLICT(enterprise_id) DO UPDATE SET tier = excluded.tier, seat_limit = excluded.seat_limit,                  expires_at = excluded.expires_at, updated_at = excluded.updated_at",
-            dream_core_db::DbBackend::MySql => "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at)              VALUES (?, ?, ?, ?, ?)              ON DUPLICATE KEY UPDATE tier = new.tier, seat_limit = new.seat_limit,                  expires_at = new.expires_at, updated_at = new.updated_at",
+            dream_core_db::DbBackend::MySql => "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at)              VALUES (?, ?, ?, ?, ?) AS new              ON DUPLICATE KEY UPDATE tier = new.tier, seat_limit = new.seat_limit,                  expires_at = new.expires_at, updated_at = new.updated_at",
         };
         tx.execute(
             license_sql,
@@ -560,7 +560,7 @@ impl BillingService {
              ON CONFLICT(enterprise_id) DO UPDATE SET monthly_cost_cap_micros = excluded.monthly_cost_cap_micros, \
                  allowed_models = excluded.allowed_models, updated_at = excluded.updated_at",
             "INSERT INTO one_enterprise_license (enterprise_id, tier, monthly_cost_cap_micros, allowed_models, updated_at) \
-             VALUES (?, 'free', ?, ?, ?) \
+             VALUES (?, 'free', ?, ?, ?) AS new \
              ON DUPLICATE KEY UPDATE monthly_cost_cap_micros = new.monthly_cost_cap_micros, \
                  allowed_models = new.allowed_models, updated_at = new.updated_at",
             &db_params![enterprise_id, cost_cap_micros, allowed_json, now_ms()],
@@ -574,7 +574,7 @@ impl BillingService {
     async fn budget_used_micros(&self, enterprise_id: &str) -> Result<i64, BillingError> {
         let since = now_ms() - BUDGET_WINDOW_MS;
         let used: i64 = self.db.fetch_one_scalar(
-            "SELECT COALESCE(SUM(estimated_cost_micros), 0) FROM one_usage_events \
+            "SELECT CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED) FROM one_usage_events \
              WHERE enterprise_id = ? AND created_at >= ?",
         &db_params![enterprise_id, since])
         .await
@@ -593,7 +593,7 @@ impl BillingService {
     /// conversation with no turns yet) return 0, not an error.
     pub async fn conversation_cost(&self, user_id: &str, conversation_id: &str) -> Result<i64, BillingError> {
         let used: i64 = self.db.fetch_one_scalar(
-            "SELECT COALESCE(SUM(estimated_cost_micros), 0) FROM one_usage_events \
+            "SELECT CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED) FROM one_usage_events \
              WHERE user_id = ? AND conversation_id = ?",
         &db_params![user_id, conversation_id])
         .await
@@ -618,7 +618,7 @@ impl BillingService {
              ON CONFLICT(department_id) DO UPDATE SET \
                  cost_cap_micros = excluded.cost_cap_micros, updated_at = excluded.updated_at",
             "INSERT INTO one_department_budgets (department_id, enterprise_id, cost_cap_micros, updated_at) \
-             VALUES (?, ?, ?, ?) \
+             VALUES (?, ?, ?, ?) AS new \
              ON DUPLICATE KEY UPDATE \
                  cost_cap_micros = new.cost_cap_micros, updated_at = new.updated_at",
             &db_params![department_id, enterprise_id, cost_cap_micros, now_ms()],
@@ -642,7 +642,7 @@ impl BillingService {
     async fn department_budget_used_micros(&self, department_id: &str) -> Result<i64, BillingError> {
         let since = now_ms() - BUDGET_WINDOW_MS;
         let used: i64 = self.db.fetch_one_scalar(
-            "SELECT COALESCE(SUM(estimated_cost_micros), 0) FROM one_usage_events \
+            "SELECT CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED) FROM one_usage_events \
              WHERE department_id = ? AND created_at >= ?",
         &db_params![department_id, since])
         .await
@@ -692,7 +692,7 @@ impl BillingService {
              ON CONFLICT(enterprise_id) DO UPDATE SET \
                  retain_prompts = excluded.retain_prompts, updated_at = excluded.updated_at",
             "INSERT INTO one_media_ledger_settings (enterprise_id, retain_prompts, updated_at) \
-             VALUES (?, ?, ?) \
+             VALUES (?, ?, ?) AS new \
              ON DUPLICATE KEY UPDATE \
                  retain_prompts = new.retain_prompts, updated_at = new.updated_at",
             &db_params![enterprise_id, retain_prompts, now_ms()],
@@ -1068,7 +1068,7 @@ impl BillingService {
         let (total_turns, total_tokens, total_cost): (i64, i64, i64) = self
             .db
             .fetch_one_as(
-                "SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(estimated_cost_micros), 0)              FROM one_usage_events WHERE enterprise_id = ? AND created_at >= ?",
+                "SELECT COUNT(*), CAST(COALESCE(SUM(total_tokens), 0) AS SIGNED), CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED)              FROM one_usage_events WHERE enterprise_id = ? AND created_at >= ?",
                 &db_params![enterprise_id, since_ms],
             )
             .await?;
@@ -1116,7 +1116,7 @@ impl BillingService {
         key_expr: &str,
     ) -> Result<Vec<UsageBucketDto>, BillingError> {
         let sql = format!(
-            "SELECT {key_expr} AS k, COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(estimated_cost_micros), 0) \
+            "SELECT {key_expr} AS k, COUNT(*), CAST(COALESCE(SUM(total_tokens), 0) AS SIGNED), CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED) \
              FROM one_usage_events WHERE enterprise_id = ? AND created_at >= ? \
              GROUP BY k ORDER BY COUNT(*) DESC"
         );
@@ -1407,7 +1407,7 @@ impl BillingService {
         let (active_users, window_tokens): (i64, i64) = self
             .db
             .fetch_one_as(
-                "SELECT COUNT(DISTINCT user_id), COALESCE(SUM(total_tokens), 0) \
+                "SELECT COUNT(DISTINCT user_id), CAST(COALESCE(SUM(total_tokens), 0) AS SIGNED) \
              FROM one_usage_events WHERE enterprise_id = ? AND created_at >= ?",
                 &db_params![enterprise_id, since_ms],
             )
@@ -1423,7 +1423,7 @@ impl BillingService {
         // call count and unbounded, so the Top10 ordering is computed here
         // rather than re-sorted (and re-fetched in full) client-side.
         let top_rows: Vec<(String, i64, i64)> = self.db.fetch_all_as::<(String, i64, i64)>(
-            "SELECT user_id, COALESCE(SUM(total_tokens), 0), COALESCE(SUM(estimated_cost_micros), 0) \
+            "SELECT user_id, CAST(COALESCE(SUM(total_tokens), 0) AS SIGNED), CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED) \
              FROM one_usage_events WHERE enterprise_id = ? AND created_at >= ? \
              GROUP BY user_id ORDER BY 2 DESC LIMIT 10",
         &db_params![enterprise_id, since_ms])
@@ -1541,8 +1541,8 @@ impl BillingService {
 
         type Row = (String, String, i64, i64, i64, i64, i64);
         let rows: Vec<Row> = self.db.fetch_all_as::<Row>(
-            "SELECT conversation_id, MIN(user_id), COUNT(*), COALESCE(SUM(total_tokens), 0), \
-                    COALESCE(SUM(estimated_cost_micros), 0), MIN(created_at), MAX(created_at) \
+            "SELECT conversation_id, MIN(user_id), COUNT(*), CAST(COALESCE(SUM(total_tokens), 0) AS SIGNED), \
+                    CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED), MIN(created_at), MAX(created_at) \
              FROM one_usage_events \
              WHERE enterprise_id = ? AND created_at >= ? AND conversation_id IS NOT NULL \
              GROUP BY conversation_id ORDER BY MAX(created_at) DESC LIMIT ? OFFSET ?",
@@ -1647,6 +1647,45 @@ mod tests {
             .unwrap();
         let svc = BillingService::new(dream_core_db::DbPool::Sqlite(pool.clone()), Arc::new(ManualBillingProvider));
         (svc, pool)
+    }
+
+    /// Real MySQL: exercises `set_tier`'s and `set_department_budget`'s
+    /// upsert (insert, then update-on-conflict) — the `AS new` row alias
+    /// review found missing from every MySQL branch in this file (real
+    /// MySQL rejects `new.col` without it: `1054 Unknown column`).
+    /// Requires `DREAM_TEST_MYSQL_URL`; skipped when unset.
+    #[tokio::test]
+    async fn set_tier_and_department_budget_round_trip_on_mysql() {
+        let Some(mysql_db) = dream_core_db::testing::mysql_test_pool().await else {
+            eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
+            return;
+        };
+        // billing_001_init.sql backfills from one-enterprise's `one_enterprises`
+        // (ordering enforced in dream-core-app in production); seed a minimal
+        // stand-in so the migration's grandfather SELECT has a source, same
+        // idiom as `migrate::tests::migrations_are_idempotent_mysql`.
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS one_enterprises (id VARCHAR(255) PRIMARY KEY, provider VARCHAR(64) NULL, external_id VARCHAR(255) NULL, display_name VARCHAR(255) NULL, created_at BIGINT NULL, updated_at BIGINT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_as_cs;",
+        )
+        .execute(mysql_db.pool.mysql())
+        .await
+        .unwrap();
+        crate::migrate::run_one_billing_migrations(&mysql_db.pool).await.unwrap();
+        let svc = BillingService::new(mysql_db.pool.clone(), Arc::new(ManualBillingProvider));
+
+        // Insert, then update-on-conflict (same enterprise_id).
+        svc.set_tier("ent1", Tier::Free, Some(5)).await.unwrap();
+        svc.set_tier("ent1", Tier::Free, Some(10)).await.unwrap();
+        let license = svc.license_of("ent1").await.unwrap();
+        assert_eq!(license.seat_limit, Some(10));
+
+        svc.set_department_budget("ent1", "dept1", Some(1_000_000)).await.unwrap();
+        svc.set_department_budget("ent1", "dept1", Some(2_000_000)).await.unwrap();
+        let budgets = svc.list_department_budgets("ent1").await.unwrap();
+        let dept1 = budgets.iter().find(|d| d.department_id == "dept1").unwrap();
+        assert_eq!(dept1.cost_cap_micros, Some(2_000_000));
+
+        mysql_db.cleanup().await.unwrap();
     }
 
     async fn add_members(svc: &BillingService, sqlite: &sqlx::SqlitePool, enterprise_id: &str, n: usize) {
@@ -1778,7 +1817,7 @@ mod tests {
              VALUES (?, ?, NULL, ?, 0) \
              ON CONFLICT(enterprise_id) DO UPDATE SET tier = excluded.tier, expires_at = excluded.expires_at",
             "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at) \
-             VALUES (?, ?, NULL, ?, 0) \
+             VALUES (?, ?, NULL, ?, 0) AS new \
              ON DUPLICATE KEY UPDATE tier = new.tier, expires_at = new.expires_at",
             &db_params![enterprise_id, tier.as_str(), expires_at],
         )

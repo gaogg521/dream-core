@@ -282,7 +282,7 @@ impl OrgService {
         self.upsert(
             "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) \
              ON CONFLICT(user_id) DO UPDATE SET tenant_id = excluded.tenant_id, updated_at = excluded.updated_at",
-            "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) \
+            "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) AS new \
              ON DUPLICATE KEY UPDATE tenant_id = new.tenant_id, updated_at = new.updated_at",
             &db_params![user_id, tenant_id, now],
         )
@@ -494,21 +494,45 @@ impl OrgService {
         if claimed == 0 {
             return Err(OrgError::InvalidCode);
         }
+        let user_org_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO one_user_org \
+                 (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
+                  org_profile_synced_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(user_id, tenant_id) DO UPDATE SET updated_at = excluded.updated_at, \
+                     display_name = excluded.display_name, org_unit_path = excluded.org_unit_path, \
+                     job_title = excluded.job_title, org_profile_source = excluded.org_profile_source, \
+                     org_profile_synced_at = excluded.org_profile_synced_at"
+            }
+            DbBackend::MySql => {
+                "INSERT INTO one_user_org \
+                 (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
+                  org_profile_synced_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
+                 ON DUPLICATE KEY UPDATE updated_at = new.updated_at, \
+                     display_name = new.display_name, org_unit_path = new.org_unit_path, \
+                     job_title = new.job_title, org_profile_source = new.org_profile_source, \
+                     org_profile_synced_at = new.org_profile_synced_at"
+            }
+        };
         tx.execute(
-            "INSERT INTO one_user_org \
-             (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
-              org_profile_synced_at, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(user_id, tenant_id) DO UPDATE SET updated_at = excluded.updated_at, \
-                 display_name = excluded.display_name, org_unit_path = excluded.org_unit_path, \
-                 job_title = excluded.job_title, org_profile_source = excluded.org_profile_source, \
-                 org_profile_synced_at = excluded.org_profile_synced_at",
+            user_org_sql,
         &db_params![user_id, &invite.tenant_id, ROLE_MEMBER, &display_name, &org_unit_path, &job_title, &org_profile_source, org_profile_synced_at, now, now])
         .await?;
         // The group just joined becomes the active one.
+        let active_tenant_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) \
+                 ON CONFLICT(user_id) DO UPDATE SET tenant_id = excluded.tenant_id, updated_at = excluded.updated_at"
+            }
+            DbBackend::MySql => {
+                "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) AS new \
+                 ON DUPLICATE KEY UPDATE tenant_id = new.tenant_id, updated_at = new.updated_at"
+            }
+        };
         tx.execute(
-            "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) \
-             ON CONFLICT(user_id) DO UPDATE SET tenant_id = excluded.tenant_id, updated_at = excluded.updated_at",
+            active_tenant_sql,
         &db_params![user_id, &invite.tenant_id, now])
         .await?;
         tx.commit().await?;
@@ -600,14 +624,32 @@ impl OrgService {
 
         let now = now_ms() as i64;
         let mut tx = self.db.begin().await?;
+        let user_org_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?) \
+                 ON CONFLICT(user_id, tenant_id) DO UPDATE SET updated_at = excluded.updated_at"
+            }
+            DbBackend::MySql => {
+                "INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?) AS new \
+                 ON DUPLICATE KEY UPDATE updated_at = new.updated_at"
+            }
+        };
         tx.execute(
-            "INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?) \
-             ON CONFLICT(user_id, tenant_id) DO UPDATE SET updated_at = excluded.updated_at",
+            user_org_sql,
         &db_params![user_id, &tenant_id, ROLE_MEMBER, now, now])
         .await?;
+        let active_tenant_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) \
+                 ON CONFLICT(user_id) DO UPDATE SET tenant_id = excluded.tenant_id, updated_at = excluded.updated_at"
+            }
+            DbBackend::MySql => {
+                "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) AS new \
+                 ON DUPLICATE KEY UPDATE tenant_id = new.tenant_id, updated_at = new.updated_at"
+            }
+        };
         tx.execute(
-            "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) \
-             ON CONFLICT(user_id) DO UPDATE SET tenant_id = excluded.tenant_id, updated_at = excluded.updated_at",
+            active_tenant_sql,
         &db_params![user_id, &tenant_id, now])
         .await?;
         tx.commit().await?;
@@ -692,12 +734,17 @@ impl OrgService {
             }
             _ => existing_password,
         };
-        self.db.execute(
+        self.upsert(
             "INSERT INTO one_smtp_config (id, host, port, username, password_encrypted, from_address, enabled, updated_at) \
              VALUES (1, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET host = excluded.host, port = excluded.port, username = excluded.username, \
                  password_encrypted = excluded.password_encrypted, from_address = excluded.from_address, \
                  enabled = excluded.enabled, updated_at = excluded.updated_at",
+            "INSERT INTO one_smtp_config (id, host, port, username, password_encrypted, from_address, enabled, updated_at) \
+             VALUES (1, ?, ?, ?, ?, ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE host = new.host, port = new.port, username = new.username, \
+                 password_encrypted = new.password_encrypted, from_address = new.from_address, \
+                 enabled = new.enabled, updated_at = new.updated_at",
         &db_params![host, port, username, &password_encrypted, from_address, enabled, now_ms()])
         .await?;
         self.get_smtp_config().await
@@ -822,11 +869,15 @@ impl OrgService {
             _ => existing_secret,
         };
         let config_json = serde_json::to_string(config).map_err(|e| OrgError::Internal(e.to_string()))?;
-        self.db.execute(
+        self.upsert(
             "INSERT INTO one_integrations (tenant_id, provider, base_url, config_json, secret_encrypted, enabled, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(tenant_id, provider) DO UPDATE SET base_url = excluded.base_url, config_json = excluded.config_json, \
                  secret_encrypted = excluded.secret_encrypted, enabled = excluded.enabled, updated_at = excluded.updated_at",
+            "INSERT INTO one_integrations (tenant_id, provider, base_url, config_json, secret_encrypted, enabled, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE base_url = new.base_url, config_json = new.config_json, \
+                 secret_encrypted = new.secret_encrypted, enabled = new.enabled, updated_at = new.updated_at",
         &db_params![tenant_id, provider, base_url, &config_json, &secret_encrypted, enabled, now_ms()])
         .await?;
         self.get_integration(tenant_id, provider).await
@@ -904,21 +955,46 @@ impl OrgService {
         let mut tx = self.db.begin().await?;
         tx.execute("INSERT INTO one_tenants (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)", &db_params![&tenant_id, name, now, now])
             .await?;
+        let user_org_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO one_user_org \
+                 (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
+                  org_profile_synced_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(user_id, tenant_id) DO UPDATE SET \
+                     role = excluded.role, updated_at = excluded.updated_at, \
+                     display_name = excluded.display_name, org_unit_path = excluded.org_unit_path, \
+                     job_title = excluded.job_title, org_profile_source = excluded.org_profile_source, \
+                     org_profile_synced_at = excluded.org_profile_synced_at"
+            }
+            DbBackend::MySql => {
+                "INSERT INTO one_user_org \
+                 (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
+                  org_profile_synced_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
+                 ON DUPLICATE KEY UPDATE \
+                     role = new.role, updated_at = new.updated_at, \
+                     display_name = new.display_name, org_unit_path = new.org_unit_path, \
+                     job_title = new.job_title, org_profile_source = new.org_profile_source, \
+                     org_profile_synced_at = new.org_profile_synced_at"
+            }
+        };
         tx.execute(
-            "INSERT INTO one_user_org \
-             (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
-              org_profile_synced_at, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(user_id, tenant_id) DO UPDATE SET \
-                 role = excluded.role, updated_at = excluded.updated_at, \
-                 display_name = excluded.display_name, org_unit_path = excluded.org_unit_path, \
-                 job_title = excluded.job_title, org_profile_source = excluded.org_profile_source, \
-                 org_profile_synced_at = excluded.org_profile_synced_at",
+            user_org_sql,
         &db_params![user_id, &tenant_id, ROLE_SYSTEM_ADMIN, &display_name, &org_unit_path, &job_title, &org_profile_source, org_profile_synced_at, now, now])
         .await?;
+        let active_tenant_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) \
+                 ON CONFLICT(user_id) DO UPDATE SET tenant_id = excluded.tenant_id, updated_at = excluded.updated_at"
+            }
+            DbBackend::MySql => {
+                "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) AS new \
+                 ON DUPLICATE KEY UPDATE tenant_id = new.tenant_id, updated_at = new.updated_at"
+            }
+        };
         tx.execute(
-            "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) \
-             ON CONFLICT(user_id) DO UPDATE SET tenant_id = excluded.tenant_id, updated_at = excluded.updated_at",
+            active_tenant_sql,
         &db_params![user_id, &tenant_id, now])
         .await?;
         tx.commit().await?;
@@ -1702,14 +1778,14 @@ impl OrgService {
                         status: row.status.clone(),
                         created_at: row.created_at,
                     });
-                    if entries.len() >= limit as usize {
-                        entries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-                        entries.truncate(limit as usize);
-                        return Ok(entries);
-                    }
                 }
             }
         }
+        // Sort/truncate only after every member has been scanned: `members`
+        // has no defined order, so truncating mid-loop (as this used to)
+        // would silently drop a later member's newer activity in favor of
+        // an earlier member's older rows — breaking "org-wide most recent
+        // N" for any tenant where one member alone has >= `limit` entries.
         entries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         entries.truncate(limit as usize);
         Ok(entries)
@@ -2277,10 +2353,13 @@ impl OrgService {
     /// keep their status, and flipping back to open does not auto-approve
     /// anything still pending (an admin decides those explicitly).
     pub async fn set_runtime_node_policy(&self, tenant_id: &str, require_approval: bool) -> Result<(), OrgError> {
-        self.db.execute(
+        self.upsert(
             "INSERT INTO one_runtime_policy (tenant_id, require_approval, updated_at) VALUES (?, ?, ?) \
              ON CONFLICT(tenant_id) DO UPDATE SET require_approval = excluded.require_approval, \
                  updated_at = excluded.updated_at",
+            "INSERT INTO one_runtime_policy (tenant_id, require_approval, updated_at) VALUES (?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE require_approval = new.require_approval, \
+                 updated_at = new.updated_at",
         &db_params![tenant_id, require_approval as i64, now_ms() as i64])
         .await?;
         Ok(())
@@ -3977,6 +4056,66 @@ mod tests {
         assert_eq!(err.code(), "NOT_IN_ENTERPRISE");
 
         db.close().await;
+    }
+
+    /// Same scenario as `join_second_group_auto_activates_and_lists_both` /
+    /// `switch_active_tenant_changes_resolution`, but against a real MySQL
+    /// server: `OrgService`'s own tables (`one_tenants`, `one_user_org`,
+    /// `one_active_tenant`, `one_tenant_invites`) ride `DbPool::MySql` while
+    /// the main schema (users/conversations) stays SQLite, matching the
+    /// hybrid-storage design. This exercises every upsert this crate does on
+    /// the join/create/switch path (`one_user_org`, `one_active_tenant`) —
+    /// the exact statements found unpaired/missing `AS new` in review, which
+    /// no prior MySQL-gated test ever reached (only `migrate.rs`'s migration
+    /// idempotency tests ran against real MySQL before this).
+    /// Requires a real MySQL 8.0.19+ server via `DREAM_TEST_MYSQL_URL`;
+    /// skipped when unset.
+    #[tokio::test]
+    async fn join_and_switch_tenants_round_trip_on_mysql() {
+        let Some(mysql_db) = dream_core_db::testing::mysql_test_pool().await else {
+            eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
+            return;
+        };
+        crate::migrate::run_one_migrations(&mysql_db.pool).await.unwrap();
+
+        // Main schema (users/conversations) stays on SQLite regardless of
+        // the enterprise storage backend — same split as production.
+        let sqlite_db = dream_core_db::init_database_memory().await.unwrap();
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(SqliteUserRepository::new(sqlite_db.pool().clone()));
+        let data_dir = std::env::temp_dir().join(format!("one-org-test-mysql-{}", uuid::Uuid::now_v7()));
+        let service = Arc::new(OrgService::new(
+            mysql_db.pool.clone(),
+            user_repo.clone(),
+            std::sync::Arc::new(dream_core_db::SqliteConversationRepository::new(sqlite_db.pool().clone())),
+            data_dir,
+            [7u8; 32],
+        ));
+
+        let (g1, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Group One").await.unwrap();
+        let (g2, _, code2) = service
+            .create_tenant_for_enterprise("ent1", "Group Two", SYSTEM_DEFAULT_USER_ID, None)
+            .await
+            .unwrap();
+        let (_, code1) = service.create_invite(&g1, SYSTEM_DEFAULT_USER_ID, None, None).await.unwrap();
+        let member = create_user(&user_repo, "multi").await;
+
+        // `one_user_org` upsert on first join, then again on the second join
+        // (same PK, different tenant_id) — this is the exact shape that threw
+        // MySQL 1064 with the bare `ON CONFLICT` left in place.
+        service.join_with_invite(&member, &code1).await.unwrap();
+        service.join_with_invite(&member, &code2).await.unwrap();
+
+        let mine = service.list_memberships(&member).await.unwrap();
+        assert_eq!(mine.len(), 2);
+        // `one_active_tenant` upsert: re-inserting the same PK (user_id) with
+        // a new tenant_id is exactly the `new.tenant_id` MySQL branch.
+        assert_eq!(service.active_tenant_id(&member).await.unwrap(), g2);
+
+        service.set_active_tenant(&member, &g1).await.unwrap();
+        assert_eq!(service.active_tenant_id(&member).await.unwrap(), g1);
+
+        sqlite_db.close().await;
+        mysql_db.cleanup().await.unwrap();
     }
 
     #[tokio::test]

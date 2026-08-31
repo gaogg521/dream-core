@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 
 use dream_core_common::now_ms;
-use dream_core_db::{DbBackend, DbPool, db_params};
+use dream_core_db::{DbBackend, DbPool, DbValue, db_params};
 
 use crate::embedding::EmbeddingConfig;
 use crate::error::DevopsError;
@@ -101,6 +101,22 @@ impl DevopsService {
         self
     }
 
+    /// Runs `sqlite_sql` or `mysql_sql` by backend — the two dialects
+    /// diverge on upsert syntax only; params are shared. Shared across this
+    /// crate's split `impl DevopsService` blocks (e.g. `provider_channel.rs`).
+    pub(crate) async fn upsert(
+        &self,
+        sqlite_sql: &str,
+        mysql_sql: &str,
+        params: &[DbValue],
+    ) -> Result<u64, DevopsError> {
+        let sql = match self.db.backend() {
+            DbBackend::Sqlite => sqlite_sql,
+            DbBackend::MySql => mysql_sql,
+        };
+        Ok(self.db.execute(sql, params).await?)
+    }
+
     /// Wire the enterprise resource-authorization matrix. Called once by the
     /// app router, and only when the `enterprise` feature is on. Takes `&self`
     /// so it can run after this service has already been shared.
@@ -190,7 +206,7 @@ impl DevopsService {
     /// ordered by updated_at DESC (matches the 1one tree endpoint).
     pub async fn requirements_tree(&self, tenant_id: &str) -> Result<Vec<RequirementDto>, DevopsError> {
         let rows = self.db.fetch_all_as::<RequirementRow>(
-            "SELECT id, parent_id, type, subject, description, status, priority, assigned_to, \
+            "SELECT id, parent_id, `type`, subject, description, status, priority, assigned_to, \
                     milestone_id, autopilot, creator_id, creator_name, created_at, updated_at \
              FROM one_requirements WHERE tenant_id = ? ORDER BY updated_at DESC",
         &db_params![tenant_id])
@@ -245,7 +261,7 @@ impl DevopsService {
         let now = now_ms();
         self.db.execute(
             "INSERT INTO one_requirements \
-                (id, parent_id, type, subject, description, status, priority, assigned_to, \
+                (id, parent_id, `type`, subject, description, status, priority, assigned_to, \
                  milestone_id, autopilot, creator_id, creator_name, tenant_id, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, 'backlog', ?, NULL, ?, ?, ?, ?, ?, ?, ?)",
         &db_params![&id, &input.parent_id, kind, subject, &input.description, priority, &input.milestone_id, input.autopilot.unwrap_or(false), creator_id, creator_name, tenant_id, now, now])
@@ -472,7 +488,7 @@ impl DevopsService {
 
     async fn fetch_requirement(&self, tenant_id: &str, id: &str) -> Result<RequirementRow, DevopsError> {
         self.db.fetch_optional_as::<RequirementRow>(
-            "SELECT id, parent_id, type, subject, description, status, priority, assigned_to, \
+            "SELECT id, parent_id, `type`, subject, description, status, priority, assigned_to, \
                     milestone_id, autopilot, creator_id, creator_name, created_at, updated_at \
              FROM one_requirements WHERE id = ? AND tenant_id = ?",
         &db_params![id, tenant_id])
@@ -519,7 +535,7 @@ impl DevopsService {
         match result {
             Ok(role) => Ok(role),
             // Table missing = one-org never initialized = standalone.
-            Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => Ok(None),
+            Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
@@ -532,7 +548,7 @@ impl DevopsService {
             .await;
         match result {
             Ok(tenant_id) => Ok(tenant_id),
-            Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => Ok(None),
+            Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
@@ -657,7 +673,7 @@ impl DevopsService {
                 .await
             {
                 Ok(n) => n > 0,
-                Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => true,
+                Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => true,
                 Err(e) => return Err(e.into()),
             };
         if !recipient_in_tenant {
@@ -1006,7 +1022,7 @@ impl DevopsService {
     // -- mcp registry -----------------------------------------------------
 
     pub async fn list_mcp_registry(&self, viewer_user_id: &str) -> Result<Vec<McpRegistryDto>, DevopsError> {
-        const COLS: &str = "id, name, type, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, \
+        const COLS: &str = "id, name, `type`, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, \
                             origin, category_id, published, created_by, created_at, updated_at";
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
         if privileged {
@@ -1097,7 +1113,7 @@ impl DevopsService {
                     ));
                 }
                 let updated = self.db.execute(
-                    "UPDATE one_mcp_registry SET name = ?, type = ?, endpoint = ?, enabled = ?, has_keys = ?, secrets_json = ?, \
+                    "UPDATE one_mcp_registry SET name = ?, `type` = ?, endpoint = ?, enabled = ?, has_keys = ?, secrets_json = ?, \
                      scope = ?, team_id = ?, visibility = ?, category_id = ?, updated_at = ? WHERE id = ?",
                 &db_params![name, r#type, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, category_id, now, existing])
                 .await?;
@@ -1110,7 +1126,7 @@ impl DevopsService {
                 let id = new_id("omcp");
                 self.db.execute(
                     "INSERT INTO one_mcp_registry \
-                        (id, name, type, endpoint, enabled, has_keys, scope, team_id, visibility, category_id, created_by, created_at, updated_at) \
+                        (id, name, `type`, endpoint, enabled, has_keys, scope, team_id, visibility, category_id, created_by, created_at, updated_at) \
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 &db_params![&id, name, r#type, endpoint, enabled, has_keys, scope, team_id, visibility, category_id, created_by, now, now])
                 .await?;
@@ -1118,7 +1134,7 @@ impl DevopsService {
             }
         };
         self.db.fetch_one_as::<McpRegistryDto>(
-            "SELECT id, name, type, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, \
+            "SELECT id, name, `type`, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, \
              origin, category_id, published, created_by, created_at, updated_at \
              FROM one_mcp_registry WHERE id = ?",
         &db_params![&id])
@@ -1398,11 +1414,15 @@ impl DevopsService {
                 .await?
                 .unwrap_or_default(),
         };
-        self.db.execute(
+        self.upsert(
             "INSERT INTO one_rag_config (id, base_url, api_key, model, updated_at) \
              VALUES ('default', ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET base_url = excluded.base_url, api_key = excluded.api_key, \
                 model = excluded.model, updated_at = excluded.updated_at",
+            "INSERT INTO one_rag_config (id, base_url, api_key, model, updated_at) \
+             VALUES ('default', ?, ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE base_url = new.base_url, api_key = new.api_key, \
+                model = new.model, updated_at = new.updated_at",
         &db_params![base_url.trim(), &key, model.trim(), now])
         .await?;
         self.get_rag_config().await
@@ -1831,7 +1851,7 @@ impl DevopsService {
 
     pub async fn list_pipelines(&self, tenant_id: &str) -> Result<Vec<PipelineDto>, DevopsError> {
         Ok(self.db.fetch_all_as::<PipelineDto>(
-            "SELECT id, name, description, status, trigger, creator_id, creator_name, \
+            "SELECT id, name, description, status, `trigger`, creator_id, creator_name, \
                     created_at, updated_at \
              FROM one_pipelines WHERE tenant_id = ? ORDER BY \
                 CASE status WHEN 'active' THEN 0 ELSE 1 END, updated_at DESC",
@@ -1858,7 +1878,7 @@ impl DevopsService {
         let now = now_ms();
         self.db.execute(
             "INSERT INTO one_pipelines \
-                (id, name, description, status, trigger, creator_id, creator_name, tenant_id, created_at, updated_at) \
+                (id, name, description, status, `trigger`, creator_id, creator_name, tenant_id, created_at, updated_at) \
              VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)",
         &db_params![&id, name, description, trigger, creator_id, creator_name, tenant_id, now, now])
         .await?;
@@ -1886,7 +1906,7 @@ impl DevopsService {
                 name = CASE WHEN ? THEN ? ELSE name END, \
                 description = CASE WHEN ? THEN ? ELSE description END, \
                 status = CASE WHEN ? THEN ? ELSE status END, \
-                trigger = CASE WHEN ? THEN ? ELSE trigger END, \
+                `trigger` = CASE WHEN ? THEN ? ELSE trigger END, \
                 updated_at = ? \
              WHERE id = ? AND tenant_id = ?",
         &db_params![name.is_some(), name, description.is_some(), description.flatten(), status.is_some(), status, trigger.is_some(), trigger, now, id, tenant_id])
@@ -1912,7 +1932,7 @@ impl DevopsService {
 
     async fn fetch_pipeline(&self, tenant_id: &str, id: &str) -> Result<PipelineDto, DevopsError> {
         self.db.fetch_optional_as::<PipelineDto>(
-            "SELECT id, name, description, status, trigger, creator_id, creator_name, \
+            "SELECT id, name, description, status, `trigger`, creator_id, creator_name, \
                     created_at, updated_at \
              FROM one_pipelines WHERE id = ? AND tenant_id = ?",
         &db_params![id, tenant_id])

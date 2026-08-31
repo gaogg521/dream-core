@@ -155,7 +155,7 @@ impl EnterpriseService {
                     }
                     dream_core_db::DbBackend::MySql => {
                 tx.execute(
-                    "INSERT INTO one_directory_departments                    (enterprise_id, external_id, parent_external_id, name, first_seen_at, last_seen_at)                  VALUES (?, ?, ?, ?, ?, ?)                  ON DUPLICATE KEY UPDATE                    parent_external_id = new.parent_external_id,                    name = new.name,                    last_seen_at = new.last_seen_at",
+                    "INSERT INTO one_directory_departments                    (enterprise_id, external_id, parent_external_id, name, first_seen_at, last_seen_at)                  VALUES (?, ?, ?, ?, ?, ?) AS new                  ON DUPLICATE KEY UPDATE                    parent_external_id = new.parent_external_id,                    name = new.name,                    last_seen_at = new.last_seen_at",
                     &params,
                 )
                 .await?;
@@ -179,7 +179,7 @@ impl EnterpriseService {
                     }
                     dream_core_db::DbBackend::MySql => {
                 tx.execute(
-                    "INSERT INTO one_directory_people                    (enterprise_id, external_id, name, job_title, department_external_id, active,                     first_seen_at, last_seen_at, missing_since)                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)                  ON CONFLICT(enterprise_id, external_id) DO UPDATE SET                    name = excluded.name,                    job_title = excluded.job_title,                    department_external_id = excluded.department_external_id,                    active = excluded.active,                    last_seen_at = excluded.last_seen_at",
+                    "INSERT INTO one_directory_people                    (enterprise_id, external_id, name, job_title, department_external_id, active,                     first_seen_at, last_seen_at, missing_since)                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL) AS new                  ON DUPLICATE KEY UPDATE                    name = new.name,                    job_title = new.job_title,                    department_external_id = new.department_external_id,                    active = new.active,                    last_seen_at = new.last_seen_at",
                     &params,
                 )
                 .await?;
@@ -231,14 +231,14 @@ impl EnterpriseService {
             dream_core_db::DbBackend::Sqlite => {
         tx.execute(
             "INSERT INTO one_directory_sync_state                (enterprise_id, provider, external_id_field, last_run_at, last_status, last_error,                 department_count, people_count, updated_at)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)              ON CONFLICT(enterprise_id) DO UPDATE SET                provider = excluded.provider,                external_id_field = excluded.external_id_field,                last_run_at = excluded.last_run_at,                last_status = excluded.last_status,                last_error = excluded.last_error,                department_count = excluded.department_count,                people_count = excluded.people_count,                updated_at = excluded.updated_at",
-            &db_params![enterprise_id, &input.provider, &input.external_id_field, now, status, input.error.as_deref(), input.departments.len() as i64, input.people.len() as i64, now],
+            &params,
         )
         .await?;
             }
             dream_core_db::DbBackend::MySql => {
         tx.execute(
-            "INSERT INTO one_directory_sync_state                (enterprise_id, provider, external_id_field, last_run_at, last_status, last_error,                 department_count, people_count, updated_at)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)              ON DUPLICATE KEY UPDATE                provider = new.provider,                external_id_field = new.external_id_field,                last_run_at = new.last_run_at,                last_status = new.last_status,                last_error = new.last_error,                department_count = new.department_count,                people_count = new.people_count,                updated_at = new.updated_at",
-            &db_params![enterprise_id, &input.provider, &input.external_id_field, now, status, input.error.as_deref(), input.departments.len() as i64, input.people.len() as i64, now],
+            "INSERT INTO one_directory_sync_state                (enterprise_id, provider, external_id_field, last_run_at, last_status, last_error,                 department_count, people_count, updated_at)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) AS new              ON DUPLICATE KEY UPDATE                provider = new.provider,                external_id_field = new.external_id_field,                last_run_at = new.last_run_at,                last_status = new.last_status,                last_error = new.last_error,                department_count = new.department_count,                people_count = new.people_count,                updated_at = new.updated_at",
+            &params,
         )
         .await?;
             }
@@ -313,7 +313,7 @@ impl EnterpriseService {
             user_ids.iter().map(|u| dream_core_db::DbValue::from(u.as_str())).collect();
         let rows = match self.db.fetch_all_as::<(String, String, Option<String>)>(&sql, &params).await {
             Ok(rows) => rows,
-            Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => return Ok(out),
+            Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => return Ok(out),
             Err(e) => return Err(e.into()),
         };
         for (user_id, tenant_id, name) in rows {
@@ -484,6 +484,48 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(stored as usize, expected, "every chunk committed");
+    }
+
+    /// Real MySQL: runs `apply_directory_snapshot` twice over the same
+    /// external_ids so every upsert in this function (department, person,
+    /// sync_state) hits its update-on-conflict branch. Review found the
+    /// person upsert's "MySQL" branch was a byte-for-byte copy of the SQLite
+    /// branch (still `ON CONFLICT`/`excluded`, not `ON DUPLICATE KEY
+    /// UPDATE`/`new`) — this would have thrown `1064` on any real MySQL
+    /// directory sync. Requires `DREAM_TEST_MYSQL_URL`; skipped when unset.
+    #[tokio::test]
+    async fn directory_snapshot_round_trips_on_mysql() {
+        let Some(mysql_db) = dream_core_db::testing::mysql_test_pool().await else {
+            eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
+            return;
+        };
+        crate::migrate::run_one_enterprise_migrations(&mysql_db.pool).await.unwrap();
+        let svc = EnterpriseService::new(mysql_db.pool.clone());
+
+        let people = vec![person("od_p1", true), person("od_p2", true)];
+        let report1 = svc.apply_directory_snapshot("ent1", &snapshot(people.clone(), true)).await.unwrap();
+        assert_eq!(report1.people, 2);
+        assert_eq!(report1.departments, 1);
+
+        // Second pull over the same external_ids: every INSERT above now
+        // hits its ON DUPLICATE KEY UPDATE / ON CONFLICT branch instead.
+        let mut updated_people = people;
+        updated_people[0].name = Some("renamed".into());
+        let report2 = svc.apply_directory_snapshot("ent1", &snapshot(updated_people, true)).await.unwrap();
+        assert_eq!(report2.people, 2);
+        assert_eq!(report2.newly_missing, 0);
+
+        let people_rows = svc.list_directory_people("ent1").await.unwrap();
+        assert_eq!(people_rows.len(), 2, "the second pull updated in place, not duplicated rows");
+        assert!(
+            people_rows.iter().any(|p| p.name.as_deref() == Some("renamed")),
+            "the update-on-conflict branch must actually apply the new name"
+        );
+
+        let state = svc.directory_sync_state("ent1").await.unwrap();
+        assert_eq!(state.unwrap().last_status.as_deref(), Some("ok"));
+
+        mysql_db.cleanup().await.unwrap();
     }
 
     fn snapshot(people: Vec<DirectoryPersonInput>, complete: bool) -> DirectorySyncInput {

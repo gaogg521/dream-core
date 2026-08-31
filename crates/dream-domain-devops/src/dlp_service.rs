@@ -18,7 +18,7 @@ use serde::Serialize;
 use sqlx::FromRow;
 
 use crate::error::DevopsError;
-use dream_core_db::db_params;
+use dream_core_db::{day_bucket_expr, db_params};
 use crate::service::DevopsService;
 
 const RULE_COLS: &str =
@@ -346,13 +346,13 @@ impl DevopsService {
     /// aggregate against the raw list it summarizes.
     pub async fn dlp_summary(&self, since_ms: i64) -> Result<DlpSummaryDto, DevopsError> {
         let by_day = self
-            .dlp_buckets(since_ms, "strftime('%Y-%m-%d', created_at / 1000, 'unixepoch')")
+            .dlp_buckets(since_ms, &day_bucket_expr(self.db.backend(), "created_at"))
             .await?;
         let by_action = self.dlp_buckets(since_ms, "action").await?;
         let (total_events, total_blocked): (i64, i64) = self
             .db
             .fetch_one_as(
-                "SELECT COUNT(*), COALESCE(SUM(CASE WHEN action = 'block' THEN 1 ELSE 0 END), 0) \
+                "SELECT COUNT(*), CAST(COALESCE(SUM(CASE WHEN action = 'block' THEN 1 ELSE 0 END), 0) AS SIGNED) \
              FROM one_dlp_events WHERE created_at >= ?",
                 &db_params![since_ms],
             )
@@ -428,6 +428,43 @@ mod tests {
         })
         .await
         .unwrap()
+    }
+
+    /// Real MySQL: `dlp_summary`'s by-day bucket used to hardcode SQLite's
+    /// `strftime()` (MySQL has no such function) instead of the shared
+    /// `day_bucket_expr` dialect helper built for exactly this. Requires
+    /// `DREAM_TEST_MYSQL_URL`; skipped when unset.
+    #[tokio::test]
+    async fn dlp_summary_by_day_bucket_works_on_mysql() {
+        let Some(mysql_db) = dream_core_db::testing::mysql_test_pool().await else {
+            eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
+            return;
+        };
+        run_one_devops_migrations(&mysql_db.pool).await.unwrap();
+        let svc = DevopsService::new(mysql_db.pool.clone());
+
+        svc.record_dlp_events(
+            "user1",
+            &[DlpEventInput {
+                conversation_id: None,
+                model: Some("claude-opus".into()),
+                rule_id: "r1".into(),
+                rule_name: "PII".into(),
+                action: "block".into(),
+                hits: 1,
+                excerpt: String::new(),
+            }],
+        )
+        .await
+        .unwrap();
+
+        let summary = svc.dlp_summary(0).await.unwrap();
+        assert_eq!(summary.total_events, 1);
+        assert_eq!(summary.total_blocked, 1);
+        assert_eq!(summary.by_day.len(), 1, "the DATE_FORMAT/FROM_UNIXTIME bucket must group the one event into one day");
+        assert_eq!(summary.by_day[0].count, 1);
+
+        mysql_db.cleanup().await.unwrap();
     }
 
     /// A rule that cannot compile enforces nothing while looking exactly like a

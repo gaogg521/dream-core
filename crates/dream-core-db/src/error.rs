@@ -39,6 +39,22 @@ pub fn message_indicates_unique_violation(message: &str) -> bool {
     message.to_ascii_lowercase().contains(SQLITE_UNIQUE_VIOLATION_MARKER)
 }
 
+/// Case-insensitive substrings identifying "this table doesn't exist" across
+/// both backends: SQLite says `"no such table: x"`, MySQL says `"Table
+/// 'db.x' doesn't exist"` (error 1146). Several services treat a missing
+/// sibling-crate table as "nothing to report" rather than an error (e.g. a
+/// deployment that hasn't run every crate's migrations yet) — that fallback
+/// only ever matched the SQLite phrasing until this helper existed, so it
+/// silently never triggered under a MySQL-backed enterprise deployment.
+pub const MISSING_TABLE_MESSAGE_MARKERS: &[&str] = &["no such table", "doesn't exist"];
+
+/// Whether an error message indicates the referenced table does not exist,
+/// on either backend. See [`MISSING_TABLE_MESSAGE_MARKERS`].
+pub fn message_indicates_missing_table(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    MISSING_TABLE_MESSAGE_MARKERS.iter().any(|marker| lower.contains(marker))
+}
+
 impl DbError {
     /// True when this error is a transient SQLite busy/locked contention that is
     /// safe to retry (SQLITE_BUSY, primary result code 5, or a "database is

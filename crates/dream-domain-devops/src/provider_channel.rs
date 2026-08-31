@@ -356,11 +356,16 @@ impl DevopsService {
 
         let token = generate_token()?;
         let now = now_ms();
-        self.db.execute(
+        self.upsert(
             "INSERT INTO one_provider_channel_tokens (token_hash, user_id, channel_id, created_at) \
              VALUES (?, ?, ?, ?) \
              ON CONFLICT(user_id, channel_id) DO UPDATE SET \
                 token_hash = excluded.token_hash, created_at = excluded.created_at, \
+                last_used = NULL, revoked_at = NULL",
+            "INSERT INTO one_provider_channel_tokens (token_hash, user_id, channel_id, created_at) \
+             VALUES (?, ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE \
+                token_hash = new.token_hash, created_at = new.created_at, \
                 last_used = NULL, revoked_at = NULL",
         &db_params![hash_token(&token), user_id, channel_id, now])
         .await?;

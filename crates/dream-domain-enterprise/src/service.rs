@@ -1,7 +1,7 @@
 //! Business logic for the enterprise-org dimension. No axum imports.
 
 use dream_core_common::now_ms;
-use dream_core_db::{DbPool, db_params};
+use dream_core_db::{DbBackend, DbPool, DbValue, db_params};
 
 use crate::disband_cascade::{CompanyDisbandCascade, NoopCompanyDisbandCascade};
 use crate::error::EnterpriseError;
@@ -62,6 +62,21 @@ impl EnterpriseService {
     /// `impl EnterpriseService` blocks do not need the field to be public.
     pub(crate) fn pool_ref(&self) -> &DbPool {
         &self.db
+    }
+
+    /// Runs `sqlite_sql` or `mysql_sql` by backend — the two dialects
+    /// diverge on upsert syntax only; params are shared.
+    async fn upsert(
+        &self,
+        sqlite_sql: &str,
+        mysql_sql: &str,
+        params: &[DbValue],
+    ) -> Result<u64, EnterpriseError> {
+        let sql = match self.db.backend() {
+            DbBackend::Sqlite => sqlite_sql,
+            DbBackend::MySql => mysql_sql,
+        };
+        Ok(self.db.execute(sql, params).await?)
     }
 
     /// Attach the caller's membership to the deployment's company at SSO login
@@ -318,7 +333,7 @@ impl EnterpriseService {
         let display_name = display_name.map(str::trim).filter(|s| !s.is_empty());
         let department = department.map(str::trim).filter(|s| !s.is_empty());
         let job_title = job_title.map(str::trim).filter(|s| !s.is_empty());
-        self.db.execute(
+        self.upsert(
             "INSERT INTO one_enterprise_members \
              (user_id, enterprise_id, display_name, department, job_title, role, seat_status, joined_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, 'member', ?, ?, ?) \
@@ -326,6 +341,13 @@ impl EnterpriseService {
                  display_name = excluded.display_name, department = excluded.department, \
                  job_title = excluded.job_title, seat_status = excluded.seat_status, \
                  updated_at = excluded.updated_at",
+            "INSERT INTO one_enterprise_members \
+             (user_id, enterprise_id, display_name, department, job_title, role, seat_status, joined_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, 'member', ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE enterprise_id = new.enterprise_id, \
+                 display_name = new.display_name, department = new.department, \
+                 job_title = new.job_title, seat_status = new.seat_status, \
+                 updated_at = new.updated_at",
         &db_params![user_id, enterprise_id, display_name, department, job_title, seat_status, now, now])
         .await?;
         Ok(())
@@ -339,11 +361,15 @@ impl EnterpriseService {
         role: &str,
         now: i64,
     ) -> Result<(), EnterpriseError> {
-        self.db.execute(
+        self.upsert(
             "INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) \
              VALUES (?, ?, ?, ?, ?) \
              ON CONFLICT(user_id) DO UPDATE SET enterprise_id = excluded.enterprise_id, \
                  role = excluded.role, updated_at = excluded.updated_at",
+            "INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE enterprise_id = new.enterprise_id, \
+                 role = new.role, updated_at = new.updated_at",
         &db_params![user_id, enterprise_id, role, now, now])
         .await?;
         Ok(())
@@ -669,13 +695,19 @@ impl EnterpriseService {
         }
         let now = now_ms() as i64;
         let id = uuid::Uuid::now_v7().simple().to_string();
-        self.db.execute(
+        self.upsert(
             "INSERT INTO one_enterprise_invites \
              (id, enterprise_id, provider, external_id, display_name, department, job_title, created_by, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(enterprise_id, provider, external_id) DO UPDATE SET \
                  id = excluded.id, display_name = excluded.display_name, department = excluded.department, \
                  job_title = excluded.job_title, created_by = excluded.created_by, created_at = excluded.created_at",
+            "INSERT INTO one_enterprise_invites \
+             (id, enterprise_id, provider, external_id, display_name, department, job_title, created_by, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE \
+                 id = new.id, display_name = new.display_name, department = new.department, \
+                 job_title = new.job_title, created_by = new.created_by, created_at = new.created_at",
         &db_params![&id, enterprise_id, provider, external_id, display_name, department, job_title, created_by, now])
         .await?;
         Ok(CompanyInviteDto {

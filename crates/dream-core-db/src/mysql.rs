@@ -17,7 +17,11 @@
 //! migration files): `CHARACTER SET utf8mb4` and a case-sensitive collation
 //! (`utf8mb4_0900_as_cs`). The server default `utf8mb4_0900_ai_ci` would make
 //! `WHERE name = 'API'` match `'api'`, silently changing config-alias and
-//! skill-name uniqueness semantics. Target server: MySQL 8.0.16+.
+//! skill-name uniqueness semantics. Target server: MySQL 8.0.19+ (upsert
+//! statements use the `INSERT ... AS new ON DUPLICATE KEY UPDATE
+//! col = new.col` row-alias syntax, which was introduced in 8.0.19 and
+//! replaces the deprecated `VALUES()` function; earlier 8.0.16-8.0.18
+//! servers cannot run these statements).
 
 use sqlx::MySqlPool;
 use sqlx::mysql::MySqlPoolOptions;

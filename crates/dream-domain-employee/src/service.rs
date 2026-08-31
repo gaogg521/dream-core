@@ -278,7 +278,7 @@ impl EmployeePermission {
 /// A missing table here just means "no ancestry/membership to speak of",
 /// same as an empty result, not an error.
 fn is_missing_table_error(e: &sqlx::Error) -> bool {
-    matches!(e, sqlx::Error::Database(db) if db.message().contains("no such table"))
+    matches!(e, sqlx::Error::Database(db) if dream_core_db::message_indicates_missing_table(db.message()))
 }
 
 /// Same query shape as `dream_domain_platform::PlatformService::department_ancestry`
@@ -424,7 +424,7 @@ pub(crate) async fn grant_employee_access(
     }
         let statement = match pool.backend() {
         DbBackend::MySql => {
-            "INSERT INTO one_employee_grants          (id, tenant_id, subject_type, subject_id, employee_id, permission, granted_by, created_at)          VALUES (?, ?, ?, ?, ?, ?, ?, ?)          ON DUPLICATE KEY UPDATE permission = new.permission, granted_by = new.granted_by,                         created_at = new.created_at"
+            "INSERT INTO one_employee_grants          (id, tenant_id, subject_type, subject_id, employee_id, permission, granted_by, created_at)          VALUES (?, ?, ?, ?, ?, ?, ?, ?) AS new          ON DUPLICATE KEY UPDATE permission = new.permission, granted_by = new.granted_by,                         created_at = new.created_at"
         }
         _ => {
             "INSERT INTO one_employee_grants          (id, tenant_id, subject_type, subject_id, employee_id, permission, granted_by, created_at)          VALUES (?, ?, ?, ?, ?, ?, ?, ?)          ON CONFLICT(tenant_id, subject_type, subject_id, employee_id)          DO UPDATE SET permission = excluded.permission, granted_by = excluded.granted_by,                         created_at = excluded.created_at"
@@ -1854,24 +1854,24 @@ impl EmployeeService {
     /// enterprise deployment), so this reads through the conversation
     /// repository instead of raw cross-schema SQL. Requires the conversation
     /// owner's id for the repo lookup.
+    /// Newest text/left (assistant) message in the conversation. Pages
+    /// backward through `IConversationRepository` rather than a single
+    /// fixed window: a run with a long tool-call tail after the last
+    /// assistant reply (routine for agent automation) can easily push that
+    /// reply more than one page back, and a fixed 12-message window would
+    /// silently return `None` even though a reply exists further back.
+    /// Bounded at `MAX_PAGES` pages so a pathological conversation cannot
+    /// turn this into an unbounded scan.
     async fn extract_latest_reply(&self, owner_user_id: &str, conversation_id: &str) -> Option<String> {
-        let params = dream_core_db::MessagePageParams {
-            limit: 12,
-            direction: dream_core_db::MessagePageDirection::InitialLatest,
-        };
-        let page = self
-            .conversation_repo
-            .list_messages_page(owner_user_id, conversation_id, &params)
-            .await
-            .ok()?;
+        const PAGE_LIMIT: u32 = 12;
+        const MAX_PAGES: usize = 10;
 
-        // The page is oldest→newest, so scan in reverse for the latest reply.
-        page.items.into_iter().rev().find_map(|row| {
+        fn extract_text(row: &dream_core_db::models::MessageRow) -> Option<String> {
             if row.r#type != "text" || row.position.as_deref() != Some("left") {
                 return None;
             }
-            let content = row.content;
-            let text = serde_json::from_str::<serde_json::Value>(&content)
+            let content = &row.content;
+            let text = serde_json::from_str::<serde_json::Value>(content)
                 .ok()
                 .and_then(|v| {
                     v.get("content")
@@ -1879,10 +1879,36 @@ impl EmployeeService {
                         .map(str::to_owned)
                         .or_else(|| v.as_str().map(str::to_owned))
                 })
-                .unwrap_or(content);
+                .unwrap_or_else(|| content.clone());
             let trimmed = text.trim().to_owned();
             (!trimmed.is_empty()).then_some(trimmed)
-        })
+        }
+
+        let mut direction = MessagePageDirection::InitialLatest;
+        for _ in 0..MAX_PAGES {
+            let params = MessagePageParams {
+                limit: PAGE_LIMIT,
+                direction,
+            };
+            let page = self
+                .conversation_repo
+                .list_messages_page(owner_user_id, conversation_id, &params)
+                .await
+                .ok()?;
+
+            // The page is oldest→newest, so scan in reverse for the latest reply.
+            if let Some(reply) = page.items.iter().rev().find_map(extract_text) {
+                return Some(reply);
+            }
+            if !page.has_more_before {
+                return None;
+            }
+            let oldest = page.items.first()?;
+            direction = MessagePageDirection::Before {
+                cursor: oldest.into(),
+            };
+        }
+        None
     }
 
     // --- cron scanner ---
