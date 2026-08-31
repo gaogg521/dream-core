@@ -147,7 +147,7 @@ mod tests {
             .unwrap();
         let user_repo: Arc<dyn IUserRepository> = Arc::new(dream_core_db::SqliteUserRepository::new(db.pool().clone()));
         let service = Arc::new(SsoService::new(
-            db.pool().clone(),
+            dream_core_db::DbPool::Sqlite(db.pool().clone()),
             user_repo,
             Arc::new(JwtService::new("test-secret".into())),
             Arc::new(CookieConfig {

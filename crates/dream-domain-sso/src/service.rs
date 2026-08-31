@@ -22,7 +22,7 @@ use dream_core_auth::{CookieConfig, JwtService, generate_random_secret_string, h
 use dream_core_common::license::{Feature, Tier, tier_allows};
 use dream_core_common::now_ms;
 use dream_core_db::IUserRepository;
-use sqlx::SqlitePool;
+use dream_core_db::{DbPool, db_params};
 use tokio::sync::Mutex;
 
 use crate::error::SsoError;
@@ -92,7 +92,7 @@ impl Default for OAuthStateStore {
 }
 
 pub struct SsoService {
-    pool: SqlitePool,
+    db: DbPool,
     user_repo: Arc<dyn IUserRepository>,
     jwt_service: Arc<JwtService>,
     cookie_config: Arc<CookieConfig>,
@@ -112,13 +112,12 @@ pub struct SsoSession {
 
 impl SsoService {
     pub fn new(
-        pool: SqlitePool,
+        db: DbPool,
         user_repo: Arc<dyn IUserRepository>,
         jwt_service: Arc<JwtService>,
         cookie_config: Arc<CookieConfig>,
     ) -> Self {
-        Self {
-            pool,
+        Self { db,
             user_repo,
             jwt_service,
             cookie_config,
@@ -143,13 +142,10 @@ impl SsoService {
     /// matches `one_active_tenant`, else their most-recently-joined membership
     /// (mirrors `OrgService::active_tenant_id`).
     pub async fn effective_role(&self, user_id: &str) -> Result<String, SsoError> {
-        let role: Option<String> = sqlx::query_scalar(
+        let role: Option<String> = self.db.fetch_optional_scalar(
             "SELECT uo.role FROM one_user_org uo WHERE uo.user_id = ? \
              ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC, \
-                      uo.created_at DESC, uo.tenant_id ASC LIMIT 1",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
+                      uo.created_at DESC, uo.tenant_id ASC LIMIT 1",  &db_params![user_id])
         .await?;
         if let Some(role) = role {
             return Ok(role);
@@ -163,21 +159,16 @@ impl SsoService {
     /// Load a provider config row. Returns `ProviderNotConfigured` when no
     /// row exists.
     pub async fn get_provider_row(&self, provider: SsoProviderKind) -> Result<Option<SsoProviderRow>, SsoError> {
-        let row = sqlx::query_as::<_, SsoProviderRow>(
-            "SELECT provider, enabled, config, updated_at, updated_by FROM one_sso_providers WHERE provider = ?",
-        )
-        .bind(provider.as_str())
-        .fetch_optional(&self.pool)
+        let row = self.db.fetch_optional_as::<SsoProviderRow>(
+            "SELECT provider, enabled, config, updated_at, updated_by FROM one_sso_providers WHERE provider = ?",  &db_params![provider.as_str()])
         .await?;
         Ok(row)
     }
 
     /// Public status list for the login page (secrets stripped).
     pub async fn list_provider_status(&self) -> Result<Vec<(String, bool, bool)>, SsoError> {
-        let rows = sqlx::query_as::<_, SsoProviderRow>(
-            "SELECT provider, enabled, config, updated_at, updated_by FROM one_sso_providers",
-        )
-        .fetch_all(&self.pool)
+        let rows = self.db.fetch_all_as::<SsoProviderRow>(
+            "SELECT provider, enabled, config, updated_at, updated_by FROM one_sso_providers",  &[])
         .await?;
         Ok(rows
             .into_iter()
@@ -194,10 +185,8 @@ impl SsoService {
     /// admins had to remember and retype App ID / Redirect URI on every
     /// edit). Secret fields are still stripped here.
     pub async fn list_provider_configs(&self) -> Result<Vec<SsoProviderConfigDto>, SsoError> {
-        let rows = sqlx::query_as::<_, SsoProviderRow>(
-            "SELECT provider, enabled, config, updated_at, updated_by FROM one_sso_providers",
-        )
-        .fetch_all(&self.pool)
+        let rows = self.db.fetch_all_as::<SsoProviderRow>(
+            "SELECT provider, enabled, config, updated_at, updated_by FROM one_sso_providers",  &[])
         .await?;
         Ok(rows
             .into_iter()
@@ -220,18 +209,14 @@ impl SsoService {
     /// (personal-edition red line). Tolerant of absent tables.
     async fn enterprise_feature_allowed(&self, user_id: &str, feature: Feature) -> Result<bool, SsoError> {
         let enterprise_id: Option<String> =
-            sqlx::query_scalar("SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?")
-                .bind(user_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?", &db_params![user_id])
                 .await
                 .unwrap_or(None);
         let Some(enterprise_id) = enterprise_id else {
             return Ok(true);
         };
         let tier: Option<String> =
-            sqlx::query_scalar("SELECT tier FROM one_enterprise_license WHERE enterprise_id = ?")
-                .bind(&enterprise_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT tier FROM one_enterprise_license WHERE enterprise_id = ?", &db_params![&enterprise_id])
                 .await
                 .unwrap_or(None);
         let tier = tier.map(|t| Tier::parse(&t)).unwrap_or(Tier::Free);
@@ -267,30 +252,16 @@ impl SsoService {
                     Some(incoming) => merge_config(&row.config, incoming),
                     None => row.config,
                 };
-                sqlx::query(
-                    "UPDATE one_sso_providers SET enabled = ?, config = ?, updated_at = ?, updated_by = ? WHERE provider = ?",
-                )
-                .bind(new_enabled)
-                .bind(&new_config)
-                .bind(now)
-                .bind(updated_by)
-                .bind(provider.as_str())
-                .execute(&self.pool)
+                self.db.execute(
+                    "UPDATE one_sso_providers SET enabled = ?, config = ?, updated_at = ?, updated_by = ? WHERE provider = ?",  &db_params![new_enabled, &new_config, now, updated_by, provider.as_str()])
                 .await?;
             }
             None => {
                 let config_str = config.map(|v| v.to_string()).unwrap_or_else(|| "{}".into());
                 let enabled_val = enabled.unwrap_or(false);
-                sqlx::query(
+                self.db.execute(
                     "INSERT INTO one_sso_providers (provider, enabled, config, updated_at, updated_by) \
-                     VALUES (?, ?, ?, ?, ?)",
-                )
-                .bind(provider.as_str())
-                .bind(enabled_val)
-                .bind(&config_str)
-                .bind(now)
-                .bind(updated_by)
-                .execute(&self.pool)
+                     VALUES (?, ?, ?, ?, ?)",  &db_params![provider.as_str(), enabled_val, &config_str, now, updated_by])
                 .await?;
             }
         }
@@ -374,13 +345,9 @@ impl SsoService {
         provider: SsoProviderKind,
         external_id: &str,
     ) -> Result<Option<SsoIdentityRow>, SsoError> {
-        let row = sqlx::query_as::<_, SsoIdentityRow>(
+        let row = self.db.fetch_optional_as::<SsoIdentityRow>(
             "SELECT id, provider, external_id, user_id, tenant_id, last_seen_at, created_at \
-             FROM one_sso_identities WHERE provider = ? AND external_id = ?",
-        )
-        .bind(provider.as_str())
-        .bind(external_id)
-        .fetch_optional(&self.pool)
+             FROM one_sso_identities WHERE provider = ? AND external_id = ?",  &db_params![provider.as_str(), external_id])
         .await?;
         Ok(row)
     }
@@ -394,41 +361,20 @@ impl SsoService {
     ) -> Result<(), SsoError> {
         let id = uuid::Uuid::now_v7().simple().to_string();
         let now = now_ms();
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_sso_identities \
              (id, provider, external_id, user_id, tenant_id, display_name, org_unit_path, job_title, \
               org_external_id, created_at, last_seen_at) \
-             VALUES (?, ?, ?, ?, 'default', ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(provider.as_str())
-        .bind(external_id)
-        .bind(user_id)
-        .bind(&profile.preferred_username)
-        .bind(profile.org_unit_path.as_deref())
-        .bind(profile.job_title.as_deref())
-        .bind(profile.org_external_id.as_deref())
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
+             VALUES (?, ?, ?, ?, 'default', ?, ?, ?, ?, ?, ?)",  &db_params![&id, provider.as_str(), external_id, user_id, &profile.preferred_username, profile.org_unit_path.as_deref(), profile.job_title.as_deref(), profile.org_external_id.as_deref(), now, now])
         .await?;
         Ok(())
     }
 
     async fn touch_identity(&self, provider: SsoProviderKind, external_id: &str, profile: &ProviderUserInfo) {
-        let _ = sqlx::query(
+        let _ = self.db.execute(
             "UPDATE one_sso_identities SET last_seen_at = ?, display_name = ?, org_unit_path = ?, job_title = ?, \
              org_external_id = ? \
-             WHERE provider = ? AND external_id = ?",
-        )
-        .bind(now_ms())
-        .bind(&profile.preferred_username)
-        .bind(profile.org_unit_path.as_deref())
-        .bind(profile.job_title.as_deref())
-        .bind(profile.org_external_id.as_deref())
-        .bind(provider.as_str())
-        .bind(external_id)
-        .execute(&self.pool)
+             WHERE provider = ? AND external_id = ?",  &db_params![now_ms(), &profile.preferred_username, profile.org_unit_path.as_deref(), profile.job_title.as_deref(), profile.org_external_id.as_deref(), provider.as_str(), external_id])
         .await;
     }
 }
@@ -760,7 +706,7 @@ mod tests {
         assert!(parse_feishu_config(&row).is_none());
     }
 
-    async fn service_with_memory_db() -> SsoService {
+    async fn service_with_memory_db() -> (SsoService, sqlx::SqlitePool) {
         let db = dream_core_db::init_database_memory().await.unwrap();
         // one-sso doesn't own one_user_org (one-org does); recreate the
         // minimal shape here so `effective_role` has a table to query
@@ -794,25 +740,27 @@ mod tests {
         // production schema instead of a hand-rolled CREATE TABLE drifting.
         crate::migrate::run_one_sso_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
         let user_repo: Arc<dyn IUserRepository> = Arc::new(dream_core_db::SqliteUserRepository::new(db.pool().clone()));
-        SsoService::new(
-            db.pool().clone(),
+        let sqlite = db.pool().clone();
+        let svc = SsoService::new(
+            dream_core_db::DbPool::Sqlite(db.pool().clone()),
             user_repo,
             Arc::new(JwtService::new("test-secret".into())),
             Arc::new(CookieConfig {
                 secure: false,
                 same_site: "Lax",
             }),
-        )
+        );
+        (svc, sqlite)
     }
 
     #[tokio::test]
     async fn effective_role_uses_explicit_membership_row() {
-        let service = service_with_memory_db().await;
+        let (service, sqlite) = service_with_memory_db().await;
         sqlx::query(
             "INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) \
              VALUES ('u1', 'tenant_a', 'org_admin', 0, 0)",
         )
-        .execute(&service.pool)
+        .execute(&sqlite)
         .await
         .unwrap();
         assert_eq!(service.effective_role("u1").await.unwrap(), "org_admin");
@@ -823,12 +771,12 @@ mod tests {
     /// group, not an arbitrary membership row.
     #[tokio::test]
     async fn effective_role_scopes_to_active_tenant() {
-        let service = service_with_memory_db().await;
+        let (service, sqlite) = service_with_memory_db().await;
         sqlx::query(
             "INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) VALUES \
              ('u1', 'g_admin', 'org_admin', 10, 10), ('u1', 'g_member', 'member', 20, 20)",
         )
-        .execute(&service.pool)
+        .execute(&sqlite)
         .await
         .unwrap();
 
@@ -837,14 +785,14 @@ mod tests {
 
         // Active = the admin group → org_admin.
         sqlx::query("INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES ('u1', 'g_admin', 0)")
-            .execute(&service.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
         assert_eq!(service.effective_role("u1").await.unwrap(), "org_admin");
 
         // Switch active to the member group → member.
         sqlx::query("UPDATE one_active_tenant SET tenant_id = 'g_member' WHERE user_id = 'u1'")
-            .execute(&service.pool)
+            .execute(&sqlite)
             .await
             .unwrap();
         assert_eq!(service.effective_role("u1").await.unwrap(), "member");
@@ -852,7 +800,7 @@ mod tests {
 
     #[tokio::test]
     async fn effective_role_defaults_desktop_operator_to_system_admin() {
-        let service = service_with_memory_db().await;
+        let (service, sqlite) = service_with_memory_db().await;
         // No one_user_org row for the desktop-operator sentinel user.
         assert_eq!(
             service
@@ -865,7 +813,7 @@ mod tests {
 
     #[tokio::test]
     async fn effective_role_defaults_unknown_user_to_member() {
-        let service = service_with_memory_db().await;
+        let (service, sqlite) = service_with_memory_db().await;
         assert_eq!(service.effective_role("some_other_user").await.unwrap(), "member");
     }
 
@@ -883,7 +831,7 @@ mod tests {
     }
 
     async fn identity_display_columns(
-        pool: &SqlitePool,
+        pool: &sqlx::SqlitePool,
         user_id: &str,
     ) -> (String, Option<String>, Option<String>, Option<String>) {
         sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>)>(
@@ -899,7 +847,7 @@ mod tests {
 
     #[tokio::test]
     async fn jit_provisioning_keeps_the_real_name_even_when_the_login_username_is_sanitized() {
-        let service = service_with_memory_db().await;
+        let (service, sqlite) = service_with_memory_db().await;
         let profile = ProviderUserInfo {
             external_id: "ou_zhang".into(),
             preferred_username: "张三".into(),
@@ -916,7 +864,7 @@ mod tests {
         // system-wide validate_username rule, untouched by this fix.
         assert!(username.starts_with("sso_"));
         let (stored_username, display_name, org_unit_path, job_title) =
-            identity_display_columns(&service.pool, &user_id).await;
+            identity_display_columns(&sqlite, &user_id).await;
         assert_eq!(stored_username, username);
         assert_eq!(display_name.as_deref(), Some("张三"));
         assert_eq!(org_unit_path.as_deref(), Some("研发中心"));
@@ -925,7 +873,7 @@ mod tests {
 
     #[tokio::test]
     async fn repeat_login_refreshes_the_stored_display_name_and_org_unit_path() {
-        let service = service_with_memory_db().await;
+        let (service, sqlite) = service_with_memory_db().await;
         let first = ProviderUserInfo {
             external_id: "ou_zhang".into(),
             preferred_username: "张三".into(),
@@ -957,7 +905,7 @@ mod tests {
             "same external_id must reuse the existing user, not provision a new one"
         );
         assert_eq!(second_user_id, user_id);
-        let (_, display_name, org_unit_path, job_title) = identity_display_columns(&service.pool, &user_id).await;
+        let (_, display_name, org_unit_path, job_title) = identity_display_columns(&sqlite, &user_id).await;
         assert_eq!(display_name.as_deref(), Some("张三丰"));
         assert_eq!(org_unit_path.as_deref(), Some("产品中心"));
         assert_eq!(job_title.as_deref(), Some("高级工程师"));
@@ -965,7 +913,7 @@ mod tests {
 
     #[tokio::test]
     async fn jit_provisioning_leaves_org_unit_path_null_when_the_provider_has_none() {
-        let service = service_with_memory_db().await;
+        let (service, sqlite) = service_with_memory_db().await;
         let profile = ProviderUserInfo {
             external_id: "ou_bob".into(),
             preferred_username: "Bob".into(),
@@ -977,7 +925,7 @@ mod tests {
             .resolve_or_provision_user(SsoProviderKind::Feishu, profile)
             .await
             .unwrap();
-        let (_, display_name, org_unit_path, job_title) = identity_display_columns(&service.pool, &user_id).await;
+        let (_, display_name, org_unit_path, job_title) = identity_display_columns(&sqlite, &user_id).await;
         assert_eq!(display_name.as_deref(), Some("Bob"));
         assert_eq!(org_unit_path, None);
         assert_eq!(job_title, None);
