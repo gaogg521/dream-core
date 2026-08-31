@@ -18,6 +18,7 @@ use serde::Serialize;
 use sqlx::FromRow;
 
 use crate::error::DevopsError;
+use dream_core_db::db_params;
 use crate::service::DevopsService;
 
 const RULE_COLS: &str =
@@ -153,10 +154,9 @@ impl DevopsService {
     /// Every rule, for the admin console. Includes disabled ones — an admin
     /// managing rules needs to see the ones they switched off.
     pub async fn list_dlp_rules(&self) -> Result<Vec<DlpRuleDto>, DevopsError> {
-        Ok(sqlx::query_as::<_, DlpRuleDto>(&format!(
+        Ok(self.db.fetch_all_as::<DlpRuleDto>(&format!(
             "SELECT {RULE_COLS} FROM one_dlp_rules ORDER BY updated_at DESC"
-        ))
-        .fetch_all(&self.pool)
+        ), &[])
         .await?)
     }
 
@@ -175,9 +175,7 @@ impl DevopsService {
                (SELECT tenant_id FROM one_user_org WHERE user_id = ?))) \
              ORDER BY updated_at DESC"
         );
-        Ok(sqlx::query_as::<_, DlpRuleDto>(&sql)
-            .bind(viewer_user_id)
-            .fetch_all(&self.pool)
+        Ok(self.db.fetch_all_as::<DlpRuleDto>(&sql, &db_params![viewer_user_id])
             .await?)
     }
 
@@ -247,9 +245,7 @@ impl DevopsService {
                 // The row's CURRENT team_id, not the incoming one — same
                 // reasoning as the skill/MCP/RAG registries.
                 let current_team_id: Option<String> =
-                    sqlx::query_scalar("SELECT team_id FROM one_dlp_rules WHERE id = ?")
-                        .bind(existing)
-                        .fetch_optional(&self.pool)
+                    self.db.fetch_optional_scalar("SELECT team_id FROM one_dlp_rules WHERE id = ?", &db_params![existing])
                         .await?
                         .ok_or_else(|| DevopsError::NotFound(format!("dlp rule {existing}")))?;
                 if !self
@@ -260,61 +256,35 @@ impl DevopsService {
                         "this DLP rule belongs to a different project group".into(),
                     ));
                 }
-                let updated = sqlx::query(
+                let updated = self.db.execute(
                     "UPDATE one_dlp_rules SET name = ?, matcher = ?, pattern = ?, action = ?, enabled = ?, \
                      scope = ?, team_id = ?, updated_at = ? WHERE id = ?",
-                )
-                .bind(name)
-                .bind(matcher)
-                .bind(pattern)
-                .bind(action)
-                .bind(enabled)
-                .bind(scope)
-                .bind(team_id)
-                .bind(now)
-                .bind(existing)
-                .execute(&self.pool)
+                &db_params![name, matcher, pattern, action, enabled, scope, team_id, now, existing])
                 .await?;
-                if updated.rows_affected() == 0 {
+                if updated == 0 {
                     return Err(DevopsError::NotFound(format!("dlp rule {existing}")));
                 }
                 existing.to_owned()
             }
             None => {
                 let id = format!("odlp_{}", uuid::Uuid::now_v7().simple());
-                sqlx::query(
+                self.db.execute(
                     "INSERT INTO one_dlp_rules \
                         (id, name, matcher, pattern, action, enabled, scope, team_id, created_by, created_at, updated_at) \
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                )
-                .bind(&id)
-                .bind(name)
-                .bind(matcher)
-                .bind(pattern)
-                .bind(action)
-                .bind(enabled)
-                .bind(scope)
-                .bind(team_id)
-                .bind(created_by)
-                .bind(now)
-                .bind(now)
-                .execute(&self.pool)
+                &db_params![&id, name, matcher, pattern, action, enabled, scope, team_id, created_by, now, now])
                 .await?;
                 id
             }
         };
 
-        sqlx::query_as::<_, DlpRuleDto>(&format!("SELECT {RULE_COLS} FROM one_dlp_rules WHERE id = ?"))
-            .bind(&id)
-            .fetch_one(&self.pool)
+        self.db.fetch_one_as::<DlpRuleDto>(&format!("SELECT {RULE_COLS} FROM one_dlp_rules WHERE id = ?"), &db_params![&id])
             .await
             .map_err(Into::into)
     }
 
     pub async fn delete_dlp_rule(&self, actor_user_id: &str, id: &str) -> Result<(), DevopsError> {
-        let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM one_dlp_rules WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
+        let team_id: Option<String> = self.db.fetch_optional_scalar("SELECT team_id FROM one_dlp_rules WHERE id = ?", &db_params![id])
             .await?
             .ok_or_else(|| DevopsError::NotFound(format!("dlp rule {id}")))?;
         if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
@@ -322,11 +292,9 @@ impl DevopsService {
                 "this DLP rule belongs to a different project group".into(),
             ));
         }
-        let deleted = sqlx::query("DELETE FROM one_dlp_rules WHERE id = ?")
-            .bind(id)
-            .execute(&self.pool)
+        let deleted = self.db.execute("DELETE FROM one_dlp_rules WHERE id = ?", &db_params![id])
             .await?;
-        if deleted.rows_affected() == 0 {
+        if deleted == 0 {
             return Err(DevopsError::NotFound(format!("dlp rule {id}")));
         }
         Ok(())
@@ -344,34 +312,20 @@ impl DevopsService {
         // Which project group the member was acting in, so a reviewer can scope
         // by team the same way the rest of the console does.
         let team_id: Option<String> =
-            sqlx::query_scalar("SELECT tenant_id FROM one_user_org WHERE user_id = ? LIMIT 1")
-                .bind(user_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT tenant_id FROM one_user_org WHERE user_id = ? LIMIT 1", &db_params![user_id])
                 .await
                 .unwrap_or(None);
 
         let now = now_ms();
         let mut written = 0u64;
         for event in events {
-            let result = sqlx::query(
+            let result = self.db.execute(
                 "INSERT INTO one_dlp_events \
                     (id, user_id, conversation_id, model, rule_id, rule_name, action, hits, excerpt, team_id, created_at) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(format!("odlpe_{}", uuid::Uuid::now_v7().simple()))
-            .bind(user_id)
-            .bind(event.conversation_id.as_deref())
-            .bind(event.model.as_deref())
-            .bind(&event.rule_id)
-            .bind(&event.rule_name)
-            .bind(&event.action)
-            .bind(event.hits.max(1))
-            .bind(&event.excerpt)
-            .bind(team_id.as_deref())
-            .bind(now)
-            .execute(&self.pool)
+            &db_params![format!("odlpe_{}", uuid::Uuid::now_v7().simple()), user_id, event.conversation_id.as_deref(), event.model.as_deref(), &event.rule_id, &event.rule_name, &event.action, event.hits.max(1), &event.excerpt, team_id.as_deref(), now])
             .await?;
-            written += result.rows_affected();
+            written += result;
         }
         Ok(written)
     }
@@ -379,12 +333,10 @@ impl DevopsService {
     /// Recorded findings, newest first, for the admin review screen.
     pub async fn list_dlp_events(&self, limit: i64) -> Result<Vec<DlpEventDto>, DevopsError> {
         let limit = limit.clamp(1, 500);
-        Ok(sqlx::query_as::<_, DlpEventDto>(
+        Ok(self.db.fetch_all_as::<DlpEventDto>(
             "SELECT id, user_id, conversation_id, model, rule_id, rule_name, action, hits, excerpt, team_id, created_at \
              FROM one_dlp_events ORDER BY created_at DESC LIMIT ?",
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
+        &db_params![limit])
         .await?)
     }
 
@@ -397,13 +349,14 @@ impl DevopsService {
             .dlp_buckets(since_ms, "strftime('%Y-%m-%d', created_at / 1000, 'unixepoch')")
             .await?;
         let by_action = self.dlp_buckets(since_ms, "action").await?;
-        let (total_events, total_blocked): (i64, i64) = sqlx::query_as(
-            "SELECT COUNT(*), COALESCE(SUM(CASE WHEN action = 'block' THEN 1 ELSE 0 END), 0) \
+        let (total_events, total_blocked): (i64, i64) = self
+            .db
+            .fetch_one_as(
+                "SELECT COUNT(*), COALESCE(SUM(CASE WHEN action = 'block' THEN 1 ELSE 0 END), 0) \
              FROM one_dlp_events WHERE created_at >= ?",
-        )
-        .bind(since_ms)
-        .fetch_one(&self.pool)
-        .await?;
+                &db_params![since_ms],
+            )
+            .await?;
         Ok(DlpSummaryDto {
             since: since_ms,
             total_events,
@@ -420,7 +373,7 @@ impl DevopsService {
         let sql = format!(
             "SELECT {key_expr} AS k, COUNT(*) FROM one_dlp_events WHERE created_at >= ? GROUP BY k ORDER BY COUNT(*) DESC"
         );
-        let rows: Vec<(String, i64)> = sqlx::query_as(&sql).bind(since_ms).fetch_all(&self.pool).await?;
+        let rows: Vec<(String, i64)> = self.db.fetch_all_as::<(String, i64)>(&sql, &db_params![since_ms]).await?;
         Ok(rows
             .into_iter()
             .map(|(key, count)| DlpBucketDto { key, count })
@@ -451,7 +404,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        DevopsService::new(pool)
+        DevopsService::new(dream_core_db::DbPool::Sqlite(pool.clone()))
     }
 
     async fn add(
@@ -687,7 +640,7 @@ mod tests {
             .bind(format!("e-{ms}-{action}"))
             .bind(action)
             .bind(ms)
-            .execute(&svc.pool)
+            .execute(svc.db.sqlite())
             .await
             .unwrap();
         }

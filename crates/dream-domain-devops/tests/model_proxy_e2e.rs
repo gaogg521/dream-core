@@ -77,7 +77,7 @@ async fn service() -> DevopsService {
     .execute(&pool)
     .await
     .unwrap();
-    DevopsService::new(pool).with_encryption_key(KEY)
+    DevopsService::new(dream_core_db::DbPool::Sqlite(pool.clone())).with_encryption_key(KEY)
 }
 
 struct Fixture {

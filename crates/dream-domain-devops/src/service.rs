@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 
-use sqlx::SqlitePool;
 
 use dream_core_common::now_ms;
+use dream_core_db::{DbBackend, DbPool, db_params};
 
 use crate::embedding::EmbeddingConfig;
 use crate::error::DevopsError;
@@ -16,7 +16,7 @@ use crate::models::{
 };
 
 pub struct DevopsService {
-    pub(crate) pool: SqlitePool,
+    pub(crate) db: DbPool,
     /// Deployment data-encryption key, for the one thing in this crate that
     /// holds a real credential: company model channels
     /// (`provider_channel`). `None` when the app did not wire one — channel
@@ -85,9 +85,8 @@ fn validate_one_of(value: &str, allowed: &[&str], label: &str) -> Result<(), Dev
 }
 
 impl DevopsService {
-    pub fn new(pool: SqlitePool) -> Self {
-        Self {
-            pool,
+    pub fn new(db: DbPool) -> Self {
+        Self { db,
             encryption_key: None,
             grants: std::sync::OnceLock::new(),
             config_resolver: std::sync::OnceLock::new(),
@@ -190,13 +189,11 @@ impl DevopsService {
     /// Full requirements forest, children nested, roots + children both
     /// ordered by updated_at DESC (matches the 1one tree endpoint).
     pub async fn requirements_tree(&self, tenant_id: &str) -> Result<Vec<RequirementDto>, DevopsError> {
-        let rows = sqlx::query_as::<_, RequirementRow>(
+        let rows = self.db.fetch_all_as::<RequirementRow>(
             "SELECT id, parent_id, type, subject, description, status, priority, assigned_to, \
                     milestone_id, autopilot, creator_id, creator_name, created_at, updated_at \
              FROM one_requirements WHERE tenant_id = ? ORDER BY updated_at DESC",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id])
         .await?;
 
         let mut nodes: Vec<RequirementDto> = rows.into_iter().map(RequirementDto::from_row).collect();
@@ -246,26 +243,12 @@ impl DevopsService {
 
         let id = new_id("req");
         let now = now_ms();
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_requirements \
                 (id, parent_id, type, subject, description, status, priority, assigned_to, \
                  milestone_id, autopilot, creator_id, creator_name, tenant_id, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, 'backlog', ?, NULL, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(&input.parent_id)
-        .bind(kind)
-        .bind(subject)
-        .bind(&input.description)
-        .bind(priority)
-        .bind(&input.milestone_id)
-        .bind(input.autopilot.unwrap_or(false))
-        .bind(creator_id)
-        .bind(creator_name)
-        .bind(tenant_id)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, &input.parent_id, kind, subject, &input.description, priority, &input.milestone_id, input.autopilot.unwrap_or(false), creator_id, creator_name, tenant_id, now, now])
         .await?;
 
         Ok(RequirementDto::from_row(self.fetch_requirement(tenant_id, &id).await?))
@@ -333,7 +316,7 @@ impl DevopsService {
             None => None,
         };
 
-        sqlx::query(
+        self.db.execute(
             "UPDATE one_requirements SET \
                 subject = COALESCE(?, subject), \
                 description = CASE WHEN ? THEN ? ELSE description END, \
@@ -345,22 +328,7 @@ impl DevopsService {
                 autopilot = COALESCE(?, autopilot), \
                 updated_at = ? \
              WHERE id = ?",
-        )
-        .bind(&subject)
-        .bind(input.description.is_some())
-        .bind(input.description.clone().flatten())
-        .bind(&input.status)
-        .bind(&input.priority)
-        .bind(input.assigned_to.is_some())
-        .bind(input.assigned_to.clone().flatten())
-        .bind(input.parent_id.is_some())
-        .bind(input.parent_id.clone().flatten())
-        .bind(input.milestone_id.is_some())
-        .bind(input.milestone_id.clone().flatten())
-        .bind(input.autopilot)
-        .bind(now_ms())
-        .bind(&row.id)
-        .execute(&self.pool)
+        &db_params![&subject, input.description.is_some(), input.description.clone().flatten(), &input.status, &input.priority, input.assigned_to.is_some(), input.assigned_to.clone().flatten(), input.parent_id.is_some(), input.parent_id.clone().flatten(), input.milestone_id.is_some(), input.milestone_id.clone().flatten(), input.autopilot, now_ms(), &row.id])
         .await?;
         Ok(())
     }
@@ -378,43 +346,37 @@ impl DevopsService {
     /// Requirements already in `developing` or a later status are not claimable
     /// here; the caller decides whether a deliberate re-dispatch is still allowed.
     pub async fn claim_requirement_for_dispatch(&self, tenant_id: &str, id: &str) -> Result<bool, DevopsError> {
-        let res = sqlx::query(
+        let res = self.db.execute(
             "UPDATE one_requirements SET status = 'developing', updated_at = ? \
              WHERE id = ? AND tenant_id = ? AND status IN ('backlog', 'planning')",
-        )
-        .bind(now_ms())
-        .bind(id)
-        .bind(tenant_id)
-        .execute(&self.pool)
+        &db_params![now_ms(), id, tenant_id])
         .await?;
-        Ok(res.rows_affected() == 1)
+        Ok(res == 1)
     }
 
     /// Delete a requirement and its whole subtree (plus their comments).
     pub async fn delete_requirement(&self, tenant_id: &str, id: &str) -> Result<(), DevopsError> {
         self.require_requirement(tenant_id, id).await?;
-        let mut tx = self.pool.begin().await?;
-        sqlx::query(
+        let mut tx = self.db.begin().await?;
+        tx.execute(
             "WITH RECURSIVE subtree(id) AS (\
                  SELECT id FROM one_requirements WHERE id = ? \
                  UNION ALL \
                  SELECT r.id FROM one_requirements r JOIN subtree s ON r.parent_id = s.id\
              ) \
              DELETE FROM one_requirement_comments WHERE requirement_id IN (SELECT id FROM subtree)",
+            &db_params![id],
         )
-        .bind(id)
-        .execute(&mut *tx)
         .await?;
-        sqlx::query(
+        tx.execute(
             "WITH RECURSIVE subtree(id) AS (\
                  SELECT id FROM one_requirements WHERE id = ? \
                  UNION ALL \
                  SELECT r.id FROM one_requirements r JOIN subtree s ON r.parent_id = s.id\
              ) \
              DELETE FROM one_requirements WHERE id IN (SELECT id FROM subtree)",
+            &db_params![id],
         )
-        .bind(id)
-        .execute(&mut *tx)
         .await?;
         tx.commit().await?;
         Ok(())
@@ -426,13 +388,10 @@ impl DevopsService {
         requirement_id: &str,
     ) -> Result<Vec<RequirementCommentDto>, DevopsError> {
         self.require_requirement(tenant_id, requirement_id).await?;
-        Ok(sqlx::query_as::<_, RequirementCommentDto>(
+        Ok(self.db.fetch_all_as::<RequirementCommentDto>(
             "SELECT id, requirement_id, author_type, author_id, author_name, body, metadata, created_at \
              FROM one_requirement_comments WHERE requirement_id = ? AND tenant_id = ? ORDER BY created_at ASC",
-        )
-        .bind(requirement_id)
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![requirement_id, tenant_id])
         .await?)
     }
 
@@ -451,19 +410,11 @@ impl DevopsService {
         }
         let id = new_id("reqc");
         let now = now_ms();
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_requirement_comments \
                 (id, requirement_id, author_type, author_id, author_name, body, metadata, tenant_id, created_at) \
              VALUES (?, ?, 'user', ?, ?, ?, NULL, ?, ?)",
-        )
-        .bind(&id)
-        .bind(requirement_id)
-        .bind(author_id)
-        .bind(author_name)
-        .bind(body)
-        .bind(tenant_id)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, requirement_id, author_id, author_name, body, tenant_id, now])
         .await?;
         Ok(RequirementCommentDto {
             id,
@@ -501,21 +452,11 @@ impl DevopsService {
         self.require_requirement(tenant_id, requirement_id).await?;
         let id = new_id("reqc");
         let now = now_ms();
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_requirement_comments \
                 (id, requirement_id, author_type, author_id, author_name, body, metadata, tenant_id, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(requirement_id)
-        .bind(author_type)
-        .bind(author_id)
-        .bind(author_name)
-        .bind(body)
-        .bind(metadata.as_deref())
-        .bind(tenant_id)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, requirement_id, author_type, author_id, author_name, body, metadata.as_deref(), tenant_id, now])
         .await?;
         Ok(RequirementCommentDto {
             id,
@@ -530,14 +471,11 @@ impl DevopsService {
     }
 
     async fn fetch_requirement(&self, tenant_id: &str, id: &str) -> Result<RequirementRow, DevopsError> {
-        sqlx::query_as::<_, RequirementRow>(
+        self.db.fetch_optional_as::<RequirementRow>(
             "SELECT id, parent_id, type, subject, description, status, priority, assigned_to, \
                     milestone_id, autopilot, creator_id, creator_name, created_at, updated_at \
              FROM one_requirements WHERE id = ? AND tenant_id = ?",
-        )
-        .bind(id)
-        .bind(tenant_id)
-        .fetch_optional(&self.pool)
+        &db_params![id, tenant_id])
         .await?
         .ok_or_else(|| DevopsError::NotFound(format!("requirement {id}")))
     }
@@ -551,17 +489,10 @@ impl DevopsService {
     /// (shared pool). Silently skips when the table is absent (standalone /
     /// one-org not initialized) and never fails the originating request.
     pub async fn audit(&self, tenant_id: &str, user_id: &str, action: &str, resource: Option<&str>) {
-        let result = sqlx::query(
+        let result = self.db.execute(
             "INSERT INTO one_audit_logs (id, tenant_id, user_id, action, resource, created_at) \
              VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(new_id("audit"))
-        .bind(tenant_id)
-        .bind(user_id)
-        .bind(action)
-        .bind(resource)
-        .bind(now_ms())
-        .execute(&self.pool)
+        &db_params![new_id("audit"), tenant_id, user_id, action, resource, now_ms()])
         .await;
         if let Err(e) = result {
             tracing::debug!(error = %e, action, "one-devops audit skipped (table absent or write failed)");
@@ -579,13 +510,11 @@ impl DevopsService {
     /// (active membership first, else most-recently-joined) — mirrors
     /// `OrgService::active_tenant_id`.
     pub async fn user_org_role(&self, user_id: &str) -> Result<Option<String>, DevopsError> {
-        let result = sqlx::query_scalar::<_, String>(
+        let result = self.db.fetch_optional_scalar::<String>(
             "SELECT uo.role FROM one_user_org uo WHERE uo.user_id = ? \
              ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC, \
                       uo.created_at DESC, uo.tenant_id ASC LIMIT 1",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
+        &db_params![user_id])
         .await;
         match result {
             Ok(role) => Ok(role),
@@ -599,9 +528,7 @@ impl DevopsService {
     /// deployment (no `one_user_org` row) or one where one-org's migrations
     /// never ran. Same missing-table fallback as `user_org_role`.
     async fn active_tenant_id(&self, user_id: &str) -> Result<Option<String>, DevopsError> {
-        let result = sqlx::query_scalar::<_, String>("SELECT tenant_id FROM one_active_tenant WHERE user_id = ?")
-            .bind(user_id)
-            .fetch_optional(&self.pool)
+        let result = self.db.fetch_optional_scalar::<String>("SELECT tenant_id FROM one_active_tenant WHERE user_id = ?", &db_params![user_id])
             .await;
         match result {
             Ok(tenant_id) => Ok(tenant_id),
@@ -680,19 +607,14 @@ impl DevopsService {
     pub async fn count_owned_resources(&self, user_id: &str, tenant_id: &str) -> Result<i64, DevopsError> {
         let mut total = 0i64;
         for table in Self::REGISTRY_OWNER_TABLES {
-            let n: i64 = sqlx::query_scalar(&format!(
+            let n: i64 = self.db.fetch_one_scalar(&format!(
                 "SELECT COUNT(*) FROM {table} WHERE created_by = ? AND (scope = 'org' OR team_id = ?)"
-            ))
-            .bind(user_id)
-            .bind(tenant_id)
-            .fetch_one(&self.pool)
+            ), &db_params![user_id, tenant_id])
             .await?;
             total += n;
         }
         for table in Self::BOARD_OWNER_TABLES {
-            let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table} WHERE creator_id = ?"))
-                .bind(user_id)
-                .fetch_one(&self.pool)
+            let n: i64 = self.db.fetch_one_scalar(&format!("SELECT COUNT(*) FROM {table} WHERE creator_id = ?"), &db_params![user_id])
                 .await?;
             total += n;
         }
@@ -731,10 +653,7 @@ impl DevopsService {
         // Missing table = standalone/personal edition, where there is no
         // membership model and thus nothing to enforce.
         let recipient_in_tenant =
-            match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM one_user_org WHERE user_id = ? AND tenant_id = ?")
-                .bind(to_user)
-                .bind(tenant_id)
-                .fetch_one(&self.pool)
+            match self.db.fetch_one_scalar::<i64>("SELECT COUNT(*) FROM one_user_org WHERE user_id = ? AND tenant_id = ?", &db_params![to_user, tenant_id])
                 .await
             {
                 Ok(n) => n > 0,
@@ -751,33 +670,25 @@ impl DevopsService {
         // a content edit, and bumping it would reshuffle every list that sorts
         // by recency.
         let to_name = self.lookup_creator_name(to_user).await;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.db.begin().await?;
         let mut moved = 0i64;
 
         for table in Self::REGISTRY_OWNER_TABLES {
-            let res = sqlx::query(&format!(
+            let res = tx.execute(&format!(
                 "UPDATE {table} SET created_by = ? WHERE created_by = ? AND (scope = 'org' OR team_id = ?)"
-            ))
-            .bind(to_user)
-            .bind(from_user)
-            .bind(tenant_id)
-            .execute(&mut *tx)
+            ), &db_params![to_user, from_user, tenant_id])
             .await?;
-            moved += res.rows_affected() as i64;
+            moved += res as i64;
         }
 
         for table in Self::BOARD_OWNER_TABLES {
             // `creator_name` is denormalized for display; move it with the id
             // or the board shows the departed employee as the owner.
-            let res = sqlx::query(&format!(
+            let res = tx.execute(&format!(
                 "UPDATE {table} SET creator_id = ?, creator_name = ? WHERE creator_id = ?"
-            ))
-            .bind(to_user)
-            .bind(to_name.as_deref())
-            .bind(from_user)
-            .execute(&mut *tx)
+            ), &db_params![to_user, to_name.as_deref(), from_user])
             .await?;
-            moved += res.rows_affected() as i64;
+            moved += res as i64;
         }
 
         tx.commit().await?;
@@ -794,9 +705,7 @@ impl DevopsService {
     /// Display name for a user id, for the denormalized `creator_name` columns.
     /// A missing `users` table (standalone) or absent row just yields `None`.
     async fn lookup_creator_name(&self, user_id: &str) -> Option<String> {
-        sqlx::query_scalar::<_, Option<String>>("SELECT username FROM users WHERE id = ?")
-            .bind(user_id)
-            .fetch_optional(&self.pool)
+        self.db.fetch_optional_scalar::<Option<String>>("SELECT username FROM users WHERE id = ?", &db_params![user_id])
             .await
             .ok()
             .flatten()
@@ -891,9 +800,7 @@ impl DevopsService {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| DevopsError::BadRequest("team scope requires a project group".into()))?;
-        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_tenants WHERE id = ?")
-            .bind(tid)
-            .fetch_one(&self.pool)
+        let exists: bool = self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_tenants WHERE id = ?", &db_params![tid])
             .await?;
         if !exists {
             return Err(DevopsError::BadRequest(format!("project group '{tid}' not found")));
@@ -911,18 +818,14 @@ impl DevopsService {
         feature: dream_core_common::license::Feature,
     ) -> Result<bool, DevopsError> {
         let enterprise_id: Option<String> =
-            sqlx::query_scalar("SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?")
-                .bind(user_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?", &db_params![user_id])
                 .await
                 .unwrap_or(None);
         let Some(enterprise_id) = enterprise_id else {
             return Ok(true);
         };
         let tier: Option<String> =
-            sqlx::query_scalar("SELECT tier FROM one_enterprise_license WHERE enterprise_id = ?")
-                .bind(&enterprise_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT tier FROM one_enterprise_license WHERE enterprise_id = ?", &db_params![&enterprise_id])
                 .await
                 .unwrap_or(None);
         let tier = tier
@@ -939,8 +842,7 @@ impl DevopsService {
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
         if privileged {
             let sql = format!("SELECT {COLS} FROM one_skill_registry ORDER BY updated_at DESC");
-            return Ok(sqlx::query_as::<_, SkillRegistryDto>(&sql)
-                .fetch_all(&self.pool)
+            return Ok(self.db.fetch_all_as::<SkillRegistryDto>(&sql, &[])
                 .await?);
         }
         // A matrix grant can only widen this predicate, never narrow it, so a
@@ -957,11 +859,11 @@ impl DevopsService {
         let sql = format!(
             "SELECT {COLS} FROM one_skill_registry WHERE ({predicate}) AND published = 1 ORDER BY updated_at DESC"
         );
-        let mut q = sqlx::query_as::<_, SkillRegistryDto>(&sql).bind(viewer_user_id);
+        let mut params = db_params![viewer_user_id];
         for id in &grant_ids {
-            q = q.bind(id);
+            params.push(id.as_str().into());
         }
-        let mut rows = q.fetch_all(&self.pool).await?;
+        let mut rows = self.db.fetch_all_as::<SkillRegistryDto>(&sql, &params).await?;
         // P1-5 consumption side: this branch is the member's team-sync fetch,
         // whose result is materialised as SKILL.md on their disk. Expand
         // `{{config.<set>.<key>}}` here so the on-disk skill carries real
@@ -1015,10 +917,7 @@ impl DevopsService {
         // (and can mask a built-in skill) — last-write-wins is unsafe for a
         // distributed capability.
         let name_taken: bool =
-            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_skill_registry WHERE name = ? AND id != ?")
-                .bind(name)
-                .bind(id.unwrap_or(""))
-                .fetch_one(&self.pool)
+            self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_skill_registry WHERE name = ? AND id != ?", &db_params![name, id.unwrap_or("")])
                 .await?;
         if name_taken {
             return Err(DevopsError::BadRequest(format!(
@@ -1033,9 +932,7 @@ impl DevopsService {
                 // otherwise they could both overwrite another team's resource
                 // and re-scope it away from that team in the same call.
                 let current_team_id: Option<String> =
-                    sqlx::query_scalar("SELECT team_id FROM one_skill_registry WHERE id = ?")
-                        .bind(existing)
-                        .fetch_optional(&self.pool)
+                    self.db.fetch_optional_scalar("SELECT team_id FROM one_skill_registry WHERE id = ?", &db_params![existing])
                         .await?
                         .ok_or_else(|| DevopsError::NotFound(format!("skill {existing}")))?;
                 if !self
@@ -1046,60 +943,32 @@ impl DevopsService {
                         "this skill belongs to a different project group".into(),
                     ));
                 }
-                let updated = sqlx::query(
+                let updated = self.db.execute(
                     "UPDATE one_skill_registry SET name = ?, description = ?, content = ?, enabled = ?, auto_active = ?, \
                      scope = ?, team_id = ?, visibility = ?, category_id = ?, updated_at = ? WHERE id = ?",
-                )
-                .bind(name)
-                .bind(description)
-                .bind(content)
-                .bind(enabled)
-                .bind(auto_active)
-                .bind(scope)
-                .bind(team_id)
-                .bind(visibility)
-                .bind(category_id)
-                .bind(now)
-                .bind(existing)
-                .execute(&self.pool)
+                &db_params![name, description, content, enabled, auto_active, scope, team_id, visibility, category_id, now, existing])
                 .await?;
-                if updated.rows_affected() == 0 {
+                if updated == 0 {
                     return Err(DevopsError::NotFound(format!("skill {existing}")));
                 }
                 existing.to_owned()
             }
             None => {
                 let id = new_id("oskill");
-                sqlx::query(
+                self.db.execute(
                     "INSERT INTO one_skill_registry \
                         (id, name, description, content, enabled, auto_active, scope, team_id, visibility, category_id, created_by, created_at, updated_at) \
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                )
-                .bind(&id)
-                .bind(name)
-                .bind(description)
-                .bind(content)
-                .bind(enabled)
-                .bind(auto_active)
-                .bind(scope)
-                .bind(team_id)
-                .bind(visibility)
-                .bind(category_id)
-                .bind(created_by)
-                .bind(now)
-                .bind(now)
-                .execute(&self.pool)
+                &db_params![&id, name, description, content, enabled, auto_active, scope, team_id, visibility, category_id, created_by, now, now])
                 .await?;
                 id
             }
         };
-        sqlx::query_as::<_, SkillRegistryDto>(
+        self.db.fetch_one_as::<SkillRegistryDto>(
             "SELECT id, name, description, content, enabled, auto_active, scope, team_id, visibility, \
              origin, category_id, published, created_by, created_at, updated_at \
              FROM one_skill_registry WHERE id = ?",
-        )
-        .bind(&id)
-        .fetch_one(&self.pool)
+        &db_params![&id])
         .await
         .map_err(Into::into)
     }
@@ -1111,20 +980,14 @@ impl DevopsService {
     pub async fn set_skills_published(&self, ids: &[String], published: bool) -> Result<(), DevopsError> {
         let now = now_ms();
         for id in ids {
-            sqlx::query("UPDATE one_skill_registry SET published = ?, updated_at = ? WHERE id = ?")
-                .bind(published)
-                .bind(now)
-                .bind(id)
-                .execute(&self.pool)
+            self.db.execute("UPDATE one_skill_registry SET published = ?, updated_at = ? WHERE id = ?", &db_params![published, now, id])
                 .await?;
         }
         Ok(())
     }
 
     pub async fn delete_skill(&self, actor_user_id: &str, id: &str) -> Result<(), DevopsError> {
-        let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM one_skill_registry WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
+        let team_id: Option<String> = self.db.fetch_optional_scalar("SELECT team_id FROM one_skill_registry WHERE id = ?", &db_params![id])
             .await?
             .ok_or_else(|| DevopsError::NotFound(format!("skill {id}")))?;
         if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
@@ -1132,11 +995,9 @@ impl DevopsService {
                 "this skill belongs to a different project group".into(),
             ));
         }
-        let deleted = sqlx::query("DELETE FROM one_skill_registry WHERE id = ?")
-            .bind(id)
-            .execute(&self.pool)
+        let deleted = self.db.execute("DELETE FROM one_skill_registry WHERE id = ?", &db_params![id])
             .await?;
-        if deleted.rows_affected() == 0 {
+        if deleted == 0 {
             return Err(DevopsError::NotFound(format!("skill {id}")));
         }
         Ok(())
@@ -1150,7 +1011,7 @@ impl DevopsService {
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
         if privileged {
             let sql = format!("SELECT {COLS} FROM one_mcp_registry ORDER BY updated_at DESC");
-            return Ok(sqlx::query_as::<_, McpRegistryDto>(&sql).fetch_all(&self.pool).await?);
+            return Ok(self.db.fetch_all_as::<McpRegistryDto>(&sql, &[]).await?);
         }
         // A matrix grant can only widen this predicate, never narrow it, so a
         // deployment with no matrix configured runs the identical query it ran
@@ -1165,11 +1026,11 @@ impl DevopsService {
         let sql = format!(
             "SELECT {COLS} FROM one_mcp_registry WHERE ({predicate}) AND published = 1 ORDER BY updated_at DESC"
         );
-        let mut q = sqlx::query_as::<_, McpRegistryDto>(&sql).bind(viewer_user_id);
+        let mut params = db_params![viewer_user_id];
         for id in &grant_ids {
-            q = q.bind(id);
+            params.push(id.as_str().into());
         }
-        Ok(q.fetch_all(&self.pool).await?)
+        Ok(self.db.fetch_all_as::<McpRegistryDto>(&sql, &params).await?)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1211,10 +1072,7 @@ impl DevopsService {
         // D7: MCP connector names must be unique — the member's local MCP
         // config keys on name (upsert-by-name), so duplicates would clobber.
         let name_taken: bool =
-            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_mcp_registry WHERE name = ? AND id != ?")
-                .bind(name)
-                .bind(id.unwrap_or(""))
-                .fetch_one(&self.pool)
+            self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_mcp_registry WHERE name = ? AND id != ?", &db_params![name, id.unwrap_or("")])
                 .await?;
         if name_taken {
             return Err(DevopsError::BadRequest(format!(
@@ -1227,9 +1085,7 @@ impl DevopsService {
                 // Same reasoning as upsert_skill: check the row's CURRENT
                 // team_id before applying whatever the request wants it to be.
                 let current_team_id: Option<String> =
-                    sqlx::query_scalar("SELECT team_id FROM one_mcp_registry WHERE id = ?")
-                        .bind(existing)
-                        .fetch_optional(&self.pool)
+                    self.db.fetch_optional_scalar("SELECT team_id FROM one_mcp_registry WHERE id = ?", &db_params![existing])
                         .await?
                         .ok_or_else(|| DevopsError::NotFound(format!("mcp registry entry {existing}")))?;
                 if !self
@@ -1240,61 +1096,32 @@ impl DevopsService {
                         "this MCP server belongs to a different project group".into(),
                     ));
                 }
-                let updated = sqlx::query(
+                let updated = self.db.execute(
                     "UPDATE one_mcp_registry SET name = ?, type = ?, endpoint = ?, enabled = ?, has_keys = ?, secrets_json = ?, \
                      scope = ?, team_id = ?, visibility = ?, category_id = ?, updated_at = ? WHERE id = ?",
-                )
-                .bind(name)
-                .bind(r#type)
-                .bind(endpoint)
-                .bind(enabled)
-                .bind(has_keys)
-                .bind(secrets_json)
-                .bind(scope)
-                .bind(team_id)
-                .bind(visibility)
-                .bind(category_id)
-                .bind(now)
-                .bind(existing)
-                .execute(&self.pool)
+                &db_params![name, r#type, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, category_id, now, existing])
                 .await?;
-                if updated.rows_affected() == 0 {
+                if updated == 0 {
                     return Err(DevopsError::NotFound(format!("mcp registry entry {existing}")));
                 }
                 existing.to_owned()
             }
             None => {
                 let id = new_id("omcp");
-                sqlx::query(
+                self.db.execute(
                     "INSERT INTO one_mcp_registry \
                         (id, name, type, endpoint, enabled, has_keys, scope, team_id, visibility, category_id, created_by, created_at, updated_at) \
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                )
-                .bind(&id)
-                .bind(name)
-                .bind(r#type)
-                .bind(endpoint)
-                .bind(enabled)
-                .bind(has_keys)
-                .bind(scope)
-                .bind(team_id)
-                .bind(visibility)
-                .bind(category_id)
-                .bind(created_by)
-                .bind(now)
-                .bind(now)
-                .execute(&self.pool)
+                &db_params![&id, name, r#type, endpoint, enabled, has_keys, scope, team_id, visibility, category_id, created_by, now, now])
                 .await?;
                 id
             }
         };
-        sqlx::query_as::<_, McpRegistryDto>(
+        self.db.fetch_one_as::<McpRegistryDto>(
             "SELECT id, name, type, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, \
              origin, category_id, published, created_by, created_at, updated_at \
              FROM one_mcp_registry WHERE id = ?",
-        )
-        .bind(&id)
-        .fetch_one(&self.pool)
+        &db_params![&id])
         .await
         .map_err(Into::into)
     }
@@ -1304,20 +1131,14 @@ impl DevopsService {
     pub async fn set_mcp_published(&self, ids: &[String], published: bool) -> Result<(), DevopsError> {
         let now = now_ms();
         for id in ids {
-            sqlx::query("UPDATE one_mcp_registry SET published = ?, updated_at = ? WHERE id = ?")
-                .bind(published)
-                .bind(now)
-                .bind(id)
-                .execute(&self.pool)
+            self.db.execute("UPDATE one_mcp_registry SET published = ?, updated_at = ? WHERE id = ?", &db_params![published, now, id])
                 .await?;
         }
         Ok(())
     }
 
     pub async fn delete_mcp_registry(&self, actor_user_id: &str, id: &str) -> Result<(), DevopsError> {
-        let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM one_mcp_registry WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
+        let team_id: Option<String> = self.db.fetch_optional_scalar("SELECT team_id FROM one_mcp_registry WHERE id = ?", &db_params![id])
             .await?
             .ok_or_else(|| DevopsError::NotFound(format!("mcp registry entry {id}")))?;
         if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
@@ -1325,11 +1146,9 @@ impl DevopsService {
                 "this MCP server belongs to a different project group".into(),
             ));
         }
-        let deleted = sqlx::query("DELETE FROM one_mcp_registry WHERE id = ?")
-            .bind(id)
-            .execute(&self.pool)
+        let deleted = self.db.execute("DELETE FROM one_mcp_registry WHERE id = ?", &db_params![id])
             .await?;
-        if deleted.rows_affected() == 0 {
+        if deleted == 0 {
             return Err(DevopsError::NotFound(format!("mcp registry entry {id}")));
         }
         Ok(())
@@ -1343,7 +1162,7 @@ impl DevopsService {
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
         if privileged {
             let sql = format!("SELECT {COLS} FROM one_rag_documents ORDER BY created_at DESC");
-            return Ok(sqlx::query_as::<_, RagDocumentDto>(&sql).fetch_all(&self.pool).await?);
+            return Ok(self.db.fetch_all_as::<RagDocumentDto>(&sql, &[]).await?);
         }
         // A matrix grant can only widen this predicate, never narrow it, so a
         // deployment with no matrix configured runs the identical query it ran
@@ -1354,11 +1173,11 @@ impl DevopsService {
         let (predicate, grant_ids) =
             Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "", viewer_user_id);
         let sql = format!("SELECT {COLS} FROM one_rag_documents WHERE {predicate} ORDER BY created_at DESC");
-        let mut q = sqlx::query_as::<_, RagDocumentDto>(&sql).bind(viewer_user_id);
+        let mut params = db_params![viewer_user_id];
         for id in &grant_ids {
-            q = q.bind(id);
+            params.push(id.as_str().into());
         }
-        Ok(q.fetch_all(&self.pool).await?)
+        Ok(self.db.fetch_all_as::<RagDocumentDto>(&sql, &params).await?)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1389,38 +1208,23 @@ impl DevopsService {
         }
         let id = new_id("orag");
         let now = now_ms();
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_rag_documents \
                 (id, title, file_path, file_size, mime_type, status, last_error, chunk_count, scope, team_id, visibility, created_by, created_at) \
              VALUES (?, ?, ?, ?, ?, 'pending', NULL, 0, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(title)
-        .bind(file_path)
-        .bind(file_size)
-        .bind(mime_type)
-        .bind(scope)
-        .bind(team_id)
-        .bind(visibility)
-        .bind(created_by)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, title, file_path, file_size, mime_type, scope, team_id, visibility, created_by, now])
         .await?;
-        sqlx::query_as::<_, RagDocumentDto>(
+        self.db.fetch_one_as::<RagDocumentDto>(
             "SELECT id, title, file_path, file_size, mime_type, status, last_error, chunk_count, \
                     scope, team_id, visibility, created_by, created_at \
              FROM one_rag_documents WHERE id = ?",
-        )
-        .bind(&id)
-        .fetch_one(&self.pool)
+        &db_params![&id])
         .await
         .map_err(Into::into)
     }
 
     pub async fn delete_rag_document(&self, actor_user_id: &str, id: &str) -> Result<(), DevopsError> {
-        let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM one_rag_documents WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
+        let team_id: Option<String> = self.db.fetch_optional_scalar("SELECT team_id FROM one_rag_documents WHERE id = ?", &db_params![id])
             .await?
             .ok_or_else(|| DevopsError::NotFound(format!("rag document {id}")))?;
         if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
@@ -1433,19 +1237,15 @@ impl DevopsService {
         // find them and the document's full text would sit in the FTS index
         // forever. Retrieval would not surface it (the join filters orphans),
         // but "deleted" has to mean the text is actually gone from disk.
-        crate::retrieval::delete_document(&self.pool, id).await?;
+        crate::retrieval::delete_document(&self.db, id).await?;
 
-        let mut tx = self.pool.begin().await?;
-        let deleted = sqlx::query("DELETE FROM one_rag_documents WHERE id = ?")
-            .bind(id)
-            .execute(&mut *tx)
+        let mut tx = self.db.begin().await?;
+        let deleted = tx.execute("DELETE FROM one_rag_documents WHERE id = ?", &db_params![id])
             .await?;
-        if deleted.rows_affected() == 0 {
+        if deleted == 0 {
             return Err(DevopsError::NotFound(format!("rag document {id}")));
         }
-        sqlx::query("DELETE FROM one_rag_chunks WHERE document_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
+        tx.execute("DELETE FROM one_rag_chunks WHERE document_id = ?", &db_params![id])
             .await?;
         tx.commit().await?;
         Ok(())
@@ -1454,13 +1254,11 @@ impl DevopsService {
     // -- milestones -------------------------------------------------------
 
     pub async fn list_milestones(&self, tenant_id: &str) -> Result<Vec<MilestoneDto>, DevopsError> {
-        Ok(sqlx::query_as::<_, MilestoneDto>(
+        Ok(self.db.fetch_all_as::<MilestoneDto>(
             "SELECT id, title, description, status, due_at, creator_id, creator_name, created_at, updated_at \
              FROM one_milestones WHERE tenant_id = ? ORDER BY \
                 CASE status WHEN 'active' THEN 0 WHEN 'completed' THEN 1 ELSE 2 END, updated_at DESC",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id])
         .await?)
     }
 
@@ -1479,21 +1277,11 @@ impl DevopsService {
         }
         let id = new_id("mile");
         let now = now_ms();
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_milestones \
                 (id, title, description, status, due_at, creator_id, creator_name, tenant_id, created_at, updated_at) \
              VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(title)
-        .bind(description)
-        .bind(due_at)
-        .bind(creator_id)
-        .bind(creator_name)
-        .bind(tenant_id)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, title, description, due_at, creator_id, creator_name, tenant_id, now, now])
         .await?;
         self.fetch_milestone(tenant_id, &id).await
     }
@@ -1513,7 +1301,7 @@ impl DevopsService {
         let now = now_ms();
         // CASE WHEN ? guards mirror update_requirement: absent field = keep,
         // present = overwrite (Option<Option<_>> distinguishes null-clear).
-        let res = sqlx::query(
+        let res = self.db.execute(
             "UPDATE one_milestones SET \
                 title = CASE WHEN ? THEN ? ELSE title END, \
                 description = CASE WHEN ? THEN ? ELSE description END, \
@@ -1521,53 +1309,33 @@ impl DevopsService {
                 due_at = CASE WHEN ? THEN ? ELSE due_at END, \
                 updated_at = ? \
              WHERE id = ? AND tenant_id = ?",
-        )
-        .bind(title.is_some())
-        .bind(title)
-        .bind(description.is_some())
-        .bind(description.flatten())
-        .bind(status.is_some())
-        .bind(status)
-        .bind(due_at.is_some())
-        .bind(due_at.flatten())
-        .bind(now)
-        .bind(id)
-        .bind(tenant_id)
-        .execute(&self.pool)
+        &db_params![title.is_some(), title, description.is_some(), description.flatten(), status.is_some(), status, due_at.is_some(), due_at.flatten(), now, id, tenant_id])
         .await?;
-        if res.rows_affected() == 0 {
+        if res == 0 {
             return Err(DevopsError::NotFound(format!("milestone {id}")));
         }
         self.fetch_milestone(tenant_id, id).await
     }
 
     pub async fn delete_milestone(&self, tenant_id: &str, id: &str) -> Result<(), DevopsError> {
-        let mut tx = self.pool.begin().await?;
-        let deleted = sqlx::query("DELETE FROM one_milestones WHERE id = ? AND tenant_id = ?")
-            .bind(id)
-            .bind(tenant_id)
-            .execute(&mut *tx)
+        let mut tx = self.db.begin().await?;
+        let deleted = tx.execute("DELETE FROM one_milestones WHERE id = ? AND tenant_id = ?", &db_params![id, tenant_id])
             .await?;
-        if deleted.rows_affected() == 0 {
+        if deleted == 0 {
             return Err(DevopsError::NotFound(format!("milestone {id}")));
         }
         // Clear the soft link on requirements that pointed here.
-        sqlx::query("UPDATE one_requirements SET milestone_id = NULL WHERE milestone_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
+        tx.execute("UPDATE one_requirements SET milestone_id = NULL WHERE milestone_id = ?", &db_params![id])
             .await?;
         tx.commit().await?;
         Ok(())
     }
 
     async fn fetch_milestone(&self, tenant_id: &str, id: &str) -> Result<MilestoneDto, DevopsError> {
-        sqlx::query_as::<_, MilestoneDto>(
+        self.db.fetch_optional_as::<MilestoneDto>(
             "SELECT id, title, description, status, due_at, creator_id, creator_name, created_at, updated_at \
              FROM one_milestones WHERE id = ? AND tenant_id = ?",
-        )
-        .bind(id)
-        .bind(tenant_id)
-        .fetch_optional(&self.pool)
+        &db_params![id, tenant_id])
         .await?
         .ok_or_else(|| DevopsError::NotFound(format!("milestone {id}")))
     }
@@ -1575,10 +1343,9 @@ impl DevopsService {
     // -- RAG pipeline (A2) ------------------------------------------------
 
     pub async fn get_rag_config(&self) -> Result<RagConfigDto, DevopsError> {
-        let row: Option<(String, String, String, Option<i64>, i64)> = sqlx::query_as(
+        let row: Option<(String, String, String, Option<i64>, i64)> = self.db.fetch_optional_as::<(String, String, String, Option<i64>, i64)>(
             "SELECT base_url, api_key, model, dimensions, updated_at FROM one_rag_config WHERE id = 'default'",
-        )
-        .fetch_optional(&self.pool)
+        &[])
         .await?;
         if let Some((base_url, api_key, model, dimensions, updated_at)) = &row {
             if !base_url.trim().is_empty() && !model.trim().is_empty() {
@@ -1627,30 +1394,23 @@ impl DevopsService {
         // Preserve the existing key when the caller omits it.
         let key = match api_key {
             Some(k) => k.to_owned(),
-            None => sqlx::query_scalar::<_, String>("SELECT api_key FROM one_rag_config WHERE id = 'default'")
-                .fetch_optional(&self.pool)
+            None => self.db.fetch_optional_scalar::<String>("SELECT api_key FROM one_rag_config WHERE id = 'default'", &[])
                 .await?
                 .unwrap_or_default(),
         };
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_rag_config (id, base_url, api_key, model, updated_at) \
              VALUES ('default', ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET base_url = excluded.base_url, api_key = excluded.api_key, \
                 model = excluded.model, updated_at = excluded.updated_at",
-        )
-        .bind(base_url.trim())
-        .bind(&key)
-        .bind(model.trim())
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![base_url.trim(), &key, model.trim(), now])
         .await?;
         self.get_rag_config().await
     }
 
     async fn load_embedding_config(&self) -> Result<EmbeddingConfig, DevopsError> {
         let row: Option<(String, String, String)> =
-            sqlx::query_as("SELECT base_url, api_key, model FROM one_rag_config WHERE id = 'default'")
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_as::<(String, String, String)>("SELECT base_url, api_key, model FROM one_rag_config WHERE id = 'default'", &[])
                 .await?;
         let (env_base, env_model, env_key) = crate::embedding::env_embedding_config();
         crate::embedding::resolve_embedding_config(row, env_base, env_model, env_key)
@@ -1659,9 +1419,7 @@ impl DevopsService {
 
     /// Set a document's inline content (the text to embed on process).
     pub async fn set_document_content(&self, actor_user_id: &str, id: &str, content: &str) -> Result<(), DevopsError> {
-        let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM one_rag_documents WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
+        let team_id: Option<String> = self.db.fetch_optional_scalar("SELECT team_id FROM one_rag_documents WHERE id = ?", &db_params![id])
             .await?
             .ok_or_else(|| DevopsError::NotFound(format!("rag document {id}")))?;
         if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
@@ -1669,12 +1427,9 @@ impl DevopsService {
                 "this document belongs to a different project group".into(),
             ));
         }
-        let updated = sqlx::query("UPDATE one_rag_documents SET content = ? WHERE id = ?")
-            .bind(content)
-            .bind(id)
-            .execute(&self.pool)
+        let updated = self.db.execute("UPDATE one_rag_documents SET content = ? WHERE id = ?", &db_params![content, id])
             .await?;
-        if updated.rows_affected() == 0 {
+        if updated == 0 {
             return Err(DevopsError::NotFound(format!("rag document {id}")));
         }
         Ok(())
@@ -1685,9 +1440,7 @@ impl DevopsService {
     /// first success. Returns the chunk count.
     pub async fn process_rag_document(&self, actor_user_id: &str, id: &str) -> Result<i64, DevopsError> {
         let row: Option<(Option<String>, Option<String>)> =
-            sqlx::query_as("SELECT content, team_id FROM one_rag_documents WHERE id = ?")
-                .bind(id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_as::<(Option<String>, Option<String>)>("SELECT content, team_id FROM one_rag_documents WHERE id = ?", &db_params![id])
                 .await?;
         let (content, team_id) = row.ok_or_else(|| DevopsError::NotFound(format!("rag document {id}")))?;
         if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
@@ -1705,10 +1458,7 @@ impl DevopsService {
         let vectors = match crate::embedding::embed(&config, &chunks).await {
             Ok(v) => v,
             Err(e) => {
-                let _ = sqlx::query("UPDATE one_rag_documents SET status = 'error', last_error = ? WHERE id = ?")
-                    .bind(e.to_string())
-                    .bind(id)
-                    .execute(&self.pool)
+                let _ = self.db.execute("UPDATE one_rag_documents SET status = 'error', last_error = ? WHERE id = ?", &db_params![e.to_string(), id])
                     .await;
                 return Err(e);
             }
@@ -1716,33 +1466,22 @@ impl DevopsService {
         let dims = vectors.first().map(|v| v.len() as i64);
 
         let now = now_ms();
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM one_rag_chunks WHERE document_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
+        let mut tx = self.db.begin().await?;
+        tx.execute("DELETE FROM one_rag_chunks WHERE document_id = ?", &db_params![id])
             .await?;
         let mut lexical_rows: Vec<(String, String)> = Vec::with_capacity(chunks.len());
         for (idx, (chunk, vector)) in chunks.iter().zip(vectors.iter()).enumerate() {
             let chunk_id = new_id("ragc");
-            sqlx::query(
+            tx.execute(
                 "INSERT INTO one_rag_chunks (id, document_id, chunk_index, content, embedding, created_at) \
                  VALUES (?, ?, ?, ?, ?, ?)",
+                &db_params![&chunk_id, id, idx as i64, chunk, crate::embedding::pack_embedding(vector), now],
             )
-            .bind(&chunk_id)
-            .bind(id)
-            .bind(idx as i64)
-            .bind(chunk)
-            .bind(crate::embedding::pack_embedding(vector))
-            .bind(now)
-            .execute(&mut *tx)
             .await?;
             lexical_rows.push((chunk_id, chunk.clone()));
         }
         let count = chunks.len() as i64;
-        sqlx::query("UPDATE one_rag_documents SET status = 'ready', last_error = NULL, chunk_count = ? WHERE id = ?")
-            .bind(count)
-            .bind(id)
-            .execute(&mut *tx)
+        tx.execute("UPDATE one_rag_documents SET status = 'ready', last_error = NULL, chunk_count = ? WHERE id = ?", &db_params![count, id])
             .await?;
         tx.commit().await?;
 
@@ -1750,14 +1489,12 @@ impl DevopsService {
         // chunk rows commit. A failure here leaves the index stale, not the
         // data wrong, and is recoverable by re-processing — hence a warning
         // rather than failing the upload the user just waited on.
-        if let Err(e) = crate::retrieval::sync_document(&self.pool, id, &lexical_rows).await {
+        if let Err(e) = crate::retrieval::sync_document(&self.db, id, &lexical_rows).await {
             tracing::warn!(error = %e, document_id = id, "lexical index update failed; keyword search may be stale");
         }
 
         if let Some(dims) = dims {
-            let _ = sqlx::query("UPDATE one_rag_config SET dimensions = ? WHERE id = 'default'")
-                .bind(dims)
-                .execute(&self.pool)
+            let _ = self.db.execute("UPDATE one_rag_config SET dimensions = ? WHERE id = 'default'", &db_params![dims])
                 .await;
         }
         Ok(count)
@@ -1770,7 +1507,7 @@ impl DevopsService {
     /// costs nothing and works even with the embedding endpoint unreachable.
     /// Self-skips once the index is populated, so it is safe on every boot.
     pub async fn rebuild_lexical_index(&self) -> Result<usize, DevopsError> {
-        crate::retrieval::rebuild_index(&self.pool).await
+        crate::retrieval::rebuild_index(&self.db).await
     }
 
     /// Retrieve the top-k knowledge-base chunks visible to `viewer_user_id`.
@@ -1827,11 +1564,12 @@ impl DevopsService {
             None => BASE.to_string(),
             Some(predicate) => format!("{BASE} WHERE {predicate}"),
         };
-        let mut q = sqlx::query_as::<_, (String, String, i64, String, Vec<u8>, String)>(&sql);
+        let mut params = db_params![];
         for bind in &acl_binds {
-            q = q.bind(bind);
+            params.push(bind.as_str().into());
         }
-        let rows: Vec<(String, String, i64, String, Vec<u8>, String)> = q.fetch_all(&self.pool).await?;
+        let rows: Vec<(String, String, i64, String, Vec<u8>, String)> =
+            self.db.fetch_all_as(&sql, &params).await?;
 
         let mut by_id: HashMap<String, (RagSearchHit, f32)> = HashMap::with_capacity(rows.len());
         let mut dense: Vec<(String, f32)> = Vec::with_capacity(rows.len());
@@ -1859,7 +1597,7 @@ impl DevopsService {
         // Lexical half. Best-effort: with FTS5 absent or the query unparseable
         // this returns empty and the result degrades to dense-only.
         let lexical_ranked: Vec<String> =
-            crate::retrieval::lexical_candidates(&self.pool, query, acl_predicate.as_deref(), &acl_binds, candidates)
+            crate::retrieval::lexical_candidates(&self.db, query, acl_predicate.as_deref(), &acl_binds, candidates)
                 .await?
                 .into_iter()
                 .map(|hit| hit.chunk_id)
@@ -1897,15 +1635,13 @@ impl DevopsService {
     // -- test plans (A4) --------------------------------------------------
 
     pub async fn list_test_plans(&self, tenant_id: &str) -> Result<Vec<TestPlanDto>, DevopsError> {
-        Ok(sqlx::query_as::<_, TestPlanDto>(
+        Ok(self.db.fetch_all_as::<TestPlanDto>(
             "SELECT id, title, description, status, requirement_id, creator_id, creator_name, \
                     created_at, updated_at \
              FROM one_test_plans WHERE tenant_id = ? ORDER BY \
                 CASE status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 WHEN 'completed' THEN 2 ELSE 3 END, \
                 updated_at DESC",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id])
         .await?)
     }
 
@@ -1924,21 +1660,11 @@ impl DevopsService {
         }
         let id = new_id("tplan");
         let now = now_ms();
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_test_plans \
                 (id, title, description, status, requirement_id, creator_id, creator_name, tenant_id, created_at, updated_at) \
              VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(title)
-        .bind(description)
-        .bind(requirement_id)
-        .bind(creator_id)
-        .bind(creator_name)
-        .bind(tenant_id)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, title, description, requirement_id, creator_id, creator_name, tenant_id, now, now])
         .await?;
         self.fetch_test_plan(tenant_id, &id).await
     }
@@ -1956,7 +1682,7 @@ impl DevopsService {
             validate_one_of(status, TEST_PLAN_STATUSES, "test plan status")?;
         }
         let now = now_ms();
-        let res = sqlx::query(
+        let res = self.db.execute(
             "UPDATE one_test_plans SET \
                 title = CASE WHEN ? THEN ? ELSE title END, \
                 description = CASE WHEN ? THEN ? ELSE description END, \
@@ -1964,53 +1690,33 @@ impl DevopsService {
                 requirement_id = CASE WHEN ? THEN ? ELSE requirement_id END, \
                 updated_at = ? \
              WHERE id = ? AND tenant_id = ?",
-        )
-        .bind(title.is_some())
-        .bind(title)
-        .bind(description.is_some())
-        .bind(description.flatten())
-        .bind(status.is_some())
-        .bind(status)
-        .bind(requirement_id.is_some())
-        .bind(requirement_id.flatten())
-        .bind(now)
-        .bind(id)
-        .bind(tenant_id)
-        .execute(&self.pool)
+        &db_params![title.is_some(), title, description.is_some(), description.flatten(), status.is_some(), status, requirement_id.is_some(), requirement_id.flatten(), now, id, tenant_id])
         .await?;
-        if res.rows_affected() == 0 {
+        if res == 0 {
             return Err(DevopsError::NotFound(format!("test plan {id}")));
         }
         self.fetch_test_plan(tenant_id, id).await
     }
 
     pub async fn delete_test_plan(&self, tenant_id: &str, id: &str) -> Result<(), DevopsError> {
-        let mut tx = self.pool.begin().await?;
-        let deleted = sqlx::query("DELETE FROM one_test_plans WHERE id = ? AND tenant_id = ?")
-            .bind(id)
-            .bind(tenant_id)
-            .execute(&mut *tx)
+        let mut tx = self.db.begin().await?;
+        let deleted = tx.execute("DELETE FROM one_test_plans WHERE id = ? AND tenant_id = ?", &db_params![id, tenant_id])
             .await?;
-        if deleted.rows_affected() == 0 {
+        if deleted == 0 {
             return Err(DevopsError::NotFound(format!("test plan {id}")));
         }
-        sqlx::query("DELETE FROM one_test_cases WHERE plan_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
+        tx.execute("DELETE FROM one_test_cases WHERE plan_id = ?", &db_params![id])
             .await?;
         tx.commit().await?;
         Ok(())
     }
 
     async fn fetch_test_plan(&self, tenant_id: &str, id: &str) -> Result<TestPlanDto, DevopsError> {
-        sqlx::query_as::<_, TestPlanDto>(
+        self.db.fetch_optional_as::<TestPlanDto>(
             "SELECT id, title, description, status, requirement_id, creator_id, creator_name, \
                     created_at, updated_at \
              FROM one_test_plans WHERE id = ? AND tenant_id = ?",
-        )
-        .bind(id)
-        .bind(tenant_id)
-        .fetch_optional(&self.pool)
+        &db_params![id, tenant_id])
         .await?
         .ok_or_else(|| DevopsError::NotFound(format!("test plan {id}")))
     }
@@ -2019,22 +1725,16 @@ impl DevopsService {
 
     pub async fn list_test_cases(&self, tenant_id: &str, plan_id: &str) -> Result<Vec<TestCaseDto>, DevopsError> {
         // Verify the plan exists AND belongs to the caller's tenant first.
-        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_test_plans WHERE id = ? AND tenant_id = ?")
-            .bind(plan_id)
-            .bind(tenant_id)
-            .fetch_one(&self.pool)
+        let exists: bool = self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_test_plans WHERE id = ? AND tenant_id = ?", &db_params![plan_id, tenant_id])
             .await?;
         if !exists {
             return Err(DevopsError::NotFound(format!("test plan {plan_id}")));
         }
-        Ok(sqlx::query_as::<_, TestCaseDto>(
+        Ok(self.db.fetch_all_as::<TestCaseDto>(
             "SELECT id, plan_id, title, description, steps, expected, status, creator_id, creator_name, \
                     created_at, updated_at \
              FROM one_test_cases WHERE plan_id = ? AND tenant_id = ? ORDER BY created_at ASC",
-        )
-        .bind(plan_id)
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![plan_id, tenant_id])
         .await?)
     }
 
@@ -2059,33 +1759,18 @@ impl DevopsService {
         if title.is_empty() {
             return Err(DevopsError::BadRequest("title is required".into()));
         }
-        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_test_plans WHERE id = ? AND tenant_id = ?")
-            .bind(plan_id)
-            .bind(tenant_id)
-            .fetch_one(&self.pool)
+        let exists: bool = self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_test_plans WHERE id = ? AND tenant_id = ?", &db_params![plan_id, tenant_id])
             .await?;
         if !exists {
             return Err(DevopsError::NotFound(format!("test plan {plan_id}")));
         }
         let id = new_id("tcase");
         let now = now_ms();
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_test_cases \
                 (id, plan_id, title, description, steps, expected, status, creator_id, creator_name, tenant_id, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(plan_id)
-        .bind(title)
-        .bind(description)
-        .bind(steps)
-        .bind(expected)
-        .bind(creator_id)
-        .bind(creator_name)
-        .bind(tenant_id)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, plan_id, title, description, steps, expected, creator_id, creator_name, tenant_id, now, now])
         .await?;
         self.fetch_test_case(tenant_id, &id).await
     }
@@ -2106,7 +1791,7 @@ impl DevopsService {
             validate_one_of(status, TEST_CASE_STATUSES, "test case status")?;
         }
         let now = now_ms();
-        let res = sqlx::query(
+        let res = self.db.execute(
             "UPDATE one_test_cases SET \
                 title = CASE WHEN ? THEN ? ELSE title END, \
                 status = CASE WHEN ? THEN ? ELSE status END, \
@@ -2115,49 +1800,29 @@ impl DevopsService {
                 expected = CASE WHEN ? THEN ? ELSE expected END, \
                 updated_at = ? \
              WHERE id = ? AND tenant_id = ?",
-        )
-        .bind(title.is_some())
-        .bind(title)
-        .bind(status.is_some())
-        .bind(status)
-        .bind(description.is_some())
-        .bind(description.flatten())
-        .bind(steps.is_some())
-        .bind(steps.flatten())
-        .bind(expected.is_some())
-        .bind(expected.flatten())
-        .bind(now)
-        .bind(id)
-        .bind(tenant_id)
-        .execute(&self.pool)
+        &db_params![title.is_some(), title, status.is_some(), status, description.is_some(), description.flatten(), steps.is_some(), steps.flatten(), expected.is_some(), expected.flatten(), now, id, tenant_id])
         .await?;
-        if res.rows_affected() == 0 {
+        if res == 0 {
             return Err(DevopsError::NotFound(format!("test case {id}")));
         }
         self.fetch_test_case(tenant_id, id).await
     }
 
     pub async fn delete_test_case(&self, tenant_id: &str, id: &str) -> Result<(), DevopsError> {
-        let deleted = sqlx::query("DELETE FROM one_test_cases WHERE id = ? AND tenant_id = ?")
-            .bind(id)
-            .bind(tenant_id)
-            .execute(&self.pool)
+        let deleted = self.db.execute("DELETE FROM one_test_cases WHERE id = ? AND tenant_id = ?", &db_params![id, tenant_id])
             .await?;
-        if deleted.rows_affected() == 0 {
+        if deleted == 0 {
             return Err(DevopsError::NotFound(format!("test case {id}")));
         }
         Ok(())
     }
 
     async fn fetch_test_case(&self, tenant_id: &str, id: &str) -> Result<TestCaseDto, DevopsError> {
-        sqlx::query_as::<_, TestCaseDto>(
+        self.db.fetch_optional_as::<TestCaseDto>(
             "SELECT id, plan_id, title, description, steps, expected, status, creator_id, creator_name, \
                     created_at, updated_at \
              FROM one_test_cases WHERE id = ? AND tenant_id = ?",
-        )
-        .bind(id)
-        .bind(tenant_id)
-        .fetch_optional(&self.pool)
+        &db_params![id, tenant_id])
         .await?
         .ok_or_else(|| DevopsError::NotFound(format!("test case {id}")))
     }
@@ -2165,14 +1830,12 @@ impl DevopsService {
     // -- pipelines (A4) ---------------------------------------------------
 
     pub async fn list_pipelines(&self, tenant_id: &str) -> Result<Vec<PipelineDto>, DevopsError> {
-        Ok(sqlx::query_as::<_, PipelineDto>(
+        Ok(self.db.fetch_all_as::<PipelineDto>(
             "SELECT id, name, description, status, trigger, creator_id, creator_name, \
                     created_at, updated_at \
              FROM one_pipelines WHERE tenant_id = ? ORDER BY \
                 CASE status WHEN 'active' THEN 0 ELSE 1 END, updated_at DESC",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id])
         .await?)
     }
 
@@ -2193,21 +1856,11 @@ impl DevopsService {
         validate_one_of(trigger, PIPELINE_TRIGGERS, "pipeline trigger")?;
         let id = new_id("pipe");
         let now = now_ms();
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_pipelines \
                 (id, name, description, status, trigger, creator_id, creator_name, tenant_id, created_at, updated_at) \
              VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(name)
-        .bind(description)
-        .bind(trigger)
-        .bind(creator_id)
-        .bind(creator_name)
-        .bind(tenant_id)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, name, description, trigger, creator_id, creator_name, tenant_id, now, now])
         .await?;
         self.fetch_pipeline(tenant_id, &id).await
     }
@@ -2228,7 +1881,7 @@ impl DevopsService {
             validate_one_of(trigger, PIPELINE_TRIGGERS, "pipeline trigger")?;
         }
         let now = now_ms();
-        let res = sqlx::query(
+        let res = self.db.execute(
             "UPDATE one_pipelines SET \
                 name = CASE WHEN ? THEN ? ELSE name END, \
                 description = CASE WHEN ? THEN ? ELSE description END, \
@@ -2236,53 +1889,33 @@ impl DevopsService {
                 trigger = CASE WHEN ? THEN ? ELSE trigger END, \
                 updated_at = ? \
              WHERE id = ? AND tenant_id = ?",
-        )
-        .bind(name.is_some())
-        .bind(name)
-        .bind(description.is_some())
-        .bind(description.flatten())
-        .bind(status.is_some())
-        .bind(status)
-        .bind(trigger.is_some())
-        .bind(trigger)
-        .bind(now)
-        .bind(id)
-        .bind(tenant_id)
-        .execute(&self.pool)
+        &db_params![name.is_some(), name, description.is_some(), description.flatten(), status.is_some(), status, trigger.is_some(), trigger, now, id, tenant_id])
         .await?;
-        if res.rows_affected() == 0 {
+        if res == 0 {
             return Err(DevopsError::NotFound(format!("pipeline {id}")));
         }
         self.fetch_pipeline(tenant_id, id).await
     }
 
     pub async fn delete_pipeline(&self, tenant_id: &str, id: &str) -> Result<(), DevopsError> {
-        let mut tx = self.pool.begin().await?;
-        let deleted = sqlx::query("DELETE FROM one_pipelines WHERE id = ? AND tenant_id = ?")
-            .bind(id)
-            .bind(tenant_id)
-            .execute(&mut *tx)
+        let mut tx = self.db.begin().await?;
+        let deleted = tx.execute("DELETE FROM one_pipelines WHERE id = ? AND tenant_id = ?", &db_params![id, tenant_id])
             .await?;
-        if deleted.rows_affected() == 0 {
+        if deleted == 0 {
             return Err(DevopsError::NotFound(format!("pipeline {id}")));
         }
-        sqlx::query("DELETE FROM one_pipeline_runs WHERE pipeline_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
+        tx.execute("DELETE FROM one_pipeline_runs WHERE pipeline_id = ?", &db_params![id])
             .await?;
         tx.commit().await?;
         Ok(())
     }
 
     async fn fetch_pipeline(&self, tenant_id: &str, id: &str) -> Result<PipelineDto, DevopsError> {
-        sqlx::query_as::<_, PipelineDto>(
+        self.db.fetch_optional_as::<PipelineDto>(
             "SELECT id, name, description, status, trigger, creator_id, creator_name, \
                     created_at, updated_at \
              FROM one_pipelines WHERE id = ? AND tenant_id = ?",
-        )
-        .bind(id)
-        .bind(tenant_id)
-        .fetch_optional(&self.pool)
+        &db_params![id, tenant_id])
         .await?
         .ok_or_else(|| DevopsError::NotFound(format!("pipeline {id}")))
     }
@@ -2294,22 +1927,16 @@ impl DevopsService {
         tenant_id: &str,
         pipeline_id: &str,
     ) -> Result<Vec<PipelineRunDto>, DevopsError> {
-        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_pipelines WHERE id = ? AND tenant_id = ?")
-            .bind(pipeline_id)
-            .bind(tenant_id)
-            .fetch_one(&self.pool)
+        let exists: bool = self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_pipelines WHERE id = ? AND tenant_id = ?", &db_params![pipeline_id, tenant_id])
             .await?;
         if !exists {
             return Err(DevopsError::NotFound(format!("pipeline {pipeline_id}")));
         }
-        Ok(sqlx::query_as::<_, PipelineRunDto>(
+        Ok(self.db.fetch_all_as::<PipelineRunDto>(
             "SELECT id, pipeline_id, status, triggered_by, started_at, finished_at, log, \
                     created_at, updated_at \
              FROM one_pipeline_runs WHERE pipeline_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT 100",
-        )
-        .bind(pipeline_id)
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![pipeline_id, tenant_id])
         .await?)
     }
 
@@ -2319,28 +1946,18 @@ impl DevopsService {
         pipeline_id: &str,
         triggered_by: Option<&str>,
     ) -> Result<PipelineRunDto, DevopsError> {
-        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_pipelines WHERE id = ? AND tenant_id = ?")
-            .bind(pipeline_id)
-            .bind(tenant_id)
-            .fetch_one(&self.pool)
+        let exists: bool = self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_pipelines WHERE id = ? AND tenant_id = ?", &db_params![pipeline_id, tenant_id])
             .await?;
         if !exists {
             return Err(DevopsError::NotFound(format!("pipeline {pipeline_id}")));
         }
         let id = new_id("run");
         let now = now_ms();
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_pipeline_runs \
                 (id, pipeline_id, status, triggered_by, started_at, finished_at, log, tenant_id, created_at, updated_at) \
              VALUES (?, ?, 'pending', ?, NULL, NULL, NULL, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(pipeline_id)
-        .bind(triggered_by)
-        .bind(tenant_id)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, pipeline_id, triggered_by, tenant_id, now, now])
         .await?;
         self.fetch_pipeline_run(tenant_id, &id).await
     }
@@ -2358,7 +1975,7 @@ impl DevopsService {
             validate_one_of(status, PIPELINE_RUN_STATUSES, "pipeline run status")?;
         }
         let now = now_ms();
-        let res = sqlx::query(
+        let res = self.db.execute(
             "UPDATE one_pipeline_runs SET \
                 status = CASE WHEN ? THEN ? ELSE status END, \
                 started_at = CASE WHEN ? THEN ? ELSE started_at END, \
@@ -2366,35 +1983,20 @@ impl DevopsService {
                 log = CASE WHEN ? THEN ? ELSE log END, \
                 updated_at = ? \
              WHERE id = ? AND tenant_id = ?",
-        )
-        .bind(status.is_some())
-        .bind(status)
-        .bind(started_at.is_some())
-        .bind(started_at.flatten())
-        .bind(finished_at.is_some())
-        .bind(finished_at.flatten())
-        .bind(log.is_some())
-        .bind(log.flatten())
-        .bind(now)
-        .bind(id)
-        .bind(tenant_id)
-        .execute(&self.pool)
+        &db_params![status.is_some(), status, started_at.is_some(), started_at.flatten(), finished_at.is_some(), finished_at.flatten(), log.is_some(), log.flatten(), now, id, tenant_id])
         .await?;
-        if res.rows_affected() == 0 {
+        if res == 0 {
             return Err(DevopsError::NotFound(format!("pipeline run {id}")));
         }
         self.fetch_pipeline_run(tenant_id, id).await
     }
 
     async fn fetch_pipeline_run(&self, tenant_id: &str, id: &str) -> Result<PipelineRunDto, DevopsError> {
-        sqlx::query_as::<_, PipelineRunDto>(
+        self.db.fetch_optional_as::<PipelineRunDto>(
             "SELECT id, pipeline_id, status, triggered_by, started_at, finished_at, log, \
                     created_at, updated_at \
              FROM one_pipeline_runs WHERE id = ? AND tenant_id = ?",
-        )
-        .bind(id)
-        .bind(tenant_id)
-        .fetch_optional(&self.pool)
+        &db_params![id, tenant_id])
         .await?
         .ok_or_else(|| DevopsError::NotFound(format!("pipeline run {id}")))
     }
@@ -2416,7 +2018,7 @@ mod tests {
             .await
             .unwrap();
         run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone())).await.unwrap();
-        DevopsService::new(pool)
+        DevopsService::new(dream_core_db::DbPool::Sqlite(pool.clone()))
     }
 
     /// A grant source that hands back whatever the test asks for, so the
@@ -2454,7 +2056,7 @@ mod tests {
              INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('member1', 't1', 'member');
              INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('admin1', 't1', 'org_admin');",
         )
-        .execute(&svc.pool)
+        .execute(svc.db.sqlite())
         .await
         .unwrap();
     }
@@ -2720,7 +2322,7 @@ mod tests {
         .bind(id)
         .bind(tenant)
         .bind(visibility)
-        .execute(&svc.pool)
+        .execute(svc.db.sqlite())
         .await
         .unwrap();
     }
@@ -2817,12 +2419,12 @@ mod tests {
         sqlx::raw_sql(
             "CREATE TABLE one_audit_logs (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT, username TEXT, action TEXT NOT NULL, resource TEXT, ip_address TEXT, user_agent TEXT, created_at INTEGER NOT NULL);",
         )
-        .execute(&svc.pool)
+        .execute(svc.db.sqlite())
         .await
         .unwrap();
         svc.audit("t1", "admin1", "devops.skill.delete", Some("s2")).await;
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_audit_logs WHERE action = 'devops.skill.delete'")
-            .fetch_one(&svc.pool)
+            .fetch_one(svc.db.sqlite())
             .await
             .unwrap();
         assert_eq!(count, 1);
@@ -3169,7 +2771,7 @@ mod tests {
              INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('member1', 't1', 'member');
              INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('admin1', 't1', 'org_admin');",
         )
-        .execute(&svc.pool)
+        .execute(svc.db.sqlite())
         .await
         .unwrap();
         assert_eq!(svc.user_org_role("member1").await.unwrap().as_deref(), Some("member"));
@@ -3188,7 +2790,7 @@ mod tests {
              INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('memberA', 'tA', 'member'), ('memberB', 'tB', 'member'), ('admin1', 'tA', 'org_admin'), ('admin2', 'tB', 'org_admin');
              INSERT INTO one_active_tenant (user_id, tenant_id) VALUES ('memberA', 'tA'), ('memberB', 'tB'), ('admin1', 'tA'), ('admin2', 'tB');",
         )
-        .execute(&svc.pool)
+        .execute(svc.db.sqlite())
         .await
         .unwrap();
     }
@@ -3319,7 +2921,7 @@ mod tests {
                 .bind(&doc.id)
                 .bind(format!("{title} body"))
                 .bind(Vec::<u8>::new())
-                .execute(&svc.pool)
+                .execute(svc.db.sqlite())
                 .await
                 .unwrap();
         }
@@ -3330,7 +2932,7 @@ mod tests {
         );
         let titles: Vec<String> = sqlx::query_scalar(&sql)
             .bind("memberA")
-            .fetch_all(&svc.pool)
+            .fetch_all(svc.db.sqlite())
             .await
             .unwrap();
         assert_eq!(titles.len(), 2, "memberA retrieves only org + Group A chunks");
@@ -3351,7 +2953,7 @@ mod tests {
              INSERT INTO one_enterprise_members (user_id, enterprise_id, role) VALUES ('admin1', 'ent1', 'admin');
              INSERT INTO one_enterprise_license (enterprise_id, tier, updated_at) VALUES ('ent1', 'free', 0);",
         )
-        .execute(&svc.pool)
+        .execute(svc.db.sqlite())
         .await
         .unwrap();
 
@@ -3385,7 +2987,7 @@ mod tests {
 
         // Upgrade to enterprise → both allowed.
         sqlx::query("UPDATE one_enterprise_license SET tier = 'enterprise' WHERE enterprise_id = 'ent1'")
-            .execute(&svc.pool)
+            .execute(svc.db.sqlite())
             .await
             .unwrap();
         svc.upsert_skill(
@@ -4130,11 +3732,11 @@ mod tests {
              VALUES ('c1', ?, 0, 'the merger closes on the third of March', X'', 0)",
         )
         .bind(&doc.id)
-        .execute(&svc.pool)
+        .execute(svc.db.sqlite())
         .await
         .unwrap();
         crate::retrieval::sync_document(
-            &svc.pool,
+            &svc.db,
             &doc.id,
             &[("c1".to_string(), "the merger closes on the third of March".to_string())],
         )
@@ -4146,7 +3748,7 @@ mod tests {
                 "SELECT COUNT(*) FROM {} WHERE content MATCH '\"merger\"'",
                 crate::retrieval::FTS_TABLE
             ))
-            .fetch_one(&svc.pool)
+            .fetch_one(svc.db.sqlite())
             .await
             .unwrap()
         };
