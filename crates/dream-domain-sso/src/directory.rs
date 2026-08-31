@@ -431,7 +431,7 @@ mod tests {
         let user_repo: std::sync::Arc<dyn dream_core_db::IUserRepository> =
             std::sync::Arc::new(dream_core_db::SqliteUserRepository::new(db.pool().clone()));
         crate::service::SsoService::new(
-            db.pool().clone(),
+            dream_core_db::DbPool::Sqlite(db.pool().clone()),
             user_repo,
             std::sync::Arc::new(dream_core_auth::JwtService::new("test-secret".into())),
             std::sync::Arc::new(dream_core_auth::CookieConfig {
