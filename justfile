@@ -65,9 +65,15 @@ test:
 
 # Run the MySQL-gated enterprise tests against a real MySQL 8.0.16+ server.
 # They skip (pass vacuously) when DREAM_TEST_MYSQL_URL is unset, so this is
-# always safe to run. One-time server:
-#   docker run -d --name dream-mysql-test -e MYSQL_ROOT_PASSWORD=test -p 13306:3306 mysql:8.0
-# then e.g.:
+# always safe to run.
+#
+# PREFERRED: the native Windows MySQL (root/root on 127.0.0.1:3306) — no WSL
+# networking involved (see dream-en/docs/wsl-testing-pitfalls.zh-CN.md):
+#   DREAM_TEST_MYSQL_URL=mysql://root:root@127.0.0.1:3306/dream_test just test-mysql
+#
+# Fallback: a mysql:8 container inside WSL — works, but the WSL2 localhost
+# port relay breaks after `wsl --shutdown` and needs the VM healthy:
+#   docker run -d --name dream-mysql-test --restart unless-stopped #     -e MYSQL_ROOT_PASSWORD=test -p 13306:3306 mysql:8.0
 #   DREAM_TEST_MYSQL_URL=mysql://root:test@localhost:13306/dream_test just test-mysql
 test-mysql:
     @just _cargo nextest run -p dream-core-db -p dream-domain-org -p dream-domain-sso         -p dream-domain-enterprise -p dream-domain-billing -p dream-domain-platform         -p dream-domain-employee -p dream-domain-devops -p dream-domain-workflow         -p dream-domain-memory
