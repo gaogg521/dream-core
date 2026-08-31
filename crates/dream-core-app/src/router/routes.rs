@@ -2203,7 +2203,7 @@ pub(crate) fn build_governance_plane(
     // grants. Same governance-plane assembly so a later admin-svc split can
     // lift it out whole.
     let one_memory_service = std::sync::Arc::new(dream_domain_memory::MemoryService::new(
-        services.database.pool().clone(),
+        dream_core_db::DbPool::Sqlite(services.database.pool().clone()),
     ));
     let one_memory_state = dream_domain_memory::OneMemoryRouterState::new(one_memory_service);
     let one_memory_authenticated = dream_domain_memory::one_memory_routes(one_memory_state)
@@ -2599,7 +2599,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         // `MemoryService::new` is just an `Arc` clone.
         {
             let memory = std::sync::Arc::new(dream_domain_memory::MemoryService::new(
-                services.database.pool().clone(),
+                dream_core_db::DbPool::Sqlite(services.database.pool().clone()),
             ));
             states
                 .conversation

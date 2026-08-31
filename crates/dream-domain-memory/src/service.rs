@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 
-use sqlx::SqlitePool;
+use dream_core_db::{DbPool, db_params};
 
 use dream_core_common::{generate_prefixed_id, now_ms};
 use sha2::{Digest, Sha256};
@@ -36,7 +36,7 @@ pub struct MemoryActor {
 }
 
 pub struct MemoryService {
-    pool: SqlitePool,
+    db: DbPool,
 }
 
 fn is_admin_role(role: &str) -> bool {
@@ -196,21 +196,22 @@ fn collection_row_to_model(row: &CollectionRow) -> Collection {
 }
 
 impl MemoryService {
-    pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub fn new(db: DbPool) -> Self {
+        Self { db }
     }
 
     /// Resolve the caller's active-tenant membership (same cross-crate query
     /// as one-platform's `resolve_actor`).
     pub async fn resolve_actor(&self, user_id: &str) -> Result<Option<MemoryActor>, MemoryError> {
-        let result = sqlx::query_as::<_, (String, String)>(
-            "SELECT uo.tenant_id, uo.role FROM one_user_org uo WHERE uo.user_id = ? \
-             ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC, \
-                      uo.created_at DESC, uo.tenant_id ASC LIMIT 1",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
-        .await;
+        let result = self
+            .db
+            .fetch_optional_as::<(String, String)>(
+                "SELECT uo.tenant_id, uo.role FROM one_user_org uo WHERE uo.user_id = ? \
+                 ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC, \
+                          uo.created_at DESC, uo.tenant_id ASC LIMIT 1",
+                &db_params![user_id],
+            )
+            .await;
         match result {
             Ok(Some((tenant_id, role))) => Ok(Some(MemoryActor { tenant_id, role })),
             Ok(None) => Ok(None),
@@ -240,44 +241,34 @@ impl MemoryService {
     /// tier's readability hinge.
     async fn member_department(&self, tenant_id: &str, user_id: &str) -> Result<Option<String>, MemoryError> {
         let row: Option<(Option<String>,)> =
-            sqlx::query_as("SELECT department_id FROM one_user_org WHERE tenant_id = ? AND user_id = ?")
-                .bind(tenant_id)
-                .bind(user_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_as::<(Option<String>,)>("SELECT department_id FROM one_user_org WHERE tenant_id = ? AND user_id = ?", &db_params![tenant_id, user_id])
                 .await?;
         Ok(row.and_then(|(department_id,)| department_id))
     }
 
     async fn load_collections(&self, tenant_id: &str) -> Result<Vec<CollectionRow>, MemoryError> {
-        let rows: Vec<CollectionRow> = sqlx::query_as(
+        let rows: Vec<CollectionRow> = self.db.fetch_all_as::<CollectionRow>(
             "SELECT id, tenant_id, scope, department_id, owner_user_id, name, description, created_at, updated_at \
              FROM one_memory_collections WHERE tenant_id = ? ORDER BY created_at ASC, id ASC",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id])
         .await?;
         Ok(rows)
     }
 
     async fn load_collection(&self, tenant_id: &str, id: &str) -> Result<Option<CollectionRow>, MemoryError> {
-        let row: Option<CollectionRow> = sqlx::query_as(
+        let row: Option<CollectionRow> = self.db.fetch_optional_as::<CollectionRow>(
             "SELECT id, tenant_id, scope, department_id, owner_user_id, name, description, created_at, updated_at \
              FROM one_memory_collections WHERE tenant_id = ? AND id = ?",
-        )
-        .bind(tenant_id)
-        .bind(id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id, id])
         .await?;
         Ok(row)
     }
 
     /// All grants in the tenant, evaluated in bulk by search and coverage.
     async fn load_grants(&self, tenant_id: &str) -> Result<Vec<GrantRow>, MemoryError> {
-        let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, String)> = self.db.fetch_all_as::<(String, String, String, String)>(
             "SELECT collection_id, subject_type, subject_id, access FROM one_memory_grants WHERE tenant_id = ?",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id])
         .await?;
         Ok(rows
             .into_iter()
@@ -292,13 +283,10 @@ impl MemoryService {
 
     /// Grants on one collection — the per-collection read/write check.
     async fn load_collection_grants(&self, tenant_id: &str, collection_id: &str) -> Result<Vec<GrantRow>, MemoryError> {
-        let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, String)> = self.db.fetch_all_as::<(String, String, String, String)>(
             "SELECT collection_id, subject_type, subject_id, access FROM one_memory_grants \
              WHERE tenant_id = ? AND collection_id = ?",
-        )
-        .bind(tenant_id)
-        .bind(collection_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id, collection_id])
         .await?;
         Ok(rows
             .into_iter()
@@ -421,21 +409,11 @@ impl MemoryService {
         };
         let id = generate_prefixed_id("memc");
         let now = now_ms();
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_memory_collections \
                  (id, tenant_id, scope, department_id, owner_user_id, name, description, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(tenant_id)
-        .bind(scope)
-        .bind(&department_id)
-        .bind(&owner_user_id)
-        .bind(name)
-        .bind(description.trim())
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, tenant_id, scope, &department_id, &owner_user_id, name, description.trim(), now, now])
         .await?;
         self.load_collection(tenant_id, &id)
             .await?
@@ -506,13 +484,7 @@ impl MemoryService {
                 return Err(MemoryError::BadRequest("collection name must not be empty".into()));
             }
         }
-        sqlx::query("UPDATE one_memory_collections SET name = COALESCE(?, name), description = COALESCE(?, description), updated_at = ? WHERE tenant_id = ? AND id = ?")
-            .bind(name.map(str::trim))
-            .bind(description.map(str::trim))
-            .bind(now_ms())
-            .bind(tenant_id)
-            .bind(id)
-            .execute(&self.pool)
+        self.db.execute("UPDATE one_memory_collections SET name = COALESCE(?, name), description = COALESCE(?, description), updated_at = ? WHERE tenant_id = ? AND id = ?", &db_params![name.map(str::trim), description.map(str::trim), now_ms(), tenant_id, id])
             .await?;
         self.load_collection(tenant_id, id)
             .await?
@@ -543,22 +515,22 @@ impl MemoryService {
                 "you cannot delete this memory collection".into(),
             ));
         }
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM one_memory_items WHERE tenant_id = ? AND collection_id = ?")
-            .bind(tenant_id)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM one_memory_grants WHERE tenant_id = ? AND collection_id = ?")
-            .bind(tenant_id)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM one_memory_collections WHERE tenant_id = ? AND id = ?")
-            .bind(tenant_id)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+        let mut tx = self.db.begin().await?;
+        tx.execute(
+            "DELETE FROM one_memory_items WHERE tenant_id = ? AND collection_id = ?",
+            &db_params![tenant_id, id],
+        )
+        .await?;
+        tx.execute(
+            "DELETE FROM one_memory_grants WHERE tenant_id = ? AND collection_id = ?",
+            &db_params![tenant_id, id],
+        )
+        .await?;
+        tx.execute(
+            "DELETE FROM one_memory_collections WHERE tenant_id = ? AND id = ?",
+            &db_params![tenant_id, id],
+        )
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -596,24 +568,11 @@ impl MemoryService {
         }
         let id = generate_prefixed_id("memi");
         let now = now_ms();
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_memory_items \
                  (id, tenant_id, collection_id, content, content_hash, importance, source_conversation_id, tags, status, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
-        )
-        .bind(&id)
-        .bind(tenant_id)
-        .bind(collection_id)
-        .bind(content)
-        // Hashed once at insert: the refine job groups duplicates by this
-        // column instead of re-hashing content on every run.
-        .bind(sha256_hex(content))
-        .bind(importance)
-        .bind(source_conversation_id)
-        .bind(serde_json::to_string(tags).unwrap_or_else(|_| "[]".into()))
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, tenant_id, collection_id, content, sha256_hex(content), importance, source_conversation_id, serde_json::to_string(tags).unwrap_or_else(|_| "[]".into()), now, now])
         .await?;
         self.get_item(tenant_id, collection_id, &id)
             .await?
@@ -628,11 +587,7 @@ impl MemoryService {
     ) -> Result<Option<MemoryItemDto>, MemoryError> {
         let sql =
             format!("SELECT {ITEM_COLUMNS} FROM one_memory_items WHERE tenant_id = ? AND collection_id = ? AND id = ?");
-        let row: Option<ItemRow> = sqlx::query_as(&sql)
-            .bind(tenant_id)
-            .bind(collection_id)
-            .bind(id)
-            .fetch_optional(&self.pool)
+        let row: Option<ItemRow> = self.db.fetch_optional_as::<ItemRow>(&sql, &db_params![tenant_id, collection_id, id])
             .await?;
         Ok(row.map(item_row_to_dto))
     }
@@ -653,11 +608,7 @@ impl MemoryService {
             "SELECT {ITEM_COLUMNS} FROM one_memory_items \
              WHERE tenant_id = ? AND collection_id = ? ORDER BY created_at DESC, id DESC LIMIT ?"
         );
-        let rows: Vec<ItemRow> = sqlx::query_as(&sql)
-            .bind(tenant_id)
-            .bind(collection_id)
-            .bind(limit)
-            .fetch_all(&self.pool)
+        let rows: Vec<ItemRow> = self.db.fetch_all_as::<ItemRow>(&sql, &db_params![tenant_id, collection_id, limit])
             .await?;
         Ok(rows.into_iter().map(item_row_to_dto).collect())
     }
@@ -700,11 +651,13 @@ impl MemoryService {
              AND collection_id IN ({placeholders}) \
              ORDER BY created_at DESC, id DESC LIMIT ?"
         );
-        let mut statement = sqlx::query_as::<_, ItemRow>(&sql).bind(tenant_id).bind(query);
-        for id in &collection_ids {
-            statement = statement.bind(id);
-        }
-        let rows = statement.bind(limit).fetch_all(&self.pool).await?;
+        let mut params = db_params![tenant_id, query];
+        params.extend(collection_ids.iter().map(|id| id.as_str().into()));
+        params.push(limit.into());
+        let rows = self
+            .db
+            .fetch_all_as::<ItemRow>(&sql, &params)
+            .await?;
         Ok(rows.into_iter().map(item_row_to_dto).collect())
     }
 
@@ -761,17 +714,12 @@ impl MemoryService {
              WHERE tenant_id = ? AND status = 'active' AND collection_id IN ({coll_ph}) AND ({where_any}) \
              ORDER BY ({score}) DESC, importance DESC, created_at DESC LIMIT ?"
         );
-        let mut q = sqlx::query_as::<_, ItemRow>(&sql).bind(tenant_id);
-        for id in &collection_ids {
-            q = q.bind(id);
-        }
-        for t in &terms {
-            q = q.bind(t); // WHERE (…OR…)
-        }
-        for t in &terms {
-            q = q.bind(t); // ORDER BY score
-        }
-        let rows = q.bind(limit).fetch_all(&self.pool).await?;
+        let mut params = db_params![tenant_id];
+        params.extend(collection_ids.iter().map(|id| id.as_str().into()));
+        params.extend(terms.iter().map(|t| t.as_str().into())); // WHERE (…OR…)
+        params.extend(terms.iter().map(|t| t.as_str().into())); // ORDER BY score
+        params.push(limit.into());
+        let rows = self.db.fetch_all_as::<ItemRow>(&sql, &params).await?;
         Ok(rows.into_iter().map(item_row_to_dto).collect())
     }
 
@@ -786,14 +734,11 @@ impl MemoryService {
         caller_role: &str,
         default_name: &str,
     ) -> Result<String, MemoryError> {
-        let existing: Option<String> = sqlx::query_scalar(
+        let existing: Option<String> = self.db.fetch_optional_scalar(
             "SELECT id FROM one_memory_collections \
              WHERE tenant_id = ? AND scope = 'personal' AND owner_user_id = ? \
              ORDER BY created_at ASC LIMIT 1",
-        )
-        .bind(tenant_id)
-        .bind(caller_id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id, caller_id])
         .await?;
         if let Some(id) = existing {
             return Ok(id);
@@ -829,19 +774,11 @@ impl MemoryService {
         match self.refine_collection(collection_id).await {
             Ok((merged_count, trimmed_count)) => {
                 let finished_at = now_ms();
-                sqlx::query(
+                self.db.execute(
                     "INSERT INTO one_memory_refine_jobs \
                          (id, tenant_id, collection_id, status, merged_count, trimmed_count, error, created_at, finished_at) \
                      VALUES (?, ?, ?, 'done', ?, ?, NULL, ?, ?)",
-                )
-                .bind(&id)
-                .bind(tenant_id)
-                .bind(collection_id)
-                .bind(merged_count)
-                .bind(trimmed_count)
-                .bind(created_at)
-                .bind(finished_at)
-                .execute(&self.pool)
+                &db_params![&id, tenant_id, collection_id, merged_count, trimmed_count, created_at, finished_at])
                 .await?;
                 Ok(MemoryRefineJobDto {
                     id,
@@ -856,18 +793,11 @@ impl MemoryService {
             }
             Err(e) => {
                 // Best-effort audit: the run happened even though it failed.
-                let _ = sqlx::query(
+                let _ = self.db.execute(
                     "INSERT INTO one_memory_refine_jobs \
                          (id, tenant_id, collection_id, status, merged_count, trimmed_count, error, created_at, finished_at) \
                      VALUES (?, ?, ?, 'failed', 0, 0, ?, ?, ?)",
-                )
-                .bind(&id)
-                .bind(tenant_id)
-                .bind(collection_id)
-                .bind(e.to_string())
-                .bind(created_at)
-                .bind(now_ms())
-                .execute(&self.pool)
+                &db_params![&id, tenant_id, collection_id, e.to_string(), created_at, now_ms()])
                 .await;
                 Err(e)
             }
@@ -879,15 +809,15 @@ impl MemoryService {
     /// items still exceed the floor, trim the oldest low-importance ones
     /// down to it. Soft deletion throughout — rows stay for audit.
     async fn refine_collection(&self, collection_id: &str) -> Result<(i64, i64), MemoryError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.db.begin().await?;
 
-        let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT id, content_hash FROM one_memory_items \
-             WHERE collection_id = ? AND status = 'active' ORDER BY created_at ASC, id ASC",
-        )
-        .bind(collection_id)
-        .fetch_all(&mut *tx)
-        .await?;
+        let rows: Vec<(String, String)> = tx
+            .fetch_all_as(
+                "SELECT id, content_hash FROM one_memory_items \
+                 WHERE collection_id = ? AND status = 'active' ORDER BY created_at ASC, id ASC",
+                &db_params![collection_id],
+            )
+            .await?;
         let mut seen: HashSet<String> = HashSet::new();
         let mut duplicates: Vec<String> = Vec::new();
         for (id, content_hash) in rows {
@@ -899,43 +829,40 @@ impl MemoryService {
         }
         let mut merged_count: i64 = 0;
         for id in duplicates {
-            let result = sqlx::query(
-                "UPDATE one_memory_items SET status = 'trimmed', updated_at = ? WHERE id = ? AND status = 'active'",
-            )
-            .bind(now_ms())
-            .bind(&id)
-            .execute(&mut *tx)
-            .await?;
-            merged_count += result.rows_affected() as i64;
+            let rows = tx
+                .execute(
+                    "UPDATE one_memory_items SET status = 'trimmed', updated_at = ? WHERE id = ? AND status = 'active'",
+                    &db_params![now_ms(), &id],
+                )
+                .await?;
+            merged_count += rows as i64;
         }
 
-        let active_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM one_memory_items WHERE collection_id = ? AND status = 'active'")
-                .bind(collection_id)
-                .fetch_one(&mut *tx)
-                .await?;
+        let active_count: i64 = tx
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_memory_items WHERE collection_id = ? AND status = 'active'",
+                &db_params![collection_id],
+            )
+            .await?;
         let mut trimmed_count: i64 = 0;
         if active_count > MEMORY_REFINE_ACTIVE_FLOOR {
             let excess = active_count - MEMORY_REFINE_ACTIVE_FLOOR;
-            let victims: Vec<(String,)> = sqlx::query_as(
-                "SELECT id FROM one_memory_items \
-                 WHERE collection_id = ? AND status = 'active' AND importance < ? \
-                 ORDER BY created_at ASC, id ASC LIMIT ?",
-            )
-            .bind(collection_id)
-            .bind(MEMORY_REFINE_MIN_IMPORTANCE)
-            .bind(excess)
-            .fetch_all(&mut *tx)
-            .await?;
-            for (id,) in victims {
-                let result = sqlx::query(
-                    "UPDATE one_memory_items SET status = 'trimmed', updated_at = ? WHERE id = ? AND status = 'active'",
+            let victims: Vec<(String,)> = tx
+                .fetch_all_as(
+                    "SELECT id FROM one_memory_items \
+                     WHERE collection_id = ? AND status = 'active' AND importance < ? \
+                     ORDER BY created_at ASC, id ASC LIMIT ?",
+                    &db_params![collection_id, MEMORY_REFINE_MIN_IMPORTANCE, excess],
                 )
-                .bind(now_ms())
-                .bind(&id)
-                .execute(&mut *tx)
                 .await?;
-                trimmed_count += result.rows_affected() as i64;
+            for (id,) in victims {
+                let rows = tx
+                    .execute(
+                        "UPDATE one_memory_items SET status = 'trimmed', updated_at = ? WHERE id = ? AND status = 'active'",
+                        &db_params![now_ms(), &id],
+                    )
+                    .await?;
+                trimmed_count += rows as i64;
             }
         }
 
@@ -972,51 +899,30 @@ impl MemoryService {
             .await?
             .ok_or_else(|| MemoryError::NotFound("memory collection not found".into()))?;
         let subject_id = subject_id.trim();
-        let existing: Option<(String,)> = sqlx::query_as(
+        let existing: Option<(String,)> = self.db.fetch_optional_as::<(String,)>(
             "SELECT id FROM one_memory_grants WHERE tenant_id = ? AND collection_id = ? AND subject_type = ? AND subject_id = ?",
-        )
-        .bind(tenant_id)
-        .bind(collection_id)
-        .bind(subject_type)
-        .bind(subject_id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id, collection_id, subject_type, subject_id])
         .await?;
         if let Some((id,)) = existing {
-            sqlx::query("UPDATE one_memory_grants SET access = ?, granted_by = ? WHERE id = ?")
-                .bind(access)
-                .bind(granted_by)
-                .bind(&id)
-                .execute(&self.pool)
+            self.db.execute("UPDATE one_memory_grants SET access = ?, granted_by = ? WHERE id = ?", &db_params![access, granted_by, &id])
                 .await?;
             return self.get_grant(tenant_id, &id).await;
         }
         let id = generate_prefixed_id("memg");
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_memory_grants \
                  (id, tenant_id, collection_id, subject_type, subject_id, access, granted_by, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(tenant_id)
-        .bind(collection_id)
-        .bind(subject_type)
-        .bind(subject_id)
-        .bind(access)
-        .bind(granted_by)
-        .bind(now_ms())
-        .execute(&self.pool)
+        &db_params![&id, tenant_id, collection_id, subject_type, subject_id, access, granted_by, now_ms()])
         .await?;
         self.get_grant(tenant_id, &id).await
     }
 
     async fn get_grant(&self, tenant_id: &str, id: &str) -> Result<MemoryGrantDto, MemoryError> {
-        let row: Option<(String, String, String, String, String, String, i64)> = sqlx::query_as(
+        let row: Option<(String, String, String, String, String, String, i64)> = self.db.fetch_optional_as::<(String, String, String, String, String, String, i64)>(
             "SELECT id, collection_id, subject_type, subject_id, access, granted_by, created_at \
              FROM one_memory_grants WHERE tenant_id = ? AND id = ?",
-        )
-        .bind(tenant_id)
-        .bind(id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id, id])
         .await?;
         let Some((id, collection_id, subject_type, subject_id, access, granted_by, created_at)) = row else {
             return Err(MemoryError::Internal(
@@ -1035,12 +941,11 @@ impl MemoryService {
     }
 
     pub async fn revoke_memory(&self, tenant_id: &str, grant_id: &str) -> Result<(), MemoryError> {
-        let result = sqlx::query("DELETE FROM one_memory_grants WHERE tenant_id = ? AND id = ?")
-            .bind(tenant_id)
-            .bind(grant_id)
-            .execute(&self.pool)
+        let rows = self
+            .db
+            .execute("DELETE FROM one_memory_grants WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, grant_id])
             .await?;
-        if result.rows_affected() == 0 {
+        if rows == 0 {
             return Err(MemoryError::NotFound("memory grant not found".into()));
         }
         Ok(())
@@ -1050,13 +955,10 @@ impl MemoryService {
         self.load_collection(tenant_id, collection_id)
             .await?
             .ok_or_else(|| MemoryError::NotFound("memory collection not found".into()))?;
-        let rows: Vec<(String, String, String, String, String, String, i64)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, String, String, String, i64)> = self.db.fetch_all_as::<(String, String, String, String, String, String, i64)>(
             "SELECT id, collection_id, subject_type, subject_id, access, granted_by, created_at \
              FROM one_memory_grants WHERE tenant_id = ? AND collection_id = ? ORDER BY created_at ASC, id ASC",
-        )
-        .bind(tenant_id)
-        .bind(collection_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id, collection_id])
         .await?;
         Ok(rows
             .into_iter()
@@ -1079,9 +981,7 @@ impl MemoryService {
     /// reaching people, or is it written and never seen".
     pub async fn grant_coverage(&self, tenant_id: &str) -> Result<GrantCoverageDto, MemoryError> {
         let members: Vec<(String, String, Option<String>)> =
-            sqlx::query_as("SELECT user_id, role, department_id FROM one_user_org WHERE tenant_id = ?")
-                .bind(tenant_id)
-                .fetch_all(&self.pool)
+            self.db.fetch_all_as::<(String, String, Option<String>)>("SELECT user_id, role, department_id FROM one_user_org WHERE tenant_id = ?", &db_params![tenant_id])
                 .await?;
         let member_count = members.len() as i64;
         if member_count == 0 {
@@ -1096,15 +996,15 @@ impl MemoryService {
         // `readable_by` takes the admin flag per member, so the models are
         // kept separate from any single member's answer.
         let models: Vec<Collection> = rows.iter().map(collection_row_to_model).collect();
-        let with_active: HashSet<String> = sqlx::query_as::<_, (String,)>(
-            "SELECT DISTINCT collection_id FROM one_memory_items WHERE tenant_id = ? AND status = 'active'",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
-        .await?
-        .into_iter()
-        .map(|(id,)| id)
-        .collect();
+        let with_active: HashSet<String> = self
+            .db
+            .fetch_all_scalar::<String>(
+                "SELECT DISTINCT collection_id FROM one_memory_items WHERE tenant_id = ? AND status = 'active'",
+                &db_params![tenant_id],
+            )
+            .await?
+            .into_iter()
+            .collect();
         let mut covered_count: i64 = 0;
         for (user_id, role, department_id) in &members {
             let is_admin = is_admin_role(role);
@@ -1131,7 +1031,7 @@ mod tests {
     async fn setup() -> (dream_core_db::Database, MemoryService) {
         let db = dream_core_db::init_database_memory().await.unwrap();
         crate::migrate::run_one_memory_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let service = MemoryService::new(db.pool().clone());
+        let service = MemoryService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()));
         (db, service)
     }
 
