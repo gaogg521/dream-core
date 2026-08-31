@@ -11,12 +11,24 @@ use crate::error::MemoryError;
 
 /// Embedded migrations, applied in array order. Append-only: never edit or
 /// reorder shipped entries — add a new file instead.
-const MIGRATIONS: &[(&str, &str)] = &[("001_init", include_str!("../migrations/001_init.sql"))];
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("001_init", include_str!("../migrations/001_init.sql")),
+    (
+        "002_memory_config",
+        include_str!("../migrations/002_memory_config.sql"),
+    ),
+];
 
-const MIGRATIONS_MYSQL: &[(&str, &str)] = &[(
-    "001_init",
-    include_str!("../migrations_mysql/001_init.sql"),
-)];
+const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
+    (
+        "001_init",
+        include_str!("../migrations_mysql/001_init.sql"),
+    ),
+    (
+        "002_memory_config",
+        include_str!("../migrations_mysql/002_memory_config.sql"),
+    ),
+];
 
 /// Run all pending one-memory migrations on the pool's backend. Idempotent;
 /// call once at startup after the upstream database has been initialized.

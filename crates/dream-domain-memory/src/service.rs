@@ -13,7 +13,10 @@ use dream_core_common::{generate_prefixed_id, now_ms};
 use sha2::{Digest, Sha256};
 
 use crate::error::MemoryError;
-use crate::models::{GrantCoverageDto, MemoryCollectionDto, MemoryGrantDto, MemoryItemDto, MemoryRefineJobDto};
+use crate::models::{
+    GrantCoverageDto, MemoryCollectionDto, MemoryConfigDto, MemoryGrantDto, MemoryItemDto,
+    MemoryRefineJobDto,
+};
 
 /// The three OpenOcta-aligned memory tiers (§产品口径): global company
 /// knowledge, fused department memory, and personal distillation. The
@@ -196,6 +199,56 @@ fn collection_row_to_model(row: &CollectionRow) -> Collection {
 }
 
 impl MemoryService {
+    /// Runs `sqlite_sql` or `mysql_sql` by backend — the dialects diverge on
+    /// upsert syntax only; params are shared.
+    async fn upsert(
+        &self,
+        sqlite_sql: &str,
+        mysql_sql: &str,
+        params: &[dream_core_db::DbValue],
+    ) -> Result<u64, MemoryError> {
+        let sql = match self.db.backend() {
+            dream_core_db::DbBackend::Sqlite => sqlite_sql,
+            dream_core_db::DbBackend::MySql => mysql_sql,
+        };
+        Ok(self.db.execute(sql, params).await?)
+    }
+
+    /// Per-tenant extraction settings, or `None` when the tenant never saved
+    /// a config — the extractor's "disabled" signal (§A.6: no configured
+    /// channel = no LLM extraction, explicit 「记住…」 requests still work).
+    pub async fn memory_config(&self, tenant_id: &str) -> Result<Option<MemoryConfigDto>, MemoryError> {
+        Ok(self
+            .db
+            .fetch_optional_as::<MemoryConfigDto>(
+                "SELECT tenant_id, extraction_channel_id, extraction_model, updated_at                  FROM one_memory_config WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?)
+    }
+
+    /// Save per-tenant extraction settings (admin action). Both fields are
+    /// replaced wholesale; `extraction_channel_id = None` disables LLM
+    /// extraction for the tenant.
+    pub async fn set_memory_config(
+        &self,
+        tenant_id: &str,
+        extraction_channel_id: Option<&str>,
+        extraction_model: Option<&str>,
+    ) -> Result<MemoryConfigDto, MemoryError> {
+        let now = now_ms() as i64;
+        self.upsert(
+            "INSERT INTO one_memory_config (tenant_id, extraction_channel_id, extraction_model, updated_at)              VALUES (?, ?, ?, ?)              ON CONFLICT(tenant_id) DO UPDATE SET extraction_channel_id = excluded.extraction_channel_id,                  extraction_model = excluded.extraction_model, updated_at = excluded.updated_at",
+            "INSERT INTO one_memory_config (tenant_id, extraction_channel_id, extraction_model, updated_at)              VALUES (?, ?, ?, ?)              ON DUPLICATE KEY UPDATE extraction_channel_id = new.extraction_channel_id,                  extraction_model = new.extraction_model, updated_at = new.updated_at",
+            &db_params![tenant_id, extraction_channel_id, extraction_model, now],
+        )
+        .await?;
+        Ok(self
+            .memory_config(tenant_id)
+            .await?
+            .ok_or_else(|| MemoryError::Internal("memory config vanished immediately after write".into()))?)
+    }
+
     pub fn new(db: DbPool) -> Self {
         Self { db }
     }

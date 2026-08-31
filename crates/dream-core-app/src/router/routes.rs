@@ -1021,8 +1021,10 @@ const MEMORY_DEFAULT_COLLECTION_NAME: &str = "个人对话记忆";
 /// needs a tenant-configurable model channel. Fire-and-forget, spawns its
 /// own work, never touches the turn result.
 #[cfg(feature = "enterprise")]
-struct OneMemoryTurnExtractor {
+pub(crate) struct OneMemoryTurnExtractor {
     memory: std::sync::Arc<dream_domain_memory::MemoryService>,
+    devops: std::sync::Arc<dream_domain_devops::DevopsService>,
+    conversation_repo: std::sync::Arc<dyn dream_core_db::IConversationRepository>,
 }
 
 /// Extract the fact clause from an explicit "remember this" style message,
@@ -1076,10 +1078,9 @@ impl dream_core_conversation::TurnMemoryExtractor for OneMemoryTurnExtractor {
         if synthetic_prompt {
             return;
         }
-        let Some(fact) = explicit_memory_request(&user_message) else {
-            return;
-        };
         let memory = self.memory.clone();
+        let devops = self.devops.clone();
+        let conversation_repo = self.conversation_repo.clone();
         tokio::spawn(async move {
             let actor = match memory.resolve_actor(&user_id).await {
                 Ok(Some(a)) => a,
@@ -1095,20 +1096,136 @@ impl dream_core_conversation::TurnMemoryExtractor for OneMemoryTurnExtractor {
                     return;
                 }
             };
-            if let Err(e) = memory
-                .add_item(
-                    &actor.tenant_id,
-                    &user_id,
-                    &actor.role,
-                    &collection,
-                    &fact,
-                    0.7,
-                    Some(&conversation_id),
-                    &[],
-                )
-                .await
-            {
-                tracing::debug!(error = %e, "memory extract: add_item failed (non-fatal)");
+
+            // LLM extraction (§A.6 方案 L) when the tenant configured a
+            // channel; the explicit-request heuristic stays as the
+            // zero-config fallback. Both write through the same authorised
+            // add_item path.
+            let config = memory.memory_config(&actor.tenant_id).await.ok().flatten();
+            if let Some(cfg) = config.filter(|c| c.extraction_channel_id.is_some()) {
+                // LLM extraction needs both sides of the turn. The user
+                // message is already in hand; the assistant reply is read
+                // from persistence (it is persisted before the turn
+                // completes). A half-turn (no persisted reply) is never
+                // extracted.
+                let page_params = dream_core_db::MessagePageParams {
+                    limit: 12,
+                    direction: dream_core_db::MessagePageDirection::InitialLatest,
+                };
+                let Ok(page) = conversation_repo
+                    .list_messages_page(&user_id, &conversation_id, &page_params)
+                    .await
+                else {
+                    return;
+                };
+                let Some(assistant_message) = page.items.iter().rev().find_map(|row| {
+                    (row.r#type == "text"
+                        && row.position.as_deref() == Some("left")
+                        && !row.content.trim().is_empty())
+                    .then_some(row.content.trim().to_owned())
+                }) else {
+                    return;
+                };
+                match devops
+                    .extraction_llm_config(
+                        cfg.extraction_channel_id.as_deref().unwrap_or_default(),
+                        cfg.extraction_model.as_deref(),
+                    )
+                    .await
+                {
+                    Ok(Some(llm)) => {
+                        let engine_config = dream_engine_config::config::Config {
+                            provider_label: "memory-extraction".into(),
+                            provider: dream_engine_config::config::ProviderType::OpenAI,
+                            api_key: llm.api_key,
+                            base_url: llm.base_url,
+                            model: llm.model,
+                            max_tokens: None,
+                            max_turns: None,
+                            max_tool_call_malformed_turns: None,
+                            max_tool_call_failure_turns: None,
+                            system_prompt: None,
+                            thinking: None,
+                            prompt_caching: false,
+                            compat: Default::default(),
+                            tools: Default::default(),
+                            session: Default::default(),
+                            compact: Default::default(),
+                            plan: Default::default(),
+                            shell: Default::default(),
+                            file_cache: Default::default(),
+                            hooks: Default::default(),
+                            bedrock: None,
+                            vertex: None,
+                            mcp: Default::default(),
+                            logging: Default::default(),
+                            vision: None,
+                        };
+                        match dream_core_ai_agent::extract_facts_via_llm(
+                            &engine_config,
+                            &user_message,
+                            &assistant_message,
+                        )
+                        .await
+                        {
+                            Ok(facts) => {
+                                for fact in facts {
+                                    if fact.importance
+                                        < dream_core_ai_agent::EXTRACTION_MIN_IMPORTANCE
+                                    {
+                                        continue;
+                                    }
+                                    if let Err(e) = memory
+                                        .add_item(
+                                            &actor.tenant_id,
+                                            &user_id,
+                                            &actor.role,
+                                            &collection,
+                                            &fact.content,
+                                            fact.importance,
+                                            Some(&conversation_id),
+                                            &fact.tags,
+                                        )
+                                        .await
+                                    {
+                                        tracing::debug!(
+                                            error = %e,
+                                            "memory extract: LLM add_item failed (non-fatal)"
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::debug!(error = %e, "memory extract: LLM extraction failed (non-fatal)");
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::debug!("memory extract: extraction channel missing; skipped");
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "memory extract: channel unusable (non-fatal)");
+                    }
+                }
+            }
+
+            // Zero-config fallback: explicit 「记住…」 requests always work.
+            if let Some(fact) = explicit_memory_request(&user_message) {
+                if let Err(e) = memory
+                    .add_item(
+                        &actor.tenant_id,
+                        &user_id,
+                        &actor.role,
+                        &collection,
+                        &fact,
+                        0.7,
+                        Some(&conversation_id),
+                        &[],
+                    )
+                    .await
+                {
+                    tracing::debug!(error = %e, "memory extract: add_item failed (non-fatal)");
+                }
             }
         });
     }
@@ -1119,8 +1236,16 @@ impl dream_core_conversation::TurnMemoryExtractor for OneMemoryTurnExtractor {
 /// prepended to the turn's preset context. Awaited on the turn-start path,
 /// so it stays one indexed query and returns empty on any error.
 #[cfg(feature = "enterprise")]
-struct OneMemoryContextProvider {
-    memory: std::sync::Arc<dream_domain_memory::MemoryService>,
+pub(crate) struct OneMemoryContextProvider {
+    pub(crate) memory: std::sync::Arc<dream_domain_memory::MemoryService>,
+}
+
+#[cfg(feature = "enterprise")]
+#[async_trait::async_trait]
+impl dream_core_ai_agent::TurnMemoryRecall for OneMemoryContextProvider {
+    async fn recall(&self, user_id: &str, query: &str) -> Vec<String> {
+        dream_core_conversation::MemoryContextProvider::recall(self, user_id, query).await
+    }
 }
 
 #[async_trait::async_trait]
@@ -2604,10 +2729,24 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
             let memory = std::sync::Arc::new(dream_domain_memory::MemoryService::new(
                 services.db.clone(),
             ));
+            // Local devops handle: the extractor resolves the tenant's
+            // extraction channel (credential decryption) through it. Cheap
+            // construction — pool clone + key — same posture as the plan's
+            // "re-wrap rather than thread the handle" note.
+            let devops = std::sync::Arc::new(
+                dream_domain_devops::DevopsService::new(services.db.clone())
+                    .with_encryption_key(crate::config::derive_encryption_key(
+                        &services.data_secret_raw,
+                    )),
+            );
             states
                 .conversation
                 .service
-                .with_turn_memory_extractor(std::sync::Arc::new(OneMemoryTurnExtractor { memory: memory.clone() }));
+                .with_turn_memory_extractor(std::sync::Arc::new(OneMemoryTurnExtractor {
+                    memory: memory.clone(),
+                    devops,
+                    conversation_repo: services.conversation_repo.clone(),
+                }));
             states
                 .conversation
                 .service

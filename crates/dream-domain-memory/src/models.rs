@@ -41,6 +41,19 @@ pub struct MemoryItemDto {
     pub updated_at: i64,
 }
 
+/// Per-tenant memory-extraction settings (P2-2 followups §A.6). Absence of a
+/// row = extraction disabled: the turn extractor keeps honouring explicit
+/// 「记住…」 requests but never invokes an LLM.
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct MemoryConfigDto {
+    pub tenant_id: String,
+    /// one-devops `one_provider_registry` id the extraction LLM calls go to.
+    pub extraction_channel_id: Option<String>,
+    /// Channel model to call; `None` = the channel's first configured model.
+    pub extraction_model: Option<String>,
+    pub updated_at: i64,
+}
+
 /// One synchronous refine run: how many duplicates were merged away and how
 /// many low-value items were trimmed.
 #[derive(Debug, Clone, Serialize)]

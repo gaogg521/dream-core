@@ -11,6 +11,8 @@ pub(crate) mod first_message_injector;
 pub(crate) mod image_description;
 pub(crate) mod image_input;
 pub(crate) mod local_ocr_skill;
+pub mod memory_extraction;
+pub mod memory_recall;
 pub mod prompt_pipeline;
 pub(crate) mod skill_manager;
 pub(crate) mod vision_delegate;

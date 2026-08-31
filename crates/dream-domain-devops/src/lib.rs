@@ -41,5 +41,6 @@ pub use error::DevopsError;
 pub use migrate::run_one_devops_migrations;
 pub use model_proxy::model_proxy_routes;
 pub use routes::{admin_devops_routes, one_devops_routes};
+pub use provider_channel::{ExtractionLlmConfig, ResolvedChannel};
 pub use service::DevopsService;
 pub use state::OneDevopsRouterState;

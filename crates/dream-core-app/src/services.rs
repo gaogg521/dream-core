@@ -504,6 +504,15 @@ impl AppServices {
             })),
             #[cfg(not(feature = "enterprise"))]
             tool_call_security_gate: None,
+            // Enterprise memory recall (P2-2 §B.4 完整版): a per-turn ACP
+            // prompt hook injects the caller's readable memory into every
+            // prompt. `None` in personal builds — the hook is not registered.
+            #[cfg(feature = "enterprise")]
+            memory_recall: Some(Arc::new(crate::router::OneMemoryContextProvider {
+                memory: Arc::new(dream_domain_memory::MemoryService::new(db.clone())),
+            }) as Arc<dyn dream_core_ai_agent::TurnMemoryRecall>),
+            #[cfg(not(feature = "enterprise"))]
+            memory_recall: None,
         });
 
         // Agent factory is now wired. Future extension/custom agents

@@ -85,7 +85,66 @@ pub struct ResolvedChannel {
     pub user_id: String,
 }
 
+/// One-shot LLM call settings for the memory turn extractor (P2-2 followups
+/// §A.6): the channel's OpenAI-compatible upstream + credential (decrypted
+/// server-side, never leaves the process) + the model to call.
+#[derive(Debug, Clone)]
+pub struct ExtractionLlmConfig {
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+}
+
 impl DevopsService {
+    /// Resolves a company model channel into one-shot LLM call settings for
+    /// the memory turn extractor (P2-2 followups §A.6). OpenAI-compatible
+    /// channels only — extraction is a plain chat completion against
+    /// `upstream_base_url`, the same protocol the model proxy speaks. `model`
+    /// overrides the channel's first configured model; `None` picks it.
+    /// Returns `Ok(None)` when the channel does not exist (extraction is then
+    /// skipped, not failed) and errors when it exists but is unusable
+    /// (disabled, not OpenAI-compatible, no credential, no model).
+    pub async fn extraction_llm_config(
+        &self,
+        channel_id: &str,
+        model: Option<&str>,
+    ) -> Result<Option<ExtractionLlmConfig>, DevopsError> {
+        let row: Option<(String, String, String, String)> = self.db.fetch_optional_as::<(String, String, String, String)>(
+            "SELECT platform, upstream_base_url, api_key_encrypted, models              FROM one_provider_registry WHERE id = ? AND enabled = 1",
+        &db_params![channel_id])
+        .await?;
+
+        let Some((platform, upstream_base_url, api_key_encrypted, models_json)) = row else {
+            return Ok(None);
+        };
+        if platform != "openai" {
+            return Err(DevopsError::BadRequest(format!(
+                "extraction channel '{channel_id}' has platform '{platform}'; extraction supports OpenAI-compatible channels only"
+            )));
+        }
+        if api_key_encrypted.is_empty() {
+            return Err(DevopsError::BadRequest(format!(
+                "extraction channel '{channel_id}' has no credential configured"
+            )));
+        }
+        let api_key = decrypt_string(&api_key_encrypted, self.encryption_key()?)
+            .map_err(|e| DevopsError::Internal(format!("failed to decrypt channel credential: {e}")))?;
+        let models: Vec<String> = serde_json::from_str(&models_json).unwrap_or_default();
+        let Some(model) = model
+            .map(str::to_owned)
+            .or_else(|| models.first().cloned())
+        else {
+            return Err(DevopsError::BadRequest(format!(
+                "extraction channel '{channel_id}' has no model configured"
+            )));
+        };
+        Ok(Some(ExtractionLlmConfig {
+            base_url: upstream_base_url,
+            api_key,
+            model,
+        }))
+    }
+
     fn encryption_key(&self) -> Result<&[u8; 32], DevopsError> {
         self.encryption_key.as_ref().ok_or_else(|| {
             DevopsError::Internal(

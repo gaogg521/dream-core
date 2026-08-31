@@ -19,7 +19,6 @@ pub struct WorkspaceInfo {
 /// `AcpAgentManager` reads from this but never mutates it. By front-loading
 /// the decision logic (which MCP servers to inject, what preset context to
 /// compose) we keep the manager focused on execution + state.
-#[derive(Debug, Clone)]
 pub struct AcpSessionParams {
     pub conversation_id: String,
     pub user_id: String,
@@ -39,6 +38,21 @@ pub struct AcpSessionParams {
     /// uses it to prevent a text-only bridged model from inventing image
     /// contents when an attachment is represented only by a path.
     pub vision_policy: AcpVisionPolicy,
+    /// Enterprise memory recall (P2-2 §B.4 完整版). When `Some`, the prompt
+    /// pipeline gains a per-turn hook that prepends `[Relevant Memory]` to
+    /// every outgoing prompt — accumulated memory reaches continuing
+    /// conversations, not just the first turn. `None` for personal builds
+    /// and tests: prompts flow through unmodified.
+    pub memory_recall: Option<std::sync::Arc<dyn crate::capability::memory_recall::TurnMemoryRecall>>,
+}
+
+impl std::fmt::Debug for AcpSessionParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AcpSessionParams")
+            .field("conversation_id", &self.conversation_id)
+            .field("user_id", &self.user_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AcpSessionParams {
@@ -75,6 +89,8 @@ pub async fn assemble_acp_params(
     data_dir: PathBuf,
     dump_prompts: bool,
     vision_policy: AcpVisionPolicy,
+    memory_recall: Option<std::sync::Arc<dyn crate::capability::memory_recall::TurnMemoryRecall>>,
+
 ) -> AcpSessionParams {
     let mcp_servers = resolve_mcp_servers(&config, user_mcp_servers);
     let preset_context = compose_preset_context(config.preset_context.as_deref());
@@ -92,6 +108,7 @@ pub async fn assemble_acp_params(
         data_dir,
         dump_prompts,
         vision_policy,
+        memory_recall,
     }
 }
 
@@ -223,7 +240,8 @@ mod tests {
             PathBuf::from("/tmp/data"),
             true,
             AcpVisionPolicy::NotBridged,
-        )
+        
+    None,)
         .await;
 
         assert!(params.dump_prompts);
@@ -306,7 +324,8 @@ mod tests {
             PathBuf::from("/tmp/data"),
             false,
             AcpVisionPolicy::NotBridged,
-        )
+        
+    None,)
         .await;
 
         let request = params.new_session_request();

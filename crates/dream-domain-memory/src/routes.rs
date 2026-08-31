@@ -17,7 +17,10 @@ use dream_core_api_types::ApiResponse;
 use dream_core_auth::CurrentUser;
 
 use crate::error::MemoryError;
-use crate::models::{GrantCoverageDto, MemoryCollectionDto, MemoryGrantDto, MemoryItemDto, MemoryRefineJobDto};
+use crate::models::{
+    GrantCoverageDto, MemoryCollectionDto, MemoryConfigDto, MemoryGrantDto, MemoryItemDto,
+    MemoryRefineJobDto,
+};
 use crate::rbac::{RequireMemoryAdmin, RequireMemoryMember};
 use crate::state::OneMemoryRouterState;
 
@@ -37,6 +40,10 @@ pub fn one_memory_routes(state: OneMemoryRouterState) -> Router {
         )
         .route("/api/one/admin/memory/collections/{id}/grants", get(admin_list_grants))
         .route("/api/one/admin/memory/grants", put(admin_put_grant))
+        .route(
+            "/api/one/admin/memory/config",
+            get(admin_get_memory_config).put(admin_put_memory_config),
+        )
         .route("/api/one/admin/memory/grants/{grantId}", delete(admin_revoke_grant))
         .route("/api/one/admin/memory/coverage", get(admin_coverage))
         .route("/api/one/memory/collections", get(member_list_collections))
@@ -312,6 +319,64 @@ async fn member_search(
                 &query.query,
                 query.collection_id.as_deref(),
                 query.limit.unwrap_or(50),
+            )
+            .await?,
+    )))
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PutMemoryConfigBody {
+    /// one-devops `one_provider_registry` id; `None` disables LLM extraction.
+    #[serde(default)]
+    extraction_channel_id: Option<String>,
+    /// Channel model to call; `None` = the channel's first configured model.
+    #[serde(default)]
+    extraction_model: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GetMemoryConfigQuery {
+    #[serde(default)]
+    tenant_id: Option<String>,
+}
+
+/// Admin read of per-tenant extraction settings. `None` fields = extraction
+/// disabled for the tenant (the common default).
+async fn admin_get_memory_config(
+    State(state): State<OneMemoryRouterState>,
+    RequireMemoryAdmin(actor): RequireMemoryAdmin,
+) -> Result<Json<ApiResponse<Option<MemoryConfigDto>>>, MemoryError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.memory_config(&actor.tenant_id).await?,
+    )))
+}
+
+/// Admin save of per-tenant extraction settings. Upserts the tenant's row;
+/// both fields are replaced wholesale.
+async fn admin_put_memory_config(
+    State(state): State<OneMemoryRouterState>,
+    RequireMemoryAdmin(actor): RequireMemoryAdmin,
+    Json(body): Json<PutMemoryConfigBody>,
+) -> Result<Json<ApiResponse<MemoryConfigDto>>, MemoryError> {
+    if let Some(model) = body.extraction_model.as_deref() {
+        if body.extraction_channel_id.is_none() {
+            return Err(MemoryError::BadRequest(
+                "extraction_model requires extraction_channel_id".into(),
+            ));
+        }
+        if model.trim().is_empty() {
+            return Err(MemoryError::BadRequest("extraction_model must not be blank".into()));
+        }
+    }
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .set_memory_config(
+                &actor.tenant_id,
+                body.extraction_channel_id.as_deref(),
+                body.extraction_model.as_deref(),
             )
             .await?,
     )))

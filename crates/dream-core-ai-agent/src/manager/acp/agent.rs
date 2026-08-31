@@ -739,10 +739,16 @@ impl AcpAgentManager {
         );
         seed_startup_config_preferences(&mut session, &params, &startup_config_seed_base);
 
-        let pipeline = PromptPipeline::new(vec![
+        let mut hooks: Vec<Arc<dyn crate::capability::prompt_pipeline::PreSendHook>> = vec![
             Arc::new(SessionNewPreludeHook),
             Arc::new(ImageAttachmentVisionHook::default()),
-        ]);
+        ];
+        // P2-2 §B.4 完整版: per-turn memory injection — only registered when
+        // the app wired a recall implementation (enterprise memory plane).
+        if let Some(recall) = params.memory_recall.clone() {
+            hooks.push(Arc::new(crate::manager::acp::memory_prompt_hook::MemoryPromptHook { recall }));
+        }
+        let pipeline = PromptPipeline::new(hooks);
 
         let manager = Self {
             params,
