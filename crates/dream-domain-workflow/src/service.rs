@@ -134,7 +134,7 @@ impl WorkflowService {
         match result {
             Ok(Some((tenant_id, role))) => Ok(Some(WorkflowActor { tenant_id, role })),
             Ok(None) => Ok(None),
-            Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => Ok(None),
+            Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }

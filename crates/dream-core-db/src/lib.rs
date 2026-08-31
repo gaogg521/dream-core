@@ -27,8 +27,8 @@ pub use database::{
 };
 pub use dialect::{DbValue, day_bucket_expr};
 pub use error::{
-    DbError, SQLITE_BUSY_MESSAGE_MARKERS, SQLITE_UNIQUE_VIOLATION_MARKER, message_indicates_busy,
-    message_indicates_unique_violation,
+    DbError, MISSING_TABLE_MESSAGE_MARKERS, SQLITE_BUSY_MESSAGE_MARKERS, SQLITE_UNIQUE_VIOLATION_MARKER,
+    message_indicates_busy, message_indicates_missing_table, message_indicates_unique_violation,
 };
 pub use instance_lock::{DataDirInstanceGuard, instance_lock_path};
 pub use migrate_runner::{MigrationSet, run_ledgered_migrations};

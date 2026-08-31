@@ -20,7 +20,7 @@ use crate::collaboration::{
 };
 use crate::container::{ContainerRuntime, ContainerSettings, ContainerStatus, NoopContainerRuntime};
 use crate::error::PlatformError;
-use dream_core_db::{DbBackend, DbPool, db_params};
+use dream_core_db::{DbBackend, DbPool, DbValue, db_params};
 use crate::ip_allowlist::ip_allowed;
 use crate::models::{
     ApiKeyDto, CollaborationConfigDto, ConfigBulkImportDto, ConfigEntryDto, ConfigSetDto, ConfigSetReference,
@@ -137,6 +137,21 @@ impl PlatformService {
         }
     }
 
+    /// Runs `sqlite_sql` or `mysql_sql` by backend — the two dialects
+    /// diverge on upsert syntax only; params are shared.
+    async fn upsert(
+        &self,
+        sqlite_sql: &str,
+        mysql_sql: &str,
+        params: &[DbValue],
+    ) -> Result<u64, PlatformError> {
+        let sql = match self.db.backend() {
+            DbBackend::Sqlite => sqlite_sql,
+            DbBackend::MySql => mysql_sql,
+        };
+        Ok(self.db.execute(sql, params).await?)
+    }
+
     /// Swap in a real `ContainerRuntime` once a container client is wired at the
     /// app layer. Chainable at construction time.
     pub fn with_container_runtime(mut self, runtime: Arc<dyn ContainerRuntime>) -> Self {
@@ -181,7 +196,7 @@ impl PlatformService {
             Ok(Some((tenant_id, role))) => Ok(Some(PlatformActor { tenant_id, role })),
             Ok(None) => Ok(None),
             // Table missing = one-org never initialized = standalone.
-            Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => Ok(None),
+            Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
@@ -273,7 +288,7 @@ impl PlatformService {
             }
             _ => existing,
         };
-        self.db.execute(
+        self.upsert(
             "INSERT INTO one_container_config \
                  (tenant_id, runtime_kind, endpoint, default_image, registry, registry_secret_encrypted, enabled, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
@@ -281,6 +296,13 @@ impl PlatformService {
                  default_image = excluded.default_image, registry = excluded.registry, \
                  registry_secret_encrypted = excluded.registry_secret_encrypted, enabled = excluded.enabled, \
                  updated_at = excluded.updated_at",
+            "INSERT INTO one_container_config \
+                 (tenant_id, runtime_kind, endpoint, default_image, registry, registry_secret_encrypted, enabled, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE runtime_kind = new.runtime_kind, endpoint = new.endpoint, \
+                 default_image = new.default_image, registry = new.registry, \
+                 registry_secret_encrypted = new.registry_secret_encrypted, enabled = new.enabled, \
+                 updated_at = new.updated_at",
         &db_params![tenant_id, runtime_kind, endpoint, default_image, registry, &secret_encrypted, enabled, now_ms()])
         .await?;
         self.get_container_config(tenant_id).await
@@ -362,13 +384,19 @@ impl PlatformService {
             }
             _ => existing,
         };
-        self.db.execute(
+        self.upsert(
             "INSERT INTO one_collaboration_config \
                  (tenant_id, provider, endpoint, secret_encrypted, presence, enabled, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(tenant_id) DO UPDATE SET provider = excluded.provider, endpoint = excluded.endpoint, \
                  secret_encrypted = excluded.secret_encrypted, presence = excluded.presence, \
                  enabled = excluded.enabled, updated_at = excluded.updated_at",
+            "INSERT INTO one_collaboration_config \
+                 (tenant_id, provider, endpoint, secret_encrypted, presence, enabled, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE provider = new.provider, endpoint = new.endpoint, \
+                 secret_encrypted = new.secret_encrypted, presence = new.presence, \
+                 enabled = new.enabled, updated_at = new.updated_at",
         &db_params![tenant_id, provider, endpoint, &secret_encrypted, presence, enabled, now_ms()])
         .await?;
         self.get_collaboration_config(tenant_id).await
@@ -428,10 +456,13 @@ impl PlatformService {
         enabled: bool,
     ) -> Result<IpAllowlistConfigDto, PlatformError> {
         let cidrs_json = serde_json::to_string(cidrs).map_err(|e| PlatformError::Internal(e.to_string()))?;
-        self.db.execute(
+        self.upsert(
             "INSERT INTO one_ip_allowlist_config (tenant_id, cidrs, enabled, updated_at) VALUES (?, ?, ?, ?) \
              ON CONFLICT(tenant_id) DO UPDATE SET cidrs = excluded.cidrs, enabled = excluded.enabled, \
                  updated_at = excluded.updated_at",
+            "INSERT INTO one_ip_allowlist_config (tenant_id, cidrs, enabled, updated_at) VALUES (?, ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE cidrs = new.cidrs, enabled = new.enabled, \
+                 updated_at = new.updated_at",
         &db_params![tenant_id, &cidrs_json, enabled, now_ms()])
         .await?;
         self.get_ip_allowlist(tenant_id).await
@@ -490,12 +521,17 @@ impl PlatformService {
             }
             _ => existing,
         };
-        self.db.execute(
+        self.upsert(
             "INSERT INTO one_siem_config (tenant_id, kind, endpoint, secret_encrypted, enabled, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?) \
              ON CONFLICT(tenant_id) DO UPDATE SET kind = excluded.kind, endpoint = excluded.endpoint, \
                  secret_encrypted = excluded.secret_encrypted, enabled = excluded.enabled, \
                  updated_at = excluded.updated_at",
+            "INSERT INTO one_siem_config (tenant_id, kind, endpoint, secret_encrypted, enabled, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE kind = new.kind, endpoint = new.endpoint, \
+                 secret_encrypted = new.secret_encrypted, enabled = new.enabled, \
+                 updated_at = new.updated_at",
         &db_params![tenant_id, kind, endpoint, &secret_encrypted, enabled, now_ms()])
         .await?;
         self.get_siem_config(tenant_id).await
@@ -868,10 +904,12 @@ impl PlatformService {
         for (name, description, job_functions) in Self::BUILTIN_SCENES {
             let job_functions_json =
                 serde_json::to_string(job_functions).map_err(|e| PlatformError::Internal(e.to_string()))?;
-            self.db.execute(
+            self.upsert(
                 "INSERT INTO one_scenes (id, tenant_id, name, description, job_functions, built_in, created_at, updated_at) \
                  VALUES (?, ?, ?, ?, ?, 1, ?, ?) \
                  ON CONFLICT(tenant_id, name) DO NOTHING",
+                "INSERT IGNORE INTO one_scenes (id, tenant_id, name, description, job_functions, built_in, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
             &db_params![generate_prefixed_id("scene"), tenant_id, name, description, &job_functions_json, now, now])
             .await?;
         }
@@ -977,7 +1015,7 @@ impl PlatformService {
             Ok(rows) => rows,
             // A deployment where the channel tables were never created (or
             // one-org never initialized) simply has no IM channels to show.
-            Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => Vec::new(),
+            Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => Vec::new(),
             Err(e) => return Err(e.into()),
         };
         let mut members: Vec<ImChannelMemberDto> = Vec::new();
@@ -1122,9 +1160,10 @@ impl PlatformService {
     /// member is not an error, same posture as `grant_resource`.
     pub async fn add_scene_member(&self, tenant_id: &str, scene_id: &str, user_id: &str) -> Result<(), PlatformError> {
         self.require_scene(tenant_id, scene_id).await?;
-        self.db.execute(
+        self.upsert(
             "INSERT INTO one_scene_members (scene_id, tenant_id, user_id, added_at) VALUES (?, ?, ?, ?) \
              ON CONFLICT(scene_id, user_id) DO NOTHING",
+            "INSERT IGNORE INTO one_scene_members (scene_id, tenant_id, user_id, added_at) VALUES (?, ?, ?, ?)",
         &db_params![scene_id, tenant_id, user_id, now_ms()])
         .await?;
         Ok(())
@@ -1313,7 +1352,7 @@ impl PlatformService {
     ) -> Result<SecurityPolicyDto, PlatformError> {
         let patterns_json =
             serde_json::to_string(&dto.blocked_command_patterns).map_err(|e| PlatformError::Internal(e.to_string()))?;
-        self.db.execute(
+        self.upsert(
             "INSERT INTO one_security_policy \
                  (tenant_id, tier, terminal_tools_require_approval, destructive_commands_blocked, \
                   blocked_command_patterns, external_network_denied_by_default, message_scan_enabled, \
@@ -1329,6 +1368,21 @@ impl PlatformService {
                  message_redact_enabled = excluded.message_redact_enabled, \
                  send_rate_limit_per_minute = excluded.send_rate_limit_per_minute, \
                  updated_at = excluded.updated_at",
+            "INSERT INTO one_security_policy \
+                 (tenant_id, tier, terminal_tools_require_approval, destructive_commands_blocked, \
+                  blocked_command_patterns, external_network_denied_by_default, message_scan_enabled, \
+                  message_redact_enabled, send_rate_limit_per_minute, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE \
+                 tier = new.tier, \
+                 terminal_tools_require_approval = new.terminal_tools_require_approval, \
+                 destructive_commands_blocked = new.destructive_commands_blocked, \
+                 blocked_command_patterns = new.blocked_command_patterns, \
+                 external_network_denied_by_default = new.external_network_denied_by_default, \
+                 message_scan_enabled = new.message_scan_enabled, \
+                 message_redact_enabled = new.message_redact_enabled, \
+                 send_rate_limit_per_minute = new.send_rate_limit_per_minute, \
+                 updated_at = new.updated_at",
         &db_params![tenant_id, &dto.tier, dto.terminal_tools_require_approval, dto.destructive_commands_blocked, &patterns_json, dto.external_network_denied_by_default, dto.message_scan_enabled, dto.message_redact_enabled, dto.send_rate_limit_per_minute, now_ms()])
         .await?;
         self.get_security_policy(tenant_id).await
@@ -1557,12 +1611,17 @@ impl PlatformService {
 
         let id = generate_prefixed_id("spb");
         let now = now_ms();
-        self.db.execute(
+        self.upsert(
             "INSERT INTO one_security_policy_bindings \
                  (id, tenant_id, template_id, subject_type, subject_id, note, bound_by, bound_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(template_id, subject_type, subject_id) DO UPDATE SET \
                  note = excluded.note, bound_by = excluded.bound_by, bound_at = excluded.bound_at",
+            "INSERT INTO one_security_policy_bindings \
+                 (id, tenant_id, template_id, subject_type, subject_id, note, bound_by, bound_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE \
+                 note = new.note, bound_by = new.bound_by, bound_at = new.bound_at",
         &db_params![&id, tenant_id, template_id, subject_type, subject_id, note, bound_by, now])
         .await?;
 
@@ -2160,7 +2219,7 @@ impl PlatformService {
         let (usage_bytes, object_count): (i64, i64) = self
             .db
             .fetch_one_as(
-                "SELECT COALESCE(SUM(size_bytes), 0), COUNT(*) FROM one_file_vault_objects \
+                "SELECT CAST(COALESCE(SUM(size_bytes), 0) AS SIGNED), COUNT(*) FROM one_file_vault_objects \
              WHERE tenant_id = ? AND user_id = ? AND deleted_at IS NULL",
                 &db_params![tenant_id, user_id],
             )
@@ -2201,7 +2260,7 @@ impl PlatformService {
         let (usage_bytes,): (i64,) = self
             .db
             .fetch_one_as(
-                "SELECT COALESCE(SUM(size_bytes), 0) FROM one_file_vault_objects \
+                "SELECT CAST(COALESCE(SUM(size_bytes), 0) AS SIGNED) FROM one_file_vault_objects \
              WHERE tenant_id = ? AND user_id = ? AND deleted_at IS NULL",
                 &db_params![tenant_id, user_id],
             )
@@ -2348,7 +2407,7 @@ impl PlatformService {
              FROM (SELECT user_id FROM one_user_org WHERE tenant_id = ? \
                    UNION SELECT DISTINCT user_id FROM one_file_vault_objects WHERE tenant_id = ?) u \
              LEFT JOIN one_file_vault_settings s ON s.tenant_id = ? AND s.user_id = u.user_id \
-             LEFT JOIN (SELECT user_id, SUM(size_bytes) AS usage_bytes, COUNT(*) AS object_count \
+             LEFT JOIN (SELECT user_id, CAST(SUM(size_bytes) AS SIGNED) AS usage_bytes, COUNT(*) AS object_count \
                         FROM one_file_vault_objects WHERE tenant_id = ? AND deleted_at IS NULL GROUP BY user_id) o \
                       ON o.user_id = u.user_id \
              ORDER BY u.user_id",
@@ -2380,10 +2439,13 @@ impl PlatformService {
         if !matches!(status, "available" | "frozen") {
             return Err(PlatformError::BadRequest(format!("unknown vault status '{status}'")));
         }
-        self.db.execute(
+        self.upsert(
             "INSERT INTO one_file_vault_settings (tenant_id, user_id, status, quota_bytes, updated_at) \
              VALUES (?, ?, ?, NULL, ?) \
              ON CONFLICT(tenant_id, user_id) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at",
+            "INSERT INTO one_file_vault_settings (tenant_id, user_id, status, quota_bytes, updated_at) \
+             VALUES (?, ?, ?, NULL, ?) AS new \
+             ON DUPLICATE KEY UPDATE status = new.status, updated_at = new.updated_at",
         &db_params![tenant_id, user_id, status, now_ms()])
         .await?;
         Ok(())
@@ -2403,11 +2465,15 @@ impl PlatformService {
             }
         }
         let (status, _) = self.vault_settings(tenant_id, user_id).await?;
-        self.db.execute(
+        self.upsert(
             "INSERT INTO one_file_vault_settings (tenant_id, user_id, status, quota_bytes, updated_at) \
              VALUES (?, ?, ?, ?, ?) \
              ON CONFLICT(tenant_id, user_id) DO UPDATE SET quota_bytes = excluded.quota_bytes, \
                  updated_at = excluded.updated_at",
+            "INSERT INTO one_file_vault_settings (tenant_id, user_id, status, quota_bytes, updated_at) \
+             VALUES (?, ?, ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE quota_bytes = new.quota_bytes, \
+                 updated_at = new.updated_at",
         &db_params![tenant_id, user_id, status, quota_bytes, now_ms()])
         .await?;
         Ok(())
@@ -2663,7 +2729,7 @@ impl PlatformService {
         }
 
         let existing: Option<(String, String, bool)> =
-            self.db.fetch_optional_as::<(String, String, bool)>("SELECT id, value, sensitive FROM one_config_entries WHERE set_id = ? AND key = ?", &db_params![set_id, key])
+            self.db.fetch_optional_as::<(String, String, bool)>("SELECT id, `value`, `sensitive` FROM one_config_entries WHERE set_id = ? AND `key` = ?", &db_params![set_id, key])
                 .await?;
 
         let entry_id;
@@ -2683,7 +2749,7 @@ impl PlatformService {
                     // silently shipping garbage).
                     _ => Self::entry_restamp_value(&old_value, old_sensitive, sensitive, &self.encryption_key)?,
                 };
-                self.db.execute("UPDATE one_config_entries SET value = ?, sensitive = ? WHERE id = ?", &db_params![&stored, sensitive, &entry_id])
+                self.db.execute("UPDATE one_config_entries SET `value` = ?, `sensitive` = ? WHERE id = ?", &db_params![&stored, sensitive, &entry_id])
                     .await?;
             }
             None => {
@@ -2693,7 +2759,7 @@ impl PlatformService {
                 entry_id = generate_prefixed_id("cfge");
                 stored = Self::entry_storage_value(v, sensitive, &self.encryption_key)?;
                 self.db.execute(
-                    "INSERT INTO one_config_entries (id, tenant_id, set_id, key, value, sensitive) \
+                    "INSERT INTO one_config_entries (id, tenant_id, set_id, `key`, `value`, `sensitive`) \
                      VALUES (?, ?, ?, ?, ?, ?)",
                 &db_params![&entry_id, tenant_id, set_id, key, &stored, sensitive])
                 .await?;
@@ -2758,7 +2824,7 @@ impl PlatformService {
             return Err(PlatformError::NotFound("config set not found".into()));
         }
         let rows: Vec<(String, String, String, String, bool)> = self.db.fetch_all_as::<(String, String, String, String, bool)>(
-            "SELECT id, set_id, key, value, sensitive FROM one_config_entries WHERE set_id = ? ORDER BY key ASC",
+            "SELECT id, set_id, `key`, `value`, `sensitive` FROM one_config_entries WHERE set_id = ? ORDER BY `key` ASC",
         &db_params![set_id])
         .await?;
         Ok(rows
@@ -2839,12 +2905,22 @@ impl PlatformService {
         }
 
         let mut tx = self.db.begin().await?;
+        let import_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO one_config_entries (id, tenant_id, set_id, key, value, sensitive) \
+                 VALUES (?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(set_id, key) DO UPDATE SET value = excluded.value, sensitive = excluded.sensitive"
+            }
+            DbBackend::MySql => {
+                "INSERT INTO one_config_entries (id, tenant_id, set_id, `key`, `value`, `sensitive`) \
+                 VALUES (?, ?, ?, ?, ?, ?) AS new \
+                 ON DUPLICATE KEY UPDATE `value` = new.value, `sensitive` = new.sensitive"
+            }
+        };
         for (key, (value, sensitive)) in &deduped {
             let stored = Self::entry_storage_value(value, *sensitive, &self.encryption_key)?;
             tx.execute(
-                "INSERT INTO one_config_entries (id, tenant_id, set_id, key, value, sensitive) \
-                 VALUES (?, ?, ?, ?, ?, ?) \
-                 ON CONFLICT(set_id, key) DO UPDATE SET value = excluded.value, sensitive = excluded.sensitive",
+                import_sql,
             &db_params![generate_prefixed_id("cfge"), tenant_id, set_id, key, &stored, sensitive])
             .await?;
         }
@@ -2904,7 +2980,7 @@ impl PlatformService {
                 .collect(),
             // Table missing = one-devops never initialized = nothing can
             // reference the set yet.
-            Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => Vec::new(),
+            Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => Vec::new(),
             Err(e) => return Err(e.into()),
         };
         let count = references.len() as i64;
@@ -2926,7 +3002,7 @@ impl PlatformService {
                 .await;
         match result {
             Ok(count) => Ok(count),
-            Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => Ok(0),
+            Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => Ok(0),
             Err(e) => Err(e.into()),
         }
     }
@@ -3256,6 +3332,74 @@ mod tests {
 
         // Default Noop runtime reports "not configured".
         assert_eq!(service.probe_container("t1").await.unwrap().status, "not_configured");
+    }
+
+    /// Real MySQL: exercises the container-config upsert (insert, then
+    /// update-on-conflict) and the config-vault bulk-import upsert loop —
+    /// the two `PlatformService` write paths review found with zero MySQL
+    /// branch at all (raw SQLite-only `ON CONFLICT`, 1064 on real MySQL) plus
+    /// the reserved-word (`key`/`value`/`sensitive`) columns fixed alongside
+    /// them. Requires `DREAM_TEST_MYSQL_URL`; skipped when unset.
+    #[tokio::test]
+    async fn container_config_and_config_vault_import_round_trip_on_mysql() {
+        let Some(mysql_db) = dream_core_db::testing::mysql_test_pool().await else {
+            eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
+            return;
+        };
+        crate::migrate::run_one_platform_migrations(&mysql_db.pool).await.unwrap();
+        let service = PlatformService::new(mysql_db.pool.clone(), [7u8; 32]);
+
+        // Insert, then update-on-conflict (same tenant_id) — the exact shape
+        // that threw `1064` with the bare `ON CONFLICT` left unported.
+        let saved = service
+            .set_container_config("t1", Some("docker"), Some("unix:///var/run/docker.sock"), None, None, Some("reg_secret"), true)
+            .await
+            .unwrap();
+        assert!(saved.has_registry_secret);
+        let updated = service
+            .set_container_config("t1", Some("docker"), None, None, None, None, false)
+            .await
+            .unwrap();
+        assert!(!updated.enabled);
+        assert_eq!(
+            service.container_registry_secret("t1").await.unwrap().as_deref(),
+            Some("reg_secret"),
+            "omitting the secret on update must keep the previously stored one"
+        );
+
+        // Config vault: bulk import (INSERT ... AS new ON DUPLICATE KEY
+        // UPDATE) against columns that are MySQL reserved words.
+        let set = service.create_config_set("t1", "prod", "", "admin1").await.unwrap();
+        let rows = vec![
+            ConfigImportRow {
+                key: "api_base".into(),
+                value: "https://api.acme.com".into(),
+                sensitive: false,
+            },
+            ConfigImportRow {
+                key: "api_token".into(),
+                value: "shh".into(),
+                sensitive: true,
+            },
+        ];
+        let report = service.bulk_import_config_entries("t1", &set.id, &rows, false).await.unwrap();
+        assert_eq!(report.imported, 2);
+        let entries = service.list_config_entries("t1", &set.id).await.unwrap();
+        assert_eq!(entries.len(), 2);
+        let sensitive_entry = entries.iter().find(|e| e.key == "api_token").unwrap();
+        assert_eq!(sensitive_entry.value, SENSITIVE_PLACEHOLDER, "sensitive value must never round-trip in plaintext");
+
+        // Re-import with merge=true hits the ON DUPLICATE KEY UPDATE branch.
+        let updated_rows = vec![ConfigImportRow {
+            key: "api_base".into(),
+            value: "https://api2.acme.com".into(),
+            sensitive: false,
+        }];
+        service.bulk_import_config_entries("t1", &set.id, &updated_rows, true).await.unwrap();
+        let entries = service.list_config_entries("t1", &set.id).await.unwrap();
+        assert_eq!(entries.iter().find(|e| e.key == "api_base").unwrap().value, "https://api2.acme.com");
+
+        mysql_db.cleanup().await.unwrap();
     }
 
     #[tokio::test]

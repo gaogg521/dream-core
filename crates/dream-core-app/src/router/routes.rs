@@ -1086,6 +1086,22 @@ impl dream_core_conversation::TurnMemoryExtractor for OneMemoryTurnExtractor {
                 Ok(Some(a)) => a,
                 _ => return, // not in an enterprise — nothing to write to
             };
+
+            // LLM extraction (§A.6 方案 L) when the tenant configured a
+            // channel; the explicit-request heuristic stays as the
+            // zero-config fallback. Both write through the same authorised
+            // add_item path.
+            let config = memory.memory_config(&actor.tenant_id).await.ok().flatten();
+            let has_channel = config.as_ref().is_some_and(|c| c.extraction_channel_id.is_some());
+            let explicit_fact = explicit_memory_request(&user_message);
+            if !has_channel && explicit_fact.is_none() {
+                // Nothing this turn would extract: no configured channel and
+                // no explicit "记住…" — skip the collection lazy-create too,
+                // so a tenant that never configured extraction and never
+                // said "remember" gets zero DB round-trips per turn (same as
+                // before this feature existed).
+                return;
+            }
             let collection = match memory
                 .ensure_personal_collection(&actor.tenant_id, &user_id, &actor.role, MEMORY_DEFAULT_COLLECTION_NAME)
                 .await
@@ -1097,12 +1113,7 @@ impl dream_core_conversation::TurnMemoryExtractor for OneMemoryTurnExtractor {
                 }
             };
 
-            // LLM extraction (§A.6 方案 L) when the tenant configured a
-            // channel; the explicit-request heuristic stays as the
-            // zero-config fallback. Both write through the same authorised
-            // add_item path.
-            let config = memory.memory_config(&actor.tenant_id).await.ok().flatten();
-            if let Some(cfg) = config.filter(|c| c.extraction_channel_id.is_some()) {
+            if let Some(cfg) = config.filter(|_| has_channel) {
                 // LLM extraction needs both sides of the turn. The user
                 // message is already in hand; the assistant reply is read
                 // from persistence (it is persisted before the turn
@@ -1210,7 +1221,7 @@ impl dream_core_conversation::TurnMemoryExtractor for OneMemoryTurnExtractor {
             }
 
             // Zero-config fallback: explicit 「记住…」 requests always work.
-            if let Some(fact) = explicit_memory_request(&user_message) {
+            if let Some(fact) = explicit_fact {
                 if let Err(e) = memory
                     .add_item(
                         &actor.tenant_id,

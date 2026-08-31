@@ -239,7 +239,7 @@ impl MemoryService {
         let now = now_ms() as i64;
         self.upsert(
             "INSERT INTO one_memory_config (tenant_id, extraction_channel_id, extraction_model, updated_at)              VALUES (?, ?, ?, ?)              ON CONFLICT(tenant_id) DO UPDATE SET extraction_channel_id = excluded.extraction_channel_id,                  extraction_model = excluded.extraction_model, updated_at = excluded.updated_at",
-            "INSERT INTO one_memory_config (tenant_id, extraction_channel_id, extraction_model, updated_at)              VALUES (?, ?, ?, ?)              ON DUPLICATE KEY UPDATE extraction_channel_id = new.extraction_channel_id,                  extraction_model = new.extraction_model, updated_at = new.updated_at",
+            "INSERT INTO one_memory_config (tenant_id, extraction_channel_id, extraction_model, updated_at)              VALUES (?, ?, ?, ?) AS new              ON DUPLICATE KEY UPDATE extraction_channel_id = new.extraction_channel_id,                  extraction_model = new.extraction_model, updated_at = new.updated_at",
             &db_params![tenant_id, extraction_channel_id, extraction_model, now],
         )
         .await?;
@@ -268,7 +268,7 @@ impl MemoryService {
         match result {
             Ok(Some((tenant_id, role))) => Ok(Some(MemoryActor { tenant_id, role })),
             Ok(None) => Ok(None),
-            Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => Ok(None),
+            Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
