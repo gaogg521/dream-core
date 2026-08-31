@@ -91,7 +91,8 @@ async fn fixture_params_with_vision_policy(
             std::env::temp_dir(),
             false,
             vision_policy,
-        )
+            None,
+    )
         .await,
     )
 }

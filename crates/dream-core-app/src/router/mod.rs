@@ -20,7 +20,9 @@ pub use routes::create_admin_router;
 /// but is wired in `AppServices` — the agent factory is built before any
 /// router exists.
 #[cfg(feature = "enterprise")]
-pub(crate) use routes::{BillingModelAllowlistGate, PlatformToolCallSecurityGate, PolicyGrace};
+pub(crate) use routes::{
+    BillingModelAllowlistGate, OneMemoryContextProvider, PlatformToolCallSecurityGate, PolicyGrace,
+};
 pub use routes::{
     RouterRuntime, create_router, create_router_with_all_state, create_router_with_runtime, create_router_with_states,
 };

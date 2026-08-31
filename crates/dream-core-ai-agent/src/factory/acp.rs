@@ -530,6 +530,7 @@ pub(super) async fn build(
             deps.data_dir.clone(),
             deps.dump_prompts,
             vision_policy,
+            deps.memory_recall.clone(),
         )
         .await,
     );

@@ -94,6 +94,12 @@ pub struct AgentFactoryDeps {
     /// builds and tests — every tool call then flows through unmodified,
     /// exactly as before this existed.
     pub tool_call_security_gate: Option<Arc<dyn crate::security_policy::ToolCallSecurityGate>>,
+    /// Enterprise memory recall (P2-2 §B.4 完整版) — a per-turn ACP prompt
+    /// hook prepends the caller's readable memory to every prompt, so
+    /// accumulated memory reaches continuing conversations too. `None` for
+    /// personal builds and tests: the hook is not registered and prompts
+    /// flow through unmodified.
+    pub memory_recall: Option<Arc<dyn crate::capability::memory_recall::TurnMemoryRecall>>,
 }
 
 /// Build a production agent factory that dispatches to concrete agent types.
