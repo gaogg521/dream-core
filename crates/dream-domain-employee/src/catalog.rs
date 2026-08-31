@@ -44,7 +44,7 @@
 
 use std::collections::HashMap;
 
-use sqlx::SqlitePool;
+use dream_core_db::{DbPool, db_params};
 
 use dream_core_common::now_ms;
 
@@ -75,14 +75,13 @@ fn catalog_agent_id() -> String {
 /// mirror constant) so the migration is the single source of truth and the
 /// two can never drift. Called from every catalog read/write path — cheap
 /// (28 guarded inserts against a small table) and self-healing.
-async fn seed_catalog_for_tenant(pool: &SqlitePool, tenant_id: &str) -> Result<(), EmployeeError> {
-    let entries = sqlx::query_as::<_, CatalogEntryRow>("SELECT * FROM one_employee_catalog ORDER BY id ASC")
-        .fetch_all(pool)
+async fn seed_catalog_for_tenant(pool: &DbPool, tenant_id: &str) -> Result<(), EmployeeError> {
+    let entries = pool.fetch_all_as::<CatalogEntryRow>("SELECT * FROM one_employee_catalog ORDER BY id ASC", &[])
         .await?;
     let now = now_ms() as i64;
     for entry in entries {
         let config = serde_json::json!({ "instructions": entry.persona }).to_string();
-        sqlx::query(
+        pool.execute(
             "INSERT INTO one_personal_agents \
                  (id, owner_user_id, tenant_id, name, description, agent_type, automation_config, \
                   visibility, origin, created_at, updated_at) \
@@ -90,24 +89,7 @@ async fn seed_catalog_for_tenant(pool: &SqlitePool, tenant_id: &str) -> Result<(
              WHERE NOT EXISTS ( \
                  SELECT 1 FROM one_personal_agents \
                  WHERE tenant_id = ? AND origin = ? AND owner_user_id = ? AND name = ?)",
-        )
-        .bind(catalog_agent_id())
-        .bind(CATALOG_OWNER_SENTINEL)
-        .bind(tenant_id)
-        .bind(&entry.name)
-        .bind(&entry.description)
-        .bind(CATALOG_AGENT_TYPE)
-        .bind(&config)
-        .bind(CATALOG_ORIGIN)
-        .bind(now)
-        .bind(now)
-        // Repeat the guard keys as binds — the SELECT's WHERE clause runs per
-        // candidate row, making the whole statement idempotent per entry.
-        .bind(tenant_id)
-        .bind(CATALOG_ORIGIN)
-        .bind(CATALOG_OWNER_SENTINEL)
-        .bind(&entry.name)
-        .execute(pool)
+        &db_params![catalog_agent_id(), CATALOG_OWNER_SENTINEL, tenant_id, &entry.name, &entry.description, CATALOG_AGENT_TYPE, &config, CATALOG_ORIGIN, now, now, tenant_id, CATALOG_ORIGIN, CATALOG_OWNER_SENTINEL, &entry.name])
         .await?;
     }
     Ok(())
@@ -118,23 +100,18 @@ async fn seed_catalog_for_tenant(pool: &SqlitePool, tenant_id: &str) -> Result<(
 /// is assembled in memory from three small queries instead of one query per
 /// entry (28 entries × N+1 would still be cheap, but the batch shape matches
 /// `list_tags_for_resources`' convention).
-pub(crate) async fn list_catalog(pool: &SqlitePool, tenant_id: &str) -> Result<Vec<CatalogEntryDto>, EmployeeError> {
+pub(crate) async fn list_catalog(pool: &DbPool, tenant_id: &str) -> Result<Vec<CatalogEntryDto>, EmployeeError> {
     seed_catalog_for_tenant(pool, tenant_id).await?;
 
-    let entries = sqlx::query_as::<_, CatalogEntryRow>("SELECT * FROM one_employee_catalog ORDER BY id ASC")
-        .fetch_all(pool)
+    let entries = pool.fetch_all_as::<CatalogEntryRow>("SELECT * FROM one_employee_catalog ORDER BY id ASC", &[])
         .await?;
 
     // Sentinel-owned placeholders, keyed by entry name (names are unique
     // across the catalog content).
-    let placeholders: HashMap<String, String> = sqlx::query_as::<_, (String, String)>(
+    let placeholders: HashMap<String, String> = pool.fetch_all_as::<(String, String)>(
         "SELECT name, id FROM one_personal_agents \
          WHERE tenant_id = ? AND origin = ? AND owner_user_id = ?",
-    )
-    .bind(tenant_id)
-    .bind(CATALOG_ORIGIN)
-    .bind(CATALOG_OWNER_SENTINEL)
-    .fetch_all(pool)
+    &db_params![tenant_id, CATALOG_ORIGIN, CATALOG_OWNER_SENTINEL])
     .await?
     .into_iter()
     .collect();
@@ -143,15 +120,11 @@ pub(crate) async fn list_catalog(pool: &SqlitePool, tenant_id: &str) -> Result<V
     // idempotent, so there is normally exactly one; ordering keeps the
     // mapping stable even if an old duplicate predates the guard).
     let mut instances: HashMap<String, String> = HashMap::new();
-    let rows = sqlx::query_as::<_, (String, String)>(
+    let rows = pool.fetch_all_as::<(String, String)>(
         "SELECT name, id FROM one_personal_agents \
          WHERE tenant_id = ? AND origin = ? AND owner_user_id != ? \
          ORDER BY created_at ASC, id ASC",
-    )
-    .bind(tenant_id)
-    .bind(CATALOG_ORIGIN)
-    .bind(CATALOG_OWNER_SENTINEL)
-    .fetch_all(pool)
+    &db_params![tenant_id, CATALOG_ORIGIN, CATALOG_OWNER_SENTINEL])
     .await?;
     for (name, id) in rows {
         instances.entry(name).or_insert(id);
@@ -160,14 +133,14 @@ pub(crate) async fn list_catalog(pool: &SqlitePool, tenant_id: &str) -> Result<V
     // Grant counts per employee id, batched — the "authorization summary"
     // column of the catalog page (placeholder + instance both count: grants
     // may pre-date instantiation, see the module docs).
-    let grants: HashMap<String, i64> = sqlx::query_as::<_, (String, i64)>(
-        "SELECT employee_id, COUNT(*) FROM one_employee_grants WHERE tenant_id = ? GROUP BY employee_id",
-    )
-    .bind(tenant_id)
-    .fetch_all(pool)
-    .await?
-    .into_iter()
-    .collect();
+    let grants: HashMap<String, i64> = pool
+        .fetch_all_as::<(String, i64)>(
+            "SELECT employee_id, COUNT(*) FROM one_employee_grants WHERE tenant_id = ? GROUP BY employee_id",
+            &db_params![tenant_id],
+        )
+        .await?
+        .into_iter()
+        .collect();
 
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -196,7 +169,7 @@ pub(crate) async fn list_catalog(pool: &SqlitePool, tenant_id: &str) -> Result<V
 /// already has an instance returns that instance unchanged (see the module
 /// docs for the exact idempotency key).
 pub(crate) async fn instantiate_catalog_entry(
-    pool: &SqlitePool,
+    pool: &DbPool,
     tenant_id: &str,
     admin_user_id: &str,
     catalog_id: &str,
@@ -207,24 +180,17 @@ pub(crate) async fn instantiate_catalog_entry(
     // complete no matter which endpoint an admin hits first.
     seed_catalog_for_tenant(pool, tenant_id).await?;
 
-    let entry = sqlx::query_as::<_, CatalogEntryRow>("SELECT * FROM one_employee_catalog WHERE id = ?")
-        .bind(catalog_id)
-        .fetch_optional(pool)
+    let entry = pool.fetch_optional_as::<CatalogEntryRow>("SELECT * FROM one_employee_catalog WHERE id = ?", &db_params![catalog_id])
         .await?
         .ok_or_else(|| EmployeeError::BadRequest(format!("catalog entry '{catalog_id}' not found")))?;
 
     // Idempotency: an instance (owner ≠ sentinel) for this entry already
     // exists → return it instead of creating a second one.
-    if let Some(existing) = sqlx::query_as::<_, PersonalAgentRow>(
+    if let Some(existing) = pool.fetch_optional_as::<PersonalAgentRow>(
         "SELECT * FROM one_personal_agents \
          WHERE tenant_id = ? AND origin = ? AND name = ? AND owner_user_id != ? \
          ORDER BY created_at ASC, id ASC LIMIT 1",
-    )
-    .bind(tenant_id)
-    .bind(CATALOG_ORIGIN)
-    .bind(&entry.name)
-    .bind(CATALOG_OWNER_SENTINEL)
-    .fetch_optional(pool)
+    &db_params![tenant_id, CATALOG_ORIGIN, &entry.name, CATALOG_OWNER_SENTINEL])
     .await?
     {
         return Ok(existing);
@@ -233,28 +199,15 @@ pub(crate) async fn instantiate_catalog_entry(
     let id = catalog_agent_id();
     let now = now_ms() as i64;
     let config = serde_json::json!({ "instructions": entry.persona }).to_string();
-    sqlx::query(
+    pool.execute(
         "INSERT INTO one_personal_agents \
              (id, owner_user_id, tenant_id, name, description, agent_type, automation_config, \
               visibility, origin, created_at, updated_at) \
          VALUES (?, ?, ?, ?, ?, ?, ?, 'shared', ?, ?, ?)",
-    )
-    .bind(&id)
-    .bind(admin_user_id)
-    .bind(tenant_id)
-    .bind(&entry.name)
-    .bind(&entry.description)
-    .bind(CATALOG_AGENT_TYPE)
-    .bind(&config)
-    .bind(CATALOG_ORIGIN)
-    .bind(now)
-    .bind(now)
-    .execute(pool)
+    &db_params![&id, admin_user_id, tenant_id, &entry.name, &entry.description, CATALOG_AGENT_TYPE, &config, CATALOG_ORIGIN, now, now])
     .await?;
 
-    sqlx::query_as::<_, PersonalAgentRow>("SELECT * FROM one_personal_agents WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(pool)
+    pool.fetch_optional_as::<PersonalAgentRow>("SELECT * FROM one_personal_agents WHERE id = ?", &db_params![&id])
         .await?
         .ok_or_else(|| EmployeeError::Internal("catalog instance vanished immediately after insert".into()))
 }
@@ -267,18 +220,20 @@ mod tests {
     // for testability, same convention as the other free functions there).
     use crate::service::{grant_employee_access, select_agent_for_use};
 
-    async fn test_pool() -> sqlx::SqlitePool {
+    async fn test_pool() -> dream_core_db::DbPool {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        db.pool().clone()
+        run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
+        dream_core_db::DbPool::Sqlite(db.pool().clone())
     }
 
-    async fn count_rows(pool: &SqlitePool, where_clause: &str) -> i64 {
+    async fn count_rows(pool: &DbPool, where_clause: &str) -> i64 {
         let sql = format!("SELECT COUNT(*) FROM one_personal_agents WHERE {where_clause}");
-        sqlx::query_scalar(&sql).fetch_one(pool).await.unwrap()
+        pool.fetch_one_scalar(&sql, &[]).await.unwrap()
     }
 
-    async fn placeholder_count(pool: &SqlitePool, tenant: &str) -> i64 {
+    async fn placeholder_count(pool: &DbPool, tenant: &str) -> i64 {
         count_rows(
             pool,
             &format!("tenant_id = '{tenant}' AND origin = 'catalog' AND owner_user_id = 'catalog'"),
@@ -299,13 +254,14 @@ mod tests {
                 .all(|e| !e.instantiated && e.instance_id.is_none() && e.grant_count == 0)
         );
         // The seeded placeholder carries the persona where the run path reads it.
-        let config: String = sqlx::query_scalar(
-            "SELECT automation_config FROM one_personal_agents \
+        let config: String = pool
+            .fetch_one_scalar(
+                "SELECT automation_config FROM one_personal_agents \
              WHERE tenant_id = 't1' AND origin = 'catalog' AND owner_user_id = 'catalog' LIMIT 1",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+                &[],
+            )
+            .await
+            .unwrap();
         assert!(config.contains("instructions"));
 
         // Second list: no duplicate entries, no duplicate placeholders.
@@ -315,11 +271,12 @@ mod tests {
 
         // Self-healing: a hand-deleted placeholder is re-seeded on the next
         // list, same spirit as seed_builtin_scenes re-inserting on every call.
-        sqlx::query("DELETE FROM one_personal_agents WHERE tenant_id = 't1' AND origin = 'catalog' AND owner_user_id = 'catalog' AND name = ?")
-            .bind(&first[0].name)
-            .execute(&pool)
-            .await
-            .unwrap();
+        pool.execute(
+            "DELETE FROM one_personal_agents WHERE tenant_id = 't1' AND origin = 'catalog' AND owner_user_id = 'catalog' AND name = ?",
+            &db_params![&first[0].name],
+        )
+        .await
+        .unwrap();
         assert_eq!(placeholder_count(&pool, "t1").await, 27);
         list_catalog(&pool, "t1").await.unwrap();
         assert_eq!(
@@ -331,14 +288,14 @@ mod tests {
         // Every catalog entry has a matching placeholder (no drift between
         // the migration content and the seeding loop).
         for entry in &second {
-            let exists: bool = sqlx::query_scalar(
-                "SELECT COUNT(*) > 0 FROM one_personal_agents \
+            let exists: bool = pool
+                .fetch_one_scalar(
+                    "SELECT COUNT(*) > 0 FROM one_personal_agents \
                  WHERE tenant_id = 't1' AND origin = 'catalog' AND owner_user_id = 'catalog' AND name = ?",
-            )
-            .bind(&entry.name)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+                    &db_params![&entry.name],
+                )
+                .await
+                .unwrap();
             assert!(exists, "placeholder missing for entry {}", entry.key);
         }
     }
@@ -404,14 +361,14 @@ mod tests {
             .await
             .unwrap();
         // A grant pre-dating instantiation, attached to the placeholder row.
-        let placeholder_id: String = sqlx::query_scalar(
-            "SELECT id FROM one_personal_agents \
+        let placeholder_id: String = pool
+            .fetch_one_scalar(
+                "SELECT id FROM one_personal_agents \
              WHERE tenant_id = 't1' AND origin = 'catalog' AND owner_user_id = 'catalog' AND name = ?",
-        )
-        .bind(&entry.name)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+                &db_params![&entry.name],
+            )
+            .await
+            .unwrap();
         grant_employee_access(&pool, "t1", "member", "u1", &placeholder_id, "use", "admin1")
             .await
             .unwrap();
@@ -435,14 +392,14 @@ mod tests {
         instantiate_catalog_entry(&pool, "t1", "admin1", &entry.id)
             .await
             .unwrap();
-        let placeholder_id: String = sqlx::query_scalar(
-            "SELECT id FROM one_personal_agents \
+        let placeholder_id: String = pool
+            .fetch_one_scalar(
+                "SELECT id FROM one_personal_agents \
              WHERE tenant_id = 't1' AND origin = 'catalog' AND owner_user_id = 'catalog' AND name = ?",
-        )
-        .bind(&entry.name)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+                &db_params![&entry.name],
+            )
+            .await
+            .unwrap();
         grant_employee_access(&pool, "t1", "member", "u1", &placeholder_id, "use", "admin1")
             .await
             .unwrap();
@@ -477,13 +434,14 @@ mod tests {
     async fn seeded_placeholder_needs_explicit_grant_for_non_owner_use() {
         let pool = test_pool().await;
         list_catalog(&pool, "t1").await.unwrap();
-        let placeholder_id: String = sqlx::query_scalar(
-            "SELECT id FROM one_personal_agents \
+        let placeholder_id: String = pool
+            .fetch_one_scalar(
+                "SELECT id FROM one_personal_agents \
              WHERE tenant_id = 't1' AND origin = 'catalog' AND owner_user_id = 'catalog' LIMIT 1",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+                &[],
+            )
+            .await
+            .unwrap();
 
         assert!(
             select_agent_for_use(&pool, "u1", "t1", &placeholder_id)

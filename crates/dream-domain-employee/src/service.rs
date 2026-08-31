@@ -30,7 +30,7 @@ use dream_core_common::{AgentType, ProviderWithModel, now_ms};
 use dream_core_conversation::{ConversationAgentTurnRequest, ConversationAgentTurnStatus, ConversationService};
 use dream_core_cron::scheduler::compute_next_run;
 use dream_core_cron::types::schedule_from_dto;
-use dream_core_db::{ConversationRowUpdate, IConversationRepository, IProviderRepository};
+use dream_core_db::{ConversationRowUpdate, DbBackend, DbPool, MessagePageDirection, MessagePageParams, db_params, IConversationRepository, IProviderRepository};
 use dream_core_team::TeamSessionService;
 
 use crate::catalog;
@@ -60,7 +60,7 @@ const TEAM_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3
 const TEAM_POLL_MAX: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 pub struct EmployeeService {
-    pool: SqlitePool,
+    db: DbPool,
     conversation_service: Arc<ConversationService>,
     conversation_repo: Arc<dyn IConversationRepository>,
     agent_registry: Arc<AgentRegistry>,
@@ -183,20 +183,18 @@ fn build_run_prompt(agent: &PersonalAgentRow) -> String {
 /// without constructing the full `EmployeeService` — `catalog.rs`'s tests
 /// reuse it for the same reason (hence `pub(crate)`).
 pub(crate) async fn select_agent_for_use(
-    pool: &SqlitePool,
+    pool: &DbPool,
     user_id: &str,
     tenant_id: &str,
     agent_id: &str,
 ) -> Result<Option<PersonalAgentRow>, sqlx::Error> {
-    let Some(row) = sqlx::query_as::<_, PersonalAgentRow>(
-        "SELECT * FROM one_personal_agents \
+    let Some(row) = pool
+        .fetch_optional_as::<PersonalAgentRow>(
+            "SELECT * FROM one_personal_agents \
          WHERE id = ? AND (owner_user_id = ? OR (visibility = 'shared' AND tenant_id = ?))",
-    )
-    .bind(agent_id)
-    .bind(user_id)
-    .bind(tenant_id)
-    .fetch_optional(pool)
-    .await?
+            &db_params![agent_id, user_id, tenant_id],
+        )
+        .await?
     else {
         return Ok(None);
     };
@@ -220,19 +218,18 @@ pub(crate) async fn select_agent_for_use(
 /// Own employees plus tenant-shared ones the caller has been granted access
 /// to. Free function, mirrors `select_agent_for_use` for testability.
 async fn select_available_agents(
-    pool: &SqlitePool,
+    pool: &DbPool,
     user_id: &str,
     tenant_id: &str,
 ) -> Result<Vec<PersonalAgentRow>, sqlx::Error> {
-    let candidates = sqlx::query_as::<_, PersonalAgentRow>(
-        "SELECT * FROM one_personal_agents \
+    let candidates = pool
+        .fetch_all_as::<PersonalAgentRow>(
+            "SELECT * FROM one_personal_agents \
          WHERE owner_user_id = ? OR (visibility = 'shared' AND tenant_id = ?) \
          ORDER BY updated_at DESC",
-    )
-    .bind(user_id)
-    .bind(tenant_id)
-    .fetch_all(pool)
-    .await?;
+            &db_params![user_id, tenant_id],
+        )
+        .await?;
 
     let mut visible = Vec::with_capacity(candidates.len());
     for row in candidates {
@@ -293,13 +290,9 @@ fn is_missing_table_error(e: &sqlx::Error) -> bool {
 /// `dream_domain_devops::DevopsService::user_org_role`, which does the exact
 /// same thing against `one_user_org` for its own admin-role check), not a
 /// new trait.
-async fn department_ancestry(pool: &SqlitePool, tenant_id: &str, user_id: &str) -> Result<Vec<String>, sqlx::Error> {
+async fn department_ancestry(pool: &DbPool, tenant_id: &str, user_id: &str) -> Result<Vec<String>, sqlx::Error> {
     let mut current: Option<String> =
-        match sqlx::query_scalar("SELECT department_id FROM one_user_org WHERE tenant_id = ? AND user_id = ?")
-            .bind(tenant_id)
-            .bind(user_id)
-            .fetch_optional(pool)
-            .await
+        match pool.fetch_optional_scalar("SELECT department_id FROM one_user_org WHERE tenant_id = ? AND user_id = ?", &db_params![tenant_id, user_id]).await
         {
             Ok(v) => v.flatten(),
             Err(e) if is_missing_table_error(&e) => return Ok(Vec::new()),
@@ -315,10 +308,8 @@ async fn department_ancestry(pool: &SqlitePool, tenant_id: &str, user_id: &str) 
         }
         hops += 1;
         chain.push(department_id.clone());
-        current = match sqlx::query_scalar("SELECT parent_id FROM one_departments WHERE tenant_id = ? AND id = ?")
-            .bind(tenant_id)
-            .bind(&department_id)
-            .fetch_optional(pool)
+        current = match pool
+            .fetch_optional_scalar("SELECT parent_id FROM one_departments WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, &department_id])
             .await
         {
             Ok(v) => v.flatten(),
@@ -332,15 +323,12 @@ async fn department_ancestry(pool: &SqlitePool, tenant_id: &str, user_id: &str) 
 /// Same query shape as `PlatformService::scene_ids_for_member` — see
 /// `department_ancestry`'s doc comment for why this is duplicated SQL, not a
 /// shared function, and `is_missing_table_error`'s for the fallback.
-async fn scene_ids_for_member(pool: &SqlitePool, tenant_id: &str, user_id: &str) -> Result<Vec<String>, sqlx::Error> {
-    let result: Result<Vec<(String,)>, sqlx::Error> =
-        sqlx::query_as("SELECT scene_id FROM one_scene_members WHERE tenant_id = ? AND user_id = ?")
-            .bind(tenant_id)
-            .bind(user_id)
-            .fetch_all(pool)
-            .await;
+async fn scene_ids_for_member(pool: &DbPool, tenant_id: &str, user_id: &str) -> Result<Vec<String>, sqlx::Error> {
+    let result: Result<Vec<String>, sqlx::Error> = pool
+        .fetch_all_scalar("SELECT scene_id FROM one_scene_members WHERE tenant_id = ? AND user_id = ?", &db_params![tenant_id, user_id])
+        .await;
     match result {
-        Ok(rows) => Ok(rows.into_iter().map(|(id,)| id).collect()),
+        Ok(rows) => Ok(rows),
         Err(e) if is_missing_table_error(&e) => Ok(Vec::new()),
         Err(e) => Err(e),
     }
@@ -351,7 +339,7 @@ async fn scene_ids_for_member(pool: &SqlitePool, tenant_id: &str, user_id: &str)
 /// no row matches — never an error, same "absence is just absence" contract
 /// `fold_grants_for_subjects` uses for the four-type matrix.
 async fn max_employee_permission_for_subjects(
-    pool: &SqlitePool,
+    pool: &DbPool,
     tenant_id: &str,
     subject_type: &str,
     subject_ids: &[String],
@@ -366,14 +354,11 @@ async fn max_employee_permission_for_subjects(
          WHERE tenant_id = ? AND subject_type = ? AND employee_id IN (?, '{EMPLOYEE_GRANT_ALL}') \
          AND subject_id IN ({placeholders})"
     );
-    let mut query = sqlx::query_scalar::<_, String>(&sql)
-        .bind(tenant_id)
-        .bind(subject_type)
-        .bind(employee_id);
+    let mut params = db_params![tenant_id, subject_type, employee_id];
     for subject_id in subject_ids {
-        query = query.bind(subject_id);
+        params.push(subject_id.as_str().into());
     }
-    let rows = query.fetch_all(pool).await?;
+    let rows = pool.fetch_all_scalar::<String>(&sql, &params).await?;
     Ok(rows.iter().filter_map(|p| EmployeePermission::parse(p)).max())
 }
 
@@ -384,7 +369,7 @@ async fn max_employee_permission_for_subjects(
 /// regardless of this function, and callers must check that separately (see
 /// `select_agent_for_use`/`get_for_manage`, both of which do).
 async fn effective_employee_permission(
-    pool: &SqlitePool,
+    pool: &DbPool,
     tenant_id: &str,
     user_id: &str,
     employee_id: &str,
@@ -419,7 +404,7 @@ async fn effective_employee_permission(
 /// grant path the routes use.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn grant_employee_access(
-    pool: &SqlitePool,
+    pool: &DbPool,
     tenant_id: &str,
     subject_type: &str,
     subject_id: &str,
@@ -437,23 +422,27 @@ pub(crate) async fn grant_employee_access(
             "unknown permission '{permission}' (allowed: use/manage)"
         )));
     }
-    sqlx::query(
-        "INSERT INTO one_employee_grants \
-             (id, tenant_id, subject_type, subject_id, employee_id, permission, granted_by, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
-         ON CONFLICT(tenant_id, subject_type, subject_id, employee_id) \
-         DO UPDATE SET permission = excluded.permission, granted_by = excluded.granted_by, \
-                        created_at = excluded.created_at",
+        let statement = match pool.backend() {
+        DbBackend::MySql => {
+            "INSERT INTO one_employee_grants          (id, tenant_id, subject_type, subject_id, employee_id, permission, granted_by, created_at)          VALUES (?, ?, ?, ?, ?, ?, ?, ?)          ON DUPLICATE KEY UPDATE permission = new.permission, granted_by = new.granted_by,                         created_at = new.created_at"
+        }
+        _ => {
+            "INSERT INTO one_employee_grants          (id, tenant_id, subject_type, subject_id, employee_id, permission, granted_by, created_at)          VALUES (?, ?, ?, ?, ?, ?, ?, ?)          ON CONFLICT(tenant_id, subject_type, subject_id, employee_id)          DO UPDATE SET permission = excluded.permission, granted_by = excluded.granted_by,                         created_at = excluded.created_at"
+        }
+    };
+    pool.execute(
+        statement,
+        &db_params![
+            short_id("empgrant"),
+            tenant_id,
+            subject_type,
+            subject_id,
+            employee_id,
+            permission,
+            granted_by,
+            now_ms() as i64
+        ],
     )
-    .bind(short_id("empgrant"))
-    .bind(tenant_id)
-    .bind(subject_type)
-    .bind(subject_id)
-    .bind(employee_id)
-    .bind(permission)
-    .bind(granted_by)
-    .bind(now_ms() as i64)
-    .execute(pool)
     .await?;
     Ok(())
 }
@@ -465,19 +454,14 @@ pub(crate) async fn grant_employee_access(
 /// row (`WHERE id = ? AND tenant_id = ?` matches nothing) rather than an
 /// error, so one bad id in a batch doesn't fail the whole call.
 async fn set_published_batch(
-    pool: &SqlitePool,
+    pool: &DbPool,
     tenant_id: &str,
     ids: &[String],
     published: bool,
 ) -> Result<(), EmployeeError> {
     let now = now_ms() as i64;
     for id in ids {
-        sqlx::query("UPDATE one_personal_agents SET published = ?, updated_at = ? WHERE id = ? AND tenant_id = ?")
-            .bind(published as i64)
-            .bind(now)
-            .bind(id)
-            .bind(tenant_id)
-            .execute(pool)
+        pool.execute("UPDATE one_personal_agents SET published = ?, updated_at = ? WHERE id = ? AND tenant_id = ?", &db_params![published as i64, now, id, tenant_id])
             .await?;
     }
     Ok(())
@@ -501,32 +485,27 @@ fn validate_content_resource_type(resource_type: &str) -> Result<(), EmployeeErr
 }
 
 async fn list_categories(
-    pool: &SqlitePool,
+    pool: &DbPool,
     tenant_id: &str,
     resource_type: &str,
 ) -> Result<Vec<ContentCategoryRow>, EmployeeError> {
     validate_content_resource_type(resource_type)?;
-    let rows = sqlx::query_as::<_, ContentCategoryRow>(
+    let rows = pool.fetch_all_as::<ContentCategoryRow>(
         "SELECT * FROM one_content_categories WHERE tenant_id = ? AND resource_type = ? \
          ORDER BY sort_order ASC, created_at ASC",
-    )
-    .bind(tenant_id)
-    .bind(resource_type)
-    .fetch_all(pool)
+    &db_params![tenant_id, resource_type])
     .await?;
     Ok(rows)
 }
 
-async fn get_category(pool: &SqlitePool, id: &str) -> Result<ContentCategoryRow, EmployeeError> {
-    sqlx::query_as::<_, ContentCategoryRow>("SELECT * FROM one_content_categories WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
+async fn get_category(pool: &DbPool, id: &str) -> Result<ContentCategoryRow, EmployeeError> {
+    pool.fetch_optional_as::<ContentCategoryRow>("SELECT * FROM one_content_categories WHERE id = ?", &db_params![id])
         .await?
         .ok_or_else(|| EmployeeError::BadRequest(format!("category '{id}' not found")))
 }
 
 async fn create_category(
-    pool: &SqlitePool,
+    pool: &DbPool,
     tenant_id: &str,
     resource_type: &str,
     parent_id: Option<&str>,
@@ -540,26 +519,17 @@ async fn create_category(
     }
     let id = short_id("cat");
     let now = now_ms() as i64;
-    sqlx::query(
+    pool.execute(
         "INSERT INTO one_content_categories \
              (id, tenant_id, parent_id, resource_type, name, sort_order, created_at, updated_at) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(&id)
-    .bind(tenant_id)
-    .bind(parent_id)
-    .bind(resource_type)
-    .bind(name)
-    .bind(sort_order)
-    .bind(now)
-    .bind(now)
-    .execute(pool)
+    &db_params![&id, tenant_id, parent_id, resource_type, name, sort_order, now, now])
     .await?;
     get_category(pool, &id).await
 }
 
 async fn update_category(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     parent_id: Option<&str>,
     name: &str,
@@ -573,17 +543,11 @@ async fn update_category(
         return Err(EmployeeError::BadRequest("a category cannot be its own parent".into()));
     }
     let now = now_ms() as i64;
-    let result = sqlx::query(
+    let result = pool.execute(
         "UPDATE one_content_categories SET parent_id = ?, name = ?, sort_order = ?, updated_at = ? WHERE id = ?",
-    )
-    .bind(parent_id)
-    .bind(name)
-    .bind(sort_order)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
+    &db_params![parent_id, name, sort_order, now, id])
     .await?;
-    if result.rows_affected() == 0 {
+    if result == 0 {
         return Err(EmployeeError::BadRequest(format!("category '{id}' not found")));
     }
     get_category(pool, id).await
@@ -598,41 +562,34 @@ async fn update_category(
 /// A row whose category was deleted just reads as "uncategorized" the next
 /// time it's listed, rather than blocking the deletion or requiring a
 /// cross-crate integrity sweep.
-async fn delete_category(pool: &SqlitePool, id: &str) -> Result<(), EmployeeError> {
-    let has_children: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_content_categories WHERE parent_id = ?")
-        .bind(id)
-        .fetch_one(pool)
+async fn delete_category(pool: &DbPool, id: &str) -> Result<(), EmployeeError> {
+    let has_children: bool = pool.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_content_categories WHERE parent_id = ?", &db_params![id])
         .await?;
     if has_children {
         return Err(EmployeeError::BadRequest(
             "delete or move this category's sub-categories first".into(),
         ));
     }
-    sqlx::query("DELETE FROM one_content_categories WHERE id = ?")
-        .bind(id)
-        .execute(pool)
+    pool.execute("DELETE FROM one_content_categories WHERE id = ?", &db_params![id])
         .await?;
     Ok(())
 }
 
 async fn list_tags(
-    pool: &SqlitePool,
+    pool: &DbPool,
     tenant_id: &str,
     resource_type: &str,
 ) -> Result<Vec<ContentTagRow>, EmployeeError> {
     validate_content_resource_type(resource_type)?;
-    let rows = sqlx::query_as::<_, ContentTagRow>(
+    let rows = pool.fetch_all_as::<ContentTagRow>(
         "SELECT * FROM one_content_tags WHERE tenant_id = ? AND resource_type = ? ORDER BY name ASC",
-    )
-    .bind(tenant_id)
-    .bind(resource_type)
-    .fetch_all(pool)
+    &db_params![tenant_id, resource_type])
     .await?;
     Ok(rows)
 }
 
 async fn create_tag(
-    pool: &SqlitePool,
+    pool: &DbPool,
     tenant_id: &str,
     resource_type: &str,
     name: &str,
@@ -643,24 +600,14 @@ async fn create_tag(
         return Err(EmployeeError::BadRequest("tag name must not be empty".into()));
     }
     let existing: Option<ContentTagRow> =
-        sqlx::query_as("SELECT * FROM one_content_tags WHERE tenant_id = ? AND resource_type = ? AND name = ?")
-            .bind(tenant_id)
-            .bind(resource_type)
-            .bind(name)
-            .fetch_optional(pool)
+        pool.fetch_optional_as::<ContentTagRow>("SELECT * FROM one_content_tags WHERE tenant_id = ? AND resource_type = ? AND name = ?", &db_params![tenant_id, resource_type, name])
             .await?;
     if let Some(row) = existing {
         return Ok(row);
     }
     let id = short_id("tag");
     let now = now_ms() as i64;
-    sqlx::query("INSERT INTO one_content_tags (id, tenant_id, resource_type, name, created_at) VALUES (?, ?, ?, ?, ?)")
-        .bind(&id)
-        .bind(tenant_id)
-        .bind(resource_type)
-        .bind(name)
-        .bind(now)
-        .execute(pool)
+    pool.execute("INSERT INTO one_content_tags (id, tenant_id, resource_type, name, created_at) VALUES (?, ?, ?, ?, ?)", &db_params![&id, tenant_id, resource_type, name, now])
         .await?;
     Ok(ContentTagRow {
         id,
@@ -674,15 +621,11 @@ async fn create_tag(
 /// Deletes the tag and every link to it — no `ON DELETE CASCADE` is
 /// declared (SQLite FKs aren't enforced here), so the link cleanup is
 /// explicit.
-async fn delete_tag(pool: &SqlitePool, id: &str) -> Result<(), EmployeeError> {
+async fn delete_tag(pool: &DbPool, id: &str) -> Result<(), EmployeeError> {
     let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM one_content_tag_links WHERE tag_id = ?")
-        .bind(id)
-        .execute(&mut *tx)
+    tx.execute("DELETE FROM one_content_tag_links WHERE tag_id = ?", &db_params![id])
         .await?;
-    sqlx::query("DELETE FROM one_content_tags WHERE id = ?")
-        .bind(id)
-        .execute(&mut *tx)
+    tx.execute("DELETE FROM one_content_tags WHERE id = ?", &db_params![id])
         .await?;
     tx.commit().await?;
     Ok(())
@@ -693,24 +636,17 @@ async fn delete_tag(pool: &SqlitePool, id: &str) -> Result<(), EmployeeError> {
 /// upsert-by-replace convention (see `grant_employee_access`'s sibling
 /// functions for the same "caller sends the whole desired state" shape).
 async fn set_resource_tags(
-    pool: &SqlitePool,
+    pool: &DbPool,
     resource_type: &str,
     resource_id: &str,
     tag_ids: &[String],
 ) -> Result<(), EmployeeError> {
     validate_content_resource_type(resource_type)?;
     let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM one_content_tag_links WHERE resource_type = ? AND resource_id = ?")
-        .bind(resource_type)
-        .bind(resource_id)
-        .execute(&mut *tx)
+    tx.execute("DELETE FROM one_content_tag_links WHERE resource_type = ? AND resource_id = ?", &db_params![resource_type, resource_id])
         .await?;
     for tag_id in tag_ids {
-        sqlx::query("INSERT INTO one_content_tag_links (tag_id, resource_type, resource_id) VALUES (?, ?, ?)")
-            .bind(tag_id)
-            .bind(resource_type)
-            .bind(resource_id)
-            .execute(&mut *tx)
+        tx.execute("INSERT INTO one_content_tag_links (tag_id, resource_type, resource_id) VALUES (?, ?, ?)", &db_params![tag_id, resource_type, resource_id])
             .await?;
     }
     tx.commit().await?;
@@ -720,18 +656,15 @@ async fn set_resource_tags(
 /// Tags for one resource — what the tag multi-select shows when editing a
 /// single item.
 async fn list_resource_tags(
-    pool: &SqlitePool,
+    pool: &DbPool,
     resource_type: &str,
     resource_id: &str,
 ) -> Result<Vec<ContentTagRow>, EmployeeError> {
-    let rows = sqlx::query_as::<_, ContentTagRow>(
+    let rows = pool.fetch_all_as::<ContentTagRow>(
         "SELECT t.* FROM one_content_tags t \
          JOIN one_content_tag_links l ON l.tag_id = t.id \
          WHERE l.resource_type = ? AND l.resource_id = ? ORDER BY t.name ASC",
-    )
-    .bind(resource_type)
-    .bind(resource_id)
-    .fetch_all(pool)
+    &db_params![resource_type, resource_id])
     .await?;
     Ok(rows)
 }
@@ -740,7 +673,7 @@ async fn list_resource_tags(
 /// — what a list/table view uses to show tag chips per row without an N+1
 /// query per item.
 async fn list_tags_for_resources(
-    pool: &SqlitePool,
+    pool: &DbPool,
     resource_type: &str,
     resource_ids: &[String],
 ) -> Result<HashMap<String, Vec<ContentTagRow>>, EmployeeError> {
@@ -753,23 +686,24 @@ async fn list_tags_for_resources(
          JOIN one_content_tag_links l ON l.tag_id = t.id \
          WHERE l.resource_type = ? AND l.resource_id IN ({placeholders})"
     );
-    let mut query = sqlx::query(&sql).bind(resource_type);
+    let mut params = db_params![resource_type];
     for resource_id in resource_ids {
-        query = query.bind(resource_id);
+        params.push(resource_id.as_str().into());
     }
-    let rows = query.fetch_all(pool).await?;
+    let sql = format!(
+        "SELECT l.resource_id AS link_resource_id, t.id AS id, t.tenant_id AS tenant_id,          t.resource_type AS resource_type, t.name AS name, t.created_at AS created_at          FROM one_content_tags t          JOIN one_content_tag_links l ON l.tag_id = t.id          WHERE l.resource_type = ? AND l.resource_id IN ({placeholders})"
+    );
+    type TagRow = (String, String, String, String, String, i64);
+    let rows: Vec<TagRow> = pool.fetch_all_as(&sql, &params).await?;
     let mut by_resource: HashMap<String, Vec<ContentTagRow>> = HashMap::new();
-    for row in rows {
-        use sqlx::Row;
-        let resource_id: String = row.try_get("link_resource_id")?;
-        let tag = ContentTagRow {
-            id: row.try_get("id")?,
-            tenant_id: row.try_get("tenant_id")?,
-            resource_type: row.try_get("resource_type")?,
-            name: row.try_get("name")?,
-            created_at: row.try_get("created_at")?,
-        };
-        by_resource.entry(resource_id).or_default().push(tag);
+    for (resource_id, id, tenant_id, resource_type, name, created_at) in rows {
+        by_resource.entry(resource_id).or_default().push(ContentTagRow {
+            id,
+            tenant_id,
+            resource_type,
+            name,
+            created_at,
+        });
     }
     Ok(by_resource)
 }
@@ -875,14 +809,14 @@ fn append_task_context(mut prompt: String, task_context: Option<&str>) -> String
 
 impl EmployeeService {
     pub fn new(
-        pool: SqlitePool,
+        db: DbPool,
         conversation_service: Arc<ConversationService>,
         conversation_repo: Arc<dyn IConversationRepository>,
         agent_registry: Arc<AgentRegistry>,
         work_dir: PathBuf,
     ) -> Self {
         Self {
-            pool,
+            db,
             conversation_service,
             conversation_repo,
             agent_registry,
@@ -999,10 +933,7 @@ impl EmployeeService {
     // --- CRUD ---
 
     pub async fn get(&self, owner_user_id: &str, agent_id: &str) -> Result<PersonalAgentRow, EmployeeError> {
-        sqlx::query_as::<_, PersonalAgentRow>("SELECT * FROM one_personal_agents WHERE id = ? AND owner_user_id = ?")
-            .bind(agent_id)
-            .bind(owner_user_id)
-            .fetch_optional(&self.pool)
+        self.db.fetch_optional_as::<PersonalAgentRow>("SELECT * FROM one_personal_agents WHERE id = ? AND owner_user_id = ?", &db_params![agent_id, owner_user_id])
             .await?
             .ok_or(EmployeeError::NotFound)
     }
@@ -1011,7 +942,7 @@ impl EmployeeService {
     /// within their tenant (A1 L3). Personal-tenant users only ever see their
     /// own (they are the sole member of the 'default' tenant).
     pub async fn list_available(&self, user_id: &str, tenant_id: &str) -> Result<Vec<PersonalAgentDto>, EmployeeError> {
-        let rows = select_available_agents(&self.pool, user_id, tenant_id).await?;
+        let rows = select_available_agents(&self.db, user_id, tenant_id).await?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
@@ -1025,7 +956,7 @@ impl EmployeeService {
         tenant_id: &str,
         agent_id: &str,
     ) -> Result<PersonalAgentRow, EmployeeError> {
-        select_agent_for_use(&self.pool, user_id, tenant_id, agent_id)
+        select_agent_for_use(&self.db, user_id, tenant_id, agent_id)
             .await?
             .ok_or(EmployeeError::NotFound)
     }
@@ -1035,9 +966,7 @@ impl EmployeeService {
     /// `WHERE ... AND owner_user_id = ?` would wrongly 404 here for a
     /// non-owner manager.
     async fn get_by_id(&self, agent_id: &str) -> Result<PersonalAgentRow, EmployeeError> {
-        sqlx::query_as::<_, PersonalAgentRow>("SELECT * FROM one_personal_agents WHERE id = ?")
-            .bind(agent_id)
-            .fetch_optional(&self.pool)
+        self.db.fetch_optional_as::<PersonalAgentRow>("SELECT * FROM one_personal_agents WHERE id = ?", &db_params![agent_id])
             .await?
             .ok_or(EmployeeError::NotFound)
     }
@@ -1057,15 +986,12 @@ impl EmployeeService {
         if let Ok(row) = self.get(user_id, agent_id).await {
             return Ok(row);
         }
-        let row = sqlx::query_as::<_, PersonalAgentRow>(
+        let row = self.db.fetch_optional_as::<PersonalAgentRow>(
             "SELECT * FROM one_personal_agents WHERE id = ? AND visibility = 'shared' AND tenant_id = ?",
-        )
-        .bind(agent_id)
-        .bind(tenant_id)
-        .fetch_optional(&self.pool)
+        &db_params![agent_id, tenant_id])
         .await?
         .ok_or(EmployeeError::NotFound)?;
-        match effective_employee_permission(&self.pool, tenant_id, user_id, agent_id).await? {
+        match effective_employee_permission(&self.db, tenant_id, user_id, agent_id).await? {
             Some(EmployeePermission::Manage) => Ok(row),
             _ => Err(EmployeeError::NotFound),
         }
@@ -1077,11 +1003,9 @@ impl EmployeeService {
     /// same as `dream_domain_devops::DevopsService::list_skills`'s
     /// privileged branch does for the other three registries.
     pub async fn list_all_for_tenant(&self, tenant_id: &str) -> Result<Vec<PersonalAgentDto>, EmployeeError> {
-        let rows = sqlx::query_as::<_, PersonalAgentRow>(
+        let rows = self.db.fetch_all_as::<PersonalAgentRow>(
             "SELECT * FROM one_personal_agents WHERE tenant_id = ? ORDER BY updated_at DESC",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id])
         .await?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
@@ -1100,7 +1024,7 @@ impl EmployeeService {
         ids: &[String],
         published: bool,
     ) -> Result<(), EmployeeError> {
-        set_published_batch(&self.pool, tenant_id, ids, published).await
+        set_published_batch(&self.db, tenant_id, ids, published).await
     }
 
     // ── digital-employee catalog (P1-2) ───────────────────────────────
@@ -1113,7 +1037,7 @@ impl EmployeeService {
     /// adoption status. Runs the tenant-lazy seed first — see `catalog.rs`'s
     /// module docs for the placeholder/instantiate semantics.
     pub async fn list_catalog(&self, tenant_id: &str) -> Result<Vec<CatalogEntryDto>, EmployeeError> {
-        catalog::list_catalog(&self.pool, tenant_id).await
+        catalog::list_catalog(&self.db, tenant_id).await
     }
 
     /// Instantiate a catalog entry as this tenant's formal digital employee
@@ -1127,7 +1051,7 @@ impl EmployeeService {
         catalog_id: &str,
     ) -> Result<PersonalAgentDto, EmployeeError> {
         Ok(
-            catalog::instantiate_catalog_entry(&self.pool, tenant_id, admin_user_id, catalog_id)
+            catalog::instantiate_catalog_entry(&self.db, tenant_id, admin_user_id, catalog_id)
                 .await?
                 .into(),
         )
@@ -1139,13 +1063,11 @@ impl EmployeeService {
     /// standalone) — callers treat that as "not an admin gate, let it
     /// through", matching devops's own convention for the same case.
     pub async fn user_org_role(&self, user_id: &str) -> Result<Option<String>, EmployeeError> {
-        let result = sqlx::query_scalar::<_, String>(
+        let result = self.db.fetch_optional_scalar::<String>(
             "SELECT uo.role FROM one_user_org uo WHERE uo.user_id = ? \
              ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC, \
                        uo.created_at DESC, uo.tenant_id ASC LIMIT 1",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
+        &db_params![user_id])
         .await;
         match result {
             Ok(role) => Ok(role),
@@ -1170,7 +1092,7 @@ impl EmployeeService {
         granted_by: &str,
     ) -> Result<(), EmployeeError> {
         grant_employee_access(
-            &self.pool,
+            &self.db,
             tenant_id,
             subject_type,
             subject_id,
@@ -1191,15 +1113,10 @@ impl EmployeeService {
         subject_id: &str,
         employee_id: &str,
     ) -> Result<(), EmployeeError> {
-        sqlx::query(
+        self.db.execute(
             "DELETE FROM one_employee_grants \
              WHERE tenant_id = ? AND subject_type = ? AND subject_id = ? AND employee_id = ?",
-        )
-        .bind(tenant_id)
-        .bind(subject_type)
-        .bind(subject_id)
-        .bind(employee_id)
-        .execute(&self.pool)
+        &db_params![tenant_id, subject_type, subject_id, employee_id])
         .await?;
         Ok(())
     }
@@ -1212,14 +1129,10 @@ impl EmployeeService {
         subject_type: &str,
         subject_id: &str,
     ) -> Result<Vec<EmployeeGrantRow>, EmployeeError> {
-        let rows = sqlx::query_as::<_, EmployeeGrantRow>(
+        let rows = self.db.fetch_all_as::<EmployeeGrantRow>(
             "SELECT * FROM one_employee_grants \
              WHERE tenant_id = ? AND subject_type = ? AND subject_id = ? ORDER BY created_at DESC",
-        )
-        .bind(tenant_id)
-        .bind(subject_type)
-        .bind(subject_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id, subject_type, subject_id])
         .await?;
         Ok(rows)
     }
@@ -1230,7 +1143,7 @@ impl EmployeeService {
     // for why this lives in this crate). `dream-domain-devops` calls these
     // methods directly — it already has a real Cargo dependency on this
     // crate, so this is a normal function call, not a cross-crate SQL read.
-    // All thin `&self.pool` wrappers around free functions below, same
+    // All thin `&self.db` wrappers around free functions below, same
     // testability shape as `select_agent_for_use`/`grant_employee_access`.
 
     pub async fn list_categories(
@@ -1238,7 +1151,7 @@ impl EmployeeService {
         tenant_id: &str,
         resource_type: &str,
     ) -> Result<Vec<ContentCategoryRow>, EmployeeError> {
-        list_categories(&self.pool, tenant_id, resource_type).await
+        list_categories(&self.db, tenant_id, resource_type).await
     }
 
     pub async fn create_category(
@@ -1249,7 +1162,7 @@ impl EmployeeService {
         name: &str,
         sort_order: i64,
     ) -> Result<ContentCategoryRow, EmployeeError> {
-        create_category(&self.pool, tenant_id, resource_type, parent_id, name, sort_order).await
+        create_category(&self.db, tenant_id, resource_type, parent_id, name, sort_order).await
     }
 
     pub async fn update_category(
@@ -1259,15 +1172,15 @@ impl EmployeeService {
         name: &str,
         sort_order: i64,
     ) -> Result<ContentCategoryRow, EmployeeError> {
-        update_category(&self.pool, id, parent_id, name, sort_order).await
+        update_category(&self.db, id, parent_id, name, sort_order).await
     }
 
     pub async fn delete_category(&self, id: &str) -> Result<(), EmployeeError> {
-        delete_category(&self.pool, id).await
+        delete_category(&self.db, id).await
     }
 
     pub async fn list_tags(&self, tenant_id: &str, resource_type: &str) -> Result<Vec<ContentTagRow>, EmployeeError> {
-        list_tags(&self.pool, tenant_id, resource_type).await
+        list_tags(&self.db, tenant_id, resource_type).await
     }
 
     pub async fn create_tag(
@@ -1276,11 +1189,11 @@ impl EmployeeService {
         resource_type: &str,
         name: &str,
     ) -> Result<ContentTagRow, EmployeeError> {
-        create_tag(&self.pool, tenant_id, resource_type, name).await
+        create_tag(&self.db, tenant_id, resource_type, name).await
     }
 
     pub async fn delete_tag(&self, id: &str) -> Result<(), EmployeeError> {
-        delete_tag(&self.pool, id).await
+        delete_tag(&self.db, id).await
     }
 
     pub async fn set_resource_tags(
@@ -1289,7 +1202,7 @@ impl EmployeeService {
         resource_id: &str,
         tag_ids: &[String],
     ) -> Result<(), EmployeeError> {
-        set_resource_tags(&self.pool, resource_type, resource_id, tag_ids).await
+        set_resource_tags(&self.db, resource_type, resource_id, tag_ids).await
     }
 
     pub async fn list_resource_tags(
@@ -1297,7 +1210,7 @@ impl EmployeeService {
         resource_type: &str,
         resource_id: &str,
     ) -> Result<Vec<ContentTagRow>, EmployeeError> {
-        list_resource_tags(&self.pool, resource_type, resource_id).await
+        list_resource_tags(&self.db, resource_type, resource_id).await
     }
 
     pub async fn list_tags_for_resources(
@@ -1305,7 +1218,7 @@ impl EmployeeService {
         resource_type: &str,
         resource_ids: &[String],
     ) -> Result<HashMap<String, Vec<ContentTagRow>>, EmployeeError> {
-        list_tags_for_resources(&self.pool, resource_type, resource_ids).await
+        list_tags_for_resources(&self.db, resource_type, resource_ids).await
     }
 
     /// Set an employee's visibility ('private' | 'shared'). Owner-only: only
@@ -1321,16 +1234,11 @@ impl EmployeeService {
                 "invalid visibility: {visibility} (allowed: private/shared)"
             )));
         }
-        let result = sqlx::query(
+        let result = self.db.execute(
             "UPDATE one_personal_agents SET visibility = ?, updated_at = ? WHERE id = ? AND owner_user_id = ?",
-        )
-        .bind(visibility)
-        .bind(now_ms() as i64)
-        .bind(agent_id)
-        .bind(owner_user_id)
-        .execute(&self.pool)
+        &db_params![visibility, now_ms() as i64, agent_id, owner_user_id])
         .await?;
-        if result.rows_affected() == 0 {
+        if result == 0 {
             return Err(EmployeeError::NotFound);
         }
         Ok(self.get(owner_user_id, agent_id).await?.into())
@@ -1361,29 +1269,13 @@ impl EmployeeService {
 
         let id = short_id("pa");
         let now = now_ms() as i64;
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_personal_agents \
              (id, owner_user_id, tenant_id, name, description, agent_type, custom_agent_id, cli_path, \
               assistant_id, agent_id_override, model_id, model, \
               automation_config, schedule_enabled, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
-        )
-        .bind(&id)
-        .bind(owner_user_id)
-        .bind(tenant_id)
-        .bind(name)
-        .bind(&input.description)
-        .bind(agent_type)
-        .bind(&input.custom_agent_id)
-        .bind(&input.cli_path)
-        .bind(normalize_optional(input.assistant_id.as_deref()))
-        .bind(normalize_optional(input.agent_id_override.as_deref()))
-        .bind(normalize_optional(input.model_id.as_deref()))
-        .bind(&model)
-        .bind(&automation_config)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, owner_user_id, tenant_id, name, &input.description, agent_type, &input.custom_agent_id, &input.cli_path, normalize_optional(input.assistant_id.as_deref()), normalize_optional(input.agent_id_override.as_deref()), normalize_optional(input.model_id.as_deref()), &model, &automation_config, now, now])
         .await?;
 
         Ok(self.get(owner_user_id, &id).await?.into())
@@ -1435,22 +1327,11 @@ impl EmployeeService {
         self.validate_model_binding(user_id, &agent_type, effective_model.as_ref(), touches_binding)
             .await?;
 
-        sqlx::query(
+        self.db.execute(
             "UPDATE one_personal_agents SET name = ?, description = ?, agent_type = ?, assistant_id = ?, \
              agent_id_override = ?, model_id = ?, model = ?, automation_config = ?, updated_at = ? \
              WHERE id = ?",
-        )
-        .bind(&name)
-        .bind(&description)
-        .bind(&agent_type)
-        .bind(&assistant_id)
-        .bind(&agent_id_override)
-        .bind(&model_id)
-        .bind(&model)
-        .bind(&automation_config)
-        .bind(now_ms() as i64)
-        .bind(agent_id)
-        .execute(&self.pool)
+        &db_params![&name, &description, &agent_type, &assistant_id, &agent_id_override, &model_id, &model, &automation_config, now_ms() as i64, agent_id])
         .await?;
 
         // Not `self.get`: `get_for_manage` above already proved `user_id` may
@@ -1464,12 +1345,9 @@ impl EmployeeService {
     /// it, so this stays a stricter line than `update`/`set_schedule` for
     /// now (see the `EMPLOYEE_PERMISSION_MANAGE` doc comment).
     pub async fn delete(&self, owner_user_id: &str, agent_id: &str) -> Result<(), EmployeeError> {
-        let result = sqlx::query("DELETE FROM one_personal_agents WHERE id = ? AND owner_user_id = ?")
-            .bind(agent_id)
-            .bind(owner_user_id)
-            .execute(&self.pool)
+        let result = self.db.execute("DELETE FROM one_personal_agents WHERE id = ? AND owner_user_id = ?", &db_params![agent_id, owner_user_id])
             .await?;
-        if result.rows_affected() == 0 {
+        if result == 0 {
             return Err(EmployeeError::NotFound);
         }
         Ok(())
@@ -1507,17 +1385,11 @@ impl EmployeeService {
             _ => None,
         };
 
-        sqlx::query(
+        self.db.execute(
             "UPDATE one_personal_agents \
              SET schedule = ?, schedule_enabled = ?, next_run_at = ?, updated_at = ? \
              WHERE id = ?",
-        )
-        .bind(&schedule_json)
-        .bind(if enabled { 1 } else { 0 })
-        .bind(next_run_at)
-        .bind(now_ms() as i64)
-        .bind(agent_id)
-        .execute(&self.pool)
+        &db_params![&schedule_json, if enabled { 1 } else { 0 }, next_run_at, now_ms() as i64, agent_id])
         .await?;
 
         Ok(self.get_by_id(agent_id).await?.into())
@@ -1528,20 +1400,15 @@ impl EmployeeService {
     pub async fn list_runs(&self, owner_user_id: &str, agent_id: &str) -> Result<Vec<EmployeeRunRow>, EmployeeError> {
         // Ownership check first so foreign agents 404 instead of listing empty.
         self.get(owner_user_id, agent_id).await?;
-        let rows = sqlx::query_as::<_, EmployeeRunRow>(
+        let rows = self.db.fetch_all_as::<EmployeeRunRow>(
             "SELECT * FROM one_employee_runs WHERE agent_id = ? ORDER BY started_at DESC LIMIT 50",
-        )
-        .bind(agent_id)
-        .fetch_all(&self.pool)
+        &db_params![agent_id])
         .await?;
         Ok(rows)
     }
 
     pub async fn get_run(&self, owner_user_id: &str, run_id: &str) -> Result<EmployeeRunRow, EmployeeError> {
-        sqlx::query_as::<_, EmployeeRunRow>("SELECT * FROM one_employee_runs WHERE id = ? AND owner_user_id = ?")
-            .bind(run_id)
-            .bind(owner_user_id)
-            .fetch_optional(&self.pool)
+        self.db.fetch_optional_as::<EmployeeRunRow>("SELECT * FROM one_employee_runs WHERE id = ? AND owner_user_id = ?", &db_params![run_id, owner_user_id])
             .await?
             .ok_or(EmployeeError::RunNotFound)
     }
@@ -1639,20 +1506,11 @@ impl EmployeeService {
             .await?;
 
         let run_id = short_id("run");
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_employee_runs \
              (id, agent_id, owner_user_id, tenant_id, conversation_id, status, trigger_source, started_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&run_id)
-        .bind(&agent.id)
-        .bind(owner_user_id)
-        .bind(&agent.tenant_id)
-        .bind(&conversation_id)
-        .bind(RUN_RUNNING)
-        .bind(trigger_source)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&run_id, &agent.id, owner_user_id, &agent.tenant_id, &conversation_id, RUN_RUNNING, trigger_source, now])
         .await?;
 
         Ok((run_id, conversation_id))
@@ -1725,7 +1583,7 @@ impl EmployeeService {
 
         match self.conversation_service.run_agent_turn(turn_req).await {
             Ok(outcome) if outcome.status == ConversationAgentTurnStatus::Completed => {
-                let reply = self.extract_latest_reply(&conversation_id).await.unwrap_or_default();
+                let reply = self.extract_latest_reply(user_id, &conversation_id).await.unwrap_or_default();
                 let summary = truncate_summary(&reply);
                 self.persist_run_outcome(&run_id, RUN_SUCCESS, Some(&outcome.turn_id), Some(&summary), None)
                     .await;
@@ -1791,22 +1649,11 @@ impl EmployeeService {
 
         let now = now_ms() as i64;
         let run_id = short_id("run");
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_employee_runs \
              (id, agent_id, owner_user_id, tenant_id, team_id, slot_id, conversation_id, status, trigger_source, started_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&run_id)
-        .bind(&agent.id)
-        .bind(owner_user_id)
-        .bind(&agent.tenant_id)
-        .bind(team_id)
-        .bind(slot_id)
-        .bind(&conversation_id)
-        .bind(RUN_RUNNING)
-        .bind(TRIGGER_MANUAL)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&run_id, &agent.id, owner_user_id, &agent.tenant_id, team_id, slot_id, &conversation_id, RUN_RUNNING, TRIGGER_MANUAL, now])
         .await?;
 
         let service = Arc::clone(self);
@@ -1896,7 +1743,7 @@ impl EmployeeService {
 
         let (status, turn_id, summary, error) = match self.conversation_service.run_agent_turn(turn_req).await {
             Ok(outcome) if outcome.status == ConversationAgentTurnStatus::Completed => {
-                let summary = self.extract_summary(conversation_id).await;
+                let summary = self.extract_summary(owner_user_id, conversation_id).await;
                 (RUN_SUCCESS, Some(outcome.turn_id), summary, None)
             }
             Ok(outcome) => (
@@ -1951,7 +1798,7 @@ impl EmployeeService {
             tokio::time::sleep(TEAM_POLL_INTERVAL).await;
         }
 
-        let summary = self.extract_summary(conversation_id).await;
+        let summary = self.extract_summary(owner_user_id, conversation_id).await;
         self.persist_run_outcome(run_id, RUN_SUCCESS, None, summary.as_deref(), None)
             .await;
     }
@@ -1964,17 +1811,10 @@ impl EmployeeService {
         summary: Option<&str>,
         error: Option<&str>,
     ) {
-        let result = sqlx::query(
+        let result = self.db.execute(
             "UPDATE one_employee_runs SET status = ?, turn_id = ?, summary = ?, error = ?, finished_at = ? \
              WHERE id = ?",
-        )
-        .bind(status)
-        .bind(turn_id)
-        .bind(summary)
-        .bind(error)
-        .bind(now_ms() as i64)
-        .bind(run_id)
-        .execute(&self.pool)
+        &db_params![status, turn_id, summary, error, now_ms() as i64, run_id])
         .await;
         if let Err(e) = result {
             tracing::error!(run_id, error = %e, "one-employee failed to persist run outcome");
@@ -1986,9 +1826,7 @@ impl EmployeeService {
     /// cron driver exactly.
     async fn recompute_next_run(&self, agent_id: &str) {
         let row: Result<(Option<String>,), sqlx::Error> =
-            sqlx::query_as("SELECT schedule FROM one_personal_agents WHERE id = ?")
-                .bind(agent_id)
-                .fetch_one(&self.pool)
+            self.db.fetch_one_as("SELECT schedule FROM one_personal_agents WHERE id = ?", &db_params![agent_id])
                 .await;
         let Ok((schedule_json,)) = row else { return };
         let Some(schedule_json) = schedule_json else { return };
@@ -1997,35 +1835,42 @@ impl EmployeeService {
         };
         let schedule = schedule_from_dto(&dto);
         let next = compute_next_run(&schedule, now_ms()).map(|ts| ts as i64);
-        let _ = sqlx::query("UPDATE one_personal_agents SET next_run_at = ? WHERE id = ?")
-            .bind(next)
-            .bind(agent_id)
-            .execute(&self.pool)
+        let _ = self.db.execute("UPDATE one_personal_agents SET next_run_at = ? WHERE id = ?", &db_params![next, agent_id])
             .await;
     }
 
     /// Latest visible assistant text reply, truncated to 240 chars — same
     /// summary rule as the TS reference. Used to fill the run row `summary`.
-    async fn extract_summary(&self, conversation_id: &str) -> Option<String> {
-        self.extract_latest_reply(conversation_id)
+    async fn extract_summary(&self, owner_user_id: &str, conversation_id: &str) -> Option<String> {
+        self.extract_latest_reply(owner_user_id, conversation_id)
             .await
             .map(|r| truncate_summary(&r))
     }
 
     /// Latest visible assistant text reply, untruncated. Callers that parse
     /// structured output (breakdown) need the whole thing.
-    async fn extract_latest_reply(&self, conversation_id: &str) -> Option<String> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT content FROM messages \
-             WHERE conversation_id = ? AND type = 'text' AND position = 'left' \
-             ORDER BY created_at DESC LIMIT 12",
-        )
-        .bind(conversation_id)
-        .fetch_all(&self.pool)
-        .await
-        .ok()?;
+    ///
+    /// P3-3 decision (a): `messages` is main-schema (SQLite-only in a MySQL
+    /// enterprise deployment), so this reads through the conversation
+    /// repository instead of raw cross-schema SQL. Requires the conversation
+    /// owner's id for the repo lookup.
+    async fn extract_latest_reply(&self, owner_user_id: &str, conversation_id: &str) -> Option<String> {
+        let params = dream_core_db::MessagePageParams {
+            limit: 12,
+            direction: dream_core_db::MessagePageDirection::InitialLatest,
+        };
+        let page = self
+            .conversation_repo
+            .list_messages_page(owner_user_id, conversation_id, &params)
+            .await
+            .ok()?;
 
-        rows.into_iter().find_map(|(content,)| {
+        // The page is oldest→newest, so scan in reverse for the latest reply.
+        page.items.into_iter().rev().find_map(|row| {
+            if row.r#type != "text" || row.position.as_deref() != Some("left") {
+                return None;
+            }
+            let content = row.content;
             let text = serde_json::from_str::<serde_json::Value>(&content)
                 .ok()
                 .and_then(|v| {
@@ -2066,12 +1911,10 @@ impl EmployeeService {
     /// One scanner pass. Returns the number of agents fired.
     async fn scan_once(self: &Arc<Self>) -> Result<usize, EmployeeError> {
         let now = now_ms() as i64;
-        let due: Vec<(String, String)> = sqlx::query_as(
+        let due: Vec<(String, String)> = self.db.fetch_all_as::<(String, String)>(
             "SELECT id, owner_user_id FROM one_personal_agents \
              WHERE schedule_enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?",
-        )
-        .bind(now)
-        .fetch_all(&self.pool)
+        &db_params![now])
         .await?;
 
         let mut fired = 0;
@@ -2089,9 +1932,7 @@ impl EmployeeService {
             // the next tick from re-firing while this run is still in
             // flight. `recompute_next_run` (called at the end of
             // `execute_run`) will set the next fire time.
-            let _ = sqlx::query("UPDATE one_personal_agents SET next_run_at = NULL WHERE id = ?")
-                .bind(&agent_id)
-                .execute(&self.pool)
+            let _ = self.db.execute("UPDATE one_personal_agents SET next_run_at = NULL WHERE id = ?", &db_params![&agent_id])
                 .await;
 
             if let Err(e) = self
@@ -2272,42 +2113,29 @@ mod tests {
         assert_eq!(merge_optional(Some("new"), Some("kept".into())), Some("new".into()));
     }
 
-    async fn insert_agent(pool: &SqlitePool, id: &str, owner: &str, tenant: &str, visibility: &str) {
-        sqlx::query(
+    async fn insert_agent(pool: &DbPool, id: &str, owner: &str, tenant: &str, visibility: &str) {
+        pool.execute(
             "INSERT INTO one_personal_agents \
              (id, owner_user_id, tenant_id, name, agent_type, automation_config, schedule_enabled, visibility, created_at, updated_at) \
              VALUES (?, ?, ?, ?, 'claude', '{}', 0, ?, 0, 0)",
-        )
-        .bind(id)
-        .bind(owner)
-        .bind(tenant)
-        .bind(id)
-        .bind(visibility)
-        .execute(pool)
+        &db_params![id, owner, tenant, id, visibility])
         .await
         .unwrap();
     }
 
     async fn insert_employee_grant(
-        pool: &SqlitePool,
+        pool: &DbPool,
         tenant_id: &str,
         subject_type: &str,
         subject_id: &str,
         employee_id: &str,
         permission: &str,
     ) {
-        sqlx::query(
+        pool.execute(
             "INSERT INTO one_employee_grants \
              (id, tenant_id, subject_type, subject_id, employee_id, permission, granted_by, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, 'admin1', 0)",
-        )
-        .bind(uuid::Uuid::now_v7().simple().to_string())
-        .bind(tenant_id)
-        .bind(subject_type)
-        .bind(subject_id)
-        .bind(employee_id)
-        .bind(permission)
-        .execute(pool)
+        &db_params![uuid::Uuid::now_v7().simple().to_string(), tenant_id, subject_type, subject_id, employee_id, permission])
         .await
         .unwrap();
     }
@@ -2324,35 +2152,35 @@ mod tests {
     async fn sharing_requires_an_explicit_grant_now() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let pool = db.pool();
+        let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
         // A: a1 private/t1, a2 shared/t1. B: b1 shared/t1. C: c1 shared/t2.
-        insert_agent(pool, "a1", "A", "t1", "private").await;
-        insert_agent(pool, "a2", "A", "t1", "shared").await;
-        insert_agent(pool, "b1", "B", "t1", "shared").await;
-        insert_agent(pool, "c1", "C", "t2", "shared").await;
+        insert_agent(&pool, "a1", "A", "t1", "private").await;
+        insert_agent(&pool, "a2", "A", "t1", "shared").await;
+        insert_agent(&pool, "b1", "B", "t1", "shared").await;
+        insert_agent(&pool, "c1", "C", "t2", "shared").await;
 
         // Owner always sees their own, regardless of visibility.
-        assert!(select_agent_for_use(pool, "A", "t1", "a1").await.unwrap().is_some());
-        assert!(select_agent_for_use(pool, "A", "t1", "a2").await.unwrap().is_some());
+        assert!(select_agent_for_use(&pool, "A", "t1", "a1").await.unwrap().is_some());
+        assert!(select_agent_for_use(&pool, "A", "t1", "a2").await.unwrap().is_some());
 
         // B@t1, with zero grants configured: NOT A's private a1 (never was
         // reachable), and — the new part — NOT A's `shared` a2 either. Own
         // b1 is still visible (ownership, not sharing).
-        assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_none());
-        assert!(select_agent_for_use(pool, "B", "t1", "a2").await.unwrap().is_none());
-        assert!(select_agent_for_use(pool, "B", "t1", "b1").await.unwrap().is_some());
+        assert!(select_agent_for_use(&pool, "B", "t1", "a1").await.unwrap().is_none());
+        assert!(select_agent_for_use(&pool, "B", "t1", "a2").await.unwrap().is_none());
+        assert!(select_agent_for_use(&pool, "B", "t1", "b1").await.unwrap().is_some());
 
         // Grant B `use` on a2 (a direct member grant) — now B can reach it.
-        insert_employee_grant(pool, "t1", "member", "B", "a2", "use").await;
-        assert!(select_agent_for_use(pool, "B", "t1", "a2").await.unwrap().is_some());
+        insert_employee_grant(&pool, "t1", "member", "B", "a2", "use").await;
+        assert!(select_agent_for_use(&pool, "B", "t1", "a2").await.unwrap().is_some());
 
         // Cross-tenant: A@t2 cannot reach t1-shared b1 even with a grant that
         // would only ever be looked up under tenant t1, but always sees own a1.
-        assert!(select_agent_for_use(pool, "A", "t2", "b1").await.unwrap().is_none());
-        assert!(select_agent_for_use(pool, "A", "t2", "a1").await.unwrap().is_some());
+        assert!(select_agent_for_use(&pool, "A", "t2", "b1").await.unwrap().is_none());
+        assert!(select_agent_for_use(&pool, "A", "t2", "a1").await.unwrap().is_some());
 
         // list_available for B@t1 = own b1 + granted a2 (not private a1, not t2 c1).
-        let ids: std::collections::HashSet<String> = select_available_agents(pool, "B", "t1")
+        let ids: std::collections::HashSet<String> = select_available_agents(&pool, "B", "t1")
             .await
             .unwrap()
             .into_iter()
@@ -2365,78 +2193,74 @@ mod tests {
     async fn wildcard_grant_covers_every_shared_employee() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let pool = db.pool();
-        insert_agent(pool, "a1", "A", "t1", "shared").await;
-        insert_agent(pool, "a2", "A", "t1", "shared").await;
-        insert_agent(pool, "a3", "A", "t1", "private").await;
+        let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
+        insert_agent(&pool, "a1", "A", "t1", "shared").await;
+        insert_agent(&pool, "a2", "A", "t1", "shared").await;
+        insert_agent(&pool, "a3", "A", "t1", "private").await;
 
         // No grant yet: B sees neither.
-        assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_none());
+        assert!(select_agent_for_use(&pool, "B", "t1", "a1").await.unwrap().is_none());
 
-        insert_employee_grant(pool, "t1", "member", "B", EMPLOYEE_GRANT_ALL, "use").await;
-        assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_some());
-        assert!(select_agent_for_use(pool, "B", "t1", "a2").await.unwrap().is_some());
+        insert_employee_grant(&pool, "t1", "member", "B", EMPLOYEE_GRANT_ALL, "use").await;
+        assert!(select_agent_for_use(&pool, "B", "t1", "a1").await.unwrap().is_some());
+        assert!(select_agent_for_use(&pool, "B", "t1", "a2").await.unwrap().is_some());
         // `private` is never in the matrix's reach, wildcard or not.
-        assert!(select_agent_for_use(pool, "B", "t1", "a3").await.unwrap().is_none());
+        assert!(select_agent_for_use(&pool, "B", "t1", "a3").await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn permission_resolves_via_department_ancestry() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let pool = db.pool();
-        insert_agent(pool, "a1", "A", "t1", "shared").await;
+        let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
+        insert_agent(&pool, "a1", "A", "t1", "shared").await;
 
         sqlx::raw_sql(
             "CREATE TABLE one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, \
                  department_id TEXT, PRIMARY KEY (user_id, tenant_id));\
              CREATE TABLE one_departments (id TEXT PRIMARY KEY NOT NULL, tenant_id TEXT NOT NULL, parent_id TEXT);",
         )
-        .execute(pool)
+        .execute(pool.sqlite())
         .await
         .unwrap();
-        sqlx::query("INSERT INTO one_user_org (user_id, tenant_id, department_id) VALUES ('B', 't1', 'dept_child')")
-            .execute(pool)
+        pool.execute("INSERT INTO one_user_org (user_id, tenant_id, department_id) VALUES ('B', 't1', 'dept_child')", &[])
             .await
             .unwrap();
-        sqlx::query("INSERT INTO one_departments (id, tenant_id, parent_id) VALUES ('dept_child', 't1', 'dept_root')")
-            .execute(pool)
+        pool.execute("INSERT INTO one_departments (id, tenant_id, parent_id) VALUES ('dept_child', 't1', 'dept_root')", &[])
             .await
             .unwrap();
-        sqlx::query("INSERT INTO one_departments (id, tenant_id, parent_id) VALUES ('dept_root', 't1', NULL)")
-            .execute(pool)
+        pool.execute("INSERT INTO one_departments (id, tenant_id, parent_id) VALUES ('dept_root', 't1', NULL)", &[])
             .await
             .unwrap();
 
         // B is not granted directly, but is in dept_child whose ancestor is
         // dept_root — grant the ancestor, B must still resolve it.
-        assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_none());
-        insert_employee_grant(pool, "t1", "department", "dept_root", "a1", "use").await;
-        assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_some());
+        assert!(select_agent_for_use(&pool, "B", "t1", "a1").await.unwrap().is_none());
+        insert_employee_grant(&pool, "t1", "department", "dept_root", "a1", "use").await;
+        assert!(select_agent_for_use(&pool, "B", "t1", "a1").await.unwrap().is_some());
     }
 
     #[tokio::test]
     async fn permission_resolves_via_scene_membership() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let pool = db.pool();
-        insert_agent(pool, "a1", "A", "t1", "shared").await;
+        let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
+        insert_agent(&pool, "a1", "A", "t1", "shared").await;
 
         sqlx::raw_sql(
             "CREATE TABLE one_scene_members (scene_id TEXT NOT NULL, tenant_id TEXT NOT NULL, \
                  user_id TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (scene_id, user_id));",
         )
-        .execute(pool)
+        .execute(pool.sqlite())
         .await
         .unwrap();
-        sqlx::query("INSERT INTO one_scene_members (scene_id, tenant_id, user_id, added_at) VALUES ('scene_sales', 't1', 'B', 0)")
-            .execute(pool)
+        pool.execute("INSERT INTO one_scene_members (scene_id, tenant_id, user_id, added_at) VALUES ('scene_sales', 't1', 'B', 0)", &[])
             .await
             .unwrap();
 
-        assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_none());
-        insert_employee_grant(pool, "t1", "scene", "scene_sales", "a1", "use").await;
-        assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_some());
+        assert!(select_agent_for_use(&pool, "B", "t1", "a1").await.unwrap().is_none());
+        insert_employee_grant(&pool, "t1", "scene", "scene_sales", "a1", "use").await;
+        assert!(select_agent_for_use(&pool, "B", "t1", "a1").await.unwrap().is_some());
     }
 
     #[tokio::test]
@@ -2445,14 +2269,14 @@ mod tests {
 
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let pool = db.pool();
-        insert_agent(pool, "a1", "A", "t1", "shared").await;
-        insert_employee_grant(pool, "t1", "member", "B", "a1", "manage").await;
+        let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
+        insert_agent(&pool, "a1", "A", "t1", "shared").await;
+        insert_employee_grant(&pool, "t1", "member", "B", "a1", "manage").await;
 
         // A `manage` grant alone is enough to satisfy the (weaker) use check.
-        assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_some());
+        assert!(select_agent_for_use(&pool, "B", "t1", "a1").await.unwrap().is_some());
         assert_eq!(
-            effective_employee_permission(pool, "t1", "B", "a1").await.unwrap(),
+            effective_employee_permission(&pool, "t1", "B", "a1").await.unwrap(),
             Some(EmployeePermission::Manage)
         );
     }
@@ -2461,15 +2285,14 @@ mod tests {
     async fn grant_employee_access_upserts_and_validates_input() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let pool = db.pool();
+        let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
 
-        grant_employee_access(pool, "t1", "member", "B", "a1", EMPLOYEE_PERMISSION_USE, "admin1")
+        grant_employee_access(&pool, "t1", "member", "B", "a1", EMPLOYEE_PERMISSION_USE, "admin1")
             .await
             .unwrap();
-        let rows: Vec<EmployeeGrantRow> = sqlx::query_as(
+        let rows: Vec<EmployeeGrantRow> = pool.fetch_all_as::<EmployeeGrantRow>(
             "SELECT * FROM one_employee_grants WHERE tenant_id = 't1' AND subject_id = 'B' AND employee_id = 'a1'",
-        )
-        .fetch_all(pool)
+        &[])
         .await
         .unwrap();
         assert_eq!(rows.len(), 1);
@@ -2477,24 +2300,23 @@ mod tests {
 
         // Re-granting the same (tenant, subject_type, subject_id, employee_id)
         // upserts in place rather than duplicating the row.
-        grant_employee_access(pool, "t1", "member", "B", "a1", EMPLOYEE_PERMISSION_MANAGE, "admin1")
+        grant_employee_access(&pool, "t1", "member", "B", "a1", EMPLOYEE_PERMISSION_MANAGE, "admin1")
             .await
             .unwrap();
-        let rows: Vec<EmployeeGrantRow> = sqlx::query_as(
+        let rows: Vec<EmployeeGrantRow> = pool.fetch_all_as::<EmployeeGrantRow>(
             "SELECT * FROM one_employee_grants WHERE tenant_id = 't1' AND subject_id = 'B' AND employee_id = 'a1'",
-        )
-        .fetch_all(pool)
+        &[])
         .await
         .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].permission, "manage");
 
         assert!(matches!(
-            grant_employee_access(pool, "t1", "bogus", "B", "a1", EMPLOYEE_PERMISSION_USE, "admin1").await,
+            grant_employee_access(&pool, "t1", "bogus", "B", "a1", EMPLOYEE_PERMISSION_USE, "admin1").await,
             Err(EmployeeError::BadRequest(_))
         ));
         assert!(matches!(
-            grant_employee_access(pool, "t1", "member", "B", "a1", "bogus", "admin1").await,
+            grant_employee_access(&pool, "t1", "member", "B", "a1", "bogus", "admin1").await,
             Err(EmployeeError::BadRequest(_))
         ));
     }
@@ -2533,25 +2355,18 @@ mod tests {
     // ── content categories / tags / published (P1-1 round 1) ───────────
 
     async fn insert_agent_with_published(
-        pool: &SqlitePool,
+        pool: &DbPool,
         id: &str,
         owner: &str,
         tenant: &str,
         visibility: &str,
         published: i64,
     ) {
-        sqlx::query(
+        pool.execute(
             "INSERT INTO one_personal_agents \
              (id, owner_user_id, tenant_id, name, agent_type, automation_config, schedule_enabled, visibility, published, created_at, updated_at) \
              VALUES (?, ?, ?, ?, 'claude', '{}', 0, ?, ?, 0, 0)",
-        )
-        .bind(id)
-        .bind(owner)
-        .bind(tenant)
-        .bind(id)
-        .bind(visibility)
-        .bind(published)
-        .execute(pool)
+        &db_params![id, owner, tenant, id, visibility, published])
         .await
         .unwrap();
     }
@@ -2560,15 +2375,15 @@ mod tests {
     async fn unpublished_shared_employee_is_invisible_even_with_a_grant() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let pool = db.pool();
-        insert_agent_with_published(pool, "a1", "A", "t1", "shared", 0).await;
-        insert_employee_grant(pool, "t1", "member", "B", "a1", "manage").await;
+        let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
+        insert_agent_with_published(&pool, "a1", "A", "t1", "shared", 0).await;
+        insert_employee_grant(&pool, "t1", "member", "B", "a1", "manage").await;
 
         // Owner still sees their own unpublished draft.
-        assert!(select_agent_for_use(pool, "A", "t1", "a1").await.unwrap().is_some());
+        assert!(select_agent_for_use(&pool, "A", "t1", "a1").await.unwrap().is_some());
         // A non-owner with a `manage` grant still can't reach it while unpublished.
-        assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_none());
-        let ids: std::collections::HashSet<String> = select_available_agents(pool, "B", "t1")
+        assert!(select_agent_for_use(&pool, "B", "t1", "a1").await.unwrap().is_none());
+        let ids: std::collections::HashSet<String> = select_available_agents(&pool, "B", "t1")
             .await
             .unwrap()
             .into_iter()
@@ -2581,33 +2396,33 @@ mod tests {
     async fn category_tree_crud_and_delete_rejects_with_children() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let pool = db.pool();
+        let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
 
-        let root = create_category(pool, "t1", "skill", None, "  运维  ", 0).await.unwrap();
+        let root = create_category(&pool, "t1", "skill", None, "  运维  ", 0).await.unwrap();
         assert_eq!(root.name, "运维", "name must be trimmed");
         assert!(root.parent_id.is_none());
 
-        let child = create_category(pool, "t1", "skill", Some(&root.id), "Kubernetes", 1)
+        let child = create_category(&pool, "t1", "skill", Some(&root.id), "Kubernetes", 1)
             .await
             .unwrap();
         assert_eq!(child.parent_id.as_deref(), Some(root.id.as_str()));
 
         // A category from a different resource_type is invisible to this list.
-        create_category(pool, "t1", "mcp", None, "工具分类", 0).await.unwrap();
-        let skill_categories = list_categories(pool, "t1", "skill").await.unwrap();
+        create_category(&pool, "t1", "mcp", None, "工具分类", 0).await.unwrap();
+        let skill_categories = list_categories(&pool, "t1", "skill").await.unwrap();
         assert_eq!(skill_categories.len(), 2);
 
         // Deleting the root while it still has a child is rejected.
-        assert!(delete_category(pool, &root.id).await.is_err());
+        assert!(delete_category(&pool, &root.id).await.is_err());
 
-        let updated = update_category(pool, &child.id, None, "K8s", 5).await.unwrap();
+        let updated = update_category(&pool, &child.id, None, "K8s", 5).await.unwrap();
         assert_eq!(updated.name, "K8s");
         assert!(updated.parent_id.is_none(), "reassigned to root");
 
         // Now the (former) root has no children and can be deleted.
-        delete_category(pool, &root.id).await.unwrap();
+        delete_category(&pool, &root.id).await.unwrap();
         assert!(
-            list_categories(pool, "t1", "skill")
+            list_categories(&pool, "t1", "skill")
                 .await
                 .unwrap()
                 .iter()
@@ -2615,7 +2430,7 @@ mod tests {
         );
 
         assert!(matches!(
-            create_category(pool, "t1", "bogus", None, "x", 0).await,
+            create_category(&pool, "t1", "bogus", None, "x", 0).await,
             Err(EmployeeError::BadRequest(_))
         ));
     }
@@ -2624,40 +2439,40 @@ mod tests {
     async fn tag_create_is_idempotent_by_name_and_delete_cascades_links() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let pool = db.pool();
+        let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
 
-        let tag1 = create_tag(pool, "t1", "skill", "生产力").await.unwrap();
-        let tag2 = create_tag(pool, "t1", "skill", "生产力").await.unwrap();
+        let tag1 = create_tag(&pool, "t1", "skill", "生产力").await.unwrap();
+        let tag2 = create_tag(&pool, "t1", "skill", "生产力").await.unwrap();
         assert_eq!(tag1.id, tag2.id, "re-creating the same name returns the existing row");
-        assert_eq!(list_tags(pool, "t1", "skill").await.unwrap().len(), 1);
+        assert_eq!(list_tags(&pool, "t1", "skill").await.unwrap().len(), 1);
 
-        set_resource_tags(pool, "skill", "sk_1", std::slice::from_ref(&tag1.id))
+        set_resource_tags(&pool, "skill", "sk_1", std::slice::from_ref(&tag1.id))
             .await
             .unwrap();
-        assert_eq!(list_resource_tags(pool, "skill", "sk_1").await.unwrap().len(), 1);
+        assert_eq!(list_resource_tags(&pool, "skill", "sk_1").await.unwrap().len(), 1);
 
-        delete_tag(pool, &tag1.id).await.unwrap();
-        assert!(list_resource_tags(pool, "skill", "sk_1").await.unwrap().is_empty());
-        assert!(list_tags(pool, "t1", "skill").await.unwrap().is_empty());
+        delete_tag(&pool, &tag1.id).await.unwrap();
+        assert!(list_resource_tags(&pool, "skill", "sk_1").await.unwrap().is_empty());
+        assert!(list_tags(&pool, "t1", "skill").await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn set_resource_tags_fully_replaces_the_previous_set() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let pool = db.pool();
-        let a = create_tag(pool, "t1", "skill", "a").await.unwrap();
-        let b = create_tag(pool, "t1", "skill", "b").await.unwrap();
+        let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
+        let a = create_tag(&pool, "t1", "skill", "a").await.unwrap();
+        let b = create_tag(&pool, "t1", "skill", "b").await.unwrap();
 
-        set_resource_tags(pool, "skill", "sk_1", &[a.id.clone(), b.id.clone()])
+        set_resource_tags(&pool, "skill", "sk_1", &[a.id.clone(), b.id.clone()])
             .await
             .unwrap();
-        assert_eq!(list_resource_tags(pool, "skill", "sk_1").await.unwrap().len(), 2);
+        assert_eq!(list_resource_tags(&pool, "skill", "sk_1").await.unwrap().len(), 2);
 
-        set_resource_tags(pool, "skill", "sk_1", std::slice::from_ref(&b.id))
+        set_resource_tags(&pool, "skill", "sk_1", std::slice::from_ref(&b.id))
             .await
             .unwrap();
-        let remaining = list_resource_tags(pool, "skill", "sk_1").await.unwrap();
+        let remaining = list_resource_tags(&pool, "skill", "sk_1").await.unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id, b.id);
     }
@@ -2666,17 +2481,17 @@ mod tests {
     async fn list_tags_for_resources_batches_without_n_plus_one() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let pool = db.pool();
-        let tag = create_tag(pool, "t1", "skill", "热门").await.unwrap();
-        set_resource_tags(pool, "skill", "sk_1", std::slice::from_ref(&tag.id))
+        let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
+        let tag = create_tag(&pool, "t1", "skill", "热门").await.unwrap();
+        set_resource_tags(&pool, "skill", "sk_1", std::slice::from_ref(&tag.id))
             .await
             .unwrap();
-        set_resource_tags(pool, "skill", "sk_2", std::slice::from_ref(&tag.id))
+        set_resource_tags(&pool, "skill", "sk_2", std::slice::from_ref(&tag.id))
             .await
             .unwrap();
 
         let by_resource = list_tags_for_resources(
-            pool,
+            &pool,
             "skill",
             &["sk_1".to_owned(), "sk_2".to_owned(), "sk_3".to_owned()],
         )
@@ -2691,20 +2506,18 @@ mod tests {
     async fn set_published_batch_is_scoped_to_tenant() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let pool = db.pool();
-        insert_agent(pool, "a1", "A", "t1", "shared").await;
-        insert_agent(pool, "a2", "A", "t2", "shared").await;
+        let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
+        insert_agent(&pool, "a1", "A", "t1", "shared").await;
+        insert_agent(&pool, "a2", "A", "t2", "shared").await;
 
-        set_published_batch(pool, "t1", &["a1".to_owned(), "a2".to_owned()], false)
+        set_published_batch(&pool, "t1", &["a1".to_owned(), "a2".to_owned()], false)
             .await
             .unwrap();
 
-        let a1_published: i64 = sqlx::query_scalar("SELECT published FROM one_personal_agents WHERE id = 'a1'")
-            .fetch_one(pool)
+        let a1_published: i64 = pool.fetch_one_scalar("SELECT published FROM one_personal_agents WHERE id = 'a1'", &[])
             .await
             .unwrap();
-        let a2_published: i64 = sqlx::query_scalar("SELECT published FROM one_personal_agents WHERE id = 'a2'")
-            .fetch_one(pool)
+        let a2_published: i64 = pool.fetch_one_scalar("SELECT published FROM one_personal_agents WHERE id = 'a2'", &[])
             .await
             .unwrap();
         assert_eq!(a1_published, 0, "a1 is in tenant t1, must be unpublished");
