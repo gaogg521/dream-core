@@ -26,7 +26,9 @@
 //! stop round-tripping the columns it had gone stale on.
 
 use serde::{Deserialize, Serialize};
-use sqlx::{Row, SqlitePool};
+use sqlx::Row;
+
+use dream_core_db::{DbBackend, DbPool, DbValue};
 
 use crate::error::OrgError;
 
@@ -160,24 +162,42 @@ fn redact_json_secrets(raw: &str) -> serde_json::Value {
 }
 
 /// Column names of `table`, or `None` when the table does not exist.
-async fn table_columns(pool: &SqlitePool, table: &str) -> Result<Option<Vec<String>>, OrgError> {
+async fn table_columns(pool: &DbPool, table: &str) -> Result<Option<Vec<String>>, OrgError> {
     // Table names come from the private `BACKUP_TABLES` constant, never from a
     // request, so interpolating them is safe (PRAGMA takes no bind parameters).
-    let rows = match sqlx::query(&format!("PRAGMA table_info({table})"))
-        .fetch_all(pool)
-        .await
-    {
-        Ok(rows) => rows,
-        Err(e) => return Err(e.into()),
-    };
-    if rows.is_empty() {
-        return Ok(None);
+    match pool.backend() {
+        DbBackend::Sqlite => {
+            let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
+                .fetch_all(pool.sqlite())
+                .await?;
+            if rows.is_empty() {
+                return Ok(None);
+            }
+            let mut columns = Vec::with_capacity(rows.len());
+            for row in rows {
+                columns.push(row.try_get::<String, _>("name")?);
+            }
+            Ok(Some(columns))
+        }
+        DbBackend::MySql => {
+            let present: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ?",
+            )
+            .bind(table)
+            .fetch_one(pool.mysql())
+            .await?;
+            if present == 0 {
+                return Ok(None);
+            }
+            let columns: Vec<String> = sqlx::query_scalar(
+                "SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? ORDER BY ordinal_position",
+            )
+            .bind(table)
+            .fetch_all(pool.mysql())
+            .await?;
+            Ok(Some(columns))
+        }
     }
-    let mut columns = Vec::with_capacity(rows.len());
-    for row in rows {
-        columns.push(row.try_get::<String, _>("name")?);
-    }
-    Ok(Some(columns))
 }
 
 /// Export one table as JSON rows, redacting as it goes.
@@ -186,7 +206,7 @@ async fn table_columns(pool: &SqlitePool, table: &str) -> Result<Option<Vec<Stri
 /// NULL all keep their JSON types without per-column decoding guesswork. No
 /// exported table holds a BLOB (chunk embeddings are excluded), which is the one
 /// case `json_object` cannot represent.
-async fn export_table(pool: &SqlitePool, table: &str) -> Result<Option<TableRows>, OrgError> {
+async fn export_table(pool: &DbPool, table: &str) -> Result<Option<TableRows>, OrgError> {
     let Some(columns) = table_columns(pool, table).await? else {
         return Ok(None);
     };
@@ -195,12 +215,41 @@ async fn export_table(pool: &SqlitePool, table: &str) -> Result<Option<TableRows
         .map(|c| format!("'{c}', \"{c}\""))
         .collect::<Vec<_>>()
         .join(", ");
-    let sql = format!("SELECT json_object({pairs}) AS row_json FROM {table}");
-    let rows = sqlx::query(&sql).fetch_all(pool).await?;
+    let sql = match pool.backend() {
+        DbBackend::Sqlite => format!("SELECT json_object({pairs}) AS row_json FROM {table}"),
+        // MySQL has no json_object() in the SQLite sense (JSON_OBJECT builds
+        // JSON but returns a JSON value, not text with the same shape); export
+        // the row as JSON via JSON_OBJECT too but cast to CHAR for a text read.
+        DbBackend::MySql => {
+            let pairs = columns
+                .iter()
+                .map(|c| format!("'{c}', TO_JSON_STRING(`{c}`)"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("SELECT JSON_OBJECT({pairs}) AS row_json FROM {table}")
+        }
+    };
+    let raw_rows: Vec<String> = match pool.backend() {
+        DbBackend::Sqlite => {
+            sqlx::query(&sql)
+                .fetch_all(pool.sqlite())
+                .await?
+                .into_iter()
+                .map(|r| r.try_get("row_json"))
+                .collect::<Result<_, _>>()?
+        }
+        DbBackend::MySql => {
+            sqlx::query(&sql)
+                .fetch_all(pool.mysql())
+                .await?
+                .into_iter()
+                .map(|r| r.try_get::<Option<String>, _>("row_json").map(|v| v.unwrap_or_default()))
+                .collect::<Result<_, _>>()?
+        }
+    };
 
-    let mut out: TableRows = Vec::with_capacity(rows.len());
-    for row in rows {
-        let raw: String = row.try_get("row_json")?;
+    let mut out: TableRows = Vec::with_capacity(raw_rows.len());
+    for raw in raw_rows {
         let Ok(serde_json::Value::Object(mut obj)) = serde_json::from_str::<serde_json::Value>(&raw) else {
             continue;
         };
@@ -224,7 +273,7 @@ async fn export_table(pool: &SqlitePool, table: &str) -> Result<Option<TableRows
 }
 
 /// Build a full backup bundle.
-pub async fn export_bundle(pool: &SqlitePool, tenant_id: &str, now_ms: i64) -> Result<BackupBundle, OrgError> {
+pub async fn export_bundle(pool: &DbPool, tenant_id: &str, now_ms: i64) -> Result<BackupBundle, OrgError> {
     let mut tables = std::collections::BTreeMap::new();
     for table in BACKUP_TABLES {
         if let Some(rows) = export_table(pool, table).await? {
@@ -263,7 +312,7 @@ pub struct ImportReport {
 /// the literal `__REDACTED__` marker in place makes it visible that a credential
 /// needs re-entering, whereas silently keeping a stale secret would look like it
 /// had been restored.
-pub async fn import_bundle(pool: &SqlitePool, bundle: &BackupBundle) -> Result<ImportReport, OrgError> {
+pub async fn import_bundle(pool: &DbPool, bundle: &BackupBundle) -> Result<ImportReport, OrgError> {
     if bundle.version != BACKUP_VERSION {
         return Err(OrgError::BadRequest(format!(
             "unsupported backup version {} (this build reads version {})",
@@ -303,25 +352,32 @@ pub async fn import_bundle(pool: &SqlitePool, bundle: &BackupBundle) -> Result<I
                 .map(|c| format!("\"{c}\""))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let sql = format!("INSERT OR REPLACE INTO {table} ({column_list}) VALUES ({placeholders})");
-            let mut query = sqlx::query(&sql);
+            // SQLite: INSERT OR REPLACE; MySQL: REPLACE INTO (same delete+insert
+            // semantics on the PK/unique key). Values ride as DbValues.
+            let statement = match tx.backend() {
+                DbBackend::MySql => {
+                    format!("REPLACE INTO {table} ({column_list}) VALUES ({placeholders})")
+                }
+                _ => format!("INSERT OR REPLACE INTO {table} ({column_list}) VALUES ({placeholders})"),
+            };
+            let mut params: Vec<DbValue> = Vec::with_capacity(columns.len());
             for column in &columns {
-                query = match row.get(*column) {
-                    Some(serde_json::Value::Null) | None => query.bind(Option::<String>::None),
-                    Some(serde_json::Value::Bool(b)) => query.bind(*b as i64),
+                params.push(match row.get(*column) {
+                    Some(serde_json::Value::Null) | None => DbValue::Null,
+                    Some(serde_json::Value::Bool(b)) => DbValue::Int(i64::from(*b)),
                     Some(serde_json::Value::Number(n)) => {
                         if let Some(i) = n.as_i64() {
-                            query.bind(i)
+                            DbValue::Int(i)
                         } else {
-                            query.bind(n.as_f64().unwrap_or_default())
+                            DbValue::Real(n.as_f64().unwrap_or_default())
                         }
                     }
-                    Some(serde_json::Value::String(s)) => query.bind(s.clone()),
+                    Some(serde_json::Value::String(val)) => DbValue::Text(val.clone()),
                     // Nested JSON is stored as text in these tables.
-                    Some(other) => query.bind(other.to_string()),
-                };
+                    Some(other) => DbValue::Text(other.to_string()),
+                });
             }
-            query.execute(&mut *tx).await?;
+            tx.execute(&statement, &params).await?;
             report.rows_applied += 1;
         }
         report.tables_applied += 1;
@@ -334,8 +390,8 @@ pub async fn import_bundle(pool: &SqlitePool, bundle: &BackupBundle) -> Result<I
 mod tests {
     use super::*;
 
-    async fn pool() -> SqlitePool {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
+    async fn pool() -> sqlx::SqlitePool {
+        let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
         sqlx::raw_sql(
             "CREATE TABLE one_tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL, exit_password_hash TEXT, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, tenant_id));
@@ -347,7 +403,7 @@ mod tests {
         pool
     }
 
-    async fn seed(pool: &SqlitePool) {
+    async fn seed(pool: &sqlx::SqlitePool) {
         sqlx::raw_sql(
             "INSERT INTO one_tenants (id, name, exit_password_hash) VALUES ('t1', 'Group One', '$2b$12$realhash');
              INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('u1', 't1', 'org_admin');
@@ -363,7 +419,7 @@ mod tests {
     async fn export_captures_rows_and_skips_absent_tables() {
         let pool = pool().await;
         seed(&pool).await;
-        let bundle = export_bundle(&pool, "t1", 1000).await.unwrap();
+        let bundle = export_bundle(&DbPool::Sqlite(pool.clone()), "t1", 1000).await.unwrap();
 
         assert_eq!(bundle.version, BACKUP_VERSION);
         assert_eq!(bundle.exported_at, 1000);
@@ -378,7 +434,7 @@ mod tests {
     async fn export_redacts_every_secret() {
         let pool = pool().await;
         seed(&pool).await;
-        let bundle = export_bundle(&pool, "t1", 0).await.unwrap();
+        let bundle = export_bundle(&DbPool::Sqlite(pool.clone()), "t1", 0).await.unwrap();
         let serialized = serde_json::to_string(&bundle).unwrap();
 
         assert!(!serialized.contains("$2b$12$realhash"), "exit password hash leaked");
@@ -396,10 +452,10 @@ mod tests {
     async fn import_restores_into_an_empty_deployment() {
         let source = pool().await;
         seed(&source).await;
-        let bundle = export_bundle(&source, "t1", 0).await.unwrap();
+        let bundle = export_bundle(&DbPool::Sqlite(source.clone()), "t1", 0).await.unwrap();
 
         let target = pool().await;
-        let report = import_bundle(&target, &bundle).await.unwrap();
+        let report = import_bundle(&DbPool::Sqlite(target.clone()), &bundle).await.unwrap();
         assert!(report.rows_applied >= 4);
 
         let members: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_user_org")
@@ -420,11 +476,11 @@ mod tests {
     async fn import_is_idempotent() {
         let source = pool().await;
         seed(&source).await;
-        let bundle = export_bundle(&source, "t1", 0).await.unwrap();
+        let bundle = export_bundle(&DbPool::Sqlite(source.clone()), "t1", 0).await.unwrap();
 
         let target = pool().await;
-        import_bundle(&target, &bundle).await.unwrap();
-        import_bundle(&target, &bundle).await.unwrap();
+        import_bundle(&DbPool::Sqlite(target.clone()), &bundle).await.unwrap();
+        import_bundle(&DbPool::Sqlite(target.clone()), &bundle).await.unwrap();
 
         let members: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_user_org")
             .fetch_one(&target)
@@ -443,7 +499,7 @@ mod tests {
             contains_redactions: true,
             tables: Default::default(),
         };
-        let err = import_bundle(&target, &bundle).await.unwrap_err();
+        let err = import_bundle(&DbPool::Sqlite(target.clone()), &bundle).await.unwrap_err();
         assert!(
             matches!(err, OrgError::BadRequest(ref m) if m.contains("unsupported backup version")),
             "expected a version refusal, got {err:?}"
@@ -456,13 +512,13 @@ mod tests {
     async fn import_ignores_columns_this_schema_does_not_have() {
         let source = pool().await;
         seed(&source).await;
-        let mut bundle = export_bundle(&source, "t1", 0).await.unwrap();
+        let mut bundle = export_bundle(&DbPool::Sqlite(source.clone()), "t1", 0).await.unwrap();
         for row in bundle.tables.get_mut("one_tenants").unwrap() {
             row.insert("some_future_column".into(), serde_json::Value::String("x".into()));
         }
 
         let target = pool().await;
-        import_bundle(&target, &bundle).await.unwrap();
+        import_bundle(&DbPool::Sqlite(target.clone()), &bundle).await.unwrap();
         let name: String = sqlx::query_scalar("SELECT name FROM one_tenants WHERE id = 't1'")
             .fetch_one(&target)
             .await
@@ -493,7 +549,7 @@ mod tests {
         .unwrap();
 
         // Exported *as* t1's admin — yet t2's rows are in the bundle.
-        let bundle = export_bundle(&pool, "t1", 0).await.unwrap();
+        let bundle = export_bundle(&DbPool::Sqlite(pool.clone()), "t1", 0).await.unwrap();
         let tenant_ids: Vec<&str> = bundle.tables["one_tenants"]
             .iter()
             .filter_map(|row| row["id"].as_str())

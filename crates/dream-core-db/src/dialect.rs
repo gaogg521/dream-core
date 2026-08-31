@@ -367,6 +367,14 @@ enum DbTxInner<'p> {
 }
 
 impl DbTx<'_> {
+    /// The backend this transaction is running on (for dialect-specific SQL).
+    pub fn backend(&self) -> DbBackend {
+        match &self.inner {
+            DbTxInner::Sqlite(_) => DbBackend::Sqlite,
+            DbTxInner::MySql(_) => DbBackend::MySql,
+        }
+    }
+
     pub async fn execute(&mut self, sql: &str, params: &[DbValue]) -> Result<u64, sqlx::Error> {
         match &mut self.inner {
             DbTxInner::Sqlite(tx) => {
