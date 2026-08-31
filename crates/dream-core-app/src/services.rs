@@ -430,7 +430,7 @@ impl AppServices {
         // here because the agent factory is built before the router — and
         // before the governance plane that also holds a handle.
         #[cfg(feature = "enterprise")]
-        let workflow_for_agent_factory = Arc::new(dream_domain_workflow::WorkflowService::new(database.pool().clone()));
+        let workflow_for_agent_factory = Arc::new(dream_domain_workflow::WorkflowService::new(dream_core_db::DbPool::Sqlite(database.pool().clone())));
 
         // NOT adopted this sync (2026-07-29): upstream wires a `session_spawner`
         // here for the direct-CLI SessionAgentTask path — see the matching notes

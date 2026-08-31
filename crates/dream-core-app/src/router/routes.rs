@@ -2032,7 +2032,7 @@ pub(crate) fn build_governance_plane(
         user_repo: services.user_repo.clone(),
     };
     let one_workflow_service = std::sync::Arc::new(dream_domain_workflow::WorkflowService::new(
-        services.database.pool().clone(),
+        dream_core_db::DbPool::Sqlite(services.database.pool().clone()),
     ));
     let one_workflow_state = dream_domain_workflow::OneWorkflowRouterState::new(one_workflow_service.clone());
 
