@@ -108,6 +108,24 @@ impl From<Vec<u8>> for DbValue {
     }
 }
 
+impl From<Option<&str>> for DbValue {
+    fn from(v: Option<&str>) -> Self {
+        match v {
+            Some(v) => DbValue::Text(v.to_owned()),
+            None => DbValue::Null,
+        }
+    }
+}
+
+impl From<&Option<String>> for DbValue {
+    fn from(v: &Option<String>) -> Self {
+        match v {
+            Some(v) => DbValue::Text(v.clone()),
+            None => DbValue::Null,
+        }
+    }
+}
+
 impl From<Option<String>> for DbValue {
     fn from(v: Option<String>) -> Self {
         match v {
