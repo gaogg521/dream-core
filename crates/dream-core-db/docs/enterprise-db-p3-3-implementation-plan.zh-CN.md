@@ -221,6 +221,11 @@ match self {
 
 ## 5. 测试策略
 
+> **2026-09-01 更新**：MySQL 用例统一连**本机原生 MySQL**（`root/root@127.0.0.1:3306`），
+> 不再连 WSL 内 docker 容器——WSL2 localhost 转发在 `wsl --shutdown` 后会断且不自愈，
+> 踩坑实录见 `dream-en/docs/wsl-testing-pitfalls.zh-CN.md`。`DREAM_TEST_MYSQL_URL` 传
+> `mysql://root:root@127.0.0.1:3306/dream_test` 即可（`just test-mysql` 注释已同步）。
+
 - **SQLite 回归**：每 crate 现有 `#[cfg(test)]` 用 `DbPool::Sqlite(init_database_memory().pool().clone())` 包一层，断言不变。
   收尾 `cargo nextest run --workspace`（红线：不跑 `-p dream-core-app` e2e）。
 - **MySQL 测试**：`DREAM_TEST_MYSQL_URL` gated（照 `postgres.rs:63` 的 `DREAM_TEST_POSTGRES_URL` 先例改）。默认 CI 跳过。

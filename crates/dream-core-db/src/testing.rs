@@ -111,16 +111,16 @@ mod tests {
     #[test]
     fn strips_database_and_query_from_urls() {
         assert_eq!(
-            strip_database_path("mysql://root:test@localhost:13306/dream_test").as_deref(),
-            Some("mysql://root:test@localhost:13306")
+            strip_database_path("mysql://root:root@127.0.0.1:3306/dream_test").as_deref(),
+            Some("mysql://root:root@127.0.0.1:3306")
         );
         assert_eq!(
-            strip_database_path("mysql://root:test@localhost:13306/dream?x=y").as_deref(),
-            Some("mysql://root:test@localhost:13306")
+            strip_database_path("mysql://root:root@127.0.0.1:3306/dream?x=y").as_deref(),
+            Some("mysql://root:root@127.0.0.1:3306")
         );
         assert_eq!(
-            strip_database_path("mysql://root:test@localhost:13306").as_deref(),
-            Some("mysql://root:test@localhost:13306")
+            strip_database_path("mysql://root:root@127.0.0.1:3306").as_deref(),
+            Some("mysql://root:root@127.0.0.1:3306")
         );
         assert_eq!(strip_database_path("not-a-url"), None);
     }
