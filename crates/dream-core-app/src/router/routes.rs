@@ -2318,7 +2318,7 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
     // auth middleware — mirrors `create_router_with_all_state`.
     let one_platform_service = std::sync::Arc::new(
         dream_domain_platform::PlatformService::new(
-            services.database.pool().clone(),
+            dream_core_db::DbPool::Sqlite(services.database.pool().clone()),
             crate::config::derive_encryption_key(&services.data_secret_raw),
         )
         // P2-4 personal file vault: same shared data dir / storage root as
@@ -2513,7 +2513,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     #[cfg(feature = "enterprise")]
     let one_platform_service = std::sync::Arc::new(
         dream_domain_platform::PlatformService::new(
-            services.database.pool().clone(),
+            dream_core_db::DbPool::Sqlite(services.database.pool().clone()),
             crate::config::derive_encryption_key(&services.data_secret_raw),
         )
         // P2-4 personal file vault: objects live under the shared data dir,

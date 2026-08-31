@@ -10,7 +10,6 @@
 
 use std::sync::Arc;
 
-use sqlx::SqlitePool;
 
 use dream_core_common::constants::API_KEY_TOKEN_PREFIX;
 use dream_core_common::{decrypt_string, encrypt_string, generate_id_with_length, generate_prefixed_id, now_ms};
@@ -21,6 +20,7 @@ use crate::collaboration::{
 };
 use crate::container::{ContainerRuntime, ContainerSettings, ContainerStatus, NoopContainerRuntime};
 use crate::error::PlatformError;
+use dream_core_db::{DbBackend, DbPool, db_params};
 use crate::ip_allowlist::ip_allowed;
 use crate::models::{
     ApiKeyDto, CollaborationConfigDto, ConfigBulkImportDto, ConfigEntryDto, ConfigSetDto, ConfigSetReference,
@@ -100,7 +100,7 @@ pub struct ConfigImportRow {
 }
 
 pub struct PlatformService {
-    pool: SqlitePool,
+    db: DbPool,
     /// Encrypts stored registry/collaboration credentials (same key/helper as
     /// one-org's SMTP password and provider API keys).
     encryption_key: [u8; 32],
@@ -119,9 +119,16 @@ fn is_admin_role(role: &str) -> bool {
 }
 
 impl PlatformService {
-    pub fn new(pool: SqlitePool, encryption_key: [u8; 32]) -> Self {
-        Self {
-            pool,
+    /// Test-only: the concrete SQLite pool behind the enum (platform's own
+    /// tests seed with raw sqlx against SQLite).
+    #[cfg(test)]
+    pub fn pool(&self) -> &sqlx::SqlitePool {
+        self.db.sqlite()
+    }
+
+    pub fn new(
+        db: DbPool, encryption_key: [u8; 32]) -> Self {
+        Self { db,
             encryption_key,
             container_runtime: Arc::new(NoopContainerRuntime),
             collaboration_provider: Arc::new(NoopCollaborationProvider),
@@ -164,13 +171,11 @@ impl PlatformService {
     /// is scoped to the active tenant (active membership first, else
     /// most-recently-joined), mirroring `dream_domain_devops::user_org_role`.
     pub async fn resolve_actor(&self, user_id: &str) -> Result<Option<PlatformActor>, PlatformError> {
-        let result = sqlx::query_as::<_, (String, String)>(
+        let result = self.db.fetch_optional_as::<(String, String)>(
             "SELECT uo.tenant_id, uo.role FROM one_user_org uo WHERE uo.user_id = ? \
              ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC, \
                       uo.created_at DESC, uo.tenant_id ASC LIMIT 1",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
+        &db_params![user_id])
         .await;
         match result {
             Ok(Some((tenant_id, role))) => Ok(Some(PlatformActor { tenant_id, role })),
@@ -217,12 +222,10 @@ impl PlatformService {
             bool,
             i64,
         );
-        let row: Option<Row> = sqlx::query_as(
+        let row: Option<Row> = self.db.fetch_optional_as::<Row>(
             "SELECT runtime_kind, endpoint, default_image, registry, registry_secret_encrypted, enabled, updated_at \
              FROM one_container_config WHERE tenant_id = ?",
-        )
-        .bind(tenant_id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id])
         .await?;
         Ok(match row {
             Some((runtime_kind, endpoint, default_image, registry, registry_secret_encrypted, enabled, updated_at)) => {
@@ -261,9 +264,7 @@ impl PlatformService {
         enabled: bool,
     ) -> Result<ContainerConfigDto, PlatformError> {
         let existing: Option<String> =
-            sqlx::query_scalar("SELECT registry_secret_encrypted FROM one_container_config WHERE tenant_id = ?")
-                .bind(tenant_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT registry_secret_encrypted FROM one_container_config WHERE tenant_id = ?", &db_params![tenant_id])
                 .await?
                 .flatten();
         let secret_encrypted = match registry_secret {
@@ -272,7 +273,7 @@ impl PlatformService {
             }
             _ => existing,
         };
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_container_config \
                  (tenant_id, runtime_kind, endpoint, default_image, registry, registry_secret_encrypted, enabled, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
@@ -280,16 +281,7 @@ impl PlatformService {
                  default_image = excluded.default_image, registry = excluded.registry, \
                  registry_secret_encrypted = excluded.registry_secret_encrypted, enabled = excluded.enabled, \
                  updated_at = excluded.updated_at",
-        )
-        .bind(tenant_id)
-        .bind(runtime_kind)
-        .bind(endpoint)
-        .bind(default_image)
-        .bind(registry)
-        .bind(&secret_encrypted)
-        .bind(enabled)
-        .bind(now_ms())
-        .execute(&self.pool)
+        &db_params![tenant_id, runtime_kind, endpoint, default_image, registry, &secret_encrypted, enabled, now_ms()])
         .await?;
         self.get_container_config(tenant_id).await
     }
@@ -298,9 +290,7 @@ impl PlatformService {
     /// `None` when unset or decryption fails (never panics).
     pub async fn container_registry_secret(&self, tenant_id: &str) -> Result<Option<String>, PlatformError> {
         let encrypted: Option<String> =
-            sqlx::query_scalar("SELECT registry_secret_encrypted FROM one_container_config WHERE tenant_id = ?")
-                .bind(tenant_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT registry_secret_encrypted FROM one_container_config WHERE tenant_id = ?", &db_params![tenant_id])
                 .await?
                 .flatten();
         Ok(encrypted.and_then(|e| decrypt_string(&e, &self.encryption_key).ok()))
@@ -327,12 +317,10 @@ impl PlatformService {
 
     pub async fn get_collaboration_config(&self, tenant_id: &str) -> Result<CollaborationConfigDto, PlatformError> {
         type Row = (Option<String>, Option<String>, Option<String>, bool, bool, i64);
-        let row: Option<Row> = sqlx::query_as(
+        let row: Option<Row> = self.db.fetch_optional_as::<Row>(
             "SELECT provider, endpoint, secret_encrypted, presence, enabled, updated_at \
              FROM one_collaboration_config WHERE tenant_id = ?",
-        )
-        .bind(tenant_id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id])
         .await?;
         Ok(match row {
             Some((provider, endpoint, secret_encrypted, presence, enabled, updated_at)) => CollaborationConfigDto {
@@ -365,9 +353,7 @@ impl PlatformService {
         enabled: bool,
     ) -> Result<CollaborationConfigDto, PlatformError> {
         let existing: Option<String> =
-            sqlx::query_scalar("SELECT secret_encrypted FROM one_collaboration_config WHERE tenant_id = ?")
-                .bind(tenant_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT secret_encrypted FROM one_collaboration_config WHERE tenant_id = ?", &db_params![tenant_id])
                 .await?
                 .flatten();
         let secret_encrypted = match secret {
@@ -376,22 +362,14 @@ impl PlatformService {
             }
             _ => existing,
         };
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_collaboration_config \
                  (tenant_id, provider, endpoint, secret_encrypted, presence, enabled, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(tenant_id) DO UPDATE SET provider = excluded.provider, endpoint = excluded.endpoint, \
                  secret_encrypted = excluded.secret_encrypted, presence = excluded.presence, \
                  enabled = excluded.enabled, updated_at = excluded.updated_at",
-        )
-        .bind(tenant_id)
-        .bind(provider)
-        .bind(endpoint)
-        .bind(&secret_encrypted)
-        .bind(presence)
-        .bind(enabled)
-        .bind(now_ms())
-        .execute(&self.pool)
+        &db_params![tenant_id, provider, endpoint, &secret_encrypted, presence, enabled, now_ms()])
         .await?;
         self.get_collaboration_config(tenant_id).await
     }
@@ -399,9 +377,7 @@ impl PlatformService {
     /// Decrypted collaboration credential, for a real `CollaborationProvider`.
     pub async fn collaboration_secret(&self, tenant_id: &str) -> Result<Option<String>, PlatformError> {
         let encrypted: Option<String> =
-            sqlx::query_scalar("SELECT secret_encrypted FROM one_collaboration_config WHERE tenant_id = ?")
-                .bind(tenant_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT secret_encrypted FROM one_collaboration_config WHERE tenant_id = ?", &db_params![tenant_id])
                 .await?
                 .flatten();
         Ok(encrypted.and_then(|e| decrypt_string(&e, &self.encryption_key).ok()))
@@ -426,9 +402,7 @@ impl PlatformService {
 
     pub async fn get_ip_allowlist(&self, tenant_id: &str) -> Result<IpAllowlistConfigDto, PlatformError> {
         let row: Option<(Option<String>, bool, i64)> =
-            sqlx::query_as("SELECT cidrs, enabled, updated_at FROM one_ip_allowlist_config WHERE tenant_id = ?")
-                .bind(tenant_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_as::<(Option<String>, bool, i64)>("SELECT cidrs, enabled, updated_at FROM one_ip_allowlist_config WHERE tenant_id = ?", &db_params![tenant_id])
                 .await?;
         Ok(match row {
             Some((cidrs, enabled, updated_at)) => IpAllowlistConfigDto {
@@ -454,16 +428,11 @@ impl PlatformService {
         enabled: bool,
     ) -> Result<IpAllowlistConfigDto, PlatformError> {
         let cidrs_json = serde_json::to_string(cidrs).map_err(|e| PlatformError::Internal(e.to_string()))?;
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_ip_allowlist_config (tenant_id, cidrs, enabled, updated_at) VALUES (?, ?, ?, ?) \
              ON CONFLICT(tenant_id) DO UPDATE SET cidrs = excluded.cidrs, enabled = excluded.enabled, \
                  updated_at = excluded.updated_at",
-        )
-        .bind(tenant_id)
-        .bind(&cidrs_json)
-        .bind(enabled)
-        .bind(now_ms())
-        .execute(&self.pool)
+        &db_params![tenant_id, &cidrs_json, enabled, now_ms()])
         .await?;
         self.get_ip_allowlist(tenant_id).await
     }
@@ -480,11 +449,9 @@ impl PlatformService {
 
     pub async fn get_siem_config(&self, tenant_id: &str) -> Result<SiemConfigDto, PlatformError> {
         type SiemRow = (Option<String>, Option<String>, Option<String>, bool, i64);
-        let row: Option<SiemRow> = sqlx::query_as(
+        let row: Option<SiemRow> = self.db.fetch_optional_as::<SiemRow>(
             "SELECT kind, endpoint, secret_encrypted, enabled, updated_at FROM one_siem_config WHERE tenant_id = ?",
-        )
-        .bind(tenant_id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id])
         .await?;
         Ok(match row {
             Some((kind, endpoint, secret_encrypted, enabled, updated_at)) => SiemConfigDto {
@@ -514,9 +481,7 @@ impl PlatformService {
         enabled: bool,
     ) -> Result<SiemConfigDto, PlatformError> {
         let existing: Option<String> =
-            sqlx::query_scalar("SELECT secret_encrypted FROM one_siem_config WHERE tenant_id = ?")
-                .bind(tenant_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT secret_encrypted FROM one_siem_config WHERE tenant_id = ?", &db_params![tenant_id])
                 .await?
                 .flatten();
         let secret_encrypted = match secret {
@@ -525,20 +490,13 @@ impl PlatformService {
             }
             _ => existing,
         };
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_siem_config (tenant_id, kind, endpoint, secret_encrypted, enabled, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?) \
              ON CONFLICT(tenant_id) DO UPDATE SET kind = excluded.kind, endpoint = excluded.endpoint, \
                  secret_encrypted = excluded.secret_encrypted, enabled = excluded.enabled, \
                  updated_at = excluded.updated_at",
-        )
-        .bind(tenant_id)
-        .bind(kind)
-        .bind(endpoint)
-        .bind(&secret_encrypted)
-        .bind(enabled)
-        .bind(now_ms())
-        .execute(&self.pool)
+        &db_params![tenant_id, kind, endpoint, &secret_encrypted, enabled, now_ms()])
         .await?;
         self.get_siem_config(tenant_id).await
     }
@@ -546,9 +504,7 @@ impl PlatformService {
     /// Decrypted SIEM token, for a real `SiemExporter` to consume.
     pub async fn siem_secret(&self, tenant_id: &str) -> Result<Option<String>, PlatformError> {
         let encrypted: Option<String> =
-            sqlx::query_scalar("SELECT secret_encrypted FROM one_siem_config WHERE tenant_id = ?")
-                .bind(tenant_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT secret_encrypted FROM one_siem_config WHERE tenant_id = ?", &db_params![tenant_id])
                 .await?
                 .flatten();
         Ok(encrypted.and_then(|e| decrypt_string(&e, &self.encryption_key).ok()))
@@ -616,36 +572,21 @@ impl PlatformService {
             return Err(PlatformError::BadRequest("resource id must not be empty".into()));
         }
 
-        let existing: Option<(String,)> = sqlx::query_as(
+        let existing: Option<(String,)> = self.db.fetch_optional_as::<(String,)>(
             "SELECT id FROM one_resource_grants \
              WHERE tenant_id = ? AND subject_type = ? AND subject_id = ? \
                AND resource_type = ? AND resource_id = ?",
-        )
-        .bind(tenant_id)
-        .bind(subject_type)
-        .bind(subject_id)
-        .bind(resource_type)
-        .bind(resource_id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id, subject_type, subject_id, resource_type, resource_id])
         .await?;
         let id = match existing {
             Some((id,)) => id,
             None => {
                 let id = generate_prefixed_id("grant");
-                sqlx::query(
+                self.db.execute(
                     "INSERT INTO one_resource_grants \
                      (id, tenant_id, subject_type, subject_id, resource_type, resource_id, granted_by, created_at) \
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                )
-                .bind(&id)
-                .bind(tenant_id)
-                .bind(subject_type)
-                .bind(subject_id)
-                .bind(resource_type)
-                .bind(resource_id)
-                .bind(granted_by)
-                .bind(now_ms())
-                .execute(&self.pool)
+                &db_params![&id, tenant_id, subject_type, subject_id, resource_type, resource_id, granted_by, now_ms()])
                 .await?;
                 id
             }
@@ -657,13 +598,10 @@ impl PlatformService {
 
     async fn get_grant(&self, tenant_id: &str, id: &str) -> Result<Option<ResourceGrantDto>, PlatformError> {
         type Row = (String, String, String, String, String, String, i64);
-        let row: Option<Row> = sqlx::query_as(
+        let row: Option<Row> = self.db.fetch_optional_as::<Row>(
             "SELECT id, subject_type, subject_id, resource_type, resource_id, granted_by, created_at \
              FROM one_resource_grants WHERE tenant_id = ? AND id = ?",
-        )
-        .bind(tenant_id)
-        .bind(id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id, id])
         .await?;
         Ok(row.map(
             |(id, subject_type, subject_id, resource_type, resource_id, granted_by, created_at)| ResourceGrantDto {
@@ -683,12 +621,9 @@ impl PlatformService {
     /// an admin in one project group could revoke another group's grant just
     /// by guessing its id).
     pub async fn revoke_resource(&self, tenant_id: &str, grant_id: &str) -> Result<(), PlatformError> {
-        let result = sqlx::query("DELETE FROM one_resource_grants WHERE id = ? AND tenant_id = ?")
-            .bind(grant_id)
-            .bind(tenant_id)
-            .execute(&self.pool)
+        let result = self.db.execute("DELETE FROM one_resource_grants WHERE id = ? AND tenant_id = ?", &db_params![grant_id, tenant_id])
             .await?;
-        if result.rows_affected() == 0 {
+        if result == 0 {
             return Err(PlatformError::NotFound("grant not found".into()));
         }
         Ok(())
@@ -719,17 +654,17 @@ impl PlatformService {
         sql.push_str(" ORDER BY created_at DESC");
 
         type Row = (String, String, String, String, String, String, i64);
-        let mut query = sqlx::query_as::<_, Row>(&sql).bind(tenant_id);
+        let mut params = db_params![tenant_id];
         if let Some(v) = subject_type {
-            query = query.bind(v);
+            params.push(v.into());
         }
         if let Some(v) = subject_id {
-            query = query.bind(v);
+            params.push(v.into());
         }
         if let Some(v) = resource_type {
-            query = query.bind(v);
+            params.push(v.into());
         }
-        let rows = query.fetch_all(&self.pool).await?;
+        let rows = self.db.fetch_all_as::<Row>(&sql, &params).await?;
         Ok(rows
             .into_iter()
             .map(
@@ -756,10 +691,7 @@ impl PlatformService {
     /// tree that got corrupted some other way, not the primary guard.
     async fn department_ancestry(&self, tenant_id: &str, user_id: &str) -> Result<Vec<String>, PlatformError> {
         let mut current: Option<String> =
-            sqlx::query_scalar("SELECT department_id FROM one_user_org WHERE tenant_id = ? AND user_id = ?")
-                .bind(tenant_id)
-                .bind(user_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_scalar("SELECT department_id FROM one_user_org WHERE tenant_id = ? AND user_id = ?", &db_params![tenant_id, user_id])
                 .await?
                 .flatten();
 
@@ -772,10 +704,7 @@ impl PlatformService {
             }
             hops += 1;
             chain.push(department_id.clone());
-            current = sqlx::query_scalar("SELECT parent_id FROM one_departments WHERE tenant_id = ? AND id = ?")
-                .bind(tenant_id)
-                .bind(&department_id)
-                .fetch_optional(&self.pool)
+            current = self.db.fetch_optional_scalar("SELECT parent_id FROM one_departments WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, &department_id])
                 .await?
                 .flatten();
         }
@@ -806,14 +735,11 @@ impl PlatformService {
             "SELECT resource_id FROM one_resource_grants \
              WHERE tenant_id = ? AND subject_type = ? AND resource_type = ? AND subject_id IN ({placeholders})"
         );
-        let mut query = sqlx::query_as::<_, (String,)>(&sql)
-            .bind(tenant_id)
-            .bind(subject_type)
-            .bind(resource_type);
+        let mut params = db_params![tenant_id, subject_type, resource_type];
         for subject_id in subject_ids {
-            query = query.bind(subject_id);
+            params.push(subject_id.as_str().into());
         }
-        for (resource_id,) in query.fetch_all(&self.pool).await? {
+        for (resource_id,) in self.db.fetch_all_as::<(String,)>(&sql, &params).await? {
             if resource_id == GRANT_ALL_RESOURCES {
                 *all = true;
                 return Ok(());
@@ -942,19 +868,11 @@ impl PlatformService {
         for (name, description, job_functions) in Self::BUILTIN_SCENES {
             let job_functions_json =
                 serde_json::to_string(job_functions).map_err(|e| PlatformError::Internal(e.to_string()))?;
-            sqlx::query(
+            self.db.execute(
                 "INSERT INTO one_scenes (id, tenant_id, name, description, job_functions, built_in, created_at, updated_at) \
                  VALUES (?, ?, ?, ?, ?, 1, ?, ?) \
                  ON CONFLICT(tenant_id, name) DO NOTHING",
-            )
-            .bind(generate_prefixed_id("scene"))
-            .bind(tenant_id)
-            .bind(name)
-            .bind(description)
-            .bind(&job_functions_json)
-            .bind(now)
-            .bind(now)
-            .execute(&self.pool)
+            &db_params![generate_prefixed_id("scene"), tenant_id, name, description, &job_functions_json, now, now])
             .await?;
         }
         self.seed_builtin_scene_grants(tenant_id).await
@@ -984,13 +902,10 @@ impl PlatformService {
     /// state is indistinguishable from "predates the seeder" using grant rows
     /// alone (a separate marker table would mean a migration).
     async fn seed_builtin_scene_grants(&self, tenant_id: &str) -> Result<(), PlatformError> {
-        let seeded: bool = sqlx::query_scalar(
+        let seeded: bool = self.db.fetch_one_scalar(
             "SELECT COUNT(*) > 0 FROM one_resource_grants \
              WHERE tenant_id = ? AND subject_type = 'scene' AND granted_by = ?",
-        )
-        .bind(tenant_id)
-        .bind(Self::BUILTIN_SCENE_GRANTOR)
-        .fetch_one(&self.pool)
+        &db_params![tenant_id, Self::BUILTIN_SCENE_GRANTOR])
         .await?;
         if seeded {
             return Ok(());
@@ -1000,10 +915,7 @@ impl PlatformService {
             // built-in name (possible once the admin renames the built-in
             // away) from inheriting the package.
             let scene_id: Option<(String,)> =
-                sqlx::query_as("SELECT id FROM one_scenes WHERE tenant_id = ? AND name = ? AND built_in = 1")
-                    .bind(tenant_id)
-                    .bind(name)
-                    .fetch_optional(&self.pool)
+                self.db.fetch_optional_as::<(String,)>("SELECT id FROM one_scenes WHERE tenant_id = ? AND name = ? AND built_in = 1", &db_params![tenant_id, name])
                     .await?;
             let Some((scene_id,)) = scene_id else { continue };
             for resource_type in resource_types {
@@ -1029,9 +941,7 @@ impl PlatformService {
     }
 
     async fn scene_row_to_dto(&self, row: SceneRow) -> Result<SceneDto, PlatformError> {
-        let member_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_scene_members WHERE scene_id = ?")
-            .bind(&row.0)
-            .fetch_one(&self.pool)
+        let member_count: i64 = self.db.fetch_one_scalar("SELECT COUNT(*) FROM one_scene_members WHERE scene_id = ?", &db_params![&row.0])
             .await?;
         Ok(SceneDto {
             id: row.0,
@@ -1052,19 +962,7 @@ impl PlatformService {
     /// this tenant's members. Read-only: the bots stay owner-managed.
     pub async fn list_im_channels(&self, tenant_id: &str) -> Result<Vec<ImChannelMemberDto>, PlatformError> {
         // (owner_user_id, username, platform, name, enabled, status, last_connected, authorized_count)
-        let result = sqlx::query_as::<
-            _,
-            (
-                String,
-                Option<String>,
-                String,
-                String,
-                i64,
-                Option<String>,
-                Option<i64>,
-                i64,
-            ),
-        >(
+        let result = self.db.fetch_all_as::<(String, Option<String>, String, String, i64, Option<String>, Option<i64>, i64)>(
             "SELECT p.owner_user_id, u.username, p.type, p.name, p.enabled, p.status, p.last_connected, \
                     (SELECT COUNT(*) FROM assistant_users au \
                      WHERE au.owner_user_id = p.owner_user_id AND au.platform_type = p.type) \
@@ -1072,9 +970,8 @@ impl PlatformService {
              JOIN users u ON u.id = p.owner_user_id \
              WHERE p.owner_user_id IN (SELECT user_id FROM one_user_org WHERE tenant_id = ?) \
              ORDER BY u.username ASC, p.type ASC",
+        &db_params![tenant_id],
         )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
         .await;
         let rows = match result {
             Ok(rows) => rows,
@@ -1107,12 +1004,10 @@ impl PlatformService {
 
     pub async fn list_scenes(&self, tenant_id: &str) -> Result<Vec<SceneDto>, PlatformError> {
         self.seed_builtin_scenes(tenant_id).await?;
-        let rows: Vec<SceneRow> = sqlx::query_as(
+        let rows: Vec<SceneRow> = self.db.fetch_all_as::<SceneRow>(
             "SELECT id, tenant_id, name, description, job_functions, built_in, created_at, updated_at \
              FROM one_scenes WHERE tenant_id = ? ORDER BY built_in DESC, name ASC",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id])
         .await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
@@ -1136,18 +1031,10 @@ impl PlatformService {
         let now = now_ms();
         let job_functions_json =
             serde_json::to_string(job_functions).map_err(|e| PlatformError::Internal(e.to_string()))?;
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_scenes (id, tenant_id, name, description, job_functions, built_in, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
-        )
-        .bind(&id)
-        .bind(tenant_id)
-        .bind(name)
-        .bind(description)
-        .bind(&job_functions_json)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, tenant_id, name, description, &job_functions_json, now, now])
         .await
         .map_err(|e| match &e {
             sqlx::Error::Database(db) if db.is_unique_violation() => {
@@ -1161,13 +1048,10 @@ impl PlatformService {
     }
 
     async fn get_scene(&self, tenant_id: &str, scene_id: &str) -> Result<Option<SceneDto>, PlatformError> {
-        let row: Option<SceneRow> = sqlx::query_as(
+        let row: Option<SceneRow> = self.db.fetch_optional_as::<SceneRow>(
             "SELECT id, tenant_id, name, description, job_functions, built_in, created_at, updated_at \
              FROM one_scenes WHERE tenant_id = ? AND id = ?",
-        )
-        .bind(tenant_id)
-        .bind(scene_id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id, scene_id])
         .await?;
         match row {
             Some(row) => Ok(Some(self.scene_row_to_dto(row).await?)),
@@ -1189,17 +1073,10 @@ impl PlatformService {
         }
         let job_functions_json =
             serde_json::to_string(job_functions).map_err(|e| PlatformError::Internal(e.to_string()))?;
-        let result = sqlx::query(
+        let result = self.db.execute(
             "UPDATE one_scenes SET name = ?, description = ?, job_functions = ?, updated_at = ? \
              WHERE tenant_id = ? AND id = ?",
-        )
-        .bind(name)
-        .bind(description)
-        .bind(&job_functions_json)
-        .bind(now_ms())
-        .bind(tenant_id)
-        .bind(scene_id)
-        .execute(&self.pool)
+        &db_params![name, description, &job_functions_json, now_ms(), tenant_id, scene_id])
         .await
         .map_err(|e| match &e {
             sqlx::Error::Database(db) if db.is_unique_violation() => {
@@ -1207,7 +1084,7 @@ impl PlatformService {
             }
             _ => PlatformError::from(e),
         })?;
-        if result.rows_affected() == 0 {
+        if result == 0 {
             return Err(PlatformError::NotFound("scene not found".into()));
         }
         self.get_scene(tenant_id, scene_id)
@@ -1220,10 +1097,7 @@ impl PlatformService {
     /// in this codebase.
     pub async fn delete_scene(&self, tenant_id: &str, scene_id: &str) -> Result<(), PlatformError> {
         let built_in: Option<(bool,)> =
-            sqlx::query_as("SELECT built_in FROM one_scenes WHERE tenant_id = ? AND id = ?")
-                .bind(tenant_id)
-                .bind(scene_id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_as::<(bool,)>("SELECT built_in FROM one_scenes WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, scene_id])
                 .await?;
         match built_in {
             None => return Err(PlatformError::NotFound("scene not found".into())),
@@ -1231,22 +1105,14 @@ impl PlatformService {
             Some((false,)) => {}
         }
 
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM one_scene_members WHERE scene_id = ?")
-            .bind(scene_id)
-            .execute(&mut *tx)
+        let mut tx = self.db.begin().await?;
+        tx.execute("DELETE FROM one_scene_members WHERE scene_id = ?", &db_params![scene_id])
             .await?;
-        sqlx::query(
+        tx.execute(
             "DELETE FROM one_resource_grants WHERE tenant_id = ? AND subject_type = 'scene' AND subject_id = ?",
-        )
-        .bind(tenant_id)
-        .bind(scene_id)
-        .execute(&mut *tx)
+        &db_params![tenant_id, scene_id])
         .await?;
-        sqlx::query("DELETE FROM one_scenes WHERE tenant_id = ? AND id = ?")
-            .bind(tenant_id)
-            .bind(scene_id)
-            .execute(&mut *tx)
+        tx.execute("DELETE FROM one_scenes WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, scene_id])
             .await?;
         tx.commit().await?;
         Ok(())
@@ -1256,15 +1122,10 @@ impl PlatformService {
     /// member is not an error, same posture as `grant_resource`.
     pub async fn add_scene_member(&self, tenant_id: &str, scene_id: &str, user_id: &str) -> Result<(), PlatformError> {
         self.require_scene(tenant_id, scene_id).await?;
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_scene_members (scene_id, tenant_id, user_id, added_at) VALUES (?, ?, ?, ?) \
              ON CONFLICT(scene_id, user_id) DO NOTHING",
-        )
-        .bind(scene_id)
-        .bind(tenant_id)
-        .bind(user_id)
-        .bind(now_ms())
-        .execute(&self.pool)
+        &db_params![scene_id, tenant_id, user_id, now_ms()])
         .await?;
         Ok(())
     }
@@ -1276,10 +1137,7 @@ impl PlatformService {
         user_id: &str,
     ) -> Result<(), PlatformError> {
         self.require_scene(tenant_id, scene_id).await?;
-        sqlx::query("DELETE FROM one_scene_members WHERE scene_id = ? AND user_id = ?")
-            .bind(scene_id)
-            .bind(user_id)
-            .execute(&self.pool)
+        self.db.execute("DELETE FROM one_scene_members WHERE scene_id = ? AND user_id = ?", &db_params![scene_id, user_id])
             .await?;
         Ok(())
     }
@@ -1287,18 +1145,13 @@ impl PlatformService {
     pub async fn list_scene_members(&self, tenant_id: &str, scene_id: &str) -> Result<Vec<String>, PlatformError> {
         self.require_scene(tenant_id, scene_id).await?;
         let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT user_id FROM one_scene_members WHERE scene_id = ? ORDER BY added_at ASC")
-                .bind(scene_id)
-                .fetch_all(&self.pool)
+            self.db.fetch_all_as::<(String,)>("SELECT user_id FROM one_scene_members WHERE scene_id = ? ORDER BY added_at ASC", &db_params![scene_id])
                 .await?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
     async fn require_scene(&self, tenant_id: &str, scene_id: &str) -> Result<(), PlatformError> {
-        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_scenes WHERE tenant_id = ? AND id = ?")
-            .bind(tenant_id)
-            .bind(scene_id)
-            .fetch_one(&self.pool)
+        let exists: bool = self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_scenes WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, scene_id])
             .await?;
         if !exists {
             return Err(PlatformError::NotFound("scene not found".into()));
@@ -1311,10 +1164,7 @@ impl PlatformService {
     /// their department ancestry.
     async fn scene_ids_for_member(&self, tenant_id: &str, user_id: &str) -> Result<Vec<String>, PlatformError> {
         let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT scene_id FROM one_scene_members WHERE tenant_id = ? AND user_id = ?")
-                .bind(tenant_id)
-                .bind(user_id)
-                .fetch_all(&self.pool)
+            self.db.fetch_all_as::<(String,)>("SELECT scene_id FROM one_scene_members WHERE tenant_id = ? AND user_id = ?", &db_params![tenant_id, user_id])
                 .await?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
@@ -1322,14 +1172,12 @@ impl PlatformService {
     // --- Security policy baseline (E5) ---
 
     pub async fn get_security_policy(&self, tenant_id: &str) -> Result<SecurityPolicyDto, PlatformError> {
-        let row: Option<SecurityPolicyRow> = sqlx::query_as(
+        let row: Option<SecurityPolicyRow> = self.db.fetch_optional_as::<SecurityPolicyRow>(
             "SELECT tier, terminal_tools_require_approval, destructive_commands_blocked, blocked_command_patterns, \
                     external_network_denied_by_default, message_scan_enabled, message_redact_enabled, \
                     send_rate_limit_per_minute, updated_at \
              FROM one_security_policy WHERE tenant_id = ?",
-        )
-        .bind(tenant_id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id])
         .await?;
         Ok(match row {
             Some(row) => Self::security_policy_row_to_dto(row),
@@ -1465,7 +1313,7 @@ impl PlatformService {
     ) -> Result<SecurityPolicyDto, PlatformError> {
         let patterns_json =
             serde_json::to_string(&dto.blocked_command_patterns).map_err(|e| PlatformError::Internal(e.to_string()))?;
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_security_policy \
                  (tenant_id, tier, terminal_tools_require_approval, destructive_commands_blocked, \
                   blocked_command_patterns, external_network_denied_by_default, message_scan_enabled, \
@@ -1481,18 +1329,7 @@ impl PlatformService {
                  message_redact_enabled = excluded.message_redact_enabled, \
                  send_rate_limit_per_minute = excluded.send_rate_limit_per_minute, \
                  updated_at = excluded.updated_at",
-        )
-        .bind(tenant_id)
-        .bind(&dto.tier)
-        .bind(dto.terminal_tools_require_approval)
-        .bind(dto.destructive_commands_blocked)
-        .bind(&patterns_json)
-        .bind(dto.external_network_denied_by_default)
-        .bind(dto.message_scan_enabled)
-        .bind(dto.message_redact_enabled)
-        .bind(dto.send_rate_limit_per_minute)
-        .bind(now_ms())
-        .execute(&self.pool)
+        &db_params![tenant_id, &dto.tier, dto.terminal_tools_require_approval, dto.destructive_commands_blocked, &patterns_json, dto.external_network_denied_by_default, dto.message_scan_enabled, dto.message_redact_enabled, dto.send_rate_limit_per_minute, now_ms()])
         .await?;
         self.get_security_policy(tenant_id).await
     }
@@ -1534,30 +1371,14 @@ impl PlatformService {
         let now = now_ms();
         let patterns_json =
             serde_json::to_string(blocked_command_patterns).map_err(|e| PlatformError::Internal(e.to_string()))?;
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_security_policy_templates \
                  (id, tenant_id, name, description, tier, terminal_tools_require_approval, \
                   destructive_commands_blocked, blocked_command_patterns, external_network_denied_by_default, \
                   message_scan_enabled, message_redact_enabled, send_rate_limit_per_minute, \
                   created_by, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(tenant_id)
-        .bind(name)
-        .bind(description.trim())
-        .bind(tier)
-        .bind(terminal_tools_require_approval)
-        .bind(destructive_commands_blocked)
-        .bind(&patterns_json)
-        .bind(external_network_denied_by_default)
-        .bind(message_scan_enabled)
-        .bind(message_redact_enabled)
-        .bind(send_rate_limit_per_minute)
-        .bind(created_by)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, tenant_id, name, description.trim(), tier, terminal_tools_require_approval, destructive_commands_blocked, &patterns_json, external_network_denied_by_default, message_scan_enabled, message_redact_enabled, send_rate_limit_per_minute, created_by, now, now])
         .await?;
 
         self.get_policy_template(tenant_id, &id)
@@ -1569,7 +1390,7 @@ impl PlatformService {
         &self,
         tenant_id: &str,
     ) -> Result<Vec<SecurityPolicyTemplateDto>, PlatformError> {
-        let rows: Vec<PolicyTemplateRow> = sqlx::query_as(
+        let rows: Vec<PolicyTemplateRow> = self.db.fetch_all_as::<PolicyTemplateRow>(
             "SELECT t.id, t.name, t.description, t.tier, t.terminal_tools_require_approval, \
                     t.destructive_commands_blocked, t.blocked_command_patterns, \
                     t.external_network_denied_by_default, t.message_scan_enabled, t.message_redact_enabled, \
@@ -1580,9 +1401,7 @@ impl PlatformService {
              WHERE t.tenant_id = ? \
              GROUP BY t.id \
              ORDER BY t.created_at DESC",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id])
         .await?;
         Ok(rows.into_iter().map(Self::policy_template_row_to_dto).collect())
     }
@@ -1592,7 +1411,7 @@ impl PlatformService {
         tenant_id: &str,
         id: &str,
     ) -> Result<Option<SecurityPolicyTemplateDto>, PlatformError> {
-        let row: Option<PolicyTemplateRow> = sqlx::query_as(
+        let row: Option<PolicyTemplateRow> = self.db.fetch_optional_as::<PolicyTemplateRow>(
             "SELECT t.id, t.name, t.description, t.tier, t.terminal_tools_require_approval, \
                     t.destructive_commands_blocked, t.blocked_command_patterns, \
                     t.external_network_denied_by_default, t.message_scan_enabled, t.message_redact_enabled, \
@@ -1600,10 +1419,7 @@ impl PlatformService {
                     (SELECT COUNT(*) FROM one_security_policy_bindings b WHERE b.template_id = t.id) \
              FROM one_security_policy_templates t \
              WHERE t.tenant_id = ? AND t.id = ?",
-        )
-        .bind(tenant_id)
-        .bind(id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id, id])
         .await?;
         Ok(row.map(Self::policy_template_row_to_dto))
     }
@@ -1654,29 +1470,16 @@ impl PlatformService {
         }
         let patterns_json =
             serde_json::to_string(blocked_command_patterns).map_err(|e| PlatformError::Internal(e.to_string()))?;
-        let result = sqlx::query(
+        let result = self.db.execute(
             "UPDATE one_security_policy_templates SET \
                  name = ?, description = ?, terminal_tools_require_approval = ?, \
                  destructive_commands_blocked = ?, blocked_command_patterns = ?, \
                  external_network_denied_by_default = ?, message_scan_enabled = ?, \
                  message_redact_enabled = ?, send_rate_limit_per_minute = ?, updated_at = ? \
              WHERE tenant_id = ? AND id = ?",
-        )
-        .bind(name)
-        .bind(description.trim())
-        .bind(terminal_tools_require_approval)
-        .bind(destructive_commands_blocked)
-        .bind(&patterns_json)
-        .bind(external_network_denied_by_default)
-        .bind(message_scan_enabled)
-        .bind(message_redact_enabled)
-        .bind(send_rate_limit_per_minute)
-        .bind(now_ms())
-        .bind(tenant_id)
-        .bind(id)
-        .execute(&self.pool)
+        &db_params![name, description.trim(), terminal_tools_require_approval, destructive_commands_blocked, &patterns_json, external_network_denied_by_default, message_scan_enabled, message_redact_enabled, send_rate_limit_per_minute, now_ms(), tenant_id, id])
         .await?;
-        if result.rows_affected() == 0 {
+        if result == 0 {
             return Err(PlatformError::NotFound("policy template not found".into()));
         }
         self.get_policy_template(tenant_id, id)
@@ -1690,19 +1493,13 @@ impl PlatformService {
     /// deletion has already been copied into it, which is exactly the point
     /// of the copy semantics.
     pub async fn delete_policy_template(&self, tenant_id: &str, id: &str) -> Result<(), PlatformError> {
-        let mut tx = self.pool.begin().await?;
-        let deleted = sqlx::query("DELETE FROM one_security_policy_templates WHERE tenant_id = ? AND id = ?")
-            .bind(tenant_id)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        let mut tx = self.db.begin().await?;
+        let deleted = tx.execute("DELETE FROM one_security_policy_templates WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, id])
+            .await?;
         if deleted == 0 {
             return Err(PlatformError::NotFound("policy template not found".into()));
         }
-        sqlx::query("DELETE FROM one_security_policy_bindings WHERE template_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
+        tx.execute("DELETE FROM one_security_policy_bindings WHERE template_id = ?", &db_params![id])
             .await?;
         tx.commit().await?;
         Ok(())
@@ -1744,17 +1541,11 @@ impl PlatformService {
         // subject-type union equally honest.
         let subject_exists: bool = match subject_type {
             "member" => {
-                sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_user_org WHERE tenant_id = ? AND user_id = ?")
-                    .bind(tenant_id)
-                    .bind(subject_id)
-                    .fetch_one(&self.pool)
+                self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_user_org WHERE tenant_id = ? AND user_id = ?", &db_params![tenant_id, subject_id])
                     .await?
             }
             _ => {
-                sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_departments WHERE tenant_id = ? AND id = ?")
-                    .bind(tenant_id)
-                    .bind(subject_id)
-                    .fetch_one(&self.pool)
+                self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_departments WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, subject_id])
                     .await?
             }
         };
@@ -1766,22 +1557,13 @@ impl PlatformService {
 
         let id = generate_prefixed_id("spb");
         let now = now_ms();
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_security_policy_bindings \
                  (id, tenant_id, template_id, subject_type, subject_id, note, bound_by, bound_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(template_id, subject_type, subject_id) DO UPDATE SET \
                  note = excluded.note, bound_by = excluded.bound_by, bound_at = excluded.bound_at",
-        )
-        .bind(&id)
-        .bind(tenant_id)
-        .bind(template_id)
-        .bind(subject_type)
-        .bind(subject_id)
-        .bind(note)
-        .bind(bound_by)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, tenant_id, template_id, subject_type, subject_id, note, bound_by, now])
         .await?;
 
         self.get_policy_template_binding(tenant_id, template_id, subject_type, subject_id)
@@ -1794,12 +1576,8 @@ impl PlatformService {
     /// states that can be reached twice (revoked keys), and a missing
     /// binding id is more likely a stale UI than a finished operation.
     pub async fn unbind_policy_template(&self, tenant_id: &str, binding_id: &str) -> Result<(), PlatformError> {
-        let deleted = sqlx::query("DELETE FROM one_security_policy_bindings WHERE tenant_id = ? AND id = ?")
-            .bind(tenant_id)
-            .bind(binding_id)
-            .execute(&self.pool)
-            .await?
-            .rows_affected();
+        let deleted = self.db.execute("DELETE FROM one_security_policy_bindings WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, binding_id])
+            .await?;
         if deleted == 0 {
             return Err(PlatformError::NotFound("policy template binding not found".into()));
         }
@@ -1812,14 +1590,11 @@ impl PlatformService {
         template_id: &str,
     ) -> Result<Vec<PolicyTemplateBindingDto>, PlatformError> {
         self.require_policy_template(tenant_id, template_id).await?;
-        let rows: Vec<(String, String, String, Option<String>, String, i64)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, Option<String>, String, i64)> = self.db.fetch_all_as::<(String, String, String, Option<String>, String, i64)>(
             "SELECT id, subject_type, subject_id, note, bound_by, bound_at \
              FROM one_security_policy_bindings WHERE tenant_id = ? AND template_id = ? \
              ORDER BY bound_at ASC",
-        )
-        .bind(tenant_id)
-        .bind(template_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id, template_id])
         .await?;
         Ok(rows
             .into_iter()
@@ -1844,16 +1619,11 @@ impl PlatformService {
         subject_type: &str,
         subject_id: &str,
     ) -> Result<Option<PolicyTemplateBindingDto>, PlatformError> {
-        let row: Option<(String, String, String, Option<String>, String, i64)> = sqlx::query_as(
+        let row: Option<(String, String, String, Option<String>, String, i64)> = self.db.fetch_optional_as::<(String, String, String, Option<String>, String, i64)>(
             "SELECT id, subject_type, subject_id, note, bound_by, bound_at \
              FROM one_security_policy_bindings \
              WHERE tenant_id = ? AND template_id = ? AND subject_type = ? AND subject_id = ?",
-        )
-        .bind(tenant_id)
-        .bind(template_id)
-        .bind(subject_type)
-        .bind(subject_id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id, template_id, subject_type, subject_id])
         .await?;
         Ok(row.map(
             |(id, subject_type, subject_id, note, bound_by, bound_at)| PolicyTemplateBindingDto {
@@ -1870,10 +1640,7 @@ impl PlatformService {
 
     async fn require_policy_template(&self, tenant_id: &str, id: &str) -> Result<(), PlatformError> {
         let exists: bool =
-            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_security_policy_templates WHERE tenant_id = ? AND id = ?")
-                .bind(tenant_id)
-                .bind(id)
-                .fetch_one(&self.pool)
+            self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_security_policy_templates WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, id])
                 .await?;
         if !exists {
             return Err(PlatformError::NotFound("policy template not found".into()));
@@ -1969,22 +1736,12 @@ impl PlatformService {
             serde_json::to_string(allowed_paths).map_err(|e| PlatformError::Internal(e.to_string()))?;
         let now = now_ms();
 
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_api_keys \
                  (id, tenant_id, name, key_prefix, key_hash, allowed_paths, rate_limit_per_minute, status, \
                   created_by, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
-        )
-        .bind(&id)
-        .bind(tenant_id)
-        .bind(name)
-        .bind(&key_prefix)
-        .bind(&key_hash)
-        .bind(&allowed_paths_json)
-        .bind(rate_limit_per_minute)
-        .bind(created_by)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, tenant_id, name, &key_prefix, &key_hash, &allowed_paths_json, rate_limit_per_minute, created_by, now])
         .await?;
 
         let key = self
@@ -2012,11 +1769,9 @@ impl PlatformService {
         request_path: &str,
     ) -> Result<ApiKeyAuthOutcome, PlatformError> {
         let key_hash = Self::hash_api_key_secret(secret);
-        let row: Option<(String, String, String)> = sqlx::query_as(
+        let row: Option<(String, String, String)> = self.db.fetch_optional_as::<(String, String, String)>(
             "SELECT id, created_by, allowed_paths FROM one_api_keys WHERE key_hash = ? AND status = 'active'",
-        )
-        .bind(&key_hash)
-        .fetch_optional(&self.pool)
+        &db_params![&key_hash])
         .await?;
 
         let Some((id, created_by, allowed_paths_json)) = row else {
@@ -2028,10 +1783,7 @@ impl PlatformService {
             return Ok(ApiKeyAuthOutcome::PathNotAllowed);
         }
 
-        sqlx::query("UPDATE one_api_keys SET last_used_at = ? WHERE id = ?")
-            .bind(now_ms())
-            .bind(&id)
-            .execute(&self.pool)
+        self.db.execute("UPDATE one_api_keys SET last_used_at = ? WHERE id = ?", &db_params![now_ms(), &id])
             .await?;
 
         Ok(ApiKeyAuthOutcome::Authenticated { user_id: created_by })
@@ -2053,26 +1805,21 @@ impl PlatformService {
     }
 
     async fn get_api_key(&self, tenant_id: &str, id: &str) -> Result<Option<ApiKeyDto>, PlatformError> {
-        let row: Option<ApiKeyRow> = sqlx::query_as(
+        let row: Option<ApiKeyRow> = self.db.fetch_optional_as::<ApiKeyRow>(
             "SELECT id, name, key_prefix, allowed_paths, rate_limit_per_minute, status, created_by, created_at, \
                     revoked_at, last_used_at \
              FROM one_api_keys WHERE tenant_id = ? AND id = ?",
-        )
-        .bind(tenant_id)
-        .bind(id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id, id])
         .await?;
         Ok(row.map(Self::api_key_row_to_dto))
     }
 
     pub async fn list_api_keys(&self, tenant_id: &str) -> Result<Vec<ApiKeyDto>, PlatformError> {
-        let rows: Vec<ApiKeyRow> = sqlx::query_as(
+        let rows: Vec<ApiKeyRow> = self.db.fetch_all_as::<ApiKeyRow>(
             "SELECT id, name, key_prefix, allowed_paths, rate_limit_per_minute, status, created_by, created_at, \
                     revoked_at, last_used_at \
              FROM one_api_keys WHERE tenant_id = ? ORDER BY created_at DESC",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id])
         .await?;
         Ok(rows.into_iter().map(Self::api_key_row_to_dto).collect())
     }
@@ -2088,15 +1835,12 @@ impl PlatformService {
     ///
     /// Returns the number of keys revoked so the caller can log it.
     pub async fn revoke_api_keys_for_user(&self, user_id: &str) -> Result<u64, PlatformError> {
-        let result = sqlx::query(
+        let result = self.db.execute(
             "UPDATE one_api_keys SET status = 'revoked', revoked_at = ? \
              WHERE created_by = ? AND status = 'active'",
-        )
-        .bind(now_ms())
-        .bind(user_id)
-        .execute(&self.pool)
+        &db_params![now_ms(), user_id])
         .await?;
-        Ok(result.rows_affected())
+        Ok(result)
     }
 
     /// Idempotent: revoking an already-revoked key is not an error, same
@@ -2104,22 +1848,15 @@ impl PlatformService {
     /// existed for this tenant is `NotFound`.
     pub async fn revoke_api_key(&self, tenant_id: &str, id: &str) -> Result<(), PlatformError> {
         let current: Option<(String,)> =
-            sqlx::query_as("SELECT status FROM one_api_keys WHERE tenant_id = ? AND id = ?")
-                .bind(tenant_id)
-                .bind(id)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_as::<(String,)>("SELECT status FROM one_api_keys WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, id])
                 .await?;
         match current {
             None => Err(PlatformError::NotFound("API key not found".into())),
             Some((status,)) if status == "revoked" => Ok(()),
             Some(_) => {
-                sqlx::query(
+                self.db.execute(
                     "UPDATE one_api_keys SET status = 'revoked', revoked_at = ? WHERE tenant_id = ? AND id = ?",
-                )
-                .bind(now_ms())
-                .bind(tenant_id)
-                .bind(id)
-                .execute(&self.pool)
+                &db_params![now_ms(), tenant_id, id])
                 .await?;
                 Ok(())
             }
@@ -2167,62 +1904,41 @@ impl PlatformService {
                     "a targeted notification requires at least one recipient".into(),
                 ));
             }
-            let mut tx = self.pool.begin().await?;
+            let mut tx = self.db.begin().await?;
             // Reject (rather than silently drop) recipients that are not
             // members — an admin told "sent" while half the list silently
             // received nothing would be a fake success, the exact failure
             // mode delivery-gaps T4 was about.
             for user_id in recipient_ids {
-                let member: Option<(String,)> =
-                    sqlx::query_as("SELECT user_id FROM one_user_org WHERE tenant_id = ? AND user_id = ?")
-                        .bind(tenant_id)
-                        .bind(user_id)
-                        .fetch_optional(&mut *tx)
-                        .await?;
+                let member: Option<(String,)> = tx
+                    .fetch_optional_as(
+                        "SELECT user_id FROM one_user_org WHERE tenant_id = ? AND user_id = ?",
+                        &db_params![tenant_id, user_id],
+                    )
+                    .await?;
                 if member.is_none() {
                     return Err(PlatformError::BadRequest(format!(
                         "recipient '{user_id}' is not a member of this tenant"
                     )));
                 }
             }
-            sqlx::query(
+            tx.execute(
                 "INSERT INTO one_notifications (id, tenant_id, kind, category, title, body, created_by, created_at) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(&id)
-            .bind(tenant_id)
-            .bind(kind)
-            .bind(category.trim())
-            .bind(title)
-            .bind(body)
-            .bind(created_by)
-            .bind(now)
-            .execute(&mut *tx)
+            &db_params![&id, tenant_id, kind, category.trim(), title, body, created_by, now])
             .await?;
             for user_id in recipient_ids {
-                sqlx::query(
+                tx.execute(
                     "INSERT OR IGNORE INTO one_notification_recipients (notification_id, user_id) VALUES (?, ?)",
-                )
-                .bind(&id)
-                .bind(user_id)
-                .execute(&mut *tx)
+                &db_params![&id, user_id])
                 .await?;
             }
             tx.commit().await?;
         } else {
-            sqlx::query(
+            self.db.execute(
                 "INSERT INTO one_notifications (id, tenant_id, kind, category, title, body, created_by, created_at) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(&id)
-            .bind(tenant_id)
-            .bind(kind)
-            .bind(category.trim())
-            .bind(title)
-            .bind(body)
-            .bind(created_by)
-            .bind(now)
-            .execute(&self.pool)
+            &db_params![&id, tenant_id, kind, category.trim(), title, body, created_by, now])
             .await?;
         }
 
@@ -2232,13 +1948,10 @@ impl PlatformService {
     }
 
     async fn get_notification(&self, tenant_id: &str, id: &str) -> Result<Option<NotificationDto>, PlatformError> {
-        let row: Option<(String, String, String, String, String, String, i64)> = sqlx::query_as(
+        let row: Option<(String, String, String, String, String, String, i64)> = self.db.fetch_optional_as::<(String, String, String, String, String, String, i64)>(
             "SELECT id, kind, category, title, body, created_by, created_at \
              FROM one_notifications WHERE tenant_id = ? AND id = ?",
-        )
-        .bind(tenant_id)
-        .bind(id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id, id])
         .await?;
         let Some((id, kind, category, title, body, created_by, created_at)) = row else {
             return Ok(None);
@@ -2268,34 +1981,25 @@ impl PlatformService {
         kind: &str,
     ) -> Result<(i64, i64), PlatformError> {
         let recipient_count: i64 = if kind == "broadcast" {
-            sqlx::query_scalar("SELECT COUNT(*) FROM one_user_org WHERE tenant_id = ?")
-                .bind(tenant_id)
-                .fetch_one(&self.pool)
+            self.db.fetch_one_scalar("SELECT COUNT(*) FROM one_user_org WHERE tenant_id = ?", &db_params![tenant_id])
                 .await?
         } else {
-            sqlx::query_scalar("SELECT COUNT(*) FROM one_notification_recipients WHERE notification_id = ?")
-                .bind(id)
-                .fetch_one(&self.pool)
+            self.db.fetch_one_scalar("SELECT COUNT(*) FROM one_notification_recipients WHERE notification_id = ?", &db_params![id])
                 .await?
         };
         let read_count: i64 = if kind == "broadcast" {
-            sqlx::query_scalar(
+            self.db.fetch_one_scalar(
                 "SELECT COUNT(*) FROM one_notification_reads rd \
                  JOIN one_user_org uo ON uo.user_id = rd.user_id AND uo.tenant_id = ? \
                  WHERE rd.notification_id = ?",
-            )
-            .bind(tenant_id)
-            .bind(id)
-            .fetch_one(&self.pool)
+            &db_params![tenant_id, id])
             .await?
         } else {
-            sqlx::query_scalar(
+            self.db.fetch_one_scalar(
                 "SELECT COUNT(*) FROM one_notification_reads rd \
                  JOIN one_notification_recipients r ON r.notification_id = rd.notification_id AND r.user_id = rd.user_id \
                  WHERE rd.notification_id = ?",
-            )
-            .bind(id)
-            .fetch_one(&self.pool)
+            &db_params![id])
             .await?
         };
         Ok((recipient_count, read_count))
@@ -2303,12 +2007,10 @@ impl PlatformService {
 
     /// The admin's sent history, newest first.
     pub async fn list_notifications(&self, tenant_id: &str) -> Result<Vec<NotificationDto>, PlatformError> {
-        let rows: Vec<(String, String, String, String, String, String, i64)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, String, String, String, i64)> = self.db.fetch_all_as::<(String, String, String, String, String, String, i64)>(
             "SELECT id, kind, category, title, body, created_by, created_at \
              FROM one_notifications WHERE tenant_id = ? ORDER BY created_at DESC",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id])
         .await?;
         let mut out = Vec::with_capacity(rows.len());
         for (id, kind, category, title, body, created_by, created_at) in rows {
@@ -2333,23 +2035,15 @@ impl PlatformService {
     /// id and nothing else), which is the intent — the notification no
     /// longer exists for anyone.
     pub async fn delete_notification(&self, tenant_id: &str, id: &str) -> Result<(), PlatformError> {
-        let mut tx = self.pool.begin().await?;
-        let deleted = sqlx::query("DELETE FROM one_notifications WHERE tenant_id = ? AND id = ?")
-            .bind(tenant_id)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        let mut tx = self.db.begin().await?;
+        let deleted = tx.execute("DELETE FROM one_notifications WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, id])
+            .await?;
         if deleted == 0 {
             return Err(PlatformError::NotFound("notification not found".into()));
         }
-        sqlx::query("DELETE FROM one_notification_recipients WHERE notification_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
+        tx.execute("DELETE FROM one_notification_recipients WHERE notification_id = ?", &db_params![id])
             .await?;
-        sqlx::query("DELETE FROM one_notification_reads WHERE notification_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
+        tx.execute("DELETE FROM one_notification_reads WHERE notification_id = ?", &db_params![id])
             .await?;
         tx.commit().await?;
         Ok(())
@@ -2366,7 +2060,7 @@ impl PlatformService {
         user_id: &str,
         limit: i64,
     ) -> Result<MyNotificationsDto, PlatformError> {
-        let rows: Vec<(String, String, String, String, String, String, i64, Option<i64>)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, String, String, String, i64, Option<i64>)> = self.db.fetch_all_as::<(String, String, String, String, String, String, i64, Option<i64>)>(
             "SELECT n.id, n.kind, n.category, n.title, n.body, n.created_by, n.created_at, rd.read_at \
              FROM one_notifications n \
              LEFT JOIN one_notification_reads rd ON rd.notification_id = n.id AND rd.user_id = ? \
@@ -2375,14 +2069,9 @@ impl PlatformService {
                     OR EXISTS (SELECT 1 FROM one_notification_recipients r \
                                WHERE r.notification_id = n.id AND r.user_id = ?)) \
              ORDER BY n.created_at DESC LIMIT ?",
-        )
-        .bind(user_id)
-        .bind(tenant_id)
-        .bind(user_id)
-        .bind(limit)
-        .fetch_all(&self.pool)
+        &db_params![user_id, tenant_id, user_id, limit])
         .await?;
-        let unread_count: i64 = sqlx::query_scalar(
+        let unread_count: i64 = self.db.fetch_one_scalar(
             "SELECT COUNT(*) FROM one_notifications n \
              WHERE n.tenant_id = ? \
                AND (n.kind = 'broadcast' \
@@ -2390,11 +2079,7 @@ impl PlatformService {
                                WHERE r.notification_id = n.id AND r.user_id = ?)) \
                AND NOT EXISTS (SELECT 1 FROM one_notification_reads rd \
                                WHERE rd.notification_id = n.id AND rd.user_id = ?)",
-        )
-        .bind(tenant_id)
-        .bind(user_id)
-        .bind(user_id)
-        .fetch_one(&self.pool)
+        &db_params![tenant_id, user_id, user_id])
         .await?;
         Ok(MyNotificationsDto {
             notifications: rows
@@ -2432,38 +2117,24 @@ impl PlatformService {
                   OR EXISTS (SELECT 1 FROM one_notification_recipients r \
                              WHERE r.notification_id = n.id AND r.user_id = ?))";
         if ids.is_empty() {
-            sqlx::query(&format!(
+            self.db.execute(&format!(
                 "INSERT OR IGNORE INTO one_notification_reads (notification_id, user_id, read_at) \
                  SELECT n.id, ?, ? FROM one_notifications n WHERE {visibility} \
                    AND NOT EXISTS (SELECT 1 FROM one_notification_reads rd \
                                    WHERE rd.notification_id = n.id AND rd.user_id = ?)"
-            ))
-            .bind(user_id)
-            .bind(now_ms())
-            .bind(tenant_id)
-            .bind(user_id)
-            .bind(user_id)
-            .execute(&self.pool)
+            ), &db_params![user_id, now_ms(), tenant_id, user_id, user_id])
             .await?;
             return Ok(());
         }
         for id in ids {
-            let visible: Option<(String,)> = sqlx::query_as(&format!(
+            let visible: Option<(String,)> = self.db.fetch_optional_as::<(String,)>(&format!(
                 "SELECT n.id FROM one_notifications n WHERE n.id = ? AND {visibility}"
-            ))
-            .bind(id)
-            .bind(tenant_id)
-            .bind(user_id)
-            .fetch_optional(&self.pool)
+            ), &db_params![id, tenant_id, user_id])
             .await?;
             if visible.is_some() {
-                sqlx::query(
+                self.db.execute(
                     "INSERT OR IGNORE INTO one_notification_reads (notification_id, user_id, read_at) VALUES (?, ?, ?)",
-                )
-                .bind(id)
-                .bind(user_id)
-                .bind(now_ms())
-                .execute(&self.pool)
+                &db_params![id, user_id, now_ms()])
                 .await?;
             }
         }
@@ -2476,12 +2147,9 @@ impl PlatformService {
     /// the row is created lazily on first freeze/quota touch (see the
     /// migration's comment), so absence must not read as frozen.
     async fn vault_settings(&self, tenant_id: &str, user_id: &str) -> Result<(String, Option<i64>), PlatformError> {
-        let row: Option<(String, Option<i64>)> = sqlx::query_as(
+        let row: Option<(String, Option<i64>)> = self.db.fetch_optional_as::<(String, Option<i64>)>(
             "SELECT status, quota_bytes FROM one_file_vault_settings WHERE tenant_id = ? AND user_id = ?",
-        )
-        .bind(tenant_id)
-        .bind(user_id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id, user_id])
         .await?;
         Ok(row.unwrap_or_else(|| ("available".to_owned(), None)))
     }
@@ -2489,14 +2157,14 @@ impl PlatformService {
     /// One member's own vault view: status, quota, usage, object count.
     pub async fn my_vault(&self, tenant_id: &str, user_id: &str) -> Result<FileVaultDto, PlatformError> {
         let (status, quota_bytes) = self.vault_settings(tenant_id, user_id).await?;
-        let (usage_bytes, object_count): (i64, i64) = sqlx::query_as(
-            "SELECT COALESCE(SUM(size_bytes), 0), COUNT(*) FROM one_file_vault_objects \
+        let (usage_bytes, object_count): (i64, i64) = self
+            .db
+            .fetch_one_as(
+                "SELECT COALESCE(SUM(size_bytes), 0), COUNT(*) FROM one_file_vault_objects \
              WHERE tenant_id = ? AND user_id = ? AND deleted_at IS NULL",
-        )
-        .bind(tenant_id)
-        .bind(user_id)
-        .fetch_one(&self.pool)
-        .await?;
+                &db_params![tenant_id, user_id],
+            )
+            .await?;
         Ok(FileVaultDto {
             user_id: user_id.to_owned(),
             status,
@@ -2530,14 +2198,14 @@ impl PlatformService {
         if status == "frozen" {
             return Err(PlatformError::Forbidden("file vault is frozen".into()));
         }
-        let (usage_bytes,): (i64,) = sqlx::query_as(
-            "SELECT COALESCE(SUM(size_bytes), 0) FROM one_file_vault_objects \
+        let (usage_bytes,): (i64,) = self
+            .db
+            .fetch_one_as(
+                "SELECT COALESCE(SUM(size_bytes), 0) FROM one_file_vault_objects \
              WHERE tenant_id = ? AND user_id = ? AND deleted_at IS NULL",
-        )
-        .bind(tenant_id)
-        .bind(user_id)
-        .fetch_one(&self.pool)
-        .await?;
+                &db_params![tenant_id, user_id],
+            )
+            .await?;
         if let Some(quota) = quota_bytes {
             if usage_bytes + bytes.len() as i64 > quota {
                 return Err(PlatformError::BadRequest("file vault quota exceeded".into()));
@@ -2554,27 +2222,16 @@ impl PlatformService {
         let dir = self.vault_user_dir(tenant_id, user_id)?;
         let storage_key = format!("{tenant_id}/{user_id}/{storage_name}");
 
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_file_vault_objects (id, tenant_id, user_id, file_name, size_bytes, sha256, storage_key, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(tenant_id)
-        .bind(user_id)
-        .bind(&file_name)
-        .bind(bytes.len() as i64)
-        .bind(&sha256)
-        .bind(&storage_key)
-        .bind(now_ms())
-        .execute(&self.pool)
+        &db_params![&id, tenant_id, user_id, &file_name, bytes.len() as i64, &sha256, &storage_key, now_ms()])
         .await?;
 
         if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join(&storage_name), bytes)) {
             // The ledger row must not outlive its bytes: roll the row back so
             // usage stays truthful for the reconcile pass.
-            let _ = sqlx::query("DELETE FROM one_file_vault_objects WHERE id = ?")
-                .bind(&id)
-                .execute(&self.pool)
+            let _ = self.db.execute("DELETE FROM one_file_vault_objects WHERE id = ?", &db_params![&id])
                 .await;
             return Err(PlatformError::Internal(format!("failed to store vault object: {e}")));
         }
@@ -2604,13 +2261,10 @@ impl PlatformService {
         tenant_id: &str,
         user_id: &str,
     ) -> Result<Vec<FileVaultObjectDto>, PlatformError> {
-        let rows: Vec<(String, String, i64, String, i64, Option<i64>)> = sqlx::query_as(
+        let rows: Vec<(String, String, i64, String, i64, Option<i64>)> = self.db.fetch_all_as::<(String, String, i64, String, i64, Option<i64>)>(
             "SELECT id, file_name, size_bytes, sha256, created_at, deleted_at \
              FROM one_file_vault_objects WHERE tenant_id = ? AND user_id = ? ORDER BY created_at DESC",
-        )
-        .bind(tenant_id)
-        .bind(user_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id, user_id])
         .await?;
         Ok(rows
             .into_iter()
@@ -2636,14 +2290,10 @@ impl PlatformService {
         user_id: &str,
         id: &str,
     ) -> Result<(FileVaultObjectDto, Vec<u8>), PlatformError> {
-        let row: Option<(String, i64, String, String, i64)> = sqlx::query_as(
+        let row: Option<(String, i64, String, String, i64)> = self.db.fetch_optional_as::<(String, i64, String, String, i64)>(
             "SELECT file_name, size_bytes, storage_key, sha256, created_at FROM one_file_vault_objects \
              WHERE tenant_id = ? AND user_id = ? AND id = ? AND deleted_at IS NULL",
-        )
-        .bind(tenant_id)
-        .bind(user_id)
-        .bind(id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id, user_id, id])
         .await?;
         let Some((file_name, size_bytes, storage_key, sha256, created_at)) = row else {
             return Err(PlatformError::NotFound("vault object not found".into()));
@@ -2672,22 +2322,15 @@ impl PlatformService {
     /// reports leftovers, and a delete that 500s forever because a file
     /// vanished out-of-band would be worse.
     pub async fn delete_vault_object(&self, tenant_id: &str, user_id: &str, id: &str) -> Result<(), PlatformError> {
-        let row: Option<(String,)> = sqlx::query_as(
+        let row: Option<(String,)> = self.db.fetch_optional_as::<(String,)>(
             "SELECT storage_key FROM one_file_vault_objects \
              WHERE tenant_id = ? AND user_id = ? AND id = ? AND deleted_at IS NULL",
-        )
-        .bind(tenant_id)
-        .bind(user_id)
-        .bind(id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id, user_id, id])
         .await?;
         let Some((storage_key,)) = row else {
             return Err(PlatformError::NotFound("vault object not found".into()));
         };
-        sqlx::query("UPDATE one_file_vault_objects SET deleted_at = ? WHERE id = ?")
-            .bind(now_ms())
-            .bind(id)
-            .execute(&self.pool)
+        self.db.execute("UPDATE one_file_vault_objects SET deleted_at = ? WHERE id = ?", &db_params![now_ms(), id])
             .await?;
         if let Some(root) = self.storage_root.as_ref() {
             let _ = std::fs::remove_file(root.join(&storage_key));
@@ -2700,7 +2343,7 @@ impl PlatformService {
     /// member's frozen vault with files still shows up — that is exactly the
     /// row an admin needs to see when offboarding).
     pub async fn admin_list_vaults(&self, tenant_id: &str) -> Result<Vec<FileVaultDto>, PlatformError> {
-        let rows: Vec<(String, Option<String>, Option<i64>, i64, i64)> = sqlx::query_as(
+        let rows: Vec<(String, Option<String>, Option<i64>, i64, i64)> = self.db.fetch_all_as::<(String, Option<String>, Option<i64>, i64, i64)>(
             "SELECT u.user_id, s.status, s.quota_bytes, COALESCE(o.usage_bytes, 0), COALESCE(o.object_count, 0) \
              FROM (SELECT user_id FROM one_user_org WHERE tenant_id = ? \
                    UNION SELECT DISTINCT user_id FROM one_file_vault_objects WHERE tenant_id = ?) u \
@@ -2709,12 +2352,7 @@ impl PlatformService {
                         FROM one_file_vault_objects WHERE tenant_id = ? AND deleted_at IS NULL GROUP BY user_id) o \
                       ON o.user_id = u.user_id \
              ORDER BY u.user_id",
-        )
-        .bind(tenant_id)
-        .bind(tenant_id)
-        .bind(tenant_id)
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id, tenant_id, tenant_id, tenant_id])
         .await?;
         Ok(rows
             .into_iter()
@@ -2742,16 +2380,11 @@ impl PlatformService {
         if !matches!(status, "available" | "frozen") {
             return Err(PlatformError::BadRequest(format!("unknown vault status '{status}'")));
         }
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_file_vault_settings (tenant_id, user_id, status, quota_bytes, updated_at) \
              VALUES (?, ?, ?, NULL, ?) \
              ON CONFLICT(tenant_id, user_id) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at",
-        )
-        .bind(tenant_id)
-        .bind(user_id)
-        .bind(status)
-        .bind(now_ms())
-        .execute(&self.pool)
+        &db_params![tenant_id, user_id, status, now_ms()])
         .await?;
         Ok(())
     }
@@ -2770,18 +2403,12 @@ impl PlatformService {
             }
         }
         let (status, _) = self.vault_settings(tenant_id, user_id).await?;
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_file_vault_settings (tenant_id, user_id, status, quota_bytes, updated_at) \
              VALUES (?, ?, ?, ?, ?) \
              ON CONFLICT(tenant_id, user_id) DO UPDATE SET quota_bytes = excluded.quota_bytes, \
                  updated_at = excluded.updated_at",
-        )
-        .bind(tenant_id)
-        .bind(user_id)
-        .bind(status)
-        .bind(quota_bytes)
-        .bind(now_ms())
-        .execute(&self.pool)
+        &db_params![tenant_id, user_id, status, quota_bytes, now_ms()])
         .await?;
         Ok(())
     }
@@ -2801,12 +2428,10 @@ impl PlatformService {
         let mut entries: Vec<FileVaultReconcileEntry> = Vec::new();
 
         // Ledger side, grouped by member: id + file_name + size per live row.
-        let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, i64)> = self.db.fetch_all_as::<(String, String, String, i64)>(
             "SELECT user_id, id, file_name, size_bytes FROM one_file_vault_objects \
              WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY user_id, id",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id])
         .await?;
         let mut ledger: std::collections::BTreeMap<String, Vec<(String, String, i64)>> = Default::default();
         for (user_id, id, file_name, size_bytes) in rows {
@@ -2899,18 +2524,10 @@ impl PlatformService {
         }
         let id = generate_prefixed_id("cfgset");
         let now = now_ms();
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_config_sets (id, tenant_id, name, description, created_by, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(tenant_id)
-        .bind(name)
-        .bind(description.trim())
-        .bind(created_by)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, tenant_id, name, description.trim(), created_by, now, now])
         .await
         .map_err(|e| match &e {
             sqlx::Error::Database(db) if db.is_unique_violation() => {
@@ -2924,13 +2541,11 @@ impl PlatformService {
     }
 
     pub async fn list_config_sets(&self, tenant_id: &str) -> Result<Vec<ConfigSetDto>, PlatformError> {
-        let rows: Vec<ConfigSetRow> = sqlx::query_as(
+        let rows: Vec<ConfigSetRow> = self.db.fetch_all_as::<ConfigSetRow>(
             "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.updated_at, \
                     (SELECT COUNT(*) FROM one_config_entries e WHERE e.set_id = s.id) AS entry_count \
              FROM one_config_sets s WHERE s.tenant_id = ? ORDER BY s.created_at DESC",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id])
         .await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
@@ -2962,15 +2577,9 @@ impl PlatformService {
         if name.is_empty() {
             return Err(PlatformError::BadRequest("config set name must not be empty".into()));
         }
-        let result = sqlx::query(
+        let result = self.db.execute(
             "UPDATE one_config_sets SET name = ?, description = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
-        )
-        .bind(name)
-        .bind(description.trim())
-        .bind(now_ms())
-        .bind(tenant_id)
-        .bind(id)
-        .execute(&self.pool)
+        &db_params![name, description.trim(), now_ms(), tenant_id, id])
         .await
         .map_err(|e| match &e {
             sqlx::Error::Database(db) if db.is_unique_violation() => {
@@ -2978,7 +2587,7 @@ impl PlatformService {
             }
             _ => PlatformError::from(e),
         })?;
-        if result.rows_affected() == 0 {
+        if result == 0 {
             return Err(PlatformError::NotFound("config set not found".into()));
         }
         self.get_config_set(tenant_id, id)
@@ -2992,33 +2601,24 @@ impl PlatformService {
     /// still carrying `{{config.<name>.…}}`; the references endpoint exists
     /// precisely so an admin can check before deleting.
     pub async fn delete_config_set(&self, tenant_id: &str, id: &str) -> Result<(), PlatformError> {
-        let mut tx = self.pool.begin().await?;
-        let deleted = sqlx::query("DELETE FROM one_config_sets WHERE tenant_id = ? AND id = ?")
-            .bind(tenant_id)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        let mut tx = self.db.begin().await?;
+        let deleted = tx.execute("DELETE FROM one_config_sets WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, id])
+            .await?;
         if deleted == 0 {
             return Err(PlatformError::NotFound("config set not found".into()));
         }
-        sqlx::query("DELETE FROM one_config_entries WHERE set_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
+        tx.execute("DELETE FROM one_config_entries WHERE set_id = ?", &db_params![id])
             .await?;
         tx.commit().await?;
         Ok(())
     }
 
     async fn get_config_set(&self, tenant_id: &str, id: &str) -> Result<Option<ConfigSetDto>, PlatformError> {
-        let row: Option<ConfigSetRow> = sqlx::query_as(
+        let row: Option<ConfigSetRow> = self.db.fetch_optional_as::<ConfigSetRow>(
             "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.updated_at, \
                     (SELECT COUNT(*) FROM one_config_entries e WHERE e.set_id = s.id) AS entry_count \
              FROM one_config_sets s WHERE s.tenant_id = ? AND s.id = ?",
-        )
-        .bind(tenant_id)
-        .bind(id)
-        .fetch_optional(&self.pool)
+        &db_params![tenant_id, id])
         .await?;
         match row {
             Some(row) => {
@@ -3056,20 +2656,14 @@ impl PlatformService {
             return Err(PlatformError::BadRequest("config entry key must not be empty".into()));
         }
         let exists: bool =
-            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_config_sets WHERE tenant_id = ? AND id = ?")
-                .bind(tenant_id)
-                .bind(set_id)
-                .fetch_one(&self.pool)
+            self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_config_sets WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, set_id])
                 .await?;
         if !exists {
             return Err(PlatformError::NotFound("config set not found".into()));
         }
 
         let existing: Option<(String, String, bool)> =
-            sqlx::query_as("SELECT id, value, sensitive FROM one_config_entries WHERE set_id = ? AND key = ?")
-                .bind(set_id)
-                .bind(key)
-                .fetch_optional(&self.pool)
+            self.db.fetch_optional_as::<(String, String, bool)>("SELECT id, value, sensitive FROM one_config_entries WHERE set_id = ? AND key = ?", &db_params![set_id, key])
                 .await?;
 
         let entry_id;
@@ -3089,11 +2683,7 @@ impl PlatformService {
                     // silently shipping garbage).
                     _ => Self::entry_restamp_value(&old_value, old_sensitive, sensitive, &self.encryption_key)?,
                 };
-                sqlx::query("UPDATE one_config_entries SET value = ?, sensitive = ? WHERE id = ?")
-                    .bind(&stored)
-                    .bind(sensitive)
-                    .bind(&entry_id)
-                    .execute(&self.pool)
+                self.db.execute("UPDATE one_config_entries SET value = ?, sensitive = ? WHERE id = ?", &db_params![&stored, sensitive, &entry_id])
                     .await?;
             }
             None => {
@@ -3102,17 +2692,10 @@ impl PlatformService {
                 };
                 entry_id = generate_prefixed_id("cfge");
                 stored = Self::entry_storage_value(v, sensitive, &self.encryption_key)?;
-                sqlx::query(
+                self.db.execute(
                     "INSERT INTO one_config_entries (id, tenant_id, set_id, key, value, sensitive) \
                      VALUES (?, ?, ?, ?, ?, ?)",
-                )
-                .bind(&entry_id)
-                .bind(tenant_id)
-                .bind(set_id)
-                .bind(key)
-                .bind(&stored)
-                .bind(sensitive)
-                .execute(&self.pool)
+                &db_params![&entry_id, tenant_id, set_id, key, &stored, sensitive])
                 .await?;
             }
         }
@@ -3169,19 +2752,14 @@ impl PlatformService {
         set_id: &str,
     ) -> Result<Vec<ConfigEntryDto>, PlatformError> {
         let exists: bool =
-            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_config_sets WHERE tenant_id = ? AND id = ?")
-                .bind(tenant_id)
-                .bind(set_id)
-                .fetch_one(&self.pool)
+            self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_config_sets WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, set_id])
                 .await?;
         if !exists {
             return Err(PlatformError::NotFound("config set not found".into()));
         }
-        let rows: Vec<(String, String, String, String, bool)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, String, bool)> = self.db.fetch_all_as::<(String, String, String, String, bool)>(
             "SELECT id, set_id, key, value, sensitive FROM one_config_entries WHERE set_id = ? ORDER BY key ASC",
-        )
-        .bind(set_id)
-        .fetch_all(&self.pool)
+        &db_params![set_id])
         .await?;
         Ok(rows
             .into_iter()
@@ -3204,12 +2782,8 @@ impl PlatformService {
     /// another tenant — the tenant filter is load-bearing, same as
     /// `revoke_resource`.
     pub async fn delete_config_entry(&self, tenant_id: &str, entry_id: &str) -> Result<(), PlatformError> {
-        let deleted = sqlx::query("DELETE FROM one_config_entries WHERE tenant_id = ? AND id = ?")
-            .bind(tenant_id)
-            .bind(entry_id)
-            .execute(&self.pool)
-            .await?
-            .rows_affected();
+        let deleted = self.db.execute("DELETE FROM one_config_entries WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, entry_id])
+            .await?;
         if deleted == 0 {
             return Err(PlatformError::NotFound("config entry not found".into()));
         }
@@ -3235,18 +2809,13 @@ impl PlatformService {
         merge: bool,
     ) -> Result<ConfigBulkImportDto, PlatformError> {
         let exists: bool =
-            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_config_sets WHERE tenant_id = ? AND id = ?")
-                .bind(tenant_id)
-                .bind(set_id)
-                .fetch_one(&self.pool)
+            self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_config_sets WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, set_id])
                 .await?;
         if !exists {
             return Err(PlatformError::NotFound("config set not found".into()));
         }
         if !merge {
-            let has_entries: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_config_entries WHERE set_id = ?")
-                .bind(set_id)
-                .fetch_one(&self.pool)
+            let has_entries: bool = self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_config_entries WHERE set_id = ?", &db_params![set_id])
                 .await?;
             if has_entries {
                 return Err(PlatformError::BadRequest(
@@ -3269,21 +2838,14 @@ impl PlatformService {
             }
         }
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.db.begin().await?;
         for (key, (value, sensitive)) in &deduped {
             let stored = Self::entry_storage_value(value, *sensitive, &self.encryption_key)?;
-            sqlx::query(
+            tx.execute(
                 "INSERT INTO one_config_entries (id, tenant_id, set_id, key, value, sensitive) \
                  VALUES (?, ?, ?, ?, ?, ?) \
                  ON CONFLICT(set_id, key) DO UPDATE SET value = excluded.value, sensitive = excluded.sensitive",
-            )
-            .bind(generate_prefixed_id("cfge"))
-            .bind(tenant_id)
-            .bind(set_id)
-            .bind(key)
-            .bind(&stored)
-            .bind(sensitive)
-            .execute(&mut *tx)
+            &db_params![generate_prefixed_id("cfge"), tenant_id, set_id, key, &stored, sensitive])
             .await?;
         }
         tx.commit().await?;
@@ -3328,12 +2890,13 @@ impl PlatformService {
         // which LIKE would treat as wildcards; a plain substring search has
         // no escaping problem to get wrong.
         let needle = format!("{{{{config.{}.", set.name);
-        let result = sqlx::query_as::<_, (String, String)>(
-            "SELECT id, name FROM one_skill_registry WHERE INSTR(content, ?) > 0 ORDER BY name ASC",
-        )
-        .bind(&needle)
-        .fetch_all(&self.pool)
-        .await;
+        let result = self
+            .db
+            .fetch_all_as::<(String, String)>(
+                "SELECT id, name FROM one_skill_registry WHERE INSTR(content, ?) > 0 ORDER BY name ASC",
+                &db_params![&needle],
+            )
+            .await;
         let references = match result {
             Ok(rows) => rows
                 .into_iter()
@@ -3359,9 +2922,7 @@ impl PlatformService {
     async fn config_reference_count(&self, set_name: &str) -> Result<i64, PlatformError> {
         let needle = format!("{{{{config.{}.", set_name);
         let result =
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM one_skill_registry WHERE INSTR(content, ?) > 0")
-                .bind(&needle)
-                .fetch_one(&self.pool)
+            self.db.fetch_one_scalar::<i64>("SELECT COUNT(*) FROM one_skill_registry WHERE INSTR(content, ?) > 0", &db_params![&needle])
                 .await;
         match result {
             Ok(count) => Ok(count),
@@ -3385,13 +2946,11 @@ impl PlatformService {
         // One query for the tenant's whole vault: a skill rarely references
         // more than a couple of keys, but this keeps it to a single round
         // trip regardless of token count.
-        let rows: Vec<(String, String, String, bool)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, bool)> = self.db.fetch_all_as::<(String, String, String, bool)>(
             "SELECT s.name, e.key, e.value, e.sensitive \
              FROM one_config_entries e JOIN one_config_sets s ON s.id = e.set_id \
              WHERE s.tenant_id = ?",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id])
         .await
         .unwrap_or_default();
         let mut lookup: std::collections::HashMap<(String, String), String> = std::collections::HashMap::new();
@@ -3545,7 +3104,7 @@ mod tests {
     async fn setup() -> (dream_core_db::Database, PlatformService) {
         let db = dream_core_db::init_database_memory().await.unwrap();
         crate::migrate::run_one_platform_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let service = PlatformService::new(db.pool().clone(), [7u8; 32]);
+        let service = PlatformService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()), [7u8; 32]);
         (db, service)
     }
 
@@ -3562,7 +3121,7 @@ mod tests {
         );
     }
 
-    async fn seed_membership(pool: &SqlitePool, user_id: &str, tenant_id: &str, role: &str) {
+    async fn seed_membership(pool: &sqlx::SqlitePool, user_id: &str, tenant_id: &str, role: &str) {
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, \
                  role TEXT NOT NULL DEFAULT 'member', department_id TEXT, created_at INTEGER NOT NULL DEFAULT 0, \
@@ -3802,7 +3361,7 @@ mod tests {
 
     // --- E5 resource authorization matrix ---
 
-    async fn seed_department(pool: &SqlitePool, tenant_id: &str, id: &str, parent_id: Option<&str>, name: &str) {
+    async fn seed_department(pool: &sqlx::SqlitePool, tenant_id: &str, id: &str, parent_id: Option<&str>, name: &str) {
         sqlx::query("INSERT INTO one_departments (id, tenant_id, parent_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, 0, 0)")
             .bind(id)
             .bind(tenant_id)
@@ -3813,7 +3372,7 @@ mod tests {
             .unwrap();
     }
 
-    async fn assign_department(pool: &SqlitePool, user_id: &str, tenant_id: &str, department_id: &str) {
+    async fn assign_department(pool: &sqlx::SqlitePool, user_id: &str, tenant_id: &str, department_id: &str) {
         sqlx::query("UPDATE one_user_org SET department_id = ? WHERE user_id = ? AND tenant_id = ?")
             .bind(department_id)
             .bind(user_id)
@@ -4800,7 +4359,7 @@ mod tests {
         let orphan_bindings: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM one_security_policy_bindings WHERE template_id = ?")
                 .bind(&template.id)
-                .fetch_one(&service.pool)
+                .fetch_one(service.pool())
                 .await
                 .unwrap();
         assert_eq!(orphan_bindings, 0);
@@ -5418,7 +4977,7 @@ mod tests {
         let (db, _) = setup().await;
         let root = std::env::temp_dir().join(format!("one-platform-vault-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let service = PlatformService::new(db.pool().clone(), [7u8; 32]).with_storage_root(root.clone());
+        let service = PlatformService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()), [7u8; 32]).with_storage_root(root.clone());
         (db, service, root)
     }
 
@@ -5949,7 +5508,7 @@ mod tests {
     /// The reference scan reads devops' `one_skill_registry.content`, which
     /// the test seeds with the table's minimal column set (only what the
     /// scan queries: id, name, content — see the method's boundary notes).
-    async fn seed_skill_registry(pool: &SqlitePool, rows: &[(&str, &str, &str)]) {
+    async fn seed_skill_registry(pool: &sqlx::SqlitePool, rows: &[(&str, &str, &str)]) {
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS one_skill_registry (\
                  id TEXT PRIMARY KEY NOT NULL,\
