@@ -26,6 +26,12 @@ use dream_core_realtime::{BroadcastEventBus, WebSocketManager};
 
 pub struct AppServices {
     pub database: Database,
+    /// P3-3: backend-agnostic handle for the enterprise `one_*` tables.
+    /// `DbPool::Sqlite` in personal / enterprise-SQLite deployments; `MySql`
+    /// when `DREAM_DATABASE_URL` points at a MySQL 8.0.16+ server. The main
+    /// conversation schema stays on SQLite in every deployment (mixed storage
+    /// by design — see the P3-3 plan §4).
+    pub db: dream_core_db::DbPool,
     pub jwt_service: Arc<JwtService>,
     pub user_repo: Arc<dyn IUserRepository>,
     pub cookie_config: Arc<CookieConfig>,
@@ -409,11 +415,31 @@ impl AppServices {
         // model choice the send-path gates never see (they only ever look at
         // the *session* model), so without this an admin could remove a model
         // from the allowlist and still have it invoked as a delegate.
+        // P3-3: enterprise main storage backend. `DREAM_DATABASE_URL` starting
+        // with `mysql://` connects the enterprise `one_*` tables to MySQL;
+        // anything else (unset included) keeps them in the SQLite database.
+        // Inert on personal builds.
+        let db = match std::env::var("DREAM_DATABASE_URL")
+            .ok()
+            .filter(|u| u.starts_with("mysql://"))
+        {
+            #[cfg(feature = "enterprise")]
+            Some(url) => {
+                let mysql_db = dream_core_db::init_database_mysql(&url).await?;
+                dream_core_db::DbPool::MySql(mysql_db.pool().clone())
+            }
+            #[cfg(not(feature = "enterprise"))]
+            Some(_) => {
+                anyhow::bail!("DREAM_DATABASE_URL MySQL storage requires the enterprise build");
+            }
+            None => dream_core_db::DbPool::Sqlite(database.pool().clone()),
+        };
+
         #[cfg(feature = "enterprise")]
         let policy_grace = Arc::new(crate::router::PolicyGrace::new());
         #[cfg(feature = "enterprise")]
         let billing = Arc::new(dream_domain_billing::BillingService::new(
-            database.pool().clone(),
+            db.clone(),
             Arc::new(dream_domain_billing::ManualBillingProvider),
         ));
         // Own instance, same posture as `billing` above: cheap to construct
@@ -421,7 +447,7 @@ impl AppServices {
         // destructive-command gate for the ACP permission router.
         #[cfg(feature = "enterprise")]
         let platform_for_agent_factory = Arc::new(dream_domain_platform::PlatformService::new(
-            database.pool().clone(),
+            db.clone(),
             encryption_key,
         ));
         // Same posture as `platform_for_agent_factory` above: a second
@@ -430,7 +456,7 @@ impl AppServices {
         // here because the agent factory is built before the router — and
         // before the governance plane that also holds a handle.
         #[cfg(feature = "enterprise")]
-        let workflow_for_agent_factory = Arc::new(dream_domain_workflow::WorkflowService::new(dream_core_db::DbPool::Sqlite(database.pool().clone())));
+        let workflow_for_agent_factory = Arc::new(dream_domain_workflow::WorkflowService::new(db.clone()));
 
         // NOT adopted this sync (2026-07-29): upstream wires a `session_spawner`
         // here for the direct-CLI SessionAgentTask path — see the matching notes
@@ -508,8 +534,11 @@ impl AppServices {
             project_service: project_service.clone(),
         });
 
+        
+
         Ok(Self {
             database,
+            db,
             #[cfg(feature = "enterprise")]
             billing,
             #[cfg(feature = "enterprise")]
