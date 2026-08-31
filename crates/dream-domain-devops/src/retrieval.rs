@@ -28,6 +28,7 @@
 
 use sqlx::{Row, SqlitePool};
 
+use dream_core_db::{DbPool, db_params};
 use crate::error::DevopsError;
 
 /// Reciprocal-rank-fusion constant. 60 is the value from the original RRF
@@ -69,13 +70,13 @@ impl FtsMode {
 /// Deliberately done at runtime rather than in a migration: if this SQLite
 /// build lacks FTS5 a migration failure would brick startup, whereas here the
 /// knowledge base simply degrades to vector-only retrieval.
-pub async fn ensure_fts_table(pool: &SqlitePool) -> FtsMode {
+pub async fn ensure_fts_table(pool: &DbPool) -> FtsMode {
     for (mode, tokenizer) in [(FtsMode::Trigram, "trigram"), (FtsMode::Unicode61, "unicode61")] {
         let sql = format!(
             "CREATE VIRTUAL TABLE IF NOT EXISTS {FTS_TABLE} USING fts5(\
                  chunk_id UNINDEXED, content, tokenize = '{tokenizer}')"
         );
-        match sqlx::query(&sql).execute(pool).await {
+        match pool.execute(&sql, &[]).await {
             Ok(_) => return mode,
             Err(e) => {
                 tracing::debug!(tokenizer, error = %e, "FTS5 table creation attempt failed");
@@ -88,7 +89,7 @@ pub async fn ensure_fts_table(pool: &SqlitePool) -> FtsMode {
 
 /// Replace a document's rows in the lexical index.
 pub async fn sync_document(
-    pool: &SqlitePool,
+    pool: &DbPool,
     document_id: &str,
     chunks: &[(String, String)],
 ) -> Result<(), DevopsError> {
@@ -97,10 +98,7 @@ pub async fn sync_document(
     }
     delete_document(pool, document_id).await?;
     for (chunk_id, content) in chunks {
-        sqlx::query(&format!("INSERT INTO {FTS_TABLE} (chunk_id, content) VALUES (?, ?)"))
-            .bind(chunk_id)
-            .bind(content)
-            .execute(pool)
+        pool.execute(&format!("INSERT INTO {FTS_TABLE} (chunk_id, content) VALUES (?, ?)"), &db_params![chunk_id, content])
             .await?;
     }
     Ok(())
@@ -110,15 +108,13 @@ pub async fn sync_document(
 ///
 /// The FTS table has no document column (it mirrors chunks), so deletion goes
 /// through the chunk ids that belong to the document.
-pub async fn delete_document(pool: &SqlitePool, document_id: &str) -> Result<(), DevopsError> {
+pub async fn delete_document(pool: &DbPool, document_id: &str) -> Result<(), DevopsError> {
     if !ensure_fts_table(pool).await.is_available() {
         return Ok(());
     }
-    sqlx::query(&format!(
+    pool.execute(&format!(
         "DELETE FROM {FTS_TABLE} WHERE chunk_id IN (SELECT id FROM one_rag_chunks WHERE document_id = ?)"
-    ))
-    .bind(document_id)
-    .execute(pool)
+    ), &db_params![document_id])
     .await?;
     Ok(())
 }
@@ -128,22 +124,21 @@ pub async fn delete_document(pool: &SqlitePool, document_id: &str) -> Result<(),
 /// Needed once for installs whose knowledge base predates this index. Cheap and
 /// safe to call on every boot: it self-skips when the index already has rows,
 /// and it reads only text already in SQLite — no embedding calls.
-pub async fn rebuild_index(pool: &SqlitePool) -> Result<usize, DevopsError> {
+pub async fn rebuild_index(pool: &DbPool) -> Result<usize, DevopsError> {
     if !ensure_fts_table(pool).await.is_available() {
         return Ok(0);
     }
-    let indexed: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {FTS_TABLE}"))
-        .fetch_one(pool)
+    let indexed: i64 = pool.fetch_one_scalar(&format!("SELECT COUNT(*) FROM {FTS_TABLE}"), &[])
         .await?;
     if indexed > 0 {
         return Ok(0);
     }
-    let inserted = sqlx::query(&format!(
-        "INSERT INTO {FTS_TABLE} (chunk_id, content) SELECT id, content FROM one_rag_chunks"
-    ))
-    .execute(pool)
-    .await?
-    .rows_affected() as usize;
+    let inserted = pool
+        .execute(
+            &format!("INSERT INTO {FTS_TABLE} (chunk_id, content) SELECT id, content FROM one_rag_chunks"),
+            &[],
+        )
+        .await? as usize;
     if inserted > 0 {
         tracing::info!(chunks = inserted, "team knowledge lexical index built");
     }
@@ -188,7 +183,7 @@ pub struct LexicalHit {
 /// than a single viewer id is what lets a widened (multi-placeholder)
 /// predicate be used here at all.
 pub async fn lexical_candidates(
-    pool: &SqlitePool,
+    pool: &DbPool,
     query: &str,
     acl_predicate: Option<&str>,
     acl_binds: &[String],
@@ -214,11 +209,18 @@ pub async fn lexical_candidates(
     }
     sql.push_str(&format!(" ORDER BY bm25({FTS_TABLE}) LIMIT ?"));
 
+    // FTS5 (SQLite) vs ngram/fulltext differ per backend, but the FTS table is
+    // built by ensure_fts_table on each backend with its own engine, and the
+    // bm25() ranking here is SQLite-only — MySQL deployments use the vector
+    // ranker only, so this degrades the same way a missing table does.
+    if pool.backend() != dream_core_db::DbBackend::Sqlite {
+        return Ok(vec![]);
+    }
     let mut q = sqlx::query(&sql).bind(match_expr);
     for bind in acl_binds {
         q = q.bind(bind);
     }
-    let rows = match q.bind(limit as i64).fetch_all(pool).await {
+    let rows = match q.bind(limit as i64).fetch_all(pool.sqlite()).await {
         Ok(rows) => rows,
         // A malformed MATCH expression must degrade to "no lexical hits", not
         // fail the whole search — the vector ranker still has an answer.
@@ -269,17 +271,17 @@ pub fn rrf_fuse(vector_ranked: &[String], lexical_ranked: &[String]) -> Vec<(Str
 mod tests {
     use super::*;
 
-    async fn pool() -> SqlitePool {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
+    async fn pool() -> DbPool {
+        let sqlite = SqlitePool::connect(":memory:").await.unwrap();
         sqlx::raw_sql(
             "CREATE TABLE one_rag_documents (id TEXT PRIMARY KEY, title TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'org', team_id TEXT, visibility TEXT NOT NULL DEFAULT 'all');
              CREATE TABLE one_rag_chunks (id TEXT PRIMARY KEY, document_id TEXT NOT NULL, chunk_index INTEGER NOT NULL DEFAULT 0, content TEXT NOT NULL);
              CREATE TABLE one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', PRIMARY KEY (user_id, tenant_id));",
         )
-        .execute(&pool)
+        .execute(&sqlite)
         .await
         .unwrap();
-        pool
+        DbPool::Sqlite(sqlite)
     }
 
     /// The whole lexical half of retrieval rests on FTS5 being compiled in.
@@ -300,7 +302,7 @@ mod tests {
         assert!(ensure_fts_table(&pool).await.is_available());
     }
 
-    async fn seed(pool: &SqlitePool) {
+    async fn seed(pool: &DbPool) {
         sqlx::raw_sql(
             "INSERT INTO one_rag_documents (id, title, scope, team_id, visibility) VALUES ('doc-org', 'Org Handbook', 'org', NULL, 'all');
              INSERT INTO one_rag_documents (id, title, scope, team_id, visibility) VALUES ('doc-a', 'Team A Notes', 'team', 'tA', 'all');
@@ -310,7 +312,7 @@ mod tests {
              INSERT INTO one_rag_chunks (id, document_id, content) VALUES ('c-b', 'doc-b', 'Team B also mentions ERR_QUOTA_4471 here.');
              INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('member1', 'tA', 'member');",
         )
-        .execute(pool)
+        .execute(pool.sqlite())
         .await
         .unwrap();
     }
@@ -358,7 +360,7 @@ mod tests {
             "INSERT INTO one_rag_documents (id, title) VALUES ('d1', '规章');
              INSERT INTO one_rag_chunks (id, document_id, content) VALUES ('zh1', 'd1', '报销流程需要部门经理审批后提交财务。');",
         )
-        .execute(&pool)
+        .execute(pool.sqlite())
         .await
         .unwrap();
         rebuild_index(&pool).await.unwrap();
@@ -406,8 +408,7 @@ mod tests {
         seed(&pool).await;
         assert_eq!(rebuild_index(&pool).await.unwrap(), 3);
         assert_eq!(rebuild_index(&pool).await.unwrap(), 0, "second run must be a no-op");
-        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {FTS_TABLE}"))
-            .fetch_one(&pool)
+        let total: i64 = pool.fetch_one_scalar(&format!("SELECT COUNT(*) FROM {FTS_TABLE}"), &[])
             .await
             .unwrap();
         assert_eq!(total, 3);

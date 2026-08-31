@@ -41,6 +41,7 @@ use sha2::{Digest, Sha256};
 use dream_core_common::now_ms;
 use dream_core_common::{decrypt_string, encrypt_string};
 
+use dream_core_db::db_params;
 use crate::error::DevopsError;
 use crate::models::ProviderChannelDto;
 use crate::service::DevopsService;
@@ -102,8 +103,7 @@ impl DevopsService {
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
         if privileged {
             let sql = format!("SELECT {COLS} FROM one_provider_registry ORDER BY updated_at DESC");
-            return Ok(sqlx::query_as::<_, ProviderChannelDto>(&sql)
-                .fetch_all(&self.pool)
+            return Ok(self.db.fetch_all_as::<ProviderChannelDto>(&sql, &[])
                 .await?);
         }
         // Widened with `model_channel` grants, same as the other registries.
@@ -117,11 +117,11 @@ impl DevopsService {
         let (predicate, grant_binds) =
             Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "", viewer_user_id);
         let sql = format!("SELECT {COLS} FROM one_provider_registry WHERE {predicate} ORDER BY updated_at DESC");
-        let mut q = sqlx::query_as::<_, ProviderChannelDto>(&sql).bind(viewer_user_id);
+        let mut params = db_params![viewer_user_id];
         for bind in &grant_binds {
-            q = q.bind(bind);
+            params.push(bind.as_str().into());
         }
-        Ok(q.fetch_all(&self.pool).await?)
+        Ok(self.db.fetch_all_as::<ProviderChannelDto>(&sql, &params).await?)
     }
 
     /// Create or update a channel.
@@ -193,9 +193,7 @@ impl DevopsService {
                 // (base_url + rotate the key) and re-scope it away from that
                 // team in the same call. Same pattern as skill/MCP registries.
                 let current_team_id: Option<String> =
-                    sqlx::query_scalar("SELECT team_id FROM one_provider_registry WHERE id = ?")
-                        .bind(existing)
-                        .fetch_optional(&self.pool)
+                    self.db.fetch_optional_scalar("SELECT team_id FROM one_provider_registry WHERE id = ?", &db_params![existing])
                         .await?
                         .ok_or_else(|| DevopsError::NotFound(format!("model channel {existing}")))?;
                 if !self
@@ -208,83 +206,41 @@ impl DevopsService {
                 }
                 let updated = match &encrypted {
                     Some(secret) => {
-                        sqlx::query(
+                        self.db.execute(
                             "UPDATE one_provider_registry SET name = ?, platform = ?, upstream_base_url = ?, \
                              api_key_encrypted = ?, models = ?, model_settings = ?, enabled = ?, scope = ?, \
                              team_id = ?, visibility = ?, updated_at = ? WHERE id = ?",
-                        )
-                        .bind(name)
-                        .bind(platform)
-                        .bind(upstream_base_url)
-                        .bind(secret)
-                        .bind(models)
-                        .bind(model_settings)
-                        .bind(enabled)
-                        .bind(scope)
-                        .bind(team_id)
-                        .bind(visibility)
-                        .bind(now)
-                        .bind(existing)
-                        .execute(&self.pool)
+                        &db_params![name, platform, upstream_base_url, secret, models, model_settings, enabled, scope, team_id, visibility, now, existing])
                         .await?
                     }
                     None => {
-                        sqlx::query(
+                        self.db.execute(
                             "UPDATE one_provider_registry SET name = ?, platform = ?, upstream_base_url = ?, \
                              models = ?, model_settings = ?, enabled = ?, scope = ?, team_id = ?, \
                              visibility = ?, updated_at = ? WHERE id = ?",
-                        )
-                        .bind(name)
-                        .bind(platform)
-                        .bind(upstream_base_url)
-                        .bind(models)
-                        .bind(model_settings)
-                        .bind(enabled)
-                        .bind(scope)
-                        .bind(team_id)
-                        .bind(visibility)
-                        .bind(now)
-                        .bind(existing)
-                        .execute(&self.pool)
+                        &db_params![name, platform, upstream_base_url, models, model_settings, enabled, scope, team_id, visibility, now, existing])
                         .await?
                     }
                 };
-                if updated.rows_affected() == 0 {
+                if updated == 0 {
                     return Err(DevopsError::NotFound(format!("model channel {existing}")));
                 }
                 existing.to_owned()
             }
             None => {
                 let id = format!("ochan_{}", uuid::Uuid::now_v7().simple());
-                sqlx::query(
+                self.db.execute(
                     "INSERT INTO one_provider_registry \
                         (id, name, platform, upstream_base_url, api_key_encrypted, models, model_settings, \
                          enabled, scope, team_id, visibility, created_by, created_at, updated_at) \
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                )
-                .bind(&id)
-                .bind(name)
-                .bind(platform)
-                .bind(upstream_base_url)
-                .bind(encrypted.unwrap_or_default())
-                .bind(models)
-                .bind(model_settings)
-                .bind(enabled)
-                .bind(scope)
-                .bind(team_id)
-                .bind(visibility)
-                .bind(created_by)
-                .bind(now)
-                .bind(now)
-                .execute(&self.pool)
+                &db_params![&id, name, platform, upstream_base_url, encrypted.unwrap_or_default(), models, model_settings, enabled, scope, team_id, visibility, created_by, now, now])
                 .await?;
                 id
             }
         };
 
-        sqlx::query_as::<_, ProviderChannelDto>(&format!("SELECT {COLS} FROM one_provider_registry WHERE id = ?"))
-            .bind(&id)
-            .fetch_one(&self.pool)
+        self.db.fetch_one_as::<ProviderChannelDto>(&format!("SELECT {COLS} FROM one_provider_registry WHERE id = ?"), &db_params![&id])
             .await
             .map_err(Into::into)
     }
@@ -295,9 +251,7 @@ impl DevopsService {
     /// admin believes they deleted — and, worse, a recycled id would silently
     /// re-authorize them.
     pub async fn delete_provider_channel(&self, actor_user_id: &str, id: &str) -> Result<(), DevopsError> {
-        let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM one_provider_registry WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
+        let team_id: Option<String> = self.db.fetch_optional_scalar("SELECT team_id FROM one_provider_registry WHERE id = ?", &db_params![id])
             .await?
             .ok_or_else(|| DevopsError::NotFound(format!("model channel {id}")))?;
         if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
@@ -305,16 +259,12 @@ impl DevopsService {
                 "this model channel belongs to a different project group".into(),
             ));
         }
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM one_provider_channel_tokens WHERE channel_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
+        let mut tx = self.db.begin().await?;
+        tx.execute("DELETE FROM one_provider_channel_tokens WHERE channel_id = ?", &db_params![id])
             .await?;
-        let deleted = sqlx::query("DELETE FROM one_provider_registry WHERE id = ?")
-            .bind(id)
-            .execute(&mut *tx)
+        let deleted = tx.execute("DELETE FROM one_provider_registry WHERE id = ?", &db_params![id])
             .await?;
-        if deleted.rows_affected() == 0 {
+        if deleted == 0 {
             return Err(DevopsError::NotFound(format!("model channel {id}")));
         }
         tx.commit().await?;
@@ -347,18 +297,13 @@ impl DevopsService {
 
         let token = generate_token()?;
         let now = now_ms();
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_provider_channel_tokens (token_hash, user_id, channel_id, created_at) \
              VALUES (?, ?, ?, ?) \
              ON CONFLICT(user_id, channel_id) DO UPDATE SET \
                 token_hash = excluded.token_hash, created_at = excluded.created_at, \
                 last_used = NULL, revoked_at = NULL",
-        )
-        .bind(hash_token(&token))
-        .bind(user_id)
-        .bind(channel_id)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![hash_token(&token), user_id, channel_id, now])
         .await?;
 
         Ok(IssuedChannelToken {
@@ -371,14 +316,11 @@ impl DevopsService {
     /// from the company: their session JWT is already invalidated there, and
     /// this closes the one credential that deliberately outlives it.
     pub async fn revoke_channel_tokens_for_user(&self, user_id: &str) -> Result<u64, DevopsError> {
-        let result = sqlx::query(
+        let result = self.db.execute(
             "UPDATE one_provider_channel_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
-        )
-        .bind(now_ms())
-        .bind(user_id)
-        .execute(&self.pool)
+        &db_params![now_ms(), user_id])
         .await?;
-        Ok(result.rows_affected())
+        Ok(result)
     }
 
     /// Authenticate a proxy request and produce everything it needs to forward.
@@ -392,15 +334,12 @@ impl DevopsService {
         channel_id: &str,
         token: &str,
     ) -> Result<Option<ResolvedChannel>, DevopsError> {
-        let row: Option<(String, String, String)> = sqlx::query_as(
+        let row: Option<(String, String, String)> = self.db.fetch_optional_as::<(String, String, String)>(
             "SELECT t.user_id, r.upstream_base_url, r.api_key_encrypted \
              FROM one_provider_channel_tokens t \
              JOIN one_provider_registry r ON r.id = t.channel_id \
              WHERE t.token_hash = ? AND t.channel_id = ? AND t.revoked_at IS NULL AND r.enabled = 1",
-        )
-        .bind(hash_token(token))
-        .bind(channel_id)
-        .fetch_optional(&self.pool)
+        &db_params![hash_token(token), channel_id])
         .await?;
 
         let Some((user_id, upstream_base_url, api_key_encrypted)) = row else {
@@ -416,10 +355,7 @@ impl DevopsService {
 
         // Best-effort: a failed bookkeeping write must not fail the call the
         // user is actually making.
-        let _ = sqlx::query("UPDATE one_provider_channel_tokens SET last_used = ? WHERE token_hash = ?")
-            .bind(now_ms())
-            .bind(hash_token(token))
-            .execute(&self.pool)
+        let _ = self.db.execute("UPDATE one_provider_channel_tokens SET last_used = ? WHERE token_hash = ?", &db_params![now_ms(), hash_token(token)])
             .await;
 
         Ok(Some(ResolvedChannel {
@@ -461,7 +397,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        DevopsService::new(pool).with_encryption_key(KEY)
+        DevopsService::new(dream_core_db::DbPool::Sqlite(pool.clone())).with_encryption_key(KEY)
     }
 
     async fn make_channel(svc: &DevopsService, name: &str) -> ProviderChannelDto {
@@ -611,7 +547,7 @@ mod tests {
 
         let orphans: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_provider_channel_tokens WHERE channel_id = ?")
             .bind(&channel.id)
-            .fetch_one(&svc.pool)
+            .fetch_one(svc.db.sqlite())
             .await
             .unwrap();
         assert_eq!(orphans, 0);
@@ -637,7 +573,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        let svc = DevopsService::new(pool); // no encryption key
+        let svc = DevopsService::new(dream_core_db::DbPool::Sqlite(pool.clone())); // no encryption key
 
         let err = svc
             .upsert_provider_channel(
@@ -659,7 +595,7 @@ mod tests {
         assert!(matches!(err, DevopsError::Internal(_)), "got {err:?}");
 
         let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_provider_registry")
-            .fetch_one(&svc.pool)
+            .fetch_one(svc.db.sqlite())
             .await
             .unwrap();
         assert_eq!(
@@ -695,7 +631,7 @@ mod tests {
 
         let count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM one_provider_channel_tokens WHERE user_id = 'admin1'")
-                .fetch_one(&svc.pool)
+                .fetch_one(svc.db.sqlite())
                 .await
                 .unwrap();
         assert_eq!(count, 1);
@@ -768,7 +704,7 @@ mod tests {
         let issued = svc.issue_channel_token("admin1", &channel.id).await.unwrap();
 
         let stored: String = sqlx::query_scalar("SELECT token_hash FROM one_provider_channel_tokens LIMIT 1")
-            .fetch_one(&svc.pool)
+            .fetch_one(svc.db.sqlite())
             .await
             .unwrap();
         assert_ne!(stored, issued.token);

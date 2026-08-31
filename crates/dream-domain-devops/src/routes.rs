@@ -1933,7 +1933,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        one_devops_routes(OneDevopsRouterState::new(Arc::new(DevopsService::new(pool))))
+        one_devops_routes(OneDevopsRouterState::new(Arc::new(DevopsService::new(dream_core_db::DbPool::Sqlite(pool.clone())))))
     }
 
     fn user(id: &str) -> CurrentUser {

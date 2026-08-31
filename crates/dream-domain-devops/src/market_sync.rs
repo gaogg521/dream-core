@@ -46,7 +46,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::SqlitePool;
+use dream_core_db::{DbPool, db_params};
 
 use crate::error::DevopsError;
 use crate::service::{DevopsService, new_id};
@@ -281,28 +281,25 @@ impl DevopsService {
     // -- market sources (P1-1 round 2) -----------------------------------
 
     pub async fn list_market_sources(&self, tenant_id: &str) -> Result<Vec<MarketSourceDto>, DevopsError> {
-        let rows: Vec<SourceRow> = sqlx::query_as(
+        let rows: Vec<SourceRow> = self.db.fetch_all_as::<SourceRow>(
             "SELECT id, tenant_id, name, url, enabled, last_synced_at, last_sync_status, last_sync_error, \
                     created_by, created_at, updated_at \
              FROM one_market_sources WHERE tenant_id = ? ORDER BY created_at DESC",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
+        &db_params![tenant_id])
         .await?;
         Ok(rows.into_iter().map(row_to_source).collect())
     }
 
     async fn get_market_source(&self, tenant_id: &str, id: &str) -> Result<SourceRow, DevopsError> {
-        sqlx::query_as(
-            "SELECT id, tenant_id, name, url, enabled, last_synced_at, last_sync_status, last_sync_error, \
+        self.db
+            .fetch_optional_as::<SourceRow>(
+                "SELECT id, tenant_id, name, url, enabled, last_synced_at, last_sync_status, last_sync_error, \
                     created_by, created_at, updated_at \
              FROM one_market_sources WHERE tenant_id = ? AND id = ?",
-        )
-        .bind(tenant_id)
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or(DevopsError::NotFound("market source not found".into()))
+                &db_params![tenant_id, id],
+            )
+            .await?
+            .ok_or(DevopsError::NotFound("market source not found".into()))
     }
 
     pub async fn create_market_source(
@@ -325,18 +322,10 @@ impl DevopsService {
         }
         let id = new_id("msrc");
         let now = now_ms();
-        sqlx::query(
+        self.db.execute(
             "INSERT INTO one_market_sources (id, tenant_id, name, url, enabled, created_by, created_at, updated_at) \
              VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(tenant_id)
-        .bind(name)
-        .bind(url)
-        .bind(created_by)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
+        &db_params![&id, tenant_id, name, url, created_by, now, now])
         .await
         .map_err(|e| {
             if e.to_string().contains("UNIQUE") {
@@ -360,13 +349,7 @@ impl DevopsService {
         let name = name.map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&existing.2);
         let url = url.map(str::trim).filter(|u| !u.is_empty()).unwrap_or(&existing.3);
         let enabled = enabled.unwrap_or(existing.4);
-        sqlx::query("UPDATE one_market_sources SET name = ?, url = ?, enabled = ?, updated_at = ? WHERE id = ?")
-            .bind(name)
-            .bind(url)
-            .bind(enabled)
-            .bind(now_ms())
-            .bind(id)
-            .execute(&self.pool)
+        self.db.execute("UPDATE one_market_sources SET name = ?, url = ?, enabled = ?, updated_at = ? WHERE id = ?", &db_params![name, url, enabled, now_ms(), id])
             .await?;
         Ok(row_to_source(self.get_market_source(tenant_id, id).await?))
     }
@@ -376,14 +359,10 @@ impl DevopsService {
     /// source must not silently retract content members already see.
     pub async fn delete_market_source(&self, tenant_id: &str, id: &str) -> Result<(), DevopsError> {
         self.get_market_source(tenant_id, id).await?;
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM one_market_imports WHERE source_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
+        let mut tx = self.db.begin().await?;
+        tx.execute("DELETE FROM one_market_imports WHERE source_id = ?", &db_params![id])
             .await?;
-        sqlx::query("DELETE FROM one_market_sources WHERE id = ?")
-            .bind(id)
-            .execute(&mut *tx)
+        tx.execute("DELETE FROM one_market_sources WHERE id = ?", &db_params![id])
             .await?;
         tx.commit().await?;
         Ok(())
@@ -464,9 +443,7 @@ impl DevopsService {
         // Items this source previously imported that are gone from the
         // upstream index: reported, rows kept (see the migration's doc).
         let known: Vec<(String, String)> =
-            sqlx::query_as("SELECT kind, item_name FROM one_market_imports WHERE source_id = ?")
-                .bind(&source_id)
-                .fetch_all(&self.pool)
+            self.db.fetch_all_as::<(String, String)>("SELECT kind, item_name FROM one_market_imports WHERE source_id = ?", &db_params![&source_id])
                 .await?;
         for (kind, name) in known {
             let still_listed = manifest.items.iter().any(|item| item.kind == kind && item.name == name);
@@ -493,13 +470,9 @@ impl DevopsService {
         fetcher: &dyn MarketFetcher,
         report: &mut MarketSyncReportDto,
     ) -> Result<(), String> {
-        let mapping: Option<(String, String)> = sqlx::query_as(
+        let mapping: Option<(String, String)> = self.db.fetch_optional_as::<(String, String)>(
             "SELECT registry_id, content_hash FROM one_market_imports WHERE source_id = ? AND kind = ? AND item_name = ?",
-        )
-        .bind(source_id)
-        .bind(&item.kind)
-        .bind(&item.name)
-        .fetch_optional(&self.pool)
+        &db_params![source_id, &item.kind, &item.name])
         .await
         .map_err(|e| format!("mapping lookup failed: {e}"))?;
 
@@ -575,14 +548,8 @@ impl DevopsService {
                 report.skipped += 1;
                 return Ok(());
             }
-            import.update_by_id(&self.pool, &registry_id).await?;
-            sqlx::query("UPDATE one_market_imports SET content_hash = ?, updated_at = ? WHERE source_id = ? AND kind = ? AND item_name = ?")
-                .bind(&payload_hash)
-                .bind(now_ms())
-                .bind(source_id)
-                .bind(&item.kind)
-                .bind(&item.name)
-                .execute(&self.pool)
+            import.update_by_id(&self.db, &registry_id).await?;
+            self.db.execute("UPDATE one_market_imports SET content_hash = ?, updated_at = ? WHERE source_id = ? AND kind = ? AND item_name = ?", &db_params![&payload_hash, now_ms(), source_id, &item.kind, &item.name])
                 .await
                 .map_err(|e| format!("mapping update failed: {e}"))?;
             report.updated += 1;
@@ -595,18 +562,11 @@ impl DevopsService {
         // another MARKET row is an adoption (update in place + mapping
         // created), which also makes delete-source-then-re-add idempotent
         // instead of piling up orphan rows.
-        let new_id = import.upsert_new(&self.pool, &item.name, &item.kind).await?;
-        sqlx::query(
+        let new_id = import.upsert_new(&self.db, &item.name, &item.kind).await?;
+        self.db.execute(
             "INSERT INTO one_market_imports (source_id, kind, item_name, registry_id, content_hash, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(source_id)
-        .bind(&item.kind)
-        .bind(&item.name)
-        .bind(&new_id)
-        .bind(&payload_hash)
-        .bind(now_ms())
-        .execute(&self.pool)
+        &db_params![source_id, &item.kind, &item.name, &new_id, &payload_hash, now_ms()])
         .await
         .map_err(|e| format!("mapping insert failed: {e}"))?;
         report.imported += 1;
@@ -618,14 +578,10 @@ impl DevopsService {
     /// failed status update is logged, never propagated — the report the
     /// caller holds is the authoritative result.
     async fn record_market_sync_result(&self, source_id: &str, status: &str, error: Option<String>) {
-        if let Err(e) = sqlx::query(
+        if let Err(e) = self.db.execute(
             "UPDATE one_market_sources SET last_synced_at = ?, last_sync_status = ?, last_sync_error = ? WHERE id = ?",
+            &db_params![now_ms(), status, error, source_id],
         )
-        .bind(now_ms())
-        .bind(status)
-        .bind(error)
-        .bind(source_id)
-        .execute(&self.pool)
         .await
         {
             tracing::warn!(error = %e, source_id, "failed to record the market sync result");
@@ -653,7 +609,7 @@ enum MarketImport {
 }
 
 impl MarketImport {
-    async fn update_by_id(&self, pool: &SqlitePool, registry_id: &str) -> Result<(), String> {
+    async fn update_by_id(&self, pool: &DbPool, registry_id: &str) -> Result<(), String> {
         match self {
             Self::Skill {
                 description,
@@ -661,15 +617,10 @@ impl MarketImport {
                 category_id,
                 ..
             } => {
-                sqlx::query(
+                pool.execute(
                     "UPDATE one_skill_registry SET description = ?, content = ?, category_id = ?, updated_at = ? WHERE id = ?",
+                    &db_params![description, content, category_id, now_ms(), registry_id],
                 )
-                .bind(description)
-                .bind(content)
-                .bind(category_id)
-                .bind(now_ms())
-                .bind(registry_id)
-                .execute(pool)
                 .await
                 .map_err(|e| format!("registry update failed: {e}"))?;
             }
@@ -679,15 +630,10 @@ impl MarketImport {
                 category_id,
                 ..
             } => {
-                sqlx::query(
+                pool.execute(
                     "UPDATE one_mcp_registry SET type = ?, endpoint = ?, category_id = ?, updated_at = ? WHERE id = ?",
+                    &db_params![mcp_type, endpoint, category_id, now_ms(), registry_id],
                 )
-                .bind(mcp_type)
-                .bind(endpoint)
-                .bind(category_id)
-                .bind(now_ms())
-                .bind(registry_id)
-                .execute(pool)
                 .await
                 .map_err(|e| format!("registry update failed: {e}"))?;
             }
@@ -699,16 +645,14 @@ impl MarketImport {
     /// with this name), and return the registry id. A self-built row with
     /// the same name is an error — admin-authored content is never taken
     /// over by a sync.
-    async fn upsert_new(&self, pool: &SqlitePool, item_name: &str, kind: &str) -> Result<String, String> {
+    async fn upsert_new(&self, pool: &DbPool, item_name: &str, kind: &str) -> Result<String, String> {
         let table = if kind == "skill" {
             "one_skill_registry"
         } else {
             "one_mcp_registry"
         };
         let existing: Option<(String, String)> =
-            sqlx::query_as(&format!("SELECT id, origin FROM {table} WHERE name = ?"))
-                .bind(item_name)
-                .fetch_optional(pool)
+            pool.fetch_optional_as::<(String, String)>(&format!("SELECT id, origin FROM {table} WHERE name = ?"), &db_params![item_name])
                 .await
                 .map_err(|e| format!("collision check failed: {e}"))?;
         if let Some((id, origin)) = existing {
@@ -731,20 +675,12 @@ impl MarketImport {
                 category_id,
             } => {
                 let id = new_id("oskill");
-                sqlx::query(
+                pool.execute(
                     "INSERT INTO one_skill_registry \
                      (id, name, description, content, enabled, auto_active, scope, team_id, visibility, \
                       origin, category_id, published, created_by, created_at, updated_at) \
                      VALUES (?, ?, ?, ?, 1, 0, 'org', NULL, 'all', 'market', ?, 1, 'market-sync', ?, ?)",
-                )
-                .bind(&id)
-                .bind(name)
-                .bind(description)
-                .bind(content)
-                .bind(category_id)
-                .bind(now)
-                .bind(now)
-                .execute(pool)
+                &db_params![&id, name, description, content, category_id, now, now])
                 .await
                 .map_err(|e| format!("registry insert failed: {e}"))?;
                 Ok(id)
@@ -756,20 +692,12 @@ impl MarketImport {
                 category_id,
             } => {
                 let id = new_id("omcp");
-                sqlx::query(
+                pool.execute(
                     "INSERT INTO one_mcp_registry \
                      (id, name, type, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, \
                       origin, category_id, published, created_by, created_at, updated_at) \
                      VALUES (?, ?, ?, ?, 1, 0, NULL, 'org', NULL, 'all', 'market', ?, 1, 'market-sync', ?, ?)",
-                )
-                .bind(&id)
-                .bind(name)
-                .bind(mcp_type)
-                .bind(endpoint)
-                .bind(category_id)
-                .bind(now)
-                .bind(now)
-                .execute(pool)
+                &db_params![&id, name, mcp_type, endpoint, category_id, now, now])
                 .await
                 .map_err(|e| format!("registry insert failed: {e}"))?;
                 Ok(id)
@@ -791,7 +719,7 @@ mod tests {
             .await
             .unwrap();
         crate::migrate::run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone())).await.unwrap();
-        let service = DevopsService::new(pool.clone());
+        let service = DevopsService::new(dream_core_db::DbPool::Sqlite(pool.clone()));
         (pool, service)
     }
 
@@ -872,9 +800,7 @@ mod tests {
             .expect("mcp imported");
         assert_eq!(mcp_origin, "market");
 
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_market_imports WHERE source_id = ?")
-            .bind(&id)
-            .fetch_one(&pool)
+        let count: i64 = dream_core_db::DbPool::Sqlite(pool.clone()).fetch_one_scalar("SELECT COUNT(*) FROM one_market_imports WHERE source_id = ?", &db_params![&id])
             .await
             .unwrap();
         assert_eq!(count, 2);
@@ -982,11 +908,13 @@ mod tests {
         assert_eq!(report.imported, 1, "the MCP item still imports (partial success)");
         assert_eq!(report.errors.len(), 1);
         assert!(report.errors[0].error.contains("self-built"));
-        let (origin,) =
-            sqlx::query_as::<_, (String,)>("SELECT origin FROM one_skill_registry WHERE name = 'review-skill'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let origin: String = dream_core_db::DbPool::Sqlite(pool.clone())
+            .fetch_one_scalar(
+                "SELECT origin FROM one_skill_registry WHERE name = 'review-skill'",
+                &[],
+            )
+            .await
+            .unwrap();
         assert_eq!(origin, "self_built");
     }
 
@@ -1056,8 +984,7 @@ mod tests {
 
         service.delete_market_source("t1", &id).await.unwrap();
         assert!(service.list_market_sources("t1").await.unwrap().is_empty());
-        let mappings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_market_imports")
-            .fetch_one(&pool)
+        let mappings: i64 = dream_core_db::DbPool::Sqlite(pool.clone()).fetch_one_scalar("SELECT COUNT(*) FROM one_market_imports", &[])
             .await
             .unwrap();
         assert_eq!(mappings, 0);
