@@ -166,6 +166,7 @@ fn resolve_aionui_config(cli_args: &CliArgs) -> Result<Config, AgentError> {
         ProviderType::Anthropic | ProviderType::Vertex => ProviderCompat::anthropic_defaults().transport,
         ProviderType::OpenAI => ProviderCompat::openai_defaults().transport,
         ProviderType::Bedrock => ProviderCompat::bedrock_defaults().transport,
+        ProviderType::Ollama => ProviderCompat::ollama_defaults().transport,
     };
     config.compat.transport.default_max_tokens = default_transport.default_max_tokens;
     config.compat.transport.model_max_tokens = default_transport.model_max_tokens;
@@ -322,6 +323,15 @@ impl AionrsAgentManager {
         };
 
         let mut config = resolve_aionui_config(&cli_args)?;
+
+        // User-declared context window: compaction must trigger inside the
+        // real window (a local Ollama model's 8k, not the 200k default), and
+        // the Ollama native transport sends it as `options.num_ctx` so the
+        // daemon actually allocates that window.
+        if let Some(context_window) = config_extra.context_window {
+            config.compact.context_window = context_window as usize;
+            config.compat.transport.num_ctx = Some(context_window);
+        }
 
         // Backend-specific overrides
         config.bedrock = config_extra.bedrock_config;

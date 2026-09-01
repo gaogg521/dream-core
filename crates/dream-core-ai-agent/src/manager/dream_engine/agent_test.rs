@@ -30,6 +30,7 @@ fn make_test_config() -> AionrsResolvedConfig {
         base_url: None,
         system_prompt: None,
         max_tokens: None,
+        context_window: None,
         max_turns: None,
         max_tool_call_malformed_turns: None,
         max_tool_call_failure_turns: None,

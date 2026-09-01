@@ -167,6 +167,10 @@ pub struct AionrsResolvedConfig {
     /// Internal response cap for specialized flows such as provider health probes.
     /// Normal Dream UI conversations leave this unset.
     pub max_tokens: Option<u32>,
+    /// User-declared context window for the session model (per-model setting,
+    /// falling back to the provider-level `context_limit`). Drives the
+    /// engine's compaction thresholds and, for Ollama, `options.num_ctx`.
+    pub context_window: Option<u32>,
     /// Max agentic turns.
     pub max_turns: Option<usize>,
     /// Max repeated malformed tool-call turns before stopping.

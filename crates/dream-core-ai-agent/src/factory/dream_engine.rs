@@ -106,6 +106,11 @@ pub(super) async fn build(
 
     let provider = map_dream_engine_provider(&row.platform, &model_id, row.model_protocols.as_deref())?;
     let model_overrides = resolve_model_compat_overrides(&model_id, &row.model_settings)?;
+    // Per-model setting wins; the provider-level `context_limit` (shared with
+    // the Codex bridge) is the fallback for users who set it there.
+    let context_window = model_overrides
+        .context_window
+        .or_else(|| row.context_limit.and_then(|limit| u32::try_from(limit).ok()));
 
     let (base_url, mut compat_overrides) = resolve_dream_engine_url_and_compat_with_mode(
         &row.platform,
@@ -174,6 +179,7 @@ pub(super) async fn build(
         base_url,
         system_prompt: overrides.system_prompt,
         max_tokens: None,
+        context_window,
         max_turns: overrides.max_turns,
         max_tool_call_malformed_turns: overrides.max_tool_call_malformed_turns,
         max_tool_call_failure_turns: overrides.max_tool_call_failure_turns,
@@ -343,6 +349,7 @@ pub(crate) fn map_dream_engine_provider(
         "bedrock" => return Ok("bedrock".to_owned()),
         "gemini" | "openai" => return Ok("openai".to_owned()),
         "gemini-vertex-ai" => return Ok("vertex".to_owned()),
+        "ollama" => return Ok("ollama".to_owned()),
         _ => {}
     }
 
@@ -382,6 +389,16 @@ pub(crate) fn resolve_dream_engine_url_and_compat_with_mode(
     openai_api_mode_override: Option<OpenAiApiMode>,
 ) -> (Option<String>, AionrsCompatOverrides) {
     let mut compat = AionrsCompatOverrides::default();
+
+    // Ollama's native transport owns the endpoint path (`/api/chat`) and needs
+    // the daemon root, not the OpenAI-compatible `/v1` prefix the UI presets
+    // (and the model-list fetcher) speak.
+    if platform == "ollama" {
+        let trimmed = raw_base_url.trim_end_matches('/');
+        let root = trimmed.strip_suffix("/v1").unwrap_or(trimmed);
+        return (Some(root.to_owned()).filter(|u| !u.is_empty()), compat);
+    }
+
     let openai_api_mode = resolve_openai_api_mode(platform, mapped_provider, model_id, openai_api_mode_override);
     let use_responses = openai_api_mode == Some(OpenAiApiMode::Responses);
 
@@ -481,6 +498,7 @@ fn rewrite_openai_api_url(url: &str, mode: OpenAiApiMode) -> Option<String> {
 pub(crate) struct ModelCompatOverrides {
     pub(crate) image_input: Option<ImageInputCapability>,
     pub(crate) openai_api_mode: Option<OpenAiApiMode>,
+    pub(crate) context_window: Option<u32>,
 }
 
 pub(crate) fn resolve_model_compat_overrides(
@@ -503,6 +521,7 @@ pub(crate) fn resolve_model_compat_overrides(
             ModelOpenAiApiMode::ChatCompletions => OpenAiApiMode::ChatCompletions,
             ModelOpenAiApiMode::Responses => OpenAiApiMode::Responses,
         }),
+        context_window: settings.context_window,
     })
 }
 
@@ -910,6 +929,9 @@ pub(crate) fn build_dream_engine_config(
         }
         dream_engine_config::config::ProviderType::Bedrock => {
             dream_engine_config::compat::ProviderCompat::bedrock_defaults().transport
+        }
+        dream_engine_config::config::ProviderType::Ollama => {
+            dream_engine_config::compat::ProviderCompat::ollama_defaults().transport
         }
     };
     config.compat.transport.default_max_tokens = default_transport.default_max_tokens;
