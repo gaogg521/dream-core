@@ -927,7 +927,7 @@ impl DreamEngineAgentManager {
         let option_id = option_id.trim();
         let value = value.trim();
 
-        if option_id != AIONRS_MODE_OPTION_ID {
+        if option_id != DREAM_ENGINE_MODE_OPTION_ID {
             return Err(AgentError::bad_request(format!(
                 "Config option '{option_id}' is not available"
             )));
@@ -950,7 +950,7 @@ impl DreamEngineAgentManager {
     }
 }
 
-const AIONRS_MODE_OPTION_ID: &str = "mode";
+const DREAM_ENGINE_MODE_OPTION_ID: &str = "mode";
 
 fn is_dream_engine_session_mode(s: &str) -> bool {
     matches!(s, "default" | "auto_edit" | "yolo")
@@ -958,7 +958,7 @@ fn is_dream_engine_session_mode(s: &str) -> bool {
 
 fn dream_engine_mode_config_option(current_value: String) -> AcpConfigOptionDto {
     AcpConfigOptionDto {
-        id: AIONRS_MODE_OPTION_ID.to_owned(),
+        id: DREAM_ENGINE_MODE_OPTION_ID.to_owned(),
         name: Some("Mode".to_owned()),
         label: None,
         description: None,

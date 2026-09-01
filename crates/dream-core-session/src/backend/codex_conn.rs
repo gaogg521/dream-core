@@ -74,7 +74,9 @@ fn codex_app_server_args(extra_args: &[String]) -> Vec<String> {
 fn log_codex_runtime_policy(spawn_env: &[dream_core_common::EnvVar]) {
     let mut runtime_env_keys = spawn_env
         .iter()
-        .filter_map(|entry| entry.name.starts_with("AIONUI_").then_some(entry.name.as_str()))
+        .filter_map(|entry| {
+            (entry.name.starts_with("ONE_") || entry.name.starts_with("AIONUI_")).then_some(entry.name.as_str())
+        })
         .collect::<Vec<_>>();
     runtime_env_keys.sort_unstable();
     runtime_env_keys.dedup();
