@@ -251,7 +251,7 @@ async fn first_external_user_adopts_owner_user_id_tables_too() {
 
     let user = repo
         .ensure_external_user(
-            UserType::Aionpro,
+            UserType::DreamPro,
             "ext-upgrade-1",
             ExternalUserProjection {
                 username: Some("Pro".into()),
@@ -307,7 +307,7 @@ async fn adoption_window_closes_with_second_external_user() {
 
     let first = repo
         .ensure_external_user(
-            UserType::Aionpro,
+            UserType::DreamPro,
             "ext-a",
             ExternalUserProjection {
                 username: Some("A".into()),
@@ -319,7 +319,7 @@ async fn adoption_window_closes_with_second_external_user() {
         .unwrap();
     let second = repo
         .ensure_external_user(
-            UserType::Aionpro,
+            UserType::DreamPro,
             "ext-b",
             ExternalUserProjection {
                 username: Some("B".into()),
@@ -360,7 +360,7 @@ async fn adoption_fires_once_then_new_local_data_stays_local() {
     .unwrap();
 
     let user = repo
-        .ensure_external_user(UserType::Aionpro, "ext-once", ExternalUserProjection::default())
+        .ensure_external_user(UserType::DreamPro, "ext-once", ExternalUserProjection::default())
         .await
         .unwrap();
 
@@ -403,7 +403,7 @@ async fn empty_first_sweep_still_consumes_the_adoption_opportunity() {
 
     // Fresh machine: nothing to adopt on first login.
     let user = repo
-        .ensure_external_user(UserType::Aionpro, "ext-fresh", ExternalUserProjection::default())
+        .ensure_external_user(UserType::DreamPro, "ext-fresh", ExternalUserProjection::default())
         .await
         .unwrap();
     assert_eq!(repo.adopt_system_default_data(&user.id).await.unwrap(), 0);
@@ -429,7 +429,7 @@ async fn empty_first_sweep_still_consumes_the_adoption_opportunity() {
 
     // The marker is account-specific: nobody else counts as the adopter.
     let other = repo
-        .ensure_external_user(UserType::Aionpro, "ext-other", ExternalUserProjection::default())
+        .ensure_external_user(UserType::DreamPro, "ext-other", ExternalUserProjection::default())
         .await
         .unwrap();
     assert!(!repo.is_default_data_adopter(&other.id).await.unwrap());

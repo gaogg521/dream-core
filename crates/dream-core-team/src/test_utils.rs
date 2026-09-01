@@ -1793,7 +1793,7 @@ pub(crate) mod workspace_harness {
             task_manager.clone(),
             Arc::new(NoopTurnPort),
             Arc::new(NoopCancellationPort),
-            Arc::new(std::path::PathBuf::from("/tmp/aioncore-test")),
+            Arc::new(std::path::PathBuf::from("/tmp/dreamcore-test")),
         );
         (svc, team_repo, task_manager, conv_repo, broadcaster)
     }

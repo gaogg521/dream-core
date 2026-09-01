@@ -1,7 +1,15 @@
 // --- File processing ---
 
+/// Legacy filename timestamp separator. No longer emitted; kept so doc
+/// comments and legacy-format parsers have a name for the historical form.
 pub const ONE_TIMESTAMP_SEPARATOR: &str = "_aionui_";
-pub const ONE_FILES_MARKER: &str = "[[AION_FILES]]";
+
+/// Marker line the backend splices into agent-bound text to carry resolved
+/// attachment paths. New messages use [`FILES_MARKER`]; conversations that
+/// predate the rebrand persist [`LEGACY_FILES_MARKER`], so every parser must
+/// accept both (see the strip/split helpers in `dream-core-ai-agent`).
+pub const FILES_MARKER: &str = "[[DREAM_FILES]]";
+pub const LEGACY_FILES_MARKER: &str = "[[DREAM_FILES]]";
 
 // --- WebSocket ---
 

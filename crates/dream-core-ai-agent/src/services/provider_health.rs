@@ -20,7 +20,7 @@ use crate::factory::dream_engine::{
     map_dream_engine_provider, resolve_bedrock_config, resolve_dream_engine_url_and_compat_with_mode,
     resolve_model_compat_overrides,
 };
-use crate::types::AionrsResolvedConfig;
+use crate::types::DreamEngineResolvedConfig;
 
 const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const HEALTH_CHECK_MAX_TOKENS: u32 = 16;
@@ -67,7 +67,7 @@ impl ProviderHealthCheckService {
         run_probe(row.id, row.platform, config).await
     }
 
-    fn resolve_probe_config(&self, row: &Provider, model_id: &str) -> Result<AionrsResolvedConfig, AgentError> {
+    fn resolve_probe_config(&self, row: &Provider, model_id: &str) -> Result<DreamEngineResolvedConfig, AgentError> {
         let api_key = dream_core_common::decrypt_string(&row.api_key_encrypted, &self.encryption_key)
             .map_err(|e| AgentError::internal(e.to_string()))?;
         let provider = map_dream_engine_provider(&row.platform, model_id, row.model_protocols.as_deref())?;
@@ -87,7 +87,7 @@ impl ProviderHealthCheckService {
             None
         };
 
-        Ok(AionrsResolvedConfig {
+        Ok(DreamEngineResolvedConfig {
             provider,
             api_key,
             model: model_id.to_owned(),
@@ -117,7 +117,7 @@ impl ProviderHealthCheckService {
 async fn run_probe(
     provider_id: String,
     platform: String,
-    config_extra: AionrsResolvedConfig,
+    config_extra: DreamEngineResolvedConfig,
 ) -> Result<ProviderHealthCheckResponse, AgentError> {
     let started = Instant::now();
     let model = config_extra.model.clone();
@@ -206,7 +206,7 @@ fn log_health_check_result(response: &ProviderHealthCheckResponse) {
     }
 }
 
-async fn build_probe_engine(config_extra: AionrsResolvedConfig) -> Result<AgentEngine, AgentError> {
+async fn build_probe_engine(config_extra: DreamEngineResolvedConfig) -> Result<AgentEngine, AgentError> {
     let workspace = config_extra
         .session_directory
         .parent()
@@ -383,7 +383,7 @@ mod tests {
         ProviderHealthCheckService {
             provider_repo: Arc::new(UnusedProviderRepository),
             encryption_key: TEST_KEY,
-            data_dir: PathBuf::from("/tmp/aioncore-provider-health-test"),
+            data_dir: PathBuf::from("/tmp/dreamcore-provider-health-test"),
         }
     }
 

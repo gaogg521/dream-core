@@ -48,7 +48,7 @@ fn channel_id_from_build_options(options: &BuildTaskOptions) -> Option<String> {
 pub(crate) struct TurnStartInput {
     pub user_id: String,
     pub conversation: ConversationRow,
-    /// User message content, already resolved to the inlined `[[AION_FILES]]`
+    /// User message content, already resolved to the inlined `[[DREAM_FILES]]`
     /// form (HTTP path resolves `ChatFileRef`s; internal agent turns pass a
     /// pre-formed string).
     pub content: String,
@@ -1290,7 +1290,7 @@ mod tests {
     #[test]
     fn prepend_preset_context_targets_the_right_field_per_kind() {
         use dream_core_ai_agent::session_context::{
-            AcpSessionBuildContext, AgentSessionContext, AionrsSessionBuildContext, ConversationContext,
+            AcpSessionBuildContext, AgentSessionContext, DreamEngineSessionBuildContext, ConversationContext,
             WorkspaceContext,
         };
         use dream_core_common::ProviderWithModel;
@@ -1338,7 +1338,7 @@ mod tests {
         assert!(ctx.ends_with("house rules"));
 
         // DreamEngine writes preset_rules, not preset_context.
-        let mut de = base(AgentSessionKind::DreamEngine(Box::new(AionrsSessionBuildContext {
+        let mut de = base(AgentSessionKind::DreamEngine(Box::new(DreamEngineSessionBuildContext {
             config: Default::default(),
             team: None,
             belongs_to_team: false,

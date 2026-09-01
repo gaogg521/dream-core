@@ -373,7 +373,7 @@ async fn run_migrations_staged(pool: &SqlitePool) -> Result<(), DatabaseInitErro
     // lock()/unlock() and the migrator does list_applied → apply without an
     // outer transaction, so two processes opening the same DB simultaneously
     // (e.g. Electron auto-update spawning v2.1.1 while v2.0.x is still
-    // shutting down, or `aioncore doctor` racing the server) can both decide
+    // shutting down, or `dreamcore doctor` racing the server) can both decide
     // to apply the same version and the slower one's INSERT into
     // `_sqlx_migrations` blows up with `UNIQUE constraint failed:
     // _sqlx_migrations.version`. The outer startup lock also covers

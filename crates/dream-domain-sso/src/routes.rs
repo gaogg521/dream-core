@@ -132,7 +132,7 @@ struct AuthorizeQuery {
 /// OS, so handing them `dream://` would drop the callback on the floor.
 ///
 /// `dream` / `dream-dev` must be allowed here BEFORE the desktop app starts
-/// asking for them. The app pairs with a pinned aioncore release, so a client
+/// asking for them. The app pairs with a pinned dreamcore release, so a client
 /// requesting a scheme this build does not know falls through to `aionui` and
 /// the callback reaches an app that stopped listening for it: login succeeds in
 /// the browser and never arrives.

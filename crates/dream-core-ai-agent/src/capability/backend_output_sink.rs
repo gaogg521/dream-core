@@ -26,7 +26,7 @@ impl BackendOutputSink {
         if id.is_empty() {
             None
         } else {
-            Some(format!("aionrs-{id}"))
+            Some(format!("dream-engine-{id}"))
         }
     }
 }
@@ -64,14 +64,14 @@ impl OutputSink for BackendOutputSink {
             call_id = %call_id,
             tool = name,
             status = ?ToolCallStatus::Running,
-            "Derived internal tool_call id from aionrs tool_use_id"
+            "Derived internal tool_call id from engine tool_use_id"
         );
         tracing::info!(
             tool_use_id = %tool_use_id,
             call_id = %call_id,
             tool = name,
             status = ?ToolCallStatus::Running,
-            "Emitting aionrs tool_call event"
+            "Emitting engine tool_call event"
         );
 
         let _ = self.event_tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
@@ -107,7 +107,7 @@ impl OutputSink for BackendOutputSink {
             call_id = %call_id,
             tool = name,
             status = ?status,
-            "Emitting aionrs tool_result event"
+            "Emitting engine tool_result event"
         );
 
         let _ = self.event_tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
@@ -285,10 +285,10 @@ mod tests {
             }
         }
 
-        assert_eq!(call_ids[0].0, "aionrs-call_a");
-        assert_eq!(call_ids[1].0, "aionrs-call_b");
-        assert_eq!(call_ids[2].0, "aionrs-call_a");
-        assert_eq!(call_ids[3].0, "aionrs-call_b");
+        assert_eq!(call_ids[0].0, "dream-engine-call_a");
+        assert_eq!(call_ids[1].0, "dream-engine-call_b");
+        assert_eq!(call_ids[2].0, "dream-engine-call_a");
+        assert_eq!(call_ids[3].0, "dream-engine-call_b");
         assert_eq!(call_ids[2].1, ToolCallStatus::Completed);
         assert_eq!(call_ids[3].1, ToolCallStatus::Completed);
     }

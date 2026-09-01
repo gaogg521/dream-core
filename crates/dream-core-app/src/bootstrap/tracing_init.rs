@@ -31,7 +31,7 @@ const NOISE_SUPPRESSIONS: &[&str] = &[
     "dream_engine_providers=info",
 ];
 
-const AIONRS_TARGETS: &[&str] = &[
+const ENGINE_TARGETS: &[&str] = &[
     "dream_engine_agent",
     "dream_engine_config",
     "aion_compact",
@@ -43,7 +43,7 @@ const AIONRS_TARGETS: &[&str] = &[
     "aion_memory",
 ];
 
-const RAW_AIONRS_PAYLOAD_TARGETS: &[&str] = &["dream_engine_agent", "dream_engine_providers"];
+const RAW_ENGINE_PAYLOAD_TARGETS: &[&str] = &["dream_engine_agent", "dream_engine_providers"];
 
 /// `ONE_LOG_JSON=1` (or `true`) switches the stdout console layer to the
 /// same JSON format the file layers already use — for container deployments
@@ -69,7 +69,7 @@ fn build_env_filter(log_level: Option<&str>) -> EnvFilter {
 fn build_backend_filter(log_level: Option<&str>) -> EnvFilter {
     let user_directives = log_level.unwrap_or("info");
     let suppressions = NOISE_SUPPRESSIONS.join(",");
-    let aionrs_off: String = AIONRS_TARGETS
+    let aionrs_off: String = ENGINE_TARGETS
         .iter()
         .map(|t| format!("{t}=off"))
         .collect::<Vec<_>>()
@@ -77,12 +77,12 @@ fn build_backend_filter(log_level: Option<&str>) -> EnvFilter {
     EnvFilter::new(format!("{suppressions},{aionrs_off},{user_directives}"))
 }
 
-fn build_aionrs_level(log_level: Option<&str>) -> String {
+fn build_engine_level(log_level: Option<&str>) -> String {
     let level = log_level.unwrap_or("info");
-    AIONRS_TARGETS
+    ENGINE_TARGETS
         .iter()
         .map(|target| {
-            let target_level = if RAW_AIONRS_PAYLOAD_TARGETS.contains(target) {
+            let target_level = if RAW_ENGINE_PAYLOAD_TARGETS.contains(target) {
                 "info"
             } else {
                 level
@@ -96,7 +96,7 @@ fn build_aionrs_level(log_level: Option<&str>) -> String {
 /// RAII guards that flush log buffers on drop. Hold for the process lifetime.
 pub struct LogGuards {
     _backend: tracing_appender::non_blocking::WorkerGuard,
-    _aionrs: tracing_appender::non_blocking::WorkerGuard,
+    _engine: tracing_appender::non_blocking::WorkerGuard,
 }
 
 const LOGGING_INIT_MESSAGE: &str = "failed to initialize logging";
@@ -209,8 +209,8 @@ pub fn init_tracing(
         Box::new(fmt::layer().with_target(true).with_filter(build_env_filter(log_level)))
     };
 
-    // Backend file layer — excludes aion_* targets
-    let file_appender = DailyDatedLogWriter::new(log_dir.to_path_buf(), "aioncore.log");
+    // Backend file layer — excludes engine targets
+    let file_appender = DailyDatedLogWriter::new(log_dir.to_path_buf(), "dreamcore.log");
     let (non_blocking, backend_guard) = tracing_appender::non_blocking(file_appender);
 
     let backend_file_layer = fmt::layer()
@@ -220,31 +220,31 @@ pub fn init_tracing(
         .with_target(true)
         .with_filter(build_backend_filter(log_level));
 
-    // DreamEngine file layer — only aion_* targets
-    let aionrs_level = build_aionrs_level(log_level);
-    let aionrs_filter = EnvFilter::try_new(&aionrs_level).map_err(|e| {
+    // DreamEngine file layer — only engine targets (legacy aion_* entries capture pre-rename engine binaries)
+    let engine_level = build_engine_level(log_level);
+    let engine_filter = EnvFilter::try_new(&engine_level).map_err(|e| {
         BootstrapError::new(
             BootstrapErrorCode::LoggingInitFailed,
             "logging.filter",
             LOGGING_INIT_MESSAGE,
         )
         .with_source(e)
-        .with_field("filter", aionrs_level.clone())
+        .with_field("filter", engine_level.clone())
         .with_field("logDir", active_log_dir.display().to_string())
     })?;
-    let aionrs_appender = DailyDatedLogWriter::new(log_dir.to_path_buf(), "aionrs.log");
-    let (aionrs_non_blocking, aionrs_guard) = tracing_appender::non_blocking(aionrs_appender);
-    let aionrs_layer = fmt::layer()
+    let engine_appender = DailyDatedLogWriter::new(log_dir.to_path_buf(), "dream-engine.log");
+    let (engine_non_blocking, engine_guard) = tracing_appender::non_blocking(engine_appender);
+    let engine_layer = fmt::layer()
         .json()
-        .with_writer(aionrs_non_blocking)
+        .with_writer(engine_non_blocking)
         .with_ansi(false)
         .with_target(true)
-        .with_filter(aionrs_filter);
+        .with_filter(engine_filter);
 
     tracing_subscriber::registry()
         .with(console_layer)
         .with(backend_file_layer)
-        .with(aionrs_layer)
+        .with(engine_layer)
         .try_init()
         .map_err(|e| {
             BootstrapError::new(
@@ -271,7 +271,7 @@ pub fn init_tracing(
 
     Ok(LogGuards {
         _backend: backend_guard,
-        _aionrs: aionrs_guard,
+        _engine: engine_guard,
     })
 }
 
@@ -423,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn env_filter_suppresses_raw_aionrs_provider_debug_even_when_debug_enabled() {
+    fn env_filter_suppresses_raw_engine_provider_debug_even_when_debug_enabled() {
         let subscriber = tracing_subscriber::registry().with(build_env_filter(Some("debug")));
         tracing::subscriber::with_default(subscriber, || {
             assert!(
@@ -436,14 +436,14 @@ mod tests {
             );
             assert!(
                 tracing::enabled!(target: "dream_core_ai_agent::manager::dream_engine::agent", Level::DEBUG),
-                "AionUi aionrs lifecycle debug logs should still be available"
+                "DreamEngine lifecycle debug logs should still be available"
             );
         });
     }
 
     #[test]
-    fn aionrs_file_level_suppresses_raw_provider_targets_even_when_debug_enabled() {
-        let level = build_aionrs_level(Some("debug"));
+    fn engine_file_level_suppresses_raw_provider_targets_even_when_debug_enabled() {
+        let level = build_engine_level(Some("debug"));
         assert!(level.contains("dream_engine_agent=info"), "{level}");
         assert!(level.contains("dream_engine_providers=info"), "{level}");
         assert!(level.contains("aion_tools=debug"), "{level}");
@@ -451,7 +451,7 @@ mod tests {
 
     #[test]
     fn dated_log_dir_appends_date_partition() {
-        let root = Path::new("/tmp/aionui-logs");
+        let root = Path::new("/tmp/dream-logs");
         let dated = dated_log_dir(root);
         let relative = dated.strip_prefix(root).expect("dated log dir should stay under root");
         let parts = relative
@@ -484,7 +484,7 @@ mod tests {
         let days = std::sync::Arc::new(std::sync::Mutex::new(vec![second_day, first_day]));
         let mut writer = DailyDatedLogWriter::new_with_date_provider(
             tmp.path().to_path_buf(),
-            "aioncore.log",
+            "dreamcore.log",
             Box::new({
                 let days = std::sync::Arc::clone(&days);
                 move || days.lock().expect("date queue").pop().expect("date")
@@ -495,14 +495,14 @@ mod tests {
         std::io::Write::write_all(&mut writer, b"july 3\n").expect("write second day");
         std::io::Write::flush(&mut writer).expect("flush");
 
-        let first_path = tmp.path().join("2026/07/02/2026-07-02.aioncore.log");
-        let second_path = tmp.path().join("2026/07/03/2026-07-03.aioncore.log");
+        let first_path = tmp.path().join("2026/07/02/2026-07-02.dreamcore.log");
+        let second_path = tmp.path().join("2026/07/03/2026-07-03.dreamcore.log");
         assert_eq!(std::fs::read_to_string(first_path).expect("first day log"), "july 2\n");
         assert_eq!(
             std::fs::read_to_string(second_path).expect("second day log"),
             "july 3\n"
         );
-        assert!(!tmp.path().join("2026/07/02/2026-07-03.aioncore.log").exists());
+        assert!(!tmp.path().join("2026/07/02/2026-07-03.dreamcore.log").exists());
     }
 
     #[test]

@@ -3,14 +3,14 @@
 //!
 //! Applied at agent dispatch time — the only layer that knows the target
 //! agent's prompt capabilities. The persisted/broadcast message keeps the
-//! full `[[AION_FILES]]` form (UI chips and history are untouched); only
+//! full `[[DREAM_FILES]]` form (UI chips and history are untouched); only
 //! the agent-bound copy is rewritten. Mirrors the dream precedent in
 //! `manager/dream/content.rs`: strip the trailing marker block when it
 //! matches `files` exactly, then rebuild.
 
 use std::path::Path;
 
-use dream_core_common::constants::ONE_FILES_MARKER;
+use dream_core_common::constants::{FILES_MARKER, LEGACY_FILES_MARKER};
 use tracing::warn;
 
 use crate::types::PromptMediaCaps;
@@ -40,7 +40,7 @@ pub struct MediaAttachment {
 /// Result of [`partition_media`].
 #[derive(Debug)]
 pub struct MediaPartition {
-    /// Agent-bound content: the user text with the `[[AION_FILES]]` block
+    /// Agent-bound content: the user text with the `[[DREAM_FILES]]` block
     /// re-appended containing only the non-media paths. Byte-identical to the
     /// input when nothing partitions to media.
     pub content: String,
@@ -118,11 +118,14 @@ fn classify(path: &str, caps: PromptMediaCaps) -> Option<MediaAttachment> {
     }
 }
 
-/// Strip the trailing `[[AION_FILES]]` block iff its path list matches
+/// Strip the trailing `[[DREAM_FILES]]` block iff its path list matches
 /// `files` exactly (same validation as dream `strip_attachment_metadata`);
 /// otherwise return `content` unchanged.
 fn strip_files_marker<'a>(content: &'a str, files: &[String]) -> &'a str {
-    let Some((user_text, metadata)) = content.rsplit_once(ONE_FILES_MARKER) else {
+    let split = content
+        .rsplit_once(FILES_MARKER)
+        .or_else(|| content.rsplit_once(LEGACY_FILES_MARKER));
+    let Some((user_text, metadata)) = split else {
         return content;
     };
     let metadata_files = metadata.lines().map(str::trim).filter(|line| !line.is_empty());
@@ -138,11 +141,11 @@ fn append_files_marker(content: &str, paths: &[String]) -> String {
     if paths.is_empty() {
         content.to_owned()
     } else {
-        format!("{content}\n\n{ONE_FILES_MARKER}\n{}", paths.join("\n"))
+        format!("{content}\n\n{FILES_MARKER}\n{}", paths.join("\n"))
     }
 }
 
-/// The agent-bound text with the `[[AION_FILES]]` block listing EVERY
+/// The agent-bound text with the `[[DREAM_FILES]]` block listing EVERY
 /// attachment — media included — regardless of what [`partition_media`] moved
 /// to a native block.
 ///
@@ -192,11 +195,11 @@ mod tests {
     };
 
     fn inline(content: &str, paths: &[&str]) -> String {
-        format!("{content}\n\n{ONE_FILES_MARKER}\n{}", paths.join("\n"))
+        format!("{content}\n\n{FILES_MARKER}\n{}", paths.join("\n"))
     }
 
     fn temp_file(name: &str, bytes: &[u8]) -> String {
-        let dir = std::env::temp_dir().join("aionui-media-tests");
+        let dir = std::env::temp_dir().join("dream-media-tests");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(name);
         std::fs::write(&path, bytes).unwrap();
@@ -253,7 +256,7 @@ mod tests {
     #[test]
     fn svg_and_missing_and_oversized_stay_paths() {
         let svg = temp_file("e.svg", b"<svg/>");
-        let missing = "/nonexistent/aionui-media-test.png".to_owned();
+        let missing = "/nonexistent/dream-media-test.png".to_owned();
         let big = temp_file("f.png", &vec![0u8; (MAX_MEDIA_BLOCK_BYTES + 1) as usize]);
         let files = vec![svg, missing, big];
         let content = inline("all degrade", &[&files[0], &files[1], &files[2]]);

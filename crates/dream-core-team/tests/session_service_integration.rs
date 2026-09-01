@@ -2213,7 +2213,7 @@ fn setup_with_factory_metadata_team_repo_and_conversation_repo(
     let projection_store: Arc<dyn TeamProjectionMessageStore> = conversation_ports.clone();
     let task_manager = Arc::new(CountingTaskManager::new(factory));
     let task_manager_dyn: Arc<dyn IWorkerTaskManager> = task_manager.clone();
-    let backend_binary_path = Arc::new(std::path::PathBuf::from("/tmp/aioncore-test"));
+    let backend_binary_path = Arc::new(std::path::PathBuf::from("/tmp/dreamcore-test"));
     let provider_repo: Arc<dyn IProviderRepository> = Arc::new(EmptyProviderRepo);
     let svc = TeamSessionService::new_with_capability_port(
         team_repo_dyn,
@@ -2254,7 +2254,7 @@ fn setup_with_factory_metadata_assistants_and_conversation_repo(
     let projection_store: Arc<dyn TeamProjectionMessageStore> = conversation_ports.clone();
     let task_manager = Arc::new(CountingTaskManager::new(factory));
     let task_manager_dyn: Arc<dyn IWorkerTaskManager> = task_manager.clone();
-    let backend_binary_path = Arc::new(std::path::PathBuf::from("/tmp/aioncore-test"));
+    let backend_binary_path = Arc::new(std::path::PathBuf::from("/tmp/dreamcore-test"));
     let provider_repo: Arc<dyn IProviderRepository> = Arc::new(EmptyProviderRepo);
     let assistant_catalog: Arc<dyn TeamAssistantCatalogPort> = Arc::new(TestTeamAssistantCatalog {
         agent_metadata_repo: agent_metadata_repo.clone(),
@@ -2321,7 +2321,7 @@ fn setup_with_ports_metadata_assistants_and_conversation_repo(
     let projection_store: Arc<dyn TeamProjectionMessageStore> = conversation_ports.clone();
     let task_manager = Arc::new(CountingTaskManager::new(factory));
     let task_manager_dyn: Arc<dyn IWorkerTaskManager> = task_manager.clone();
-    let backend_binary_path = Arc::new(std::path::PathBuf::from("/tmp/aioncore-test"));
+    let backend_binary_path = Arc::new(std::path::PathBuf::from("/tmp/dreamcore-test"));
     let provider_repo: Arc<dyn IProviderRepository> = Arc::new(EmptyProviderRepo);
     let assistant_catalog: Arc<dyn TeamAssistantCatalogPort> = Arc::new(TestTeamAssistantCatalog {
         agent_metadata_repo: agent_metadata_repo.clone(),
@@ -2362,7 +2362,7 @@ fn setup_with_recording_turn_port() -> (
     let projection_store: Arc<dyn TeamProjectionMessageStore> = conversation_ports.clone();
     let task_manager: Arc<dyn IWorkerTaskManager> = Arc::new(CountingTaskManager::new(success_factory()));
     let turn_port = Arc::new(RecordingTurnPort::default());
-    let backend_binary_path = Arc::new(std::path::PathBuf::from("/tmp/aioncore-test"));
+    let backend_binary_path = Arc::new(std::path::PathBuf::from("/tmp/dreamcore-test"));
     let provider_repo: Arc<dyn IProviderRepository> = Arc::new(EmptyProviderRepo);
     let svc = TeamSessionService::new_with_capability_port(
         team_repo_dyn,
@@ -2568,7 +2568,7 @@ fn setup_with_recording_broadcaster() -> (Arc<TeamSessionService>, Arc<Recording
     let conversation_port: Arc<dyn TeamConversationProvisioningPort> = conversation_ports.clone();
     let projection_store: Arc<dyn TeamProjectionMessageStore> = conversation_ports.clone();
     let task_manager: Arc<dyn IWorkerTaskManager> = Arc::new(CountingTaskManager::new(success_factory()));
-    let backend_binary_path = Arc::new(std::path::PathBuf::from("/tmp/aioncore-test"));
+    let backend_binary_path = Arc::new(std::path::PathBuf::from("/tmp/dreamcore-test"));
     let provider_repo: Arc<dyn IProviderRepository> = Arc::new(EmptyProviderRepo);
     let svc = TeamSessionService::new_with_capability_port(
         team_repo,
@@ -2622,7 +2622,7 @@ fn setup_with_factory_recording_broadcaster_and_conversation_repo(factory: Agent
     let projection_store: Arc<dyn TeamProjectionMessageStore> = conversation_ports.clone();
     let task_manager = Arc::new(CountingTaskManager::new(factory));
     let task_manager_dyn: Arc<dyn IWorkerTaskManager> = task_manager.clone();
-    let backend_binary_path = Arc::new(std::path::PathBuf::from("/tmp/aioncore-test"));
+    let backend_binary_path = Arc::new(std::path::PathBuf::from("/tmp/dreamcore-test"));
     let provider_repo: Arc<dyn IProviderRepository> = Arc::new(EmptyProviderRepo);
     let svc = TeamSessionService::new_with_capability_port(
         team_repo_dyn,

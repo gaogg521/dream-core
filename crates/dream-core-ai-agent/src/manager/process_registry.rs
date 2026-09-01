@@ -156,7 +156,7 @@ fn write_registry_file(path: &Path, registry: &ProcessRegistry) -> io::Result<()
     })?;
 
     // Temp file is namespaced to pid + counter so concurrent writers (two
-    // aioncore backends sharing one data-dir) can never clobber each other's
+    // dreamcore backends sharing one data-dir) can never clobber each other's
     // in-flight temp — the fixed-name variant was one of the corruption
     // sources behind ELECTRON-3WN.
     let stem = path
@@ -227,7 +227,7 @@ fn with_registry_lock<T>(data_dir: &Path, f: impl FnOnce() -> io::Result<T>) -> 
 }
 
 /// Run `f` while holding a BLOCKING cross-process exclusive lock, so a
-/// sibling aioncore instance sharing the same data-dir cannot interleave its
+/// sibling dreamcore instance sharing the same data-dir cannot interleave its
 /// read-modify-write and lose an entry. Degrade-not-fail: if the lock file
 /// cannot be opened or locked, warn and run `f` unguarded — a lock fault must
 /// not turn back into a send-blocking registration failure.

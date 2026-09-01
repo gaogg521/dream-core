@@ -1,4 +1,4 @@
-//! CLI argument definitions for the `aioncore` binary.
+//! CLI argument definitions for the `dreamcore` binary.
 //!
 //! Kept separate from `main.rs` to isolate the clap surface (struct + enum +
 //! attribute soup) from the runtime entry point. Visibility is `pub(crate)`
@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
-#[command(name = "aioncore", about = "1One Work Backend Server", version)]
+#[command(name = "dreamcore", about = "One Work Backend Server", version)]
 pub(crate) struct Cli {
     /// Host address to listen on.
     ///
@@ -47,7 +47,7 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub local: bool,
 
-    /// Identity source mode. DreamPro mode requires AIONCORE_BOOTSTRAP_SECRET.
+    /// Identity source mode. DreamPro mode requires DREAMCORE_BOOTSTRAP_SECRET.
     #[arg(long, value_enum, default_value_t = IdentityModeArg::Webui)]
     pub identity_mode: IdentityModeArg,
 
@@ -87,7 +87,9 @@ pub(crate) enum ManagedResourcesModeArg {
 pub(crate) enum IdentityModeArg {
     Local,
     Webui,
-    Aionpro,
+    /// CLI value stays `dreampro`; `aionpro` accepted as a deploy-script alias.
+    #[value(alias = "aionpro")]
+    DreamPro,
 }
 
 impl From<IdentityModeArg> for dream_core_app::IdentityMode {
@@ -95,7 +97,7 @@ impl From<IdentityModeArg> for dream_core_app::IdentityMode {
         match value {
             IdentityModeArg::Local => Self::Local,
             IdentityModeArg::Webui => Self::WebUi,
-            IdentityModeArg::Aionpro => Self::AionPro,
+            IdentityModeArg::DreamPro => Self::DreamPro,
         }
     }
 }
@@ -188,7 +190,7 @@ pub(crate) struct ConfigArgs {
 
 #[derive(Subcommand, Debug, Clone)]
 pub(crate) enum CronHelperCommand {
-    /// Print the configured aioncore base URL after validating cron helper routes.
+    /// Print the configured dreamcore base URL after validating cron helper routes.
     Discover,
     /// List cron jobs linked to the current conversation.
     List,
@@ -273,7 +275,7 @@ pub(crate) enum DiagnoseCommand {
     Cron(DiagnoseCronArgs),
     /// Inspect team summary.
     Teams(DiagnoseTeamsArgs),
-    /// Read aioncore logs.
+    /// Read dreamcore logs.
     Logs(DiagnoseLogsArgs),
     /// Controlled HTTP read escape hatch.
     Http(DiagnoseHttpArgs),
@@ -674,7 +676,7 @@ mod tests {
 
     #[test]
     fn long_version_flag_uses_workspace_package_version() {
-        let result = Cli::try_parse_from(["aioncore", "--version"]);
+        let result = Cli::try_parse_from(["dreamcore", "--version"]);
         let err = match result {
             Ok(_) => panic!("expected --version to exit through clap DisplayVersion"),
             Err(err) => err,
@@ -683,7 +685,7 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::DisplayVersion);
         let rendered = err.to_string();
         assert!(
-            rendered.contains("aioncore"),
+            rendered.contains("dreamcore"),
             "version output should contain binary name, got: {rendered:?}"
         );
         assert!(
@@ -695,7 +697,7 @@ mod tests {
 
     #[test]
     fn short_version_flag_uses_workspace_package_version() {
-        let result = Cli::try_parse_from(["aioncore", "-V"]);
+        let result = Cli::try_parse_from(["dreamcore", "-V"]);
         let err = match result {
             Ok(_) => panic!("expected -V to exit through clap DisplayVersion"),
             Err(err) => err,
@@ -704,7 +706,7 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::DisplayVersion);
         let rendered = err.to_string();
         assert!(
-            rendered.contains("aioncore"),
+            rendered.contains("dreamcore"),
             "version output should contain binary name, got: {rendered:?}"
         );
         assert!(
@@ -717,15 +719,15 @@ mod tests {
     #[test]
     fn prepare_managed_resources_accepts_bundle_out() {
         let cli = Cli::parse_from([
-            "aioncore",
+            "dreamcore",
             "prepare-managed-resources",
             "--bundle-out",
-            "/tmp/aioncore-bundle",
+            "/tmp/dreamcore-bundle",
         ]);
 
         match cli.command {
             Some(Command::PrepareManagedResources(args)) => {
-                assert_eq!(args.bundle_out, std::path::Path::new("/tmp/aioncore-bundle"));
+                assert_eq!(args.bundle_out, std::path::Path::new("/tmp/dreamcore-bundle"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -733,50 +735,50 @@ mod tests {
 
     #[test]
     fn managed_resources_mode_defaults_to_download() {
-        let cli = Cli::parse_from(["aioncore"]);
+        let cli = Cli::parse_from(["dreamcore"]);
         assert_eq!(cli.managed_resources_mode, ManagedResourcesModeArg::Download);
     }
 
     #[test]
     fn managed_resources_mode_accepts_download() {
-        let cli = Cli::parse_from(["aioncore", "--managed-resources-mode", "download"]);
+        let cli = Cli::parse_from(["dreamcore", "--managed-resources-mode", "download"]);
         assert_eq!(cli.managed_resources_mode, ManagedResourcesModeArg::Download);
     }
 
     #[test]
     fn parent_pid_accepts_positive_integer() {
-        let cli = Cli::parse_from(["aioncore", "--parent-pid", "4242"]);
+        let cli = Cli::parse_from(["dreamcore", "--parent-pid", "4242"]);
         assert_eq!(cli.parent_pid, Some(4242));
     }
 
     #[test]
     fn dump_prompts_defaults_to_false() {
-        let cli = Cli::parse_from(["aioncore"]);
+        let cli = Cli::parse_from(["dreamcore"]);
         assert!(!cli.dump_prompts);
     }
 
     #[test]
     fn dump_prompts_accepts_flag() {
-        let cli = Cli::parse_from(["aioncore", "--dump-prompts"]);
+        let cli = Cli::parse_from(["dreamcore", "--dump-prompts"]);
         assert!(cli.dump_prompts);
     }
 
     #[test]
     fn recover_corrupted_database_flag_defaults_to_false() {
-        let cli = Cli::parse_from(["aioncore"]);
+        let cli = Cli::parse_from(["dreamcore"]);
         assert!(!cli.recover_corrupted_database);
     }
 
     #[test]
     fn recover_corrupted_database_flag_is_accepted() {
-        let cli = Cli::parse_from(["aioncore", "--recover-corrupted-database"]);
+        let cli = Cli::parse_from(["dreamcore", "--recover-corrupted-database"]);
         assert!(cli.recover_corrupted_database);
     }
 
     #[test]
     fn command_as_str_returns_clap_subcommand_names() {
         let prepare_args = PrepareManagedResourcesArgs {
-            bundle_out: PathBuf::from("/tmp/aioncore-bundle"),
+            bundle_out: PathBuf::from("/tmp/dreamcore-bundle"),
         };
 
         let cases = [
@@ -804,75 +806,75 @@ mod tests {
     #[test]
     fn config_cli_accepts_agent_facing_design_command_paths() {
         let commands: &[&[&str]] = &[
-            &["aioncore", "config", "capabilities"],
-            &["aioncore", "config", "context"],
-            &["aioncore", "config", "conversation", "rename"],
-            &["aioncore", "config", "assistants", "list"],
-            &["aioncore", "config", "assistants", "get"],
-            &["aioncore", "config", "assistants", "create"],
-            &["aioncore", "config", "assistants", "update"],
-            &["aioncore", "config", "assistants", "delete"],
-            &["aioncore", "config", "assistants", "import"],
-            &["aioncore", "config", "assistants", "state"],
-            &["aioncore", "config", "assistants", "rule", "read"],
-            &["aioncore", "config", "assistants", "rule", "write"],
-            &["aioncore", "config", "assistants", "rule", "delete"],
-            &["aioncore", "config", "assistants", "skill", "read"],
-            &["aioncore", "config", "assistants", "skill", "write"],
-            &["aioncore", "config", "assistants", "skill", "delete"],
-            &["aioncore", "config", "skills", "list"],
-            &["aioncore", "config", "skills", "info"],
-            &["aioncore", "config", "skills", "paths"],
-            &["aioncore", "config", "skills", "import"],
-            &["aioncore", "config", "skills", "delete"],
-            &["aioncore", "config", "skills", "scan"],
-            &["aioncore", "config", "mcp", "servers", "list"],
-            &["aioncore", "config", "mcp", "servers", "get"],
-            &["aioncore", "config", "mcp", "servers", "create"],
-            &["aioncore", "config", "mcp", "servers", "update"],
-            &["aioncore", "config", "mcp", "servers", "delete"],
-            &["aioncore", "config", "mcp", "servers", "toggle"],
-            &["aioncore", "config", "mcp", "servers", "import"],
-            &["aioncore", "config", "mcp", "test-connection"],
-            &["aioncore", "config", "mcp", "agent-configs"],
-            &["aioncore", "config", "mcp", "oauth", "check-status"],
-            &["aioncore", "config", "mcp", "oauth", "login"],
-            &["aioncore", "config", "mcp", "oauth", "logout"],
-            &["aioncore", "config", "mcp", "oauth", "authenticated"],
-            &["aioncore", "config", "providers", "list"],
-            &["aioncore", "config", "providers", "create"],
-            &["aioncore", "config", "providers", "update"],
-            &["aioncore", "config", "providers", "delete"],
-            &["aioncore", "config", "providers", "detect-protocol"],
-            &["aioncore", "config", "providers", "fetch-models"],
-            &["aioncore", "config", "providers", "models", "fetch"],
-            &["aioncore", "config", "providers", "health-check"],
-            &["aioncore", "config", "settings", "get"],
-            &["aioncore", "config", "settings", "patch"],
-            &["aioncore", "config", "settings", "client", "get"],
-            &["aioncore", "config", "settings", "client", "put"],
-            &["aioncore", "config", "agents", "list"],
-            &["aioncore", "config", "agents", "enable"],
-            &["aioncore", "config", "agents", "overrides", "get"],
-            &["aioncore", "config", "agents", "overrides", "set"],
-            &["aioncore", "config", "agents", "custom", "create"],
-            &["aioncore", "config", "agents", "custom", "update"],
-            &["aioncore", "config", "agents", "custom", "delete"],
-            &["aioncore", "config", "agents", "custom", "try-connect"],
-            &["aioncore", "config", "cron", "jobs", "list"],
-            &["aioncore", "config", "cron", "jobs", "get"],
-            &["aioncore", "config", "cron", "jobs", "create"],
-            &["aioncore", "config", "cron", "jobs", "update"],
-            &["aioncore", "config", "cron", "jobs", "delete"],
-            &["aioncore", "config", "cron", "jobs", "run"],
-            &["aioncore", "config", "cron", "jobs", "skill", "get"],
-            &["aioncore", "config", "cron", "jobs", "skill", "save"],
-            &["aioncore", "config", "cron", "jobs", "skill", "delete"],
-            &["aioncore", "config", "skills", "external-paths", "list"],
-            &["aioncore", "config", "skills", "external-paths", "add"],
-            &["aioncore", "config", "skills", "external-paths", "remove"],
-            &["aioncore", "config", "skills", "market", "enable"],
-            &["aioncore", "config", "skills", "market", "disable"],
+            &["dreamcore", "config", "capabilities"],
+            &["dreamcore", "config", "context"],
+            &["dreamcore", "config", "conversation", "rename"],
+            &["dreamcore", "config", "assistants", "list"],
+            &["dreamcore", "config", "assistants", "get"],
+            &["dreamcore", "config", "assistants", "create"],
+            &["dreamcore", "config", "assistants", "update"],
+            &["dreamcore", "config", "assistants", "delete"],
+            &["dreamcore", "config", "assistants", "import"],
+            &["dreamcore", "config", "assistants", "state"],
+            &["dreamcore", "config", "assistants", "rule", "read"],
+            &["dreamcore", "config", "assistants", "rule", "write"],
+            &["dreamcore", "config", "assistants", "rule", "delete"],
+            &["dreamcore", "config", "assistants", "skill", "read"],
+            &["dreamcore", "config", "assistants", "skill", "write"],
+            &["dreamcore", "config", "assistants", "skill", "delete"],
+            &["dreamcore", "config", "skills", "list"],
+            &["dreamcore", "config", "skills", "info"],
+            &["dreamcore", "config", "skills", "paths"],
+            &["dreamcore", "config", "skills", "import"],
+            &["dreamcore", "config", "skills", "delete"],
+            &["dreamcore", "config", "skills", "scan"],
+            &["dreamcore", "config", "mcp", "servers", "list"],
+            &["dreamcore", "config", "mcp", "servers", "get"],
+            &["dreamcore", "config", "mcp", "servers", "create"],
+            &["dreamcore", "config", "mcp", "servers", "update"],
+            &["dreamcore", "config", "mcp", "servers", "delete"],
+            &["dreamcore", "config", "mcp", "servers", "toggle"],
+            &["dreamcore", "config", "mcp", "servers", "import"],
+            &["dreamcore", "config", "mcp", "test-connection"],
+            &["dreamcore", "config", "mcp", "agent-configs"],
+            &["dreamcore", "config", "mcp", "oauth", "check-status"],
+            &["dreamcore", "config", "mcp", "oauth", "login"],
+            &["dreamcore", "config", "mcp", "oauth", "logout"],
+            &["dreamcore", "config", "mcp", "oauth", "authenticated"],
+            &["dreamcore", "config", "providers", "list"],
+            &["dreamcore", "config", "providers", "create"],
+            &["dreamcore", "config", "providers", "update"],
+            &["dreamcore", "config", "providers", "delete"],
+            &["dreamcore", "config", "providers", "detect-protocol"],
+            &["dreamcore", "config", "providers", "fetch-models"],
+            &["dreamcore", "config", "providers", "models", "fetch"],
+            &["dreamcore", "config", "providers", "health-check"],
+            &["dreamcore", "config", "settings", "get"],
+            &["dreamcore", "config", "settings", "patch"],
+            &["dreamcore", "config", "settings", "client", "get"],
+            &["dreamcore", "config", "settings", "client", "put"],
+            &["dreamcore", "config", "agents", "list"],
+            &["dreamcore", "config", "agents", "enable"],
+            &["dreamcore", "config", "agents", "overrides", "get"],
+            &["dreamcore", "config", "agents", "overrides", "set"],
+            &["dreamcore", "config", "agents", "custom", "create"],
+            &["dreamcore", "config", "agents", "custom", "update"],
+            &["dreamcore", "config", "agents", "custom", "delete"],
+            &["dreamcore", "config", "agents", "custom", "try-connect"],
+            &["dreamcore", "config", "cron", "jobs", "list"],
+            &["dreamcore", "config", "cron", "jobs", "get"],
+            &["dreamcore", "config", "cron", "jobs", "create"],
+            &["dreamcore", "config", "cron", "jobs", "update"],
+            &["dreamcore", "config", "cron", "jobs", "delete"],
+            &["dreamcore", "config", "cron", "jobs", "run"],
+            &["dreamcore", "config", "cron", "jobs", "skill", "get"],
+            &["dreamcore", "config", "cron", "jobs", "skill", "save"],
+            &["dreamcore", "config", "cron", "jobs", "skill", "delete"],
+            &["dreamcore", "config", "skills", "external-paths", "list"],
+            &["dreamcore", "config", "skills", "external-paths", "add"],
+            &["dreamcore", "config", "skills", "external-paths", "remove"],
+            &["dreamcore", "config", "skills", "market", "enable"],
+            &["dreamcore", "config", "skills", "market", "disable"],
         ];
 
         for command in commands {
@@ -907,7 +909,7 @@ mod tests {
     #[test]
     fn every_registry_tool_has_a_wired_team_cli_subcommand() {
         for tool in dream_core_api_types::team_tool_descriptors() {
-            let mut argv = vec!["aioncore", "team"];
+            let mut argv = vec!["dreamcore", "team"];
             argv.extend(tool.cli_command.iter().map(String::as_str));
             assert!(
                 parse_team_command(&argv).is_some(),
@@ -923,9 +925,9 @@ mod tests {
         // Registry-independent commands; the tool-backed paths are covered by
         // `every_registry_tool_has_a_wired_team_cli_subcommand`.
         let commands: &[&[&str]] = &[
-            &["aioncore", "team", "capabilities"],
-            &["aioncore", "team", "help"],
-            &["aioncore", "team", "context"],
+            &["dreamcore", "team", "capabilities"],
+            &["dreamcore", "team", "help"],
+            &["dreamcore", "team", "context"],
         ];
 
         for command in commands {
@@ -952,7 +954,7 @@ mod tests {
             std::env::set_var("ONE_LOG_DIR", "/data/logs");
             std::env::set_var("ONE_LOG_LEVEL", "debug");
         }
-        let cli = Cli::parse_from(["aioncore"]);
+        let cli = Cli::parse_from(["dreamcore"]);
         assert_eq!(cli.host, "0.0.0.0");
         assert_eq!(cli.port, 9000);
         assert_eq!(cli.data_dir, PathBuf::from("/data"));
@@ -976,7 +978,7 @@ mod tests {
         unsafe {
             std::env::set_var("ONE_PORT", "9000");
         }
-        let cli = Cli::parse_from(["aioncore", "--port", "7000"]);
+        let cli = Cli::parse_from(["dreamcore", "--port", "7000"]);
         assert_eq!(cli.port, 7000);
         // SAFETY: same test-only justification as above.
         unsafe {
@@ -987,14 +989,14 @@ mod tests {
     #[test]
     fn unwired_team_subcommand_is_reported_as_unknown() {
         assert!(
-            parse_team_command(&["aioncore", "team", "definitely-not-a-command"]).is_none(),
+            parse_team_command(&["dreamcore", "team", "definitely-not-a-command"]).is_none(),
             "the guard above only works if an unwired path resolves to Unknown"
         );
     }
 
     #[test]
     fn prepare_managed_resources_requires_bundle_out() {
-        let err = match Cli::try_parse_from(["aioncore", "prepare-managed-resources"]) {
+        let err = match Cli::try_parse_from(["dreamcore", "prepare-managed-resources"]) {
             Ok(_) => panic!("prepare-managed-resources should require --bundle-out"),
             Err(err) => err,
         };

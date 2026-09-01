@@ -1,4 +1,4 @@
-//! Agent-readable capability contract for `aioncore config`.
+//! Agent-readable capability contract for `dreamcore config`.
 
 use serde_json::{Value, json};
 

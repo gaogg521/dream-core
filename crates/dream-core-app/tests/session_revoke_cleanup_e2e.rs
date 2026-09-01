@@ -32,7 +32,7 @@ fn bootstrap_json(method: &str, uri: &str, body: &str) -> Request<Body> {
         .method(method)
         .uri(uri)
         .header("content-type", "application/json")
-        .header("x-aioncore-bootstrap-secret", BOOTSTRAP)
+        .header("x-dreamcore-bootstrap-secret", BOOTSTRAP)
         .body(Body::from(body.to_owned()))
         .unwrap()
 }
@@ -58,7 +58,7 @@ async fn http_revoke_runs_the_real_cleanup_hook_end_to_end() {
     let tmp = tempfile::tempdir().unwrap();
     let db = dream_core_db::init_database_memory().await.unwrap();
     let config = dream_core_app::AppConfig {
-        identity_mode: dream_core_app::IdentityMode::AionPro,
+        identity_mode: dream_core_app::IdentityMode::DreamPro,
         bootstrap_secret: Some(BOOTSTRAP.to_string()),
         data_dir: tmp.path().to_path_buf(),
         work_dir: tmp.path().to_path_buf(),

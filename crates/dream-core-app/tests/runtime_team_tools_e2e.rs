@@ -15,10 +15,10 @@ fn context_request(user_id: &str, conversation_id: &str, token: Option<&str>) ->
     let mut builder = Request::builder()
         .method("GET")
         .uri("/api/runtime/team-tools/context")
-        .header("x-aionui-user-id", user_id)
-        .header("x-aionui-conversation-id", conversation_id);
+        .header("x-dream-user-id", user_id)
+        .header("x-dream-conversation-id", conversation_id);
     if let Some(token) = token {
-        builder = builder.header("x-aionui-runtime-token", token);
+        builder = builder.header("x-dream-runtime-token", token);
     }
     builder.body(Body::empty()).unwrap()
 }
@@ -28,10 +28,10 @@ fn call_request(user_id: &str, conversation_id: &str, token: Option<&str>) -> Re
         .method("POST")
         .uri("/api/runtime/team-tools/call")
         .header("content-type", "application/json")
-        .header("x-aionui-user-id", user_id)
-        .header("x-aionui-conversation-id", conversation_id);
+        .header("x-dream-user-id", user_id)
+        .header("x-dream-conversation-id", conversation_id);
     if let Some(token) = token {
-        builder = builder.header("x-aionui-runtime-token", token);
+        builder = builder.header("x-dream-runtime-token", token);
     }
     builder
         .body(Body::from(

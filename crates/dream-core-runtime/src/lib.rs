@@ -1,6 +1,6 @@
 #![warn(clippy::disallowed_types)]
 
-//! Managed runtime and subprocess infrastructure for aioncore.
+//! Managed runtime and subprocess infrastructure for dreamcore.
 
 mod agent_env;
 // Fork-exclusive: on-demand npm-package download/resolution for the

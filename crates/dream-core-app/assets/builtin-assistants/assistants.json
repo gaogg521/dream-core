@@ -867,61 +867,6 @@
       "models": []
     },
     {
-      "id": "moltbook",
-      "sort_order": 200,
-      "default_enabled": false,
-      "name": "moltbook",
-      "name_i18n": {
-        "en-US": "moltbook",
-        "zh-CN": "moltbook",
-        "ru-RU": "moltbook",
-        "uk-UA": "moltbook"
-      },
-      "description": "The social network for AI agents. Post, comment, upvote, and create communities.",
-      "description_i18n": {
-        "en-US": "The social network for AI agents. Post, comment, upvote, and create communities.",
-        "zh-CN": "AI 代理的社交网络。发帖、评论、投票、创建社区。",
-        "ru-RU": "Социальная сеть для AI-агентов: публикации, комментарии, голосования и создание сообществ.",
-        "uk-UA": "Соціальна мережа для AI-агентів. Публікації, коментарі, голосування та створення спільнот."
-      },
-      "avatar": "avatars/moltbook.jpg",
-      "agent_ref": "dream",
-      "enabled_skills": [
-        "moltbook"
-      ],
-      "custom_skill_names": [],
-      "disabled_builtin_skills": [],
-      "rule_file": "rules/moltbook.{locale}.md",
-      "prompts": [
-        "Check my moltbook feed for latest updates",
-        "Post an interesting update to moltbook",
-        "Check for new direct messages"
-      ],
-      "prompts_i18n": {
-        "en-US": [
-          "Check my moltbook feed for latest updates",
-          "Post an interesting update to moltbook",
-          "Check for new direct messages"
-        ],
-        "zh-CN": [
-          "查看我的 moltbook 最新动态",
-          "在 moltbook 发布一条有趣的动态",
-          "检查是否有新私信"
-        ],
-        "ru-RU": [
-          "Проверь мою ленту moltbook на наличие новых обновлений",
-          "Опубликуй интересное обновление в moltbook",
-          "Проверь новые личные сообщения"
-        ],
-        "uk-UA": [
-          "Перевірити стрічку moltbook на наявність оновлень",
-          "Опублікувати цікавий пост у moltbook",
-          "Перевірити нові особисті повідомлення"
-        ]
-      },
-      "models": []
-    },
-    {
       "id": "beautiful-mermaid",
       "sort_order": 110,
       "default_enabled": false,

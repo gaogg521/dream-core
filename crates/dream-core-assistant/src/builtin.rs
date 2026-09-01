@@ -6,7 +6,7 @@
 //! assumption, which was fragile in two ways:
 //!
 //! 1. Dev: Electron launches the backend through a symlink
-//!    (`~/.cargo/bin/aioncore` → `target/debug/aioncore`) and
+//!    (`~/.cargo/bin/dreamcore` → `target/debug/dreamcore`) and
 //!    `std::env::current_exe().parent()` would resolve to the symlink's
 //!    directory, not the real binary's, missing the `assets/` sibling.
 //! 2. Prod: `Dream UI/scripts/prepareDreamuiBackend.js` only copies the

@@ -1790,7 +1790,7 @@ async fn reader_task(
                         // `turn/completed` DOES arrive later, `terminated`/I10 absorb it
                         // (no double terminal). `willRetry:true` is a transient retry →
                         // still falls through to map_notification → Heartbeat (NOT a
-                        // terminal). See protocols/design/aioncore-codex-turn-no-terminal-hang-prompt.md.
+                        // terminal). See protocols/design/dreamcore-codex-turn-no-terminal-hang-prompt.md.
                         if m == "error"
                             && params.get("willRetry").and_then(Value::as_bool) != Some(true)
                             && turn_in_flight.load(Ordering::SeqCst)

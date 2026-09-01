@@ -126,7 +126,7 @@ impl AgentSendError {
                 ),
             ),
             AgentError::Internal(_) => Self::new(
-                "AionUI failed while sending the message",
+                "One Work failed while sending the message",
                 AgentErrorCode::DreamInternalError,
                 AgentErrorOwnership::Dream,
                 Some(detail),
@@ -138,7 +138,7 @@ impl AgentSendError {
                 ),
             ),
             AgentError::Forbidden(_) => Self::new(
-                "AionUI blocked the request before it reached the Agent",
+                "One Work blocked the request before it reached the Agent",
                 AgentErrorCode::DreamPermissionError,
                 AgentErrorOwnership::Dream,
                 Some(detail),
@@ -379,7 +379,7 @@ impl AgentSendError {
                 None,
             ),
             AcpError::NotConnected => Self::new(
-                "AionUI lost its Agent protocol connection",
+                "One Work lost its Agent protocol connection",
                 AgentErrorCode::UserAgentDisconnected,
                 AgentErrorOwnership::UserAgent,
                 Some(detail),
@@ -447,7 +447,7 @@ fn classify_acp_error(err: &AcpError) -> AgentSendError {
                     let lower = text.to_ascii_lowercase();
                     classify_agent_lifecycle(&lower)
                         .or_else(|| classify_provider_text(&lower))
-                        .or_else(|| classify_aionui_state(&lower))
+                        .or_else(|| classify_engine_state(&lower))
                         .map(|classification| (classification, text))
                 });
 
@@ -559,7 +559,7 @@ fn classify_upstream_detail(detail: &str) -> AgentSendError {
     let lower = detail.to_ascii_lowercase();
     let classified = classify_agent_lifecycle(&lower)
         .or_else(|| classify_provider_text(&lower))
-        .or_else(|| classify_aionui_state(&lower))
+        .or_else(|| classify_engine_state(&lower))
         .unwrap_or_else(unknown_upstream_classification);
 
     classified.into_send_error(detail.to_owned())
@@ -998,7 +998,7 @@ fn classify_provider_text(lower: &str) -> Option<ClassifiedError> {
     None
 }
 
-fn classify_aionui_state(lower: &str) -> Option<ClassifiedError> {
+fn classify_engine_state(lower: &str) -> Option<ClassifiedError> {
     if lower.contains("conversation is already processing") {
         return Some(ClassifiedError {
             message: "The current response is still running",

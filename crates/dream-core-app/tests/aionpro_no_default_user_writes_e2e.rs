@@ -21,7 +21,7 @@ use sqlx::Row;
 async fn aionpro_startup_writes_no_system_default_user_rows() {
     let db = dream_core_db::init_database_memory().await.unwrap();
     let config = dream_core_app::AppConfig {
-        identity_mode: dream_core_app::IdentityMode::AionPro,
+        identity_mode: dream_core_app::IdentityMode::DreamPro,
         bootstrap_secret: Some("bootstrap-secret".to_string()),
         ..Default::default()
     };
@@ -81,7 +81,7 @@ async fn aionpro_startup_writes_no_system_default_user_rows() {
 
     assert!(
         offenders.is_empty(),
-        "AionPro startup minted local-default-user rows — a machine-level \
+        "DreamPro startup minted local-default-user rows — a machine-level \
          routine is writing through a default-user path: {offenders:?}"
     );
 

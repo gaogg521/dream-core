@@ -43,7 +43,7 @@ For exact schema, run team capabilities.\n\n\
 
 fn render_cli_usage(role: TeamPromptRole, descriptors: &[TeamToolDescriptor]) -> String {
     let mut text = String::from(
-        "You MUST use AionCore Team CLI for ALL team coordination:\n\
+        "You MUST use DreamCore Team CLI for ALL team coordination:\n\
 \"$ONE_HELPER_BIN\" team ...\n\n\
 Run \"$ONE_HELPER_BIN\" team capabilities when you need command names,\n\
 stdin JSON schema, required fields, enum values, permissions, examples,\n\

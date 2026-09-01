@@ -529,11 +529,11 @@ impl SessionAgentTask {
     /// Build the multimodal `ContentBlock` vector for a prompt: partition
     /// attachments by the backend's declared prompt blocks — capable media
     /// becomes native Image/Audio blocks; everything else keeps the
-    /// pre-multimodal form (path in the [[AION_FILES]] text + resource link).
+    /// pre-multimodal form (path in the [[DREAM_FILES]] text + resource link).
     ///
     /// A native media block carries ONLY bytes: `ContentBlock::Image` is
     /// `{data, media_type}` with no path field, and `partition_media` has
-    /// already stripped that path out of the [[AION_FILES]] text. So each
+    /// already stripped that path out of the [[DREAM_FILES]] text. So each
     /// natively-delivered attachment is PAIRED with a resource link to the very
     /// same file — the adapters render a link as an `[Attached file: <uri>]`
     /// text element (see `adapter/claude.rs` / `backend/codex_conn.rs`), which
@@ -6736,7 +6736,7 @@ mod pump_tests {
         }
     }
 
-    // Image-capable backend: an image attachment leaves the [[AION_FILES]]
+    // Image-capable backend: an image attachment leaves the [[DREAM_FILES]]
     // text and rides as a native Image block PAIRED with a link to the same
     // file; non-media files keep the path-text + resource-link form.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6768,7 +6768,7 @@ mod pump_tests {
             backend.clone() as Arc<dyn SessionBackend>,
             None,
         );
-        let marker = dream_core_common::constants::ONE_FILES_MARKER;
+        let marker = dream_core_common::constants::FILES_MARKER;
         crate::agent_task::IAgentTask::send_message(
             task.as_ref(),
             SendMessageData {
@@ -6840,7 +6840,7 @@ mod pump_tests {
             backend.clone() as Arc<dyn SessionBackend>,
             None,
         );
-        let marker = dream_core_common::constants::ONE_FILES_MARKER;
+        let marker = dream_core_common::constants::FILES_MARKER;
         crate::agent_task::IAgentTask::send_message(
             task.as_ref(),
             SendMessageData {
@@ -8136,10 +8136,10 @@ mod pump_tests {
             // frame carrying parent_tool_use_id.
             env(SessionEvent::ToolCall {
                 tool_use_id: "toolu_task".into(),
-                name: "修复 AIONUI-151 桌面 401 恢复".into(),
+                name: "修复 DREAM-151 桌面 401 恢复".into(),
                 subagent: dream_core_session::SubagentKind::Inline,
                 input: serde_json::json!({
-                    "description": "修复 AIONUI-151 桌面 401 恢复",
+                    "description": "修复 DREAM-151 桌面 401 恢复",
                     "subagent_type": "claude",
                     "run_in_background": false
                 }),

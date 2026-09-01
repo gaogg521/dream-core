@@ -3,7 +3,7 @@ use serde::Deserialize;
 
 use crate::error::SystemError;
 
-const DEFAULT_REPO: &str = "iOfficeAI/AionUi";
+const DEFAULT_REPO: &str = "gaogg521/dream-core";
 const GITHUB_API_BASE: &str = "https://api.github.com";
 
 /// Service that checks GitHub Releases for available updates.
@@ -87,7 +87,7 @@ impl VersionCheckService {
                 .http_client
                 .get(&url)
                 .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "aioncore")
+                .header("User-Agent", "dreamcore")
                 .send()
                 .await
                 .map_err(|e| SystemError::BadGateway(format!("GitHub API request failed: {e}")))?;

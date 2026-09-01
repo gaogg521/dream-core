@@ -3,7 +3,7 @@ name: Enterprise Image
 # Builds and publishes the enterprise deployment image referenced by
 # dream-en's `deploy/docker-compose.yml` (`ghcr.io/gaogg521/dream-core-enterprise`).
 # This image is not produced by any other workflow — `release.yml` and
-# `build-manual.yml` only build the bare `dreamcore`/`aioncore` binaries for
+# `build-manual.yml` only build the bare `dreamcore` binaries for
 # direct download, and their `docker pull ghcr.io/cross-rs/...` steps are
 # unrelated cross-compilation toolchain images.
 #

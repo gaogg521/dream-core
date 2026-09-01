@@ -83,7 +83,7 @@ pub struct TerminalRegistry {
     label: String,
     /// Fallback working directory when the agent sends no `cwd` — the
     /// conversation's workspace. Without it a command would inherit the
-    /// aioncore process's cwd (the app bundle), which is never what the
+    /// dreamcore process's cwd (the app bundle), which is never what the
     /// agent means.
     default_cwd: Option<std::path::PathBuf>,
 }

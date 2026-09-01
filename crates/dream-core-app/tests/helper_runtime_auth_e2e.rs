@@ -1,4 +1,4 @@
-//! DreamPro-mode auth for the in-conversation helper CLI (`aioncore config`).
+//! DreamPro-mode auth for the in-conversation helper CLI (`dreamcore config`).
 //!
 //! Regression for the 401 that broke `/cron` inside agent conversations: the
 //! helper cannot carry a JWT, so it authenticates through the runtime-token
@@ -16,7 +16,7 @@ const CONVERSATION_ID: &str = "conv-helper-auth";
 async fn build_aionpro_app() -> (axum::Router, dream_core_app::AppServices, String) {
     let db = dream_core_db::init_database_memory().await.unwrap();
     let config = dream_core_app::AppConfig {
-        identity_mode: dream_core_app::IdentityMode::AionPro,
+        identity_mode: dream_core_app::IdentityMode::DreamPro,
         bootstrap_secret: Some("bootstrap-secret".to_string()),
         ..Default::default()
     };
@@ -30,7 +30,7 @@ async fn build_aionpro_app() -> (axum::Router, dream_core_app::AppServices, Stri
                 .method("PUT")
                 .uri("/api/auth/internal/external-users/helper-pro-user")
                 .header("content-type", "application/json")
-                .header("x-aioncore-bootstrap-secret", "bootstrap-secret")
+                .header("x-dreamcore-bootstrap-secret", "bootstrap-secret")
                 .body(Body::from(r#"{"user_type":"aionpro","username":"Helper Pro User"}"#))
                 .unwrap(),
         )
@@ -49,10 +49,10 @@ fn helper_get(path: &str, user_id: &str, conversation_id: &str, token: Option<&s
         .method("GET")
         .uri(path)
         .header("content-type", "application/json")
-        .header("x-aionui-user-id", user_id)
-        .header("x-aionui-conversation-id", conversation_id);
+        .header("x-dream-user-id", user_id)
+        .header("x-dream-conversation-id", conversation_id);
     if let Some(token) = token {
-        builder = builder.header("x-aionui-runtime-token", token);
+        builder = builder.header("x-dream-runtime-token", token);
     }
     builder.body(Body::empty()).unwrap()
 }
@@ -252,9 +252,9 @@ async fn helper_write_request_is_exempt_from_csrf() {
                 .method("POST")
                 .uri("/api/internal/conversation-cron/create")
                 .header("content-type", "application/json")
-                .header("x-aionui-user-id", &user_id)
-                .header("x-aionui-conversation-id", CONVERSATION_ID)
-                .header("x-aionui-runtime-token", &issue.token)
+                .header("x-dream-user-id", &user_id)
+                .header("x-dream-conversation-id", CONVERSATION_ID)
+                .header("x-dream-runtime-token", &issue.token)
                 .body(Body::from("{}"))
                 .unwrap(),
         )

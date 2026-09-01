@@ -137,7 +137,7 @@ async fn system_resume(
     State(state): State<CronRouterState>,
     headers: HeaderMap,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    // Both names are accepted: the desktop shell ships with a pinned aioncore
+    // Both names are accepted: the desktop shell ships with a pinned dreamcore
     // release, so a UI older than this backend is the normal state for a while
     // after any rename. Accepting only the current name would make system-resume
     // silently 403 for every such install — cron jobs would simply stop waking
@@ -160,7 +160,7 @@ async fn create_conversation_cron(
     body: Result<Json<CreateConversationCronRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<CreateConversationCronResponse>>, ApiError> {
     let user_id = trusted_header_user_id(&headers, &current_user)?;
-    let conversation_id = header_value(&headers, "x-aionui-conversation-id")?;
+    let conversation_id = header_value(&headers, "x-dream-conversation-id")?;
     let Json(req) = body.map_err(ApiError::from)?;
     let resp = state
         .cron_service
@@ -175,7 +175,7 @@ async fn list_conversation_cron(
     headers: HeaderMap,
 ) -> Result<Json<ApiResponse<Vec<CronJobResponse>>>, ApiError> {
     let user_id = trusted_header_user_id(&headers, &current_user)?;
-    let conversation_id = header_value(&headers, "x-aionui-conversation-id")?;
+    let conversation_id = header_value(&headers, "x-dream-conversation-id")?;
     let jobs = state
         .cron_service
         .list_for_conversation_helper(&user_id, &conversation_id)
@@ -192,7 +192,7 @@ async fn update_conversation_cron(
     body: Result<Json<UpdateConversationCronRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<CronJobResponse>>, ApiError> {
     let user_id = trusted_header_user_id(&headers, &current_user)?;
-    let conversation_id = header_value(&headers, "x-aionui-conversation-id")?;
+    let conversation_id = header_value(&headers, "x-dream-conversation-id")?;
     let Json(req) = body.map_err(ApiError::from)?;
     let job = state
         .cron_service
@@ -212,7 +212,7 @@ fn header_value(headers: &HeaderMap, name: &'static str) -> Result<String, ApiEr
 }
 
 fn trusted_header_user_id(headers: &HeaderMap, current_user: &CurrentUser) -> Result<String, ApiError> {
-    let header_user_id = header_value(headers, "x-aionui-user-id")?;
+    let header_user_id = header_value(headers, "x-dream-user-id")?;
     if header_user_id != current_user.id {
         return Err(ApiError::coded(
             StatusCode::FORBIDDEN,
@@ -271,34 +271,34 @@ mod tests {
         let mut headers = HeaderMap::new();
 
         assert!(matches!(
-            header_value(&headers, "x-aionui-user-id"),
-            Err(ApiError::BadRequest(message)) if message.contains("x-aionui-user-id")
+            header_value(&headers, "x-dream-user-id"),
+            Err(ApiError::BadRequest(message)) if message.contains("x-dream-user-id")
         ));
 
-        headers.insert("x-aionui-user-id", "   ".parse().unwrap());
+        headers.insert("x-dream-user-id", "   ".parse().unwrap());
 
         assert!(matches!(
-            header_value(&headers, "x-aionui-user-id"),
-            Err(ApiError::BadRequest(message)) if message.contains("x-aionui-user-id")
+            header_value(&headers, "x-dream-user-id"),
+            Err(ApiError::BadRequest(message)) if message.contains("x-dream-user-id")
         ));
     }
 
     #[test]
     fn header_value_trims_required_header() {
         let mut headers = HeaderMap::new();
-        headers.insert("x-aionui-user-id", " user_1 ".parse().unwrap());
+        headers.insert("x-dream-user-id", " user_1 ".parse().unwrap());
 
-        assert_eq!(header_value(&headers, "x-aionui-user-id").unwrap(), "user_1");
+        assert_eq!(header_value(&headers, "x-dream-user-id").unwrap(), "user_1");
     }
 
     #[test]
     fn trusted_header_user_id_rejects_user_mismatch() {
         let mut headers = HeaderMap::new();
-        headers.insert("x-aionui-user-id", "user_b".parse().unwrap());
+        headers.insert("x-dream-user-id", "user_b".parse().unwrap());
         let current_user = CurrentUser {
             id: "user_a".to_owned(),
             username: "alice".to_owned(),
-            user_type: dream_core_db::UserType::Aionpro,
+            user_type: dream_core_db::UserType::DreamPro,
             status: dream_core_db::UserStatus::Active,
         };
 
@@ -314,11 +314,11 @@ mod tests {
     #[test]
     fn trusted_header_user_id_accepts_authenticated_user() {
         let mut headers = HeaderMap::new();
-        headers.insert("x-aionui-user-id", "user_a".parse().unwrap());
+        headers.insert("x-dream-user-id", "user_a".parse().unwrap());
         let current_user = CurrentUser {
             id: "user_a".to_owned(),
             username: "alice".to_owned(),
-            user_type: dream_core_db::UserType::Aionpro,
+            user_type: dream_core_db::UserType::DreamPro,
             status: dream_core_db::UserStatus::Active,
         };
 

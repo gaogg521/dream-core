@@ -12,7 +12,7 @@ enum StartupRecoveryAction {
     FinishEmptyPlaceholder,
     /// A tool_call/tool_group row left on `work` by a previous process. At
     /// startup this is dead BY DEFINITION — the CLI process group died with the
-    /// old aioncore, so no terminal will ever be reported (a hard kill runs
+    /// old dreamcore, so no terminal will ever be reported (a hard kill runs
     /// neither the pump's teardown settle nor leaves anyone to resume). The
     /// row's CONTENT status must be rewritten too: the frontend renders the
     /// embedded status, and `hasRunningToolMessages` would keep the View Steps

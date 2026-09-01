@@ -1,12 +1,12 @@
 ---
 name: one-troubleshooting
 description: >-
-  Diagnose a running 1One Work installation: inspect stuck or errored conversations, read provider health, scheduled task state, MCP server health, team member state, backend health, and aioncore logs. Use when the user reports 1One Work is misbehaving, a conversation is stuck, an LLM/provider call is failing, a scheduled task did not run, an MCP server has no tools, a team member is hung, or they ask to troubleshoot 1One Work.
+  Diagnose a running One Work installation: inspect stuck or errored conversations, read provider health, scheduled task state, MCP server health, team member state, backend health, and dreamcore logs. Use when the user reports One Work is misbehaving, a conversation is stuck, an LLM/provider call is failing, a scheduled task did not run, an MCP server has no tools, a team member is hung, or they ask to troubleshoot One Work.
 ---
 
-# 1One Work Troubleshooting
+# One Work Troubleshooting
 
-Use the bundled `aioncore diagnose` CLI for read-only troubleshooting. It uses
+Use the bundled `dreamcore diagnose` CLI for read-only troubleshooting. It uses
 the runtime context injected into the current agent conversation, so do not
 discover ports or call backend endpoints by hand.
 
@@ -19,7 +19,7 @@ content, use the user's language.
 2. Start with `diagnose overview` for broad "what is wrong" requests.
 3. Use named diagnose commands first. Use `diagnose http get` only when no named
    command covers the diagnostic need.
-4. Treat every command as read-only. To change 1One Work configuration, use the
+4. Treat every command as read-only. To change One Work configuration, use the
    separate `one-config` skill.
 5. Never print raw provider, MCP header, token, password, or secret values. The
    CLI redacts known secret fields by default, but summarize sensitive findings
@@ -55,7 +55,7 @@ runtime context.
 
 ## Start Wide
 
-For a vague "1One Work is broken" report, run:
+For a vague "One Work is broken" report, run:
 
 ```bash
 "$ONE_HELPER_BIN" diagnose overview

@@ -1,4 +1,4 @@
-//! `aioncore resetpass` — reset a user's password directly in the on-disk
+//! `dreamcore resetpass` — reset a user's password directly in the on-disk
 //! database.
 //!
 //! `POST /api/webui/reset-password` is intentionally local-only, which
@@ -8,7 +8,7 @@
 //! operator's escape hatch — it needs filesystem access to the data dir,
 //! which is the same trust boundary as the database itself.
 //!
-//! Writes to stdout (not the rolling aioncore.log) for the same reason as
+//! Writes to stdout (not the rolling dreamcore.log) for the same reason as
 //! `doctor`: the operator runs it interactively and needs the generated
 //! password in their terminal.
 

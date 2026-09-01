@@ -7426,7 +7426,7 @@ async fn warmup_injects_runtime_token_for_mcp_team_conversation() {
             "port": 4242,
             "token": "mcp-token",
             "slot_id": "slot-1",
-            "binary_path": "/tmp/aioncore"
+            "binary_path": "/tmp/dreamcore"
         }
     });
     let conv = svc.create("user_1", req).await.unwrap();

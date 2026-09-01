@@ -266,7 +266,7 @@ impl CronService {
                     .await?
             }
         };
-        validate_aionrs_agent_config(&resolved_agent_type, req.agent_config.as_ref())?;
+        validate_engine_agent_config(&resolved_agent_type, req.agent_config.as_ref())?;
 
         let execution_mode = parse_execution_mode(req.execution_mode.as_deref())?;
         let created_by = CreatedBy::from_str(&req.created_by)?;
@@ -390,7 +390,7 @@ impl CronService {
         if let Some(config_dto) = &req.agent_config {
             let config_dto = sanitize_agent_config_dto(config_dto.clone());
             job.agent_type = self.resolve_new_job_agent_type(&job.user_id, Some(&config_dto)).await?;
-            validate_aionrs_agent_config(&job.agent_type, Some(&config_dto))?;
+            validate_engine_agent_config(&job.agent_type, Some(&config_dto))?;
             job.agent_config = Some(
                 self.build_cron_agent_config(&job.user_id, &job.agent_type, config_dto, None)
                     .await?,
@@ -2148,7 +2148,7 @@ fn normalize_model(
 
     if runtime_agent_type == "dream" && (model.provider_id.is_empty() || model.model.is_empty()) {
         return Err(CronError::InvalidAgentConfig(
-            "aionrs cron jobs require agent_config.model.provider_id and agent_config.model.model".into(),
+            "dream cron jobs require agent_config.model.provider_id and agent_config.model.model".into(),
         ));
     }
 
@@ -2159,7 +2159,7 @@ fn normalize_model(
     Ok(Some(model))
 }
 
-fn validate_aionrs_agent_config(
+fn validate_engine_agent_config(
     agent_type: &str,
     agent_config: Option<&dream_core_api_types::CronAgentConfigWriteDto>,
 ) -> Result<(), CronError> {
@@ -2173,7 +2173,7 @@ fn validate_aionrs_agent_config(
     });
     if !model_ok {
         return Err(CronError::InvalidAgentConfig(
-            "aionrs cron jobs require agent_config.model.provider_id and agent_config.model.model".into(),
+            "dream cron jobs require agent_config.model.provider_id and agent_config.model.model".into(),
         ));
     }
     Ok(())
@@ -2493,35 +2493,35 @@ mod tests {
     #[test]
     fn validate_aionrs_accepts_valid_config() {
         let cfg = agent_cfg_dto("4056cdea");
-        assert!(validate_aionrs_agent_config("dream", Some(&cfg)).is_ok());
+        assert!(validate_engine_agent_config("dream", Some(&cfg)).is_ok());
     }
 
     #[test]
     fn validate_aionrs_rejects_missing_config() {
-        let err = validate_aionrs_agent_config("dream", None).unwrap_err();
+        let err = validate_engine_agent_config("dream", None).unwrap_err();
         assert!(matches!(err, CronError::InvalidAgentConfig(_)));
     }
 
     #[test]
     fn validate_aionrs_rejects_empty_provider_id() {
         let cfg = agent_cfg_dto("");
-        let err = validate_aionrs_agent_config("dream", Some(&cfg)).unwrap_err();
+        let err = validate_engine_agent_config("dream", Some(&cfg)).unwrap_err();
         assert!(matches!(err, CronError::InvalidAgentConfig(_)));
     }
 
     #[test]
     fn validate_aionrs_rejects_whitespace_provider_id() {
         let cfg = agent_cfg_dto("   ");
-        let err = validate_aionrs_agent_config("dream", Some(&cfg)).unwrap_err();
+        let err = validate_engine_agent_config("dream", Some(&cfg)).unwrap_err();
         assert!(matches!(err, CronError::InvalidAgentConfig(_)));
     }
 
     #[test]
     fn validate_aionrs_ignores_non_aionrs_type() {
         // ACP / other types may legitimately omit agent_config or leave model empty.
-        assert!(validate_aionrs_agent_config("acp", None).is_ok());
+        assert!(validate_engine_agent_config("acp", None).is_ok());
         let cfg = agent_cfg_dto("");
-        assert!(validate_aionrs_agent_config("claude", Some(&cfg)).is_ok());
+        assert!(validate_engine_agent_config("claude", Some(&cfg)).is_ok());
     }
 
     #[test]

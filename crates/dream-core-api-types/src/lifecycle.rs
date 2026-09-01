@@ -113,11 +113,11 @@ mod tests {
     fn test_update_check_request_with_options() {
         let raw = json!({
             "include_prerelease": true,
-            "repo": "iOfficeAI/AionUi"
+            "repo": "gaogg521/dream-core"
         });
         let req: UpdateCheckRequest = serde_json::from_value(raw).unwrap();
         assert!(req.include_prerelease);
-        assert_eq!(req.repo.as_deref(), Some("iOfficeAI/AionUi"));
+        assert_eq!(req.repo.as_deref(), Some("gaogg521/dream-core"));
     }
 
     // -- UpdateCheckResult --
@@ -145,12 +145,12 @@ mod tests {
                 version: "2.0.0".into(),
                 name: Some("Version 2.0.0".into()),
                 body: Some("Major release".into()),
-                html_url: "https://github.com/iOfficeAI/AionUi/releases/tag/v2.0.0".into(),
+                html_url: "https://github.com/gaogg521/dream-core/releases/tag/v2.0.0".into(),
                 published_at: Some("2026-04-01T00:00:00Z".into()),
                 prerelease: false,
                 draft: false,
                 assets: vec![GitHubReleaseAsset {
-                    name: "aionui-2.0.0-darwin-arm64.dmg".into(),
+                    name: "dream-2.0.0-darwin-arm64.dmg".into(),
                     url: "https://github.com/download/aionui.dmg".into(),
                     size: 85_000_000,
                     content_type: Some("application/x-apple-diskimage".into()),
@@ -164,7 +164,7 @@ mod tests {
         assert_eq!(json["latest"]["version"], "2.0.0");
         assert!(!json["latest"]["html_url"].as_str().unwrap().is_empty());
         assert_eq!(json["latest"]["assets"].as_array().unwrap().len(), 1);
-        assert_eq!(json["latest"]["assets"][0]["name"], "aionui-2.0.0-darwin-arm64.dmg");
+        assert_eq!(json["latest"]["assets"][0]["name"], "dream-2.0.0-darwin-arm64.dmg");
         assert_eq!(json["latest"]["assets"][0]["size"], 85_000_000_u64);
     }
 
