@@ -24,9 +24,9 @@ use crate::email::{EmailSender, SendEmailResult, StubEmailSender};
 use crate::error::OrgError;
 use crate::integration::{IntegrationCredentials, IntegrationProvider, IntegrationTestResult, StubIntegrationProvider};
 use crate::models::{
-    AdminUserDto, AgentAuditEntry, AuditLogRow, DEFAULT_TENANT_ID, DepartmentDto, DirectoryMapReport,
-    EnterpriseTenantDto, HeartbeatOutcome, IntegrationDto, InviteDto, InviteRow, MyTenantDto, OrgContextDto,
-    ROLE_MEMBER, ROLE_ORG_ADMIN, ROLE_SYSTEM_ADMIN, ResetLocalResult, RuntimeNodeDto, RuntimeNodeRow,
+    AdminUserDto, AgentAuditEntry, AuditLogRow, DEFAULT_ENTERPRISE_TENANT_ID, DEFAULT_TENANT_ID, DepartmentDto,
+    DirectoryMapReport, EnterpriseTenantDto, HeartbeatOutcome, IntegrationDto, InviteDto, InviteRow, MyTenantDto,
+    OrgContextDto, ROLE_MEMBER, ROLE_ORG_ADMIN, ROLE_SYSTEM_ADMIN, ResetLocalResult, RuntimeNodeDto, RuntimeNodeRow,
     SYSTEM_DEFAULT_USER_ID, SmtpConfigDto, TenantRow, UserOrgRow, is_admin_role, is_enterprise_tenant_id,
     is_system_admin_role,
 };
@@ -1053,6 +1053,82 @@ impl OrgService {
         )
         .await;
         Ok((tenant_id, name.to_string(), code))
+    }
+
+    /// Idempotently wire the deployment admin (`system_default_user`) into a
+    /// fixed-id enterprise project group, so a fresh enterprise deploy is
+    /// usable without a manual "设立企业" step. Called once at startup from the
+    /// app-layer bootstrap (`dream-core-app`), after migrations, before the
+    /// server accepts requests. Returns the tenant id.
+    ///
+    /// Every write is `ON CONFLICT ... DO NOTHING`:
+    /// - `one_tenants` row keyed by [`DEFAULT_ENTERPRISE_TENANT_ID`] — a fixed
+    ///   id (not a random one) is what makes this idempotent across restarts
+    ///   and the split main/admin binary double-run;
+    /// - `one_user_org` membership with role **`system_admin`**, NOT
+    ///   `org_admin`: a membership row wins over the `SYSTEM_DEFAULT_USER_ID`
+    ///   fallback in [`Self::effective_role`], and `org_admin` would silently
+    ///   break every `RequireSystemAdmin` route. `DO NOTHING` preserves a
+    ///   later deliberate role change;
+    /// - `one_active_tenant` pointer — `DO NOTHING` never clobbers a later
+    ///   manual tenant switch.
+    ///
+    /// No `invalidate_user_tokens`: this runs before any JWT is issued, and
+    /// every RBAC gate re-reads `one_user_org` per request (nothing reads
+    /// role/tenant from claims), so there is no stale-claim risk.
+    pub async fn bootstrap_enterprise_root_tenant(
+        &self,
+        enterprise_id: &str,
+        admin_user_id: &str,
+        tenant_name: &str,
+    ) -> Result<String, OrgError> {
+        let tenant_id = DEFAULT_ENTERPRISE_TENANT_ID;
+        let now = now_ms() as i64;
+        let mut tx = self.db.begin().await?;
+
+        let tenant_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO one_tenants (id, name, enterprise_id, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING"
+            }
+            DbBackend::MySql => {
+                "INSERT IGNORE INTO one_tenants (id, name, enterprise_id, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?)"
+            }
+        };
+        tx.execute(tenant_sql, &db_params![tenant_id, tenant_name, enterprise_id, now, now])
+            .await?;
+
+        let user_org_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id, tenant_id) DO NOTHING"
+            }
+            DbBackend::MySql => {
+                "INSERT IGNORE INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?)"
+            }
+        };
+        tx.execute(
+            user_org_sql,
+            &db_params![admin_user_id, tenant_id, ROLE_SYSTEM_ADMIN, now, now],
+        )
+        .await?;
+
+        let active_tenant_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) \
+                 ON CONFLICT(user_id) DO NOTHING"
+            }
+            DbBackend::MySql => {
+                "INSERT IGNORE INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?)"
+            }
+        };
+        tx.execute(active_tenant_sql, &db_params![admin_user_id, tenant_id, now])
+            .await?;
+
+        tx.commit().await?;
+        Ok(tenant_id.to_string())
     }
 
     /// Every project group on this server (id + name), for admin pickers such
@@ -4392,5 +4468,160 @@ mod tests {
             "BAD_REQUEST"
         );
         db.close().await;
+    }
+
+    #[tokio::test]
+    async fn bootstrap_enterprise_root_tenant_creates_tenant_membership_and_active_pointer() {
+        let (db, service, _user_repo) = setup().await;
+        let tenant_id = service
+            .bootstrap_enterprise_root_tenant("ent-1", SYSTEM_DEFAULT_USER_ID, "Acme")
+            .await
+            .unwrap();
+        assert_eq!(tenant_id, DEFAULT_ENTERPRISE_TENANT_ID);
+
+        // Resolves as a real enterprise tenant for the admin.
+        assert_eq!(service.tenant_of(SYSTEM_DEFAULT_USER_ID).await.unwrap(), tenant_id);
+        let active = service.active_tenant_id(SYSTEM_DEFAULT_USER_ID).await.unwrap();
+        assert!(is_enterprise_tenant_id(&active));
+        assert!(service.context(SYSTEM_DEFAULT_USER_ID).await.unwrap().is_enterprise);
+
+        // Role must be system_admin — an `org_admin` membership row would win
+        // over the SYSTEM_DEFAULT_USER_ID fallback and break RequireSystemAdmin.
+        assert_eq!(
+            service.effective_role(SYSTEM_DEFAULT_USER_ID).await.unwrap(),
+            ROLE_SYSTEM_ADMIN
+        );
+
+        let tenant: TenantRow = service
+            .db
+            .fetch_one_as("SELECT * FROM one_tenants WHERE id = ?", &db_params![&tenant_id])
+            .await
+            .unwrap();
+        assert_eq!(tenant.enterprise_id.as_deref(), Some("ent-1"));
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn bootstrap_enterprise_root_tenant_is_idempotent() {
+        let (db, service, _user_repo) = setup().await;
+        for _ in 0..3 {
+            service
+                .bootstrap_enterprise_root_tenant("ent-1", SYSTEM_DEFAULT_USER_ID, "Acme")
+                .await
+                .unwrap();
+        }
+        let tenants: i64 = service
+            .db
+            .fetch_one_scalar("SELECT COUNT(*) FROM one_tenants", &[])
+            .await
+            .unwrap();
+        let members: i64 = service
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_user_org WHERE user_id = ?",
+                &db_params![SYSTEM_DEFAULT_USER_ID],
+            )
+            .await
+            .unwrap();
+        assert_eq!((tenants, members), (1, 1));
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn bootstrap_enterprise_root_tenant_preserves_manual_overrides() {
+        let (db, service, _user_repo) = setup().await;
+        // A prior boot provisioned the tenant; an operator then demoted the
+        // admin's role in it and switched their active tenant elsewhere.
+        service
+            .bootstrap_enterprise_root_tenant("ent-1", SYSTEM_DEFAULT_USER_ID, "Acme")
+            .await
+            .unwrap();
+        service
+            .db
+            .execute(
+                "UPDATE one_user_org SET role = ? WHERE user_id = ? AND tenant_id = ?",
+                &db_params![ROLE_ORG_ADMIN, SYSTEM_DEFAULT_USER_ID, DEFAULT_ENTERPRISE_TENANT_ID],
+            )
+            .await
+            .unwrap();
+        service
+            .db
+            .execute(
+                "UPDATE one_active_tenant SET tenant_id = ? WHERE user_id = ?",
+                &db_params!["some-other-tenant", SYSTEM_DEFAULT_USER_ID],
+            )
+            .await
+            .unwrap();
+
+        // Next boot: DO NOTHING must leave both overrides intact.
+        service
+            .bootstrap_enterprise_root_tenant("ent-1", SYSTEM_DEFAULT_USER_ID, "Acme")
+            .await
+            .unwrap();
+
+        let role: String = service
+            .db
+            .fetch_one_scalar(
+                "SELECT role FROM one_user_org WHERE user_id = ? AND tenant_id = ?",
+                &db_params![SYSTEM_DEFAULT_USER_ID, DEFAULT_ENTERPRISE_TENANT_ID],
+            )
+            .await
+            .unwrap();
+        assert_eq!(role, ROLE_ORG_ADMIN);
+        let active: String = service
+            .db
+            .fetch_one_scalar(
+                "SELECT tenant_id FROM one_active_tenant WHERE user_id = ?",
+                &db_params![SYSTEM_DEFAULT_USER_ID],
+            )
+            .await
+            .unwrap();
+        assert_eq!(active, "some-other-tenant");
+        db.close().await;
+    }
+
+    /// Real MySQL: exercises `bootstrap_enterprise_root_tenant`'s three
+    /// `INSERT IGNORE` branches (one_tenants / one_user_org / one_active_tenant)
+    /// and idempotency on a second call. Requires `DREAM_TEST_MYSQL_URL`.
+    #[tokio::test]
+    async fn bootstrap_enterprise_root_tenant_round_trip_on_mysql() {
+        let Some(mysql_db) = dream_core_db::testing::mysql_test_pool().await else {
+            eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
+            return;
+        };
+        crate::migrate::run_one_migrations(&mysql_db.pool).await.unwrap();
+        let sqlite_db = dream_core_db::init_database_memory().await.unwrap();
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(SqliteUserRepository::new(sqlite_db.pool().clone()));
+        let data_dir = std::env::temp_dir().join(format!("one-org-test-mysql-{}", uuid::Uuid::now_v7()));
+        let service = Arc::new(OrgService::new(
+            mysql_db.pool.clone(),
+            user_repo.clone(),
+            std::sync::Arc::new(dream_core_db::SqliteConversationRepository::new(sqlite_db.pool().clone())),
+            data_dir,
+            [7u8; 32],
+        ));
+
+        service
+            .bootstrap_enterprise_root_tenant("ent-1", SYSTEM_DEFAULT_USER_ID, "Acme")
+            .await
+            .unwrap();
+        service
+            .bootstrap_enterprise_root_tenant("ent-1", SYSTEM_DEFAULT_USER_ID, "Acme")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            service.active_tenant_id(SYSTEM_DEFAULT_USER_ID).await.unwrap(),
+            DEFAULT_ENTERPRISE_TENANT_ID
+        );
+        assert_eq!(
+            service.effective_role(SYSTEM_DEFAULT_USER_ID).await.unwrap(),
+            ROLE_SYSTEM_ADMIN
+        );
+        let tenants: i64 = service.db.fetch_one_scalar("SELECT COUNT(*) FROM one_tenants", &[]).await.unwrap();
+        assert_eq!(tenants, 1);
+
+        sqlite_db.close().await;
+        mysql_db.cleanup().await.unwrap();
     }
 }

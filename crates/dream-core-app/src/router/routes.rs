@@ -1782,6 +1782,11 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
     };
     let ws_state = build_ws_state(services, inbound_router);
     let router = create_router_with_all_state(services, states, ws_state);
+    // First-run: land the deployment admin in a working default enterprise so a
+    // fresh install has no `NOT_IN_ENTERPRISE` wall. Idempotent; runs after the
+    // one-* migrations (fired near the top of this function) and before serve.
+    #[cfg(feature = "enterprise")]
+    bootstrap_default_enterprise(services).await?;
     tracing::info!(
         elapsed_ms = boot.elapsed().as_millis(),
         "startup: router assembly completed"
@@ -2368,6 +2373,103 @@ pub(crate) fn build_governance_plane(
     }
 }
 
+/// First-run provisioning of the deployment's default enterprise, so the admin
+/// (`system_default_user`) resolves to a real enterprise project group and
+/// every `RequireOrgAdmin` / platform / workflow / memory gate passes without
+/// a manual "设立企业" step. Called from the async router entry points
+/// ([`create_router_with_runtime`], [`create_admin_router`]) after the one-*
+/// migrations have run — the sync test-only assembly paths skip it.
+///
+/// Idempotent: a cheap early-return when the admin already resolves to an
+/// enterprise tenant, plus `DO NOTHING` on every write underneath (so the
+/// split `dreamcore` / `dreamcore-admin` double-run, and every later restart,
+/// are safe). A deployment where the admin already did `POST /api/one/org/create`
+/// (a standalone tenant) or `POST /api/one/enterprise/company/setup` is left
+/// untouched.
+///
+/// The default company / tenant name comes from `DREAM_DEFAULT_ENTERPRISE_NAME`
+/// when set (deploy config, same place as `DREAM_DATABASE_URL`), else a
+/// generic fallback the admin renames later via the company / project-group
+/// UI. Only the bare service constructors are used — no credential revokers /
+/// disband cascades / bridges are needed for these five calls.
+#[cfg(feature = "enterprise")]
+async fn bootstrap_default_enterprise(services: &AppServices) -> Result<(), RouterBuildError> {
+    use dream_domain_org::models::{SYSTEM_DEFAULT_USER_ID, is_enterprise_tenant_id};
+
+    let org = dream_domain_org::OrgService::new(
+        services.db.clone(),
+        services.user_repo.clone(),
+        std::sync::Arc::new(dream_core_db::SqliteConversationRepository::new(
+            services.database.pool().clone(),
+        )),
+        services.data_dir.clone(),
+        crate::config::derive_encryption_key(&services.data_secret_raw),
+    );
+    let enterprise = dream_domain_enterprise::EnterpriseService::new(services.db.clone());
+    let billing = services.billing.clone();
+
+    let active = org.active_tenant_id(SYSTEM_DEFAULT_USER_ID).await.map_err(|e| {
+        RouterBuildError::new(
+            "router.bootstrap_enterprise.resolve",
+            "failed to resolve the admin's tenant",
+        )
+        .with_source(e)
+    })?;
+    let company_exists = enterprise.company_exists().await.map_err(|e| {
+        RouterBuildError::new(
+            "router.bootstrap_enterprise.company_exists",
+            "failed to check for an existing company",
+        )
+        .with_source(e)
+    })?;
+    if is_enterprise_tenant_id(&active) && company_exists {
+        tracing::info!(tenant_id = %active, "bootstrap: default enterprise already provisioned");
+        return Ok(());
+    }
+
+    let default_name = std::env::var("DREAM_DEFAULT_ENTERPRISE_NAME")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let company_name = default_name.as_deref().unwrap_or("默认企业");
+    let tenant_name = default_name.as_deref().unwrap_or("默认组织");
+
+    let enterprise_id = enterprise
+        .ensure_deployment_company(SYSTEM_DEFAULT_USER_ID, company_name)
+        .await
+        .map_err(|e| {
+            RouterBuildError::new(
+                "router.bootstrap_enterprise.company",
+                "failed to provision the default company",
+            )
+            .with_source(e)
+        })?;
+    let tenant_id = org
+        .bootstrap_enterprise_root_tenant(&enterprise_id, SYSTEM_DEFAULT_USER_ID, tenant_name)
+        .await
+        .map_err(|e| {
+            RouterBuildError::new(
+                "router.bootstrap_enterprise.tenant",
+                "failed to provision the default project group",
+            )
+            .with_source(e)
+        })?;
+    billing.ensure_default_license(&enterprise_id).await.map_err(|e| {
+        RouterBuildError::new(
+            "router.bootstrap_enterprise.license",
+            "failed to seed the default license",
+        )
+        .with_source(e)
+    })?;
+
+    tracing::info!(
+        enterprise_id = %enterprise_id,
+        tenant_id = %tenant_id,
+        "bootstrap: default enterprise provisioned"
+    );
+    Ok(())
+}
+
 /// Route tree for the standalone `dreamcore-admin` binary.
 ///
 /// Only the governance plane (`/api/one/{org,enterprise,billing,admin,sso}/*`
@@ -2497,6 +2599,9 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
         one_platform_service.clone(),
         one_billing_service.clone(),
     );
+    // First-run: land the deployment admin in a working default enterprise so a
+    // fresh install has no `NOT_IN_ENTERPRISE` wall (idempotent; migrations ran above).
+    bootstrap_default_enterprise(services).await?;
     // Same wiring as the full server: the console's own registry reads must see
     // the matrix too, or an admin would be shown a different set of skills here
     // than the members they granted them to actually get.
@@ -3407,7 +3512,7 @@ mod tests {
                 .await
                 .unwrap();
             let billing = std::sync::Arc::new(dream_domain_billing::BillingService::new(
-                db.pool().clone(),
+                dream_core_db::DbPool::Sqlite(db.pool().clone()),
                 std::sync::Arc::new(dream_domain_billing::ManualBillingProvider),
             ));
             (db, billing)
@@ -3821,7 +3926,7 @@ mod tests {
             .await
             .unwrap();
         let service = Arc::new(dream_domain_platform::PlatformService::new(
-            db.pool().clone(),
+            dream_core_db::DbPool::Sqlite(db.pool().clone()),
             [9u8; 32],
         ));
         (db, service)

@@ -6,6 +6,16 @@ use serde::Serialize;
 /// implicitly in this tenant.
 pub const DEFAULT_TENANT_ID: &str = "default";
 
+/// Deterministic id of the project group auto-provisioned for the deployment
+/// admin on first boot of an enterprise build (see the app-layer bootstrap in
+/// `dream-core-app`). Non-empty and `!= DEFAULT_TENANT_ID`, so
+/// [`is_enterprise_tenant_id`] treats it as a real enterprise tenant and every
+/// `RequireOrgAdmin` / platform / workflow / memory gate passes for the admin
+/// without a manual "设立企业" step. A fixed id (rather than a random one) is
+/// what makes the bootstrap idempotent across restarts and the split
+/// main/admin binary double-run.
+pub const DEFAULT_ENTERPRISE_TENANT_ID: &str = "enterprise";
+
 /// Upstream's built-in operator user (`ensure_system_user` in dream-db).
 /// Mirrors the 1ONE desktop-operator semantics: this user is the instance
 /// administrator until explicit roles are assigned.
