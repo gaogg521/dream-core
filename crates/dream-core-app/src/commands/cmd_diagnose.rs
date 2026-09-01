@@ -1,4 +1,4 @@
-//! `aioncore diagnose` subcommand: agent-facing read-only troubleshooting CLI.
+//! `dreamcore diagnose` subcommand: agent-facing read-only troubleshooting CLI.
 
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
@@ -309,10 +309,10 @@ async fn request_json(
     let mut request = client
         .get(&url)
         .header("content-type", "application/json")
-        .header("x-aionui-conversation-id", &env.conversation_id)
-        .header("x-aionui-user-id", &env.user_id);
+        .header("x-dream-conversation-id", &env.conversation_id)
+        .header("x-dream-user-id", &env.user_id);
     if let Some(runtime_token) = &env.runtime_token {
-        request = request.header("x-aionui-runtime-token", runtime_token);
+        request = request.header("x-dream-runtime-token", runtime_token);
     }
     let response = request.send().await.map_err(|_| {
         DiagnoseError::new(

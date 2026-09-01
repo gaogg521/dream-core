@@ -504,7 +504,7 @@ impl AcpAgentManager {
 /// Build the `session/prompt` content blocks: a text block plus one native
 /// Image/Audio block per attachment the agent's declared `promptCapabilities`
 /// accept. Attachments the agent cannot take (or that fail to read) stay in
-/// the text block's `[[AION_FILES]]` path list, byte-identical to the
+/// the text block's `[[DREAM_FILES]]` path list, byte-identical to the
 /// pre-multimodal wire form.
 ///
 /// The text keeps EVERY attachment path, media included. This path emits no
@@ -1565,7 +1565,7 @@ mod tests {
         let img = dir.join("plain.png");
         std::fs::write(&img, b"fakepng").unwrap();
         let img = img.to_string_lossy().into_owned();
-        let content = format!("hi\n\n{}\n{img}", dream_core_common::constants::ONE_FILES_MARKER);
+        let content = format!("hi\n\n{}\n{img}", dream_core_common::constants::FILES_MARKER);
         let data = SendMessageData {
             content: content.clone(),
             msg_id: "m1".into(),
@@ -1594,7 +1594,7 @@ mod tests {
         let pdf = pdf.to_string_lossy().into_owned();
         let content = format!(
             "look\n\n{}\n{img}\n{pdf}",
-            dream_core_common::constants::ONE_FILES_MARKER
+            dream_core_common::constants::FILES_MARKER
         );
         let data = SendMessageData {
             content,
@@ -1618,7 +1618,7 @@ mod tests {
                     text.text,
                     format!(
                         "look\n\n{}\n{img}\n{pdf}",
-                        dream_core_common::constants::ONE_FILES_MARKER
+                        dream_core_common::constants::FILES_MARKER
                     )
                 );
             }
@@ -1635,7 +1635,7 @@ mod tests {
     }
 
     // Regression guard: this path emits NO resource links — a non-media
-    // attachment rides solely as an `[[AION_FILES]]` marker line — so the marker
+    // attachment rides solely as an `[[DREAM_FILES]]` marker line — so the marker
     // is the only path channel it has. A native image block carries bytes, not a
     // path, and the `uri` field on it is not surfaced to the agents' file tools
     // (observed live: one ACP agent asked for a path it had already been sent as
@@ -1647,7 +1647,7 @@ mod tests {
         let img = dir.join("keep-path.png");
         std::fs::write(&img, b"fakepng").unwrap();
         let img = img.to_string_lossy().into_owned();
-        let content = format!("read this\n\n{}\n{img}", dream_core_common::constants::ONE_FILES_MARKER);
+        let content = format!("read this\n\n{}\n{img}", dream_core_common::constants::FILES_MARKER);
         let data = SendMessageData {
             content: content.clone(),
             msg_id: "m4".into(),
@@ -1679,7 +1679,7 @@ mod tests {
         let img = dir.join("vanishing.png");
         std::fs::write(&img, b"fakepng").unwrap();
         let img_path = img.to_string_lossy().into_owned();
-        let content = format!("gone\n\n{}\n{img_path}", dream_core_common::constants::ONE_FILES_MARKER);
+        let content = format!("gone\n\n{}\n{img_path}", dream_core_common::constants::FILES_MARKER);
         let data = SendMessageData {
             content: content.clone(),
             msg_id: "m3".into(),

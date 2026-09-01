@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use chrono::Datelike;
 use dream_core_ai_agent::session_context::{
-    AcpSessionBuildContext, AgentSessionContext, AgentSessionKind, AionrsSessionBuildContext,
+    AcpSessionBuildContext, AgentSessionContext, AgentSessionKind, DreamEngineSessionBuildContext,
     AntigravitySessionBuildContext, ConversationContext, WorkspaceContext,
 };
 use dream_core_ai_agent::shared_kernel::{ConfigKey, ConfigValue, ModeId, ModelId, PersistedSessionState};
@@ -44,7 +44,7 @@ impl<'a> SessionContextBuilder<'a> {
     pub(crate) async fn build_options(
         &self,
         row: &ConversationRow,
-        seed: Option<AionrsRuntimePermissionSeed>,
+        seed: Option<DreamEngineRuntimePermissionSeed>,
     ) -> Result<BuildTaskOptions, ConversationError> {
         Ok(BuildTaskOptions::new(
             self.build_with_workspace_override(row, None, seed).await?,
@@ -55,7 +55,7 @@ impl<'a> SessionContextBuilder<'a> {
         &self,
         row: &ConversationRow,
         workspace_override: Option<&str>,
-        seed: Option<AionrsRuntimePermissionSeed>,
+        seed: Option<DreamEngineRuntimePermissionSeed>,
     ) -> Result<BuildTaskOptions, ConversationError> {
         Ok(BuildTaskOptions::new(
             self.build_with_workspace_override(row, workspace_override, seed)
@@ -75,7 +75,7 @@ impl<'a> SessionContextBuilder<'a> {
         &self,
         row: &ConversationRow,
         workspace_override: Option<&str>,
-        seed: Option<AionrsRuntimePermissionSeed>,
+        seed: Option<DreamEngineRuntimePermissionSeed>,
     ) -> Result<AgentSessionContext, ConversationError> {
         let agent_type: AgentType = string_to_enum(&row.r#type)?;
         reject_deprecated_runtime_kind(row, &agent_type)?;
@@ -192,14 +192,14 @@ impl<'a> SessionContextBuilder<'a> {
         agent_type: &AgentType,
         extra: serde_json::Value,
         team: Option<TeamSessionBinding>,
-        seed: Option<AionrsRuntimePermissionSeed>,
+        seed: Option<DreamEngineRuntimePermissionSeed>,
     ) -> Result<AgentSessionKind, ConversationError> {
         match agent_type {
             AgentType::Acp => self
                 .build_acp_context(row, extra, team)
                 .await
                 .map(|context| AgentSessionKind::Acp(Box::new(context))),
-            AgentType::DreamEngine => Ok(AgentSessionKind::DreamEngine(Box::new(build_aionrs_context(
+            AgentType::DreamEngine => Ok(AgentSessionKind::DreamEngine(Box::new(build_engine_context(
                 row, extra, team, seed,
             )))),
             // Antigravity reuses the ACP build context's SHAPE (a CLI agent with
@@ -437,24 +437,24 @@ impl<'a> SessionContextBuilder<'a> {
 ///   persisted on the snapshot; only honored under `auto` for non-team
 ///   sessions.
 #[derive(Debug, Clone)]
-pub(crate) struct AionrsRuntimePermissionSeed {
+pub(crate) struct DreamEngineRuntimePermissionSeed {
     pub default_permission_mode: String,
     pub resolved_permission_value: Option<String>,
 }
 
-fn build_aionrs_context(
+fn build_engine_context(
     row: &ConversationRow,
     extra: serde_json::Value,
     team: Option<TeamSessionBinding>,
-    permission_seed: Option<AionrsRuntimePermissionSeed>,
-) -> AionrsSessionBuildContext {
+    permission_seed: Option<DreamEngineRuntimePermissionSeed>,
+) -> DreamEngineSessionBuildContext {
     let mut config: DreamEngineBuildExtra = match serde_json::from_value(extra.clone()) {
         Ok(config) => config,
         Err(err) => {
             warn!(
                 conversation_id = %row.id,
                 error = %err,
-                "session_context: invalid aionrs extra; using defaults"
+                "session_context: invalid engine extra; using defaults"
             );
             DreamEngineBuildExtra::default()
         }
@@ -469,7 +469,7 @@ fn build_aionrs_context(
     if !belongs_to_team && let Some(seed) = permission_seed {
         apply_runtime_permission_seed(seed, row, &mut config);
     }
-    AionrsSessionBuildContext {
+    DreamEngineSessionBuildContext {
         config,
         team,
         belongs_to_team,
@@ -480,7 +480,7 @@ fn build_aionrs_context(
 /// `default_permission_mode` semantics (spec §7.1/§7.2). Callers must ensure
 /// team-bound sessions never reach here.
 fn apply_runtime_permission_seed(
-    seed: AionrsRuntimePermissionSeed,
+    seed: DreamEngineRuntimePermissionSeed,
     row: &ConversationRow,
     config: &mut DreamEngineBuildExtra,
 ) {
@@ -495,7 +495,7 @@ fn apply_runtime_permission_seed(
     if let Some(resolved) = seed.resolved_permission_value.filter(|value| !value.is_empty()) {
         debug!(
             conversation_id = %row.id,
-            "session_context: aionrs rebuild seeded from resolved runtime permission"
+            "session_context: engine rebuild seeded from resolved runtime permission"
         );
         config.session_mode = Some(resolved);
     }
@@ -690,7 +690,7 @@ fn map_runtime_workspace_validation_error(error: WorkspacePathValidationError) -
 
 fn log_workspace_path_check(conversation_id: &str, error: &WorkspacePathValidationError) {
     warn!(
-        target: "aionui_feedback_diagnostics",
+        target: "dream_feedback_diagnostics",
         diagnostic_event = "feedback.runtime.workspace_path_check",
         conversation_id = %conversation_id,
         path_present = !matches!(error, WorkspacePathValidationError::Empty),
@@ -811,7 +811,7 @@ mod tests {
             Arc::new(SqliteAgentMetadataRepository::new(pool.clone()));
         let acp_session_repo: Arc<dyn IAcpSessionRepository> = Arc::new(SqliteAcpSessionRepository::new(pool));
         let workspace_root = std::env::temp_dir().join(format!(
-            "aion-session-context-test-{}",
+            "dream-session-context-test-{}",
             dream_core_common::generate_short_id()
         ));
         TestRepos {
@@ -883,7 +883,7 @@ mod tests {
         }
     }
 
-    fn aionrs_context(context: AgentSessionContext) -> AionrsSessionBuildContext {
+    fn aionrs_context(context: AgentSessionContext) -> DreamEngineSessionBuildContext {
         match context.kind {
             AgentSessionKind::DreamEngine(aionrs) => *aionrs,
             other => panic!("expected DreamEngine context, got {other:?}"),
@@ -1139,7 +1139,7 @@ mod tests {
                     "port": 4242,
                     "token": "tok-1",
                     "slot_id": "lead-1",
-                    "binary_path": "/tmp/aioncore"
+                    "binary_path": "/tmp/dreamcore"
                 }
             }),
             None,
@@ -1178,7 +1178,7 @@ mod tests {
                     "port": 5252,
                     "token": "tok-2",
                     "slot_id": "worker-1",
-                    "binary_path": "/tmp/aioncore"
+                    "binary_path": "/tmp/dreamcore"
                 }
             }),
             Some(serde_json::json!({
@@ -1335,7 +1335,7 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let raw_path = "/tmp/aionui-secret-workspace-token-12345";
+        let raw_path = "/tmp/dream-secret-workspace-token-12345";
         let captured = capture_logs(Level::WARN, || {
             runtime.block_on(async {
                 let repos = setup().await;
@@ -1346,7 +1346,7 @@ mod tests {
             });
         });
 
-        assert!(captured.contains("aionui_feedback_diagnostics"), "{captured}");
+        assert!(captured.contains("dream_feedback_diagnostics"), "{captured}");
         assert!(captured.contains("feedback.runtime.workspace_path_check"), "{captured}");
         assert!(captured.contains("conversation_id=conv-1"), "{captured}");
         assert!(captured.contains("path_present=true"), "{captured}");
@@ -1389,8 +1389,8 @@ mod tests {
         }
     }
 
-    fn aionrs_seed(mode: &str, resolved: Option<&str>) -> AionrsRuntimePermissionSeed {
-        AionrsRuntimePermissionSeed {
+    fn aionrs_seed(mode: &str, resolved: Option<&str>) -> DreamEngineRuntimePermissionSeed {
+        DreamEngineRuntimePermissionSeed {
             default_permission_mode: mode.to_owned(),
             resolved_permission_value: resolved.map(ToOwned::to_owned),
         }
@@ -1400,7 +1400,7 @@ mod tests {
     fn aionrs_auto_mode_rebuild_adopts_resolved_permission_value() {
         // AC#1: auto happy path — runtime yolo survives rebuild.
         let row = row("aionrs", serde_json::json!({ "session_mode": "default" }), None);
-        let ctx = build_aionrs_context(
+        let ctx = build_engine_context(
             &row,
             serde_json::json!({ "session_mode": "default" }),
             None,
@@ -1413,7 +1413,7 @@ mod tests {
     fn aionrs_auto_mode_resolved_overrides_create_time_seed() {
         // AC#2: existing-data compat — create-time non-yolo seed is overridden.
         let row = row("aionrs", serde_json::json!({ "session_mode": "auto_edit" }), None);
-        let ctx = build_aionrs_context(
+        let ctx = build_engine_context(
             &row,
             serde_json::json!({ "session_mode": "auto_edit" }),
             None,
@@ -1426,7 +1426,7 @@ mod tests {
     fn aionrs_fixed_mode_ignores_resolved_permission_value() {
         // AC#3: fixed safety gate — runtime residue must NOT escalate.
         let row = row("aionrs", serde_json::json!({ "session_mode": "default" }), None);
-        let ctx = build_aionrs_context(
+        let ctx = build_engine_context(
             &row,
             serde_json::json!({ "session_mode": "default" }),
             None,
@@ -1446,7 +1446,7 @@ mod tests {
         }))
         .unwrap();
         let row = row("aionrs", serde_json::json!({ "session_mode": "auto_edit" }), None);
-        let ctx = build_aionrs_context(
+        let ctx = build_engine_context(
             &row,
             serde_json::json!({ "session_mode": "auto_edit" }),
             team,

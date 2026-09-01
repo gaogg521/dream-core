@@ -1,4 +1,4 @@
-//! E2E coverage for the agent-facing `aioncore config` CLI.
+//! E2E coverage for the agent-facing `dreamcore config` CLI.
 
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
@@ -95,8 +95,8 @@ async fn fake_conversation_cron_list(
     let mut capture = capture.lock().unwrap();
     if capture.is_none() {
         *capture = Some(Capture {
-            conversation_id: header(&headers, "x-aionui-conversation-id"),
-            user_id: header(&headers, "x-aionui-user-id"),
+            conversation_id: header(&headers, "x-dream-conversation-id"),
+            user_id: header(&headers, "x-dream-user-id"),
             job_id: None,
             resource_id: None,
             payload: None,
@@ -115,8 +115,8 @@ async fn fake_conversation_cron_update(
     axum::Json(payload): axum::Json<serde_json::Value>,
 ) -> axum::Json<serde_json::Value> {
     *capture.lock().unwrap() = Some(Capture {
-        conversation_id: header(&headers, "x-aionui-conversation-id"),
-        user_id: header(&headers, "x-aionui-user-id"),
+        conversation_id: header(&headers, "x-dream-conversation-id"),
+        user_id: header(&headers, "x-dream-user-id"),
         job_id: Some(job_id),
         resource_id: None,
         payload: Some(payload),
@@ -326,8 +326,8 @@ async fn fake_cron_job_create(
     axum::Json(payload): axum::Json<serde_json::Value>,
 ) -> axum::Json<serde_json::Value> {
     *capture.lock().unwrap() = Some(Capture {
-        conversation_id: header(&headers, "x-aionui-conversation-id"),
-        user_id: header(&headers, "x-aionui-user-id"),
+        conversation_id: header(&headers, "x-dream-conversation-id"),
+        user_id: header(&headers, "x-dream-user-id"),
         payload: Some(payload),
         ..Capture::default()
     });

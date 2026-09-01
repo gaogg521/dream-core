@@ -1,4 +1,4 @@
-//! `aioncore config` subcommand: agent-facing automation CLI for 1One Work config.
+//! `dreamcore config` subcommand: agent-facing automation CLI for 1One Work config.
 
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
@@ -1396,10 +1396,10 @@ async fn request_json(
     let mut request = client
         .request(method, &url)
         .header("content-type", "application/json")
-        .header("x-aionui-conversation-id", &env.conversation_id)
-        .header("x-aionui-user-id", &env.user_id);
+        .header("x-dream-conversation-id", &env.conversation_id)
+        .header("x-dream-user-id", &env.user_id);
     if let Some(runtime_token) = &env.runtime_token {
-        request = request.header("x-aionui-runtime-token", runtime_token);
+        request = request.header("x-dream-runtime-token", runtime_token);
     }
     if let Some(body) = body {
         request = request.json(&body);

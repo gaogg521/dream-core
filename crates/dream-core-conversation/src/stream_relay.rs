@@ -301,7 +301,7 @@ impl StreamRelay {
     ) -> RelayOutcome {
         let started_at = now_ms();
         info!(
-            target: "aionui_feedback_diagnostics",
+            target: "dream_feedback_diagnostics",
             diagnostic_event = "feedback.runtime.turn_start",
             conversation_id = %self.conversation_id,
             turn_id = %self.turn_id,
@@ -378,7 +378,7 @@ impl StreamRelay {
                     if !first_agent_event_logged {
                         first_agent_event_logged = true;
                         info!(
-                            target: "aionui_feedback_diagnostics",
+                            target: "dream_feedback_diagnostics",
                             diagnostic_event = "feedback.runtime.turn_first_agent_event",
                             conversation_id = %self.conversation_id,
                             turn_id = %self.turn_id,
@@ -444,7 +444,7 @@ impl StreamRelay {
                             if !first_visible_output_logged && !data.content.is_empty() {
                                 first_visible_output_logged = true;
                                 info!(
-                                    target: "aionui_feedback_diagnostics",
+                                    target: "dream_feedback_diagnostics",
                                     diagnostic_event = "feedback.runtime.turn_first_visible_output",
                                     conversation_id = %self.conversation_id,
                                     turn_id = %self.turn_id,
@@ -471,7 +471,7 @@ impl StreamRelay {
                             if !first_visible_output_logged && !data.content.is_empty() {
                                 first_visible_output_logged = true;
                                 info!(
-                                    target: "aionui_feedback_diagnostics",
+                                    target: "dream_feedback_diagnostics",
                                     diagnostic_event = "feedback.runtime.turn_first_visible_output",
                                     conversation_id = %self.conversation_id,
                                     turn_id = %self.turn_id,
@@ -519,7 +519,7 @@ impl StreamRelay {
                                     (None, None, None)
                                 };
                             info!(
-                                target: "aionui_feedback_diagnostics",
+                                target: "dream_feedback_diagnostics",
                                 diagnostic_event = "feedback.runtime.turn_terminal",
                                 conversation_id = %self.conversation_id,
                                 turn_id = %self.turn_id,
@@ -760,7 +760,7 @@ impl StreamRelay {
                 Err(broadcast::error::RecvError::Closed) => {
                     let elapsed_ms = now_ms() - started_at;
                     warn!(
-                        target: "aionui_feedback_diagnostics",
+                        target: "dream_feedback_diagnostics",
                         diagnostic_event = "feedback.runtime.turn_terminal",
                         conversation_id = %self.conversation_id,
                         turn_id = %self.turn_id,
@@ -2090,7 +2090,7 @@ mod tests {
             });
         });
 
-        assert!(captured.contains("aionui_feedback_diagnostics"), "{captured}");
+        assert!(captured.contains("dream_feedback_diagnostics"), "{captured}");
         assert!(captured.contains("feedback.runtime.turn_terminal"), "{captured}");
         assert!(captured.contains("conversation_id=conv-1"), "{captured}");
         assert!(captured.contains("turn_id=turn-1"), "{captured}");

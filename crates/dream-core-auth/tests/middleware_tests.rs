@@ -79,7 +79,7 @@ async fn t12_2_get_requests_bypass_csrf() {
 
 /// agy's PreToolUse callback must reach its handler without a CSRF token.
 ///
-/// The hook is a local `aioncore antigravity-hook` process: no user session, no
+/// The hook is a local `dreamcore antigravity-hook` process: no user session, no
 /// cookie, no token to present. It authenticates with a per-conversation
 /// `x-dream-hook-token` that the handler checks. When CSRF rejected it, every
 /// call came back 403, the hook read that as "no answer" and denied, and agy
@@ -348,7 +348,7 @@ async fn auth_middleware_aionpro_rejects_local_user_token() {
         .unwrap();
     let db = init_database_memory().await.unwrap();
     let repo = Arc::new(SqliteUserRepository::new(db.pool().clone()));
-    let app = protected_auth_app_with_mode(jwt_service, repo as Arc<dyn IUserRepository>, AuthIdentityMode::AionPro);
+    let app = protected_auth_app_with_mode(jwt_service, repo as Arc<dyn IUserRepository>, AuthIdentityMode::DreamPro);
 
     let resp = app
         .oneshot(
@@ -635,10 +635,10 @@ impl IRuntimeTokenVerifier for MatchVerifier {
 
 fn helper_request(token: Option<&str>, user_id: &str, conversation_id: &str) -> Request<Body> {
     let mut builder = Request::get("/whoami")
-        .header("x-aionui-user-id", user_id)
-        .header("x-aionui-conversation-id", conversation_id);
+        .header("x-dream-user-id", user_id)
+        .header("x-dream-conversation-id", conversation_id);
     if let Some(token) = token {
-        builder = builder.header("x-aionui-runtime-token", token);
+        builder = builder.header("x-dream-runtime-token", token);
     }
     builder.body(Body::empty()).unwrap()
 }
@@ -676,7 +676,7 @@ async fn runtime_token_channel_aionpro_authenticates_external_user() {
     let repo = Arc::new(SqliteUserRepository::new(db.pool().clone()));
     let user = repo
         .ensure_external_user(
-            UserType::Aionpro,
+            UserType::DreamPro,
             "ext-user-1",
             dream_core_db::ExternalUserProjection {
                 username: Some("pro-user".into()),
@@ -691,7 +691,7 @@ async fn runtime_token_channel_aionpro_authenticates_external_user() {
     let app = identity_echo_app(
         jwt_service,
         repo as Arc<dyn IUserRepository>,
-        AuthIdentityMode::AionPro,
+        AuthIdentityMode::DreamPro,
         Some(Arc::new(MatchVerifier {
             token,
             user_id,
@@ -770,7 +770,7 @@ async fn runtime_token_channel_without_token_returns_authentication_required() {
     let app = identity_echo_app(
         jwt_service,
         repo,
-        AuthIdentityMode::AionPro,
+        AuthIdentityMode::DreamPro,
         Some(Arc::new(MatchVerifier {
             token: "tok-1",
             user_id: "system_default_user",
@@ -814,7 +814,7 @@ async fn runtime_token_channel_aionpro_rejects_local_user_token_binding() {
     let app = identity_echo_app(
         jwt_service,
         repo,
-        AuthIdentityMode::AionPro,
+        AuthIdentityMode::DreamPro,
         Some(Arc::new(MatchVerifier {
             token: "tok-1",
             user_id: "system_default_user",
@@ -855,7 +855,7 @@ async fn csrf_exempts_requests_bearing_runtime_token_header() {
     let resp = app
         .oneshot(
             Request::post("/api/thing")
-                .header("x-aionui-runtime-token", "tok-1")
+                .header("x-dream-runtime-token", "tok-1")
                 .body(Body::empty())
                 .unwrap(),
         )

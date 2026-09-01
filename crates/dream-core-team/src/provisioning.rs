@@ -1471,7 +1471,7 @@ mod tests {
             port: 12345,
             token: "token".into(),
             slot_id: "slot-1".into(),
-            binary_path: "/tmp/aioncore".into(),
+            binary_path: "/tmp/dreamcore".into(),
         }
     }
 

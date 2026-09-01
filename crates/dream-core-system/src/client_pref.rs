@@ -65,7 +65,7 @@ impl ClientPrefService {
                 serde_json::from_str(&row.value).unwrap_or(serde_json::Value::String(row.value));
             found_keys.insert(row.key.clone());
             debug!(
-                target: "aionui_feedback_diagnostics",
+                target: "dream_feedback_diagnostics",
                 diagnostic_event = "feedback.runtime.client_preference_read",
                 key = %row.key,
                 found = true,
@@ -76,7 +76,7 @@ impl ClientPrefService {
         if let Some(keys) = keys {
             for key in keys.iter().filter(|key| !found_keys.contains(**key)) {
                 debug!(
-                    target: "aionui_feedback_diagnostics",
+                    target: "dream_feedback_diagnostics",
                     diagnostic_event = "feedback.runtime.client_preference_read",
                     key = %key,
                     found = false,
@@ -102,7 +102,7 @@ impl ClientPrefService {
 
             if value.is_null() {
                 info!(
-                    target: "aionui_feedback_diagnostics",
+                    target: "dream_feedback_diagnostics",
                     diagnostic_event = "feedback.runtime.client_preference_write",
                     key = %key,
                     value_type = %"null",
@@ -114,7 +114,7 @@ impl ClientPrefService {
                 let serialized = serde_json::to_string(&value)
                     .map_err(|e| SystemError::Internal(format!("Failed to serialize value: {e}")))?;
                 info!(
-                    target: "aionui_feedback_diagnostics",
+                    target: "dream_feedback_diagnostics",
                     diagnostic_event = "feedback.runtime.client_preference_write",
                     key = %key,
                     value_type = %json_value_type(&value),
@@ -479,7 +479,7 @@ mod tests {
             });
         });
 
-        assert!(captured.contains("aionui_feedback_diagnostics"), "{captured}");
+        assert!(captured.contains("dream_feedback_diagnostics"), "{captured}");
         assert!(
             captured.contains("feedback.runtime.client_preference_write"),
             "{captured}"

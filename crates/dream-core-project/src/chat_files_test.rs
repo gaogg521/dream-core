@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use dream_core_common::constants::ONE_FILES_MARKER;
+use dream_core_common::constants::FILES_MARKER;
 use dream_core_db::{IProjectStore, SqliteProjectStore, init_database_memory};
 use tempfile::TempDir;
 
@@ -49,7 +49,7 @@ async fn resolves_project_file_and_inlines_marker() {
     let abs = &out.files[0];
     assert!(std::path::Path::new(abs).is_file());
     assert!(abs.ends_with("note.txt"));
-    assert_eq!(out.content, format!("please review\n\n{ONE_FILES_MARKER}\n{abs}"));
+    assert_eq!(out.content, format!("please review\n\n{FILES_MARKER}\n{abs}"));
 }
 
 #[tokio::test]
@@ -107,7 +107,7 @@ async fn resolves_project_root_ref_empty_relative_path() {
     );
 }
 
-/// bug2 regression: the path emitted to the agent (inlined into `[[AION_FILES]]`)
+/// bug2 regression: the path emitted to the agent (inlined into `[[DREAM_FILES]]`)
 /// must keep the folder's REAL on-disk casing, not the case-folded canonical.
 /// `canonical::canonicalize` ASCII-lowercases the path on macOS/Windows
 /// (`IGNORE_PATH_CASING`) for dedupe identity; before the fix that folded root
@@ -287,7 +287,7 @@ async fn local_readable_file_resolves_and_inlines_marker() {
     // Resolved to the canonicalized absolute path (symlinks/`..` collapsed).
     assert!(std::path::Path::new(abs).is_file());
     assert!(abs.ends_with("host.txt"));
-    assert_eq!(out.content, format!("see this\n\n{ONE_FILES_MARKER}\n{abs}"));
+    assert_eq!(out.content, format!("see this\n\n{FILES_MARKER}\n{abs}"));
 }
 
 #[cfg(unix)]
@@ -326,7 +326,7 @@ async fn local_canonicalizes_symlink_to_target_path() {
         "should be target name, not link name"
     );
     assert_ne!(resolved, &link_path, "must not echo back the raw symlink path");
-    assert_eq!(out.content, format!("x\n\n{ONE_FILES_MARKER}\n{resolved}"));
+    assert_eq!(out.content, format!("x\n\n{FILES_MARKER}\n{resolved}"));
 }
 
 #[tokio::test]

@@ -1073,7 +1073,7 @@ fn string_pointer(value: &serde_json::Value, pointers: &[&str]) -> Option<String
 
 fn log_acp_initialize_start(init_budget: InitBudget) {
     info!(
-        target: "aionui_feedback_diagnostics",
+        target: "dream_feedback_diagnostics",
         diagnostic_event = "feedback.runtime.acp_initialize_start",
         timeout_secs = init_budget.timeout.as_secs(),
         cold_start = init_budget.cold_start,
@@ -1083,7 +1083,7 @@ fn log_acp_initialize_start(init_budget: InitBudget) {
 
 fn log_acp_initialize_success(elapsed_ms: u64) {
     info!(
-        target: "aionui_feedback_diagnostics",
+        target: "dream_feedback_diagnostics",
         diagnostic_event = "feedback.runtime.acp_initialize_success",
         elapsed_ms,
         "feedback.runtime.acp_initialize_success"
@@ -1092,7 +1092,7 @@ fn log_acp_initialize_success(elapsed_ms: u64) {
 
 fn log_acp_initialize_failed(failure_class: &'static str, elapsed_ms: u64) {
     warn!(
-        target: "aionui_feedback_diagnostics",
+        target: "dream_feedback_diagnostics",
         diagnostic_event = "feedback.runtime.acp_initialize_failed",
         failure_class = %failure_class,
         elapsed_ms,
@@ -1425,7 +1425,7 @@ mod tests {
             super::log_acp_initialize_failed("timeout", 456);
         });
 
-        assert!(captured.contains("aionui_feedback_diagnostics"), "{captured}");
+        assert!(captured.contains("dream_feedback_diagnostics"), "{captured}");
         assert!(captured.contains("feedback.runtime.acp_initialize_start"), "{captured}");
         assert!(
             captured.contains("feedback.runtime.acp_initialize_success"),

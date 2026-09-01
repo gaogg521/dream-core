@@ -9,9 +9,9 @@
 
 use std::sync::Arc;
 
-use dream_core_ai_agent::manager::dream_engine::AionrsAgentManager;
+use dream_core_ai_agent::manager::dream_engine::DreamEngineAgentManager;
 use dream_core_ai_agent::task_manager::AgentFactory;
-use dream_core_ai_agent::types::{AionrsResolvedConfig, BuildTaskOptions, SendMessageData};
+use dream_core_ai_agent::types::{DreamEngineResolvedConfig, BuildTaskOptions, SendMessageData};
 use dream_core_ai_agent::*;
 use dream_core_ai_agent::{SkillIndex, build_system_instructions_with_skills_index};
 use dream_core_common::{AgentKillReason, AgentType, ConversationStatus, ProviderWithModel, TimestampMs, now_ms};
@@ -88,8 +88,8 @@ impl IMockAgent for TypedMockAgent {}
 // DreamEngine agent tests (real implementation with AgentEngine)
 // ---------------------------------------------------------------------------
 
-fn make_aionrs_config() -> AionrsResolvedConfig {
-    AionrsResolvedConfig {
+fn make_engine_config() -> DreamEngineResolvedConfig {
+    DreamEngineResolvedConfig {
         provider: "anthropic".into(),
         api_key: "sk-test-key".into(),
         model: "claude-sonnet-4-20250514".into(),
@@ -115,7 +115,7 @@ fn make_aionrs_config() -> AionrsResolvedConfig {
 
 #[tokio::test]
 async fn aionrs_agent_kill_succeeds() {
-    let agent = AionrsAgentManager::new("conv-1".into(), "/proj".into(), make_aionrs_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/proj".into(), make_engine_config(), None)
         .await
         .unwrap();
     assert!(agent.kill(None).is_ok());
@@ -124,7 +124,7 @@ async fn aionrs_agent_kill_succeeds() {
 
 #[tokio::test]
 async fn aionrs_agent_confirm_succeeds() {
-    let agent = AionrsAgentManager::new("conv-1".into(), "/proj".into(), make_aionrs_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/proj".into(), make_engine_config(), None)
         .await
         .unwrap();
     // `confirm` is an inherent method on `DreamEngineAgentManager` (reached via
@@ -136,7 +136,7 @@ async fn aionrs_agent_confirm_succeeds() {
 
 #[tokio::test]
 async fn aionrs_agent_metadata() {
-    let agent = AionrsAgentManager::new("conv-abc".into(), "/work".into(), make_aionrs_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-abc".into(), "/work".into(), make_engine_config(), None)
         .await
         .unwrap();
     assert_eq!(agent.agent_type(), AgentType::DreamEngine);
@@ -189,7 +189,7 @@ async fn collect_idle_ignores_aionrs_agent_type() {
                 session_id: None,
                 session_snapshot: None,
             })),
-            AgentType::DreamEngine => AgentSessionKind::DreamEngine(Box::new(AionrsSessionBuildContext {
+            AgentType::DreamEngine => AgentSessionKind::DreamEngine(Box::new(DreamEngineSessionBuildContext {
                 config: Default::default(),
                 team: None,
                 belongs_to_team: false,

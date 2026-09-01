@@ -1,4 +1,4 @@
-//! `aioncore doctor` subcommand: agent CLI detection self-check.
+//! `dreamcore doctor` subcommand: agent CLI detection self-check.
 //!
 //! Hydrates the agent registry against the real on-disk database and
 //! prints a per-agent availability table to stdout. Mirrors the
@@ -7,7 +7,7 @@
 //! does for the server, so managed runtimes and CLI commands resolve
 //! through the same paths the server uses.
 //!
-//! Writes to stdout (not the rolling aioncore.log) — the user
+//! Writes to stdout (not the rolling dreamcore.log) — the user
 //! typically runs `doctor` interactively after reporting "no agent
 //! works", and the answer needs to be visible in their terminal
 //! without grepping logs. We deliberately skip `init_environment` to

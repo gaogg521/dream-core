@@ -121,16 +121,16 @@ impl IpAllowlistGate for NoopIpAllowlistGate {
 pub enum AuthIdentityMode {
     Local,
     UserSession,
-    AionPro,
+    DreamPro,
 }
 
 /// Header carrying the conversation-runtime helper token minted by the backend
 /// and injected into agent subprocess environments as `ONE_RUNTIME_TOKEN`.
-pub const RUNTIME_TOKEN_HEADER: &str = "x-aionui-runtime-token";
+pub const RUNTIME_TOKEN_HEADER: &str = "x-dream-runtime-token";
 /// Header carrying the acting user id asserted by the helper CLI.
-pub const RUNTIME_USER_ID_HEADER: &str = "x-aionui-user-id";
+pub const RUNTIME_USER_ID_HEADER: &str = "x-dream-user-id";
 /// Header carrying the conversation id the helper CLI runs inside.
-pub const RUNTIME_CONVERSATION_ID_HEADER: &str = "x-aionui-conversation-id";
+pub const RUNTIME_CONVERSATION_ID_HEADER: &str = "x-dream-conversation-id";
 
 /// Port for validating conversation-runtime helper tokens.
 ///
@@ -206,7 +206,7 @@ pub struct AuthState {
     /// and injects a fixed default user, same as `local: true` did.
     pub identity_mode: AuthIdentityMode,
     /// Optional second credential channel for agent-subprocess helper CLIs
-    /// (`aioncore config` / `diagnose`), which cannot carry a JWT or cookies.
+    /// (`dreamcore config` / `diagnose`), which cannot carry a JWT or cookies.
     /// `None` disables the channel (requests without a JWT are rejected).
     pub runtime_token_verifier: Option<Arc<dyn IRuntimeTokenVerifier>>,
     /// IP-allowlist check, `None` to skip enforcement entirely (the default
@@ -303,7 +303,7 @@ pub async fn auth_middleware(
         })?
         .ok_or_else(|| ApiError::Unauthorized("Invalid authentication subject".into()))?;
 
-    if state.identity_mode == AuthIdentityMode::AionPro && user.user_type != UserType::Aionpro {
+    if state.identity_mode == AuthIdentityMode::DreamPro && user.user_type != UserType::DreamPro {
         return Err(ApiError::coded(
             StatusCode::UNAUTHORIZED,
             "USER_CONTEXT_REQUIRED",
@@ -394,7 +394,7 @@ async fn runtime_token_channel(state: &AuthState, mut request: Request, next: Ne
         })?
         .ok_or_else(|| ApiError::Unauthorized("Invalid authentication subject".into()))?;
 
-    if state.identity_mode == AuthIdentityMode::AionPro && user.user_type != UserType::Aionpro {
+    if state.identity_mode == AuthIdentityMode::DreamPro && user.user_type != UserType::DreamPro {
         return Err(ApiError::coded(
             StatusCode::UNAUTHORIZED,
             "USER_CONTEXT_REQUIRED",
@@ -416,7 +416,7 @@ async fn runtime_token_channel(state: &AuthState, mut request: Request, next: Ne
 /// Authenticate a request whose bearer token is shaped like an open-
 /// integration API key (`API_KEY_TOKEN_PREFIX`-prefixed) rather than a JWT.
 ///
-/// Applies the same AionPro identity-mode and IP-allowlist checks as the JWT
+/// Applies the same DreamPro identity-mode and IP-allowlist checks as the JWT
 /// path so an API key cannot bypass either — the only thing genuinely
 /// different about this credential is how it resolves to a user, and that
 /// it additionally restricts the caller to `allowed_paths`.
@@ -454,7 +454,7 @@ async fn api_key_channel(
         })?
         .ok_or_else(|| ApiError::Unauthorized("Invalid authentication subject".into()))?;
 
-    if state.identity_mode == AuthIdentityMode::AionPro && user.user_type != UserType::Aionpro {
+    if state.identity_mode == AuthIdentityMode::DreamPro && user.user_type != UserType::DreamPro {
         return Err(ApiError::coded(
             StatusCode::UNAUTHORIZED,
             "USER_CONTEXT_REQUIRED",

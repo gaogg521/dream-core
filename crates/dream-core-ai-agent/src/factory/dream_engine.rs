@@ -25,13 +25,13 @@ use crate::error::AgentError;
 use crate::factory::AgentFactoryDeps;
 use crate::factory::context::FactoryContext;
 use crate::factory::session_mcp::load_session_mcp_rows;
-use crate::manager::dream_engine::{AionrsAgentManager, sanitize_session_messages};
+use crate::manager::dream_engine::{DreamEngineAgentManager, sanitize_session_messages};
 use crate::runtime_status::conversation_runtime_reporter;
-use crate::session_context::AionrsSessionBuildContext;
-use crate::types::{AionrsCompatOverrides, AionrsResolvedConfig};
+use crate::session_context::DreamEngineSessionBuildContext;
+use crate::types::{DreamEngineCompatOverrides, DreamEngineResolvedConfig};
 pub(super) async fn build(
     deps: Arc<AgentFactoryDeps>,
-    build_context: AionrsSessionBuildContext,
+    build_context: DreamEngineSessionBuildContext,
     model: ProviderWithModel,
     ctx: FactoryContext,
 ) -> Result<AgentInstance, AgentError> {
@@ -172,7 +172,7 @@ pub(super) async fn build(
         overrides.fork.as_ref(),
     )?;
 
-    let config = AionrsResolvedConfig {
+    let config = DreamEngineResolvedConfig {
         provider,
         api_key,
         model: model_id,
@@ -227,7 +227,7 @@ pub(super) async fn build(
         }
     }
 
-    let agent = AionrsAgentManager::new(ctx.conversation_id, ctx.workspace, config, resume_session).await?;
+    let agent = DreamEngineAgentManager::new(ctx.conversation_id, ctx.workspace, config, resume_session).await?;
     Ok(AgentInstance::DreamEngine(Arc::new(agent)))
 }
 
@@ -376,7 +376,7 @@ fn resolve_dream_engine_url_and_compat(
     mapped_provider: &str,
     model_id: &str,
     is_full_url: bool,
-) -> (Option<String>, AionrsCompatOverrides) {
+) -> (Option<String>, DreamEngineCompatOverrides) {
     resolve_dream_engine_url_and_compat_with_mode(platform, raw_base_url, mapped_provider, model_id, is_full_url, None)
 }
 
@@ -387,8 +387,8 @@ pub(crate) fn resolve_dream_engine_url_and_compat_with_mode(
     model_id: &str,
     is_full_url: bool,
     openai_api_mode_override: Option<OpenAiApiMode>,
-) -> (Option<String>, AionrsCompatOverrides) {
-    let mut compat = AionrsCompatOverrides::default();
+) -> (Option<String>, DreamEngineCompatOverrides) {
+    let mut compat = DreamEngineCompatOverrides::default();
 
     // Ollama's native transport owns the endpoint path (`/api/chat`) and needs
     // the daemon root, not the OpenAI-compatible `/v1` prefix the UI presets
@@ -911,7 +911,7 @@ fn team_mcp_to_config(cfg: &TeamMcpStdioConfig) -> HashMap<String, McpServerConf
 /// the Codex compatibility bridge) so the two paths cannot drift apart.
 pub(crate) fn build_dream_engine_config(
     cli_args: &dream_engine_config::config::CliArgs,
-    compat_overrides: AionrsCompatOverrides,
+    compat_overrides: DreamEngineCompatOverrides,
     bedrock: Option<dream_engine_config::config::BedrockConfig>,
 ) -> Result<dream_engine_config::config::Config, AgentError> {
     let mut config = dream_engine_config::config::Config::resolve(cli_args)

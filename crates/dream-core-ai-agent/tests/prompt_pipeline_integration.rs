@@ -255,7 +255,7 @@ async fn text_only_bridge_replaces_image_path_with_an_honest_notice() {
     let image_path = r"C:\\attachments\\diagram.png".to_owned();
     let content = format!(
         "Please inspect this.\n\n{}\n{}",
-        dream_core_common::constants::ONE_FILES_MARKER,
+        dream_core_common::constants::FILES_MARKER,
         image_path
     );
 

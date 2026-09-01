@@ -57,7 +57,7 @@ async fn test_non_local_mode_requires_auth() {
 async fn test_local_mode_aionpro_requires_session_and_allows_bootstrap_provision_without_csrf() {
     let db = dream_core_db::init_database_memory().await.unwrap();
     let config = dream_core_app::AppConfig {
-        identity_mode: dream_core_app::IdentityMode::AionPro,
+        identity_mode: dream_core_app::IdentityMode::DreamPro,
         bootstrap_secret: Some("bootstrap-secret".to_string()),
         ..Default::default()
     };
@@ -77,7 +77,7 @@ async fn test_local_mode_aionpro_requires_session_and_allows_bootstrap_provision
                 .method("PUT")
                 .uri("/api/auth/internal/external-users/pro-app")
                 .header("content-type", "application/json")
-                .header("x-aioncore-bootstrap-secret", "bootstrap-secret")
+                .header("x-dreamcore-bootstrap-secret", "bootstrap-secret")
                 .body(Body::from(r#"{"user_type":"aionpro","username":"Pro App User"}"#))
                 .unwrap(),
         )

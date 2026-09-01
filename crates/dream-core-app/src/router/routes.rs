@@ -2746,7 +2746,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
             }))
         },
         local: services.local,
-        aionpro_mode: services.identity_mode == crate::config::IdentityMode::AionPro,
+        aionpro_mode: services.identity_mode == crate::config::IdentityMode::DreamPro,
     };
 
     // one-platform service (IP allowlist among other deployment-infra config)
@@ -3282,7 +3282,7 @@ fn auth_identity_mode(identity_mode: crate::config::IdentityMode) -> AuthIdentit
     match identity_mode {
         crate::config::IdentityMode::Local => AuthIdentityMode::Local,
         crate::config::IdentityMode::WebUi => AuthIdentityMode::UserSession,
-        crate::config::IdentityMode::AionPro => AuthIdentityMode::AionPro,
+        crate::config::IdentityMode::DreamPro => AuthIdentityMode::DreamPro,
     }
 }
 

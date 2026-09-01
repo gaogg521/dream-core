@@ -41,7 +41,7 @@ pub async fn csrf_middleware(
     // cannot attach cross-site without a CORS preflight. The token itself is
     // still fully validated by the auth middleware behind this layer.
     let is_runtime_token_request = request.headers().contains_key(crate::middleware::RUNTIME_TOKEN_HEADER);
-    // agy's PreToolUse callback. A local `aioncore antigravity-hook` process
+    // agy's PreToolUse callback. A local `dreamcore antigravity-hook` process
     // posts here for every tool the agent wants to run; it has no user session
     // and no CSRF token to present. The route is already deliberately outside
     // `auth_middleware` for that reason, and the handler authenticates it with a

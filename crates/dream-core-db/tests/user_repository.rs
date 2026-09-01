@@ -265,7 +265,7 @@ async fn t2_14_external_user_provision_is_idempotent() {
 
     let first = r
         .ensure_external_user(
-            UserType::Aionpro,
+            UserType::DreamPro,
             "pro-user-1",
             ExternalUserProjection {
                 username: Some("Pro User".to_string()),
@@ -276,12 +276,12 @@ async fn t2_14_external_user_provision_is_idempotent() {
         .await
         .unwrap();
     let second = r
-        .ensure_external_user(UserType::Aionpro, "pro-user-1", ExternalUserProjection::default())
+        .ensure_external_user(UserType::DreamPro, "pro-user-1", ExternalUserProjection::default())
         .await
         .unwrap();
 
     assert_eq!(first.id, second.id);
-    assert_eq!(first.user_type, UserType::Aionpro);
+    assert_eq!(first.user_type, UserType::DreamPro);
     assert_eq!(first.external_user_id.as_deref(), Some("pro-user-1"));
     assert!(first.password_hash.is_none());
     assert!(r.find_by_username("Pro User").await.unwrap().is_none());
@@ -292,7 +292,7 @@ async fn t2_15_disabled_user_is_not_active() {
     let r = repo().await;
     let user = r
         .ensure_external_user(
-            UserType::Aionpro,
+            UserType::DreamPro,
             "pro-user-disabled",
             ExternalUserProjection::default(),
         )

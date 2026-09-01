@@ -1,4 +1,4 @@
-use dream_core_common::constants::ONE_FILES_MARKER;
+use dream_core_common::constants::{FILES_MARKER, LEGACY_FILES_MARKER};
 use dream_engine_types::message::ContentBlock;
 
 const ATTACHED_FILES_HEADER: &str = "[Attached files]";
@@ -32,7 +32,10 @@ fn strip_attachment_metadata<'a>(content: &'a str, files: &[String]) -> &'a str 
     if files.is_empty() {
         return content;
     }
-    let Some((user_text, metadata)) = content.rsplit_once(ONE_FILES_MARKER) else {
+    let split = content
+        .rsplit_once(FILES_MARKER)
+        .or_else(|| content.rsplit_once(LEGACY_FILES_MARKER));
+    let Some((user_text, metadata)) = split else {
         return content;
     };
     let metadata_files = metadata.lines().map(str::trim).filter(|line| !line.is_empty());

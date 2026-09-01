@@ -92,7 +92,7 @@ impl IAgentTask for ScriptedAgent {
     }
 
     fn workspace(&self) -> &str {
-        "/tmp/aionui-channel-test"
+        "/tmp/dream-channel-test"
     }
 
     fn status(&self) -> Option<ConversationStatus> {

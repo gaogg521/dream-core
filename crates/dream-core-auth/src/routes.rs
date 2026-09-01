@@ -37,7 +37,7 @@ use crate::service::{AuthProvisionService, ProvisionError};
 use crate::validation::{validate_password, validate_username};
 use crate::{CookieConfig, JwtService};
 
-const BOOTSTRAP_SECRET_HEADER: &str = "x-aioncore-bootstrap-secret";
+const BOOTSTRAP_SECRET_HEADER: &str = "x-dreamcore-bootstrap-secret";
 
 pub type SessionRevokedHook = dyn Fn(&str) + Send + Sync;
 
@@ -272,7 +272,7 @@ pub fn auth_routes(state: AuthRouterState) -> Router {
         jwt_service: state.jwt_service.clone(),
         user_repo: state.user_repo.clone(),
         identity_mode: if state.aionpro_mode {
-            AuthIdentityMode::AionPro
+            AuthIdentityMode::DreamPro
         } else {
             AuthIdentityMode::UserSession
         },
@@ -856,7 +856,7 @@ async fn refresh_handler(
         })?
         .ok_or_else(|| ApiError::Unauthorized("Invalid authentication subject".into()))?;
 
-    if state.aionpro_mode && user.user_type != dream_core_db::UserType::Aionpro {
+    if state.aionpro_mode && user.user_type != dream_core_db::UserType::DreamPro {
         return Err(user_context_required());
     }
 
@@ -974,7 +974,7 @@ const QR_LOGIN_HTML: &str = r#"<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>QR Login - AionUI</title>
+<title>QR Login - One Work</title>
 <style>
   body { font-family: system-ui, sans-serif; display: flex; justify-content: center;
          align-items: center; min-height: 100vh; margin: 0; background: #f5f5f5; }
@@ -987,7 +987,7 @@ const QR_LOGIN_HTML: &str = r#"<!DOCTYPE html>
 </head>
 <body>
 <div class="card">
-  <h1>AionUI</h1>
+  <h1>One Work</h1>
   <p id="status" class="status">Processing login...</p>
 </div>
 <script>

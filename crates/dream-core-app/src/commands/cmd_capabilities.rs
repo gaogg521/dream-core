@@ -1,4 +1,4 @@
-//! Top-level agent-readable capability index for the `aioncore` binary.
+//! Top-level agent-readable capability index for the `dreamcore` binary.
 
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -20,10 +20,10 @@ pub(crate) fn run_capabilities() -> ExitCode {
 fn data() -> Value {
     json!({
         "schema_version": 1,
-        "contract": "agent-facing-aioncore-cli",
+        "contract": "agent-facing-dreamcore-cli",
         "stability": "stable",
-        "entrypoint": "aioncore capabilities",
-        "purpose": "Top-level index for agent-facing AionCore CLI domains.",
+        "entrypoint": "dreamcore capabilities",
+        "purpose": "Top-level index for agent-facing DreamCore CLI domains.",
         "output": {
             "stdout": "JSON envelope",
             "stderr": "single stable ..._FAILED error line when output cannot be written",
@@ -62,7 +62,7 @@ fn data() -> Value {
                 "description": "Manage 1One Work configuration: assistants, assistant rules, skills, MCP servers, providers, settings, agents, and scheduled tasks.",
                 "contract": "agent-facing-config-cli",
                 "contract_command": "config capabilities",
-                "invocation": "aioncore config capabilities",
+                "invocation": "dreamcore config capabilities",
                 "runtime_required": ["ONE_BASE_URL", "ONE_CONVERSATION_ID", "ONE_USER_ID"],
                 "safety": {
                     "can_write": true,
@@ -76,7 +76,7 @@ fn data() -> Value {
                 "description": "Diagnose a running 1One Work installation: backend health, conversations, provider health, MCP, cron, teams, logs, and controlled GET reads.",
                 "contract": "agent-facing-diagnose-cli",
                 "contract_command": "diagnose capabilities",
-                "invocation": "aioncore diagnose capabilities",
+                "invocation": "dreamcore diagnose capabilities",
                 "runtime_required": ["ONE_BASE_URL", "ONE_CONVERSATION_ID", "ONE_USER_ID"],
                 "optional_runtime": ["ONE_LOG_DIR"],
                 "safety": {
@@ -92,7 +92,7 @@ fn data() -> Value {
                 "description": "Agent-facing Team collaboration CLI fallback for agents without MCP injection.",
                 "contract": "agent-facing-team-cli",
                 "contract_command": "team capabilities",
-                "invocation": "aioncore team capabilities",
+                "invocation": "dreamcore team capabilities",
                 "runtime_required": ["ONE_BASE_URL", "ONE_CONVERSATION_ID", "ONE_USER_ID", "ONE_RUNTIME_TOKEN"],
                 "runtime_free_commands": ["team capabilities", "team help"],
                 "safety": {

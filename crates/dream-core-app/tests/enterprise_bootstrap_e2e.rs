@@ -23,7 +23,7 @@ async fn count(pool: &sqlx::SqlitePool, sql: &str) -> i64 {
 async fn first_run_provisions_a_working_default_enterprise_and_is_idempotent() {
     let db = dream_core_db::init_database_memory().await.unwrap();
     let config = dream_core_app::AppConfig {
-        identity_mode: dream_core_app::IdentityMode::AionPro,
+        identity_mode: dream_core_app::IdentityMode::DreamPro,
         bootstrap_secret: Some("bootstrap-secret".to_string()),
         ..Default::default()
     };

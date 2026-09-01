@@ -37,10 +37,10 @@ use crate::dev_prompt_dump::{AgentFinalInputDump, dump_agent_final_input};
 use crate::error::AgentError;
 use crate::protocol::events::{AgentStreamEvent, ToolCallStatus};
 use crate::protocol::send_error::AgentSendError;
-use crate::types::{AionrsResolvedConfig, SendMessageData};
+use crate::types::{DreamEngineResolvedConfig, SendMessageData};
 
 use super::content::build_content_blocks;
-use super::error::{aionrs_engine_error_to_send_error, aionrs_runtime_error_summary};
+use super::error::{engine_error_to_send_error, engine_runtime_error_summary};
 
 /// Ceiling on agentic turns within one user message, when the conversation
 /// does not set its own.
@@ -155,7 +155,7 @@ fn turn_limit_send_error(detail: String) -> AgentSendError {
     )
 }
 
-fn resolve_aionui_config(cli_args: &CliArgs) -> Result<Config, AgentError> {
+fn resolve_engine_config(cli_args: &CliArgs) -> Result<Config, AgentError> {
     let mut config =
         Config::resolve(cli_args).map_err(|e| AgentError::internal(format!("Config resolve failed: {e}")))?;
 
@@ -175,7 +175,7 @@ fn resolve_aionui_config(cli_args: &CliArgs) -> Result<Config, AgentError> {
 }
 
 #[derive(Clone, Debug)]
-struct AionrsFinalInputDumpContext {
+struct DreamEngineFinalInputDumpContext {
     dump_dir: PathBuf,
     provider: String,
     model: String,
@@ -187,15 +187,15 @@ struct AionrsFinalInputDumpContext {
     runtime_env: Vec<(String, String)>,
 }
 
-fn build_aionrs_final_input_dump_value(
+fn build_engine_final_input_dump_value(
     conversation_id: &str,
     workspace: &str,
-    context: &AionrsFinalInputDumpContext,
+    context: &DreamEngineFinalInputDumpContext,
     data: &SendMessageData,
 ) -> Value {
     serde_json::json!({
-        "kind": "aionrs-final-input",
-        "backend": "aionrs",
+        "kind": "dream-final-input",
+        "backend": "dream",
         "conversation_id": conversation_id,
         "session_id": "none",
         "msg_id": data.msg_id,
@@ -219,7 +219,7 @@ fn build_aionrs_final_input_dump_value(
     })
 }
 
-pub struct AionrsAgentManager {
+pub struct DreamEngineAgentManager {
     runtime: AgentRuntime,
     engine: Mutex<AgentEngine>,
     /// Static slash command metadata captured at bootstrap so UI lookups do
@@ -234,7 +234,7 @@ pub struct AionrsAgentManager {
     mcp_managers: Vec<Arc<McpManager>>,
     approval_manager: Arc<ToolApprovalManager>,
     confirmations: Arc<RwLock<Vec<Confirmation>>>,
-    final_input_dump: Option<AionrsFinalInputDumpContext>,
+    final_input_dump: Option<DreamEngineFinalInputDumpContext>,
     /// Signalled by `cancel()` to abort an in-flight `engine.run()` via
     /// `tokio::select!` in `send_message()`.
     cancel_notify: Arc<Notify>,
@@ -242,7 +242,7 @@ pub struct AionrsAgentManager {
     turn_finished_notify: Arc<Notify>,
 }
 
-impl Drop for AionrsAgentManager {
+impl Drop for DreamEngineAgentManager {
     fn drop(&mut self) {
         // McpManagers are held alive by the `mcp_managers` field specifically
         // so they outlive the agent's event loop. No explicit cleanup is needed
@@ -252,11 +252,11 @@ impl Drop for AionrsAgentManager {
     }
 }
 
-impl AionrsAgentManager {
+impl DreamEngineAgentManager {
     pub async fn new(
         conversation_id: String,
         workspace: String,
-        config_extra: AionrsResolvedConfig,
+        config_extra: DreamEngineResolvedConfig,
         resume_session: Option<Session>,
     ) -> Result<Self, AgentError> {
         let runtime = AgentRuntime::new(conversation_id.clone(), workspace.clone(), 128);
@@ -284,7 +284,7 @@ impl AionrsAgentManager {
         let final_input_dump = config_extra
             .prompt_dump_dir
             .clone()
-            .map(|dump_dir| AionrsFinalInputDumpContext {
+            .map(|dump_dir| DreamEngineFinalInputDumpContext {
                 dump_dir,
                 provider: config_extra.provider.clone(),
                 model: config_extra.model.clone(),
@@ -322,7 +322,7 @@ impl AionrsAgentManager {
             project_dir: Some(PathBuf::from(&workspace)),
         };
 
-        let mut config = resolve_aionui_config(&cli_args)?;
+        let mut config = resolve_engine_config(&cli_args)?;
 
         // User-declared context window: compaction must trigger inside the
         // real window (a local Ollama model's 8k, not the 200k default), and
@@ -375,7 +375,7 @@ impl AionrsAgentManager {
                 conversation_id = %conversation_id,
                 session_id = %session.id,
                 message_count = session.messages.len(),
-                "Resuming aionrs session"
+                "Resuming DreamEngine session"
             );
             bootstrap = bootstrap.resume(session);
         }
@@ -459,12 +459,12 @@ impl AionrsAgentManager {
         was_running
     }
 
-    fn dump_aionrs_final_input(&self, data: &SendMessageData) {
+    fn dump_engine_final_input(&self, data: &SendMessageData) {
         let Some(context) = self.final_input_dump.as_ref() else {
             return;
         };
 
-        let value = build_aionrs_final_input_dump_value(
+        let value = build_engine_final_input_dump_value(
             self.runtime.conversation_id(),
             self.runtime.workspace(),
             context,
@@ -476,8 +476,8 @@ impl AionrsAgentManager {
         match dump_agent_final_input(
             &context.dump_dir,
             AgentFinalInputDump {
-                kind: "aionrs-final-input",
-                backend: "aionrs",
+                kind: "dream-final-input",
+                backend: "dream",
                 conversation_id: self.runtime.conversation_id(),
                 session_id: None,
                 msg_id: Some(data.msg_id.as_str()),
@@ -557,7 +557,7 @@ fn build_turn_usage_frame(context_usage: u64, context_window: u64, usage: Option
 }
 
 #[async_trait::async_trait]
-impl IAgentTask for AionrsAgentManager {
+impl IAgentTask for DreamEngineAgentManager {
     fn agent_type(&self) -> AgentType {
         AgentType::DreamEngine
     }
@@ -592,7 +592,7 @@ impl IAgentTask for AionrsAgentManager {
         );
         self.runtime.bump_activity();
         self.runtime.reset_for_new_turn(ConversationStatus::Running);
-        self.dump_aionrs_final_input(&data);
+        self.dump_engine_final_input(&data);
 
         // Keep attachment paths in the provider-independent history. Images
         // are loaded on demand by dream's ViewImage tool.
@@ -696,7 +696,7 @@ impl IAgentTask for AionrsAgentManager {
                 Err(send_error)
             }
             TurnOutcome::Completed(Err(e)) => {
-                let summary = aionrs_runtime_error_summary(&e);
+                let summary = engine_runtime_error_summary(&e);
                 error!(
                     conversation_id = %self.runtime.conversation_id(),
                     elapsed_ms,
@@ -704,8 +704,8 @@ impl IAgentTask for AionrsAgentManager {
                     "DreamEngine engine.run() failed, emitting Error"
                 );
                 error!(
-                    target: "aionui_feedback_diagnostics",
-                    diagnostic_event = "feedback.runtime.aionrs_error",
+                    target: "dream_feedback_diagnostics",
+                    diagnostic_event = "feedback.runtime.dream_engine_error",
                     conversation_id = %self.runtime.conversation_id(),
                     msg_id = %data.msg_id,
                     turn_id = data.turn_id.as_deref().unwrap_or("none"),
@@ -715,14 +715,14 @@ impl IAgentTask for AionrsAgentManager {
                     http_status = summary.http_status,
                     failure_count = summary.failure_count,
                     failure_limit = summary.failure_limit,
-                    "feedback.runtime.aionrs_error"
+                    "feedback.runtime.dream_engine_error"
                 );
                 // Occupancy without a breakdown: the turn produced no
                 // `AgentResult`, but the tokens it burned before failing are
                 // gone all the same, and an indicator frozen at the previous
                 // number reads as "that attempt was free".
                 self.emit_turn_usage(&engine, None);
-                let send_error = aionrs_engine_error_to_send_error(&e);
+                let send_error = engine_error_to_send_error(&e);
                 self.runtime.emit_error_data(send_error.stream_error().clone());
                 Err(send_error)
             }
@@ -749,7 +749,7 @@ impl IAgentTask for AionrsAgentManager {
     }
 }
 
-impl AionrsAgentManager {
+impl DreamEngineAgentManager {
     /// Report the turn's token usage, so the context indicator has something to
     /// show for a dream conversation.
     ///
@@ -845,7 +845,7 @@ impl AionrsAgentManager {
             {
                 warn!(
                     conversation_id,
-                    "Timed out waiting for aionrs turn to finish after kill"
+                    "Timed out waiting for the DreamEngine turn to finish after kill"
                 );
             }
         })
@@ -854,7 +854,7 @@ impl AionrsAgentManager {
 
 /// DreamEngine-specific operations reached through `AgentInstance::DreamEngine(..)`
 /// matches in the routes + services.
-impl AionrsAgentManager {
+impl DreamEngineAgentManager {
     pub fn confirm(&self, _msg_id: &str, call_id: &str, data: Value, always_allow: bool) -> Result<(), AgentError> {
         if let Ok(mut confs) = self.confirmations.write() {
             confs.retain(|c| c.call_id != call_id);
@@ -919,7 +919,7 @@ impl AionrsAgentManager {
 
     pub async fn config_options(&self) -> Result<GetConfigOptionsResponse, AgentError> {
         Ok(GetConfigOptionsResponse {
-            config_options: vec![aionrs_mode_config_option(self.approval_manager.current_mode())],
+            config_options: vec![dream_engine_mode_config_option(self.approval_manager.current_mode())],
         })
     }
 
@@ -932,7 +932,7 @@ impl AionrsAgentManager {
                 "Config option '{option_id}' is not available"
             )));
         }
-        if !is_aionrs_session_mode(value) {
+        if !is_dream_engine_session_mode(value) {
             return Err(AgentError::bad_request(format!(
                 "Value '{value}' is not selectable for config option '{option_id}'"
             )));
@@ -952,11 +952,11 @@ impl AionrsAgentManager {
 
 const AIONRS_MODE_OPTION_ID: &str = "mode";
 
-fn is_aionrs_session_mode(s: &str) -> bool {
+fn is_dream_engine_session_mode(s: &str) -> bool {
     matches!(s, "default" | "auto_edit" | "yolo")
 }
 
-fn aionrs_mode_config_option(current_value: String) -> AcpConfigOptionDto {
+fn dream_engine_mode_config_option(current_value: String) -> AcpConfigOptionDto {
     AcpConfigOptionDto {
         id: AIONRS_MODE_OPTION_ID.to_owned(),
         name: Some("Mode".to_owned()),

@@ -1,4 +1,4 @@
-//! `aioncore mcp-team-stdio` subcommand: MCP stdio server for team tools.
+//! `dreamcore mcp-team-stdio` subcommand: MCP stdio server for team tools.
 //!
 //! Uses the `rmcp` crate (Rust MCP SDK) for protocol handling. Tool calls are
 //! forwarded to the TeamMcpServer TCP listener via 4-byte big-endian

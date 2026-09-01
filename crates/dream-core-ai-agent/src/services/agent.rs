@@ -140,8 +140,8 @@ impl AgentService {
             .as_ref()
             .is_some_and(|entries| entries.iter().any(|entry| !entry.name.trim().is_empty()));
 
-        if (command_override.is_some() || has_env_override) && is_internal_aion_cli_row(&row) {
-            return Err(AgentError::bad_request("Internal Aion CLI does not support overrides"));
+        if (command_override.is_some() || has_env_override) && is_internal_dream_cli_row(&row) {
+            return Err(AgentError::bad_request("Internal Dream CLI does not support overrides"));
         }
 
         // Launch-path overrides only make sense for direct-CLI rows. Bridge-launched
@@ -190,7 +190,7 @@ impl AgentService {
             .unwrap_or_default();
 
         Ok(dream_core_api_types::AgentOverridesResponse {
-            command_override: if is_internal_aion_cli_row(&row) {
+            command_override: if is_internal_dream_cli_row(&row) {
                 None
             } else {
                 row.command_override
@@ -219,6 +219,6 @@ fn is_bridge_launched_row(row: &dream_core_db::AgentMetadataRow) -> bool {
     }
 }
 
-fn is_internal_aion_cli_row(row: &dream_core_db::AgentMetadataRow) -> bool {
+fn is_internal_dream_cli_row(row: &dream_core_db::AgentMetadataRow) -> bool {
     row.agent_type.eq_ignore_ascii_case("dream") && row.agent_source.eq_ignore_ascii_case("internal")
 }

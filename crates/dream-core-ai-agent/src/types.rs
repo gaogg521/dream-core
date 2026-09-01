@@ -144,7 +144,7 @@ impl RuntimeCapabilities {
 
 /// Provider-specific compat overrides resolved in the factory.
 #[derive(Debug, Clone, Default)]
-pub struct AionrsCompatOverrides {
+pub struct DreamEngineCompatOverrides {
     pub(crate) openai_api_mode: Option<OpenAiApiMode>,
     pub(crate) image_input: Option<ImageInputCapability>,
     pub max_tokens_field: Option<String>,
@@ -153,7 +153,7 @@ pub struct AionrsCompatOverrides {
 
 /// Fully resolved DreamEngine configuration passed to the agent manager.
 #[derive(Debug, Clone)]
-pub struct AionrsResolvedConfig {
+pub struct DreamEngineResolvedConfig {
     /// LLM provider name (anthropic, openai, bedrock, vertex).
     pub provider: String,
     /// Decrypted API key.
@@ -178,7 +178,7 @@ pub struct AionrsResolvedConfig {
     /// Max repeated tool-call failure turns before stopping.
     pub max_tool_call_failure_turns: Option<usize>,
     /// Provider-specific compat overrides.
-    pub compat_overrides: AionrsCompatOverrides,
+    pub compat_overrides: DreamEngineCompatOverrides,
     /// A vision-capable model from the user's configured providers that the
     /// `ReadImage` tool delegates to when [`Self::model`] cannot accept images.
     ///

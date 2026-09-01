@@ -98,7 +98,7 @@ async fn async_main(merged_path: String, cli: Cli) -> Result<ExitCode, MainError
             let mut env = bootstrap::init_environment(&cli, &merged_path)?;
 
             // Acquire the data-dir process-level guard before binding a port or
-            // touching the DB, so a second aioncore yields structurally rather
+            // touching the DB, so a second dreamcore yields structurally rather
             // than racing the assistant bootstrap over the same data directory
             // (Sentry 135525166). Held (via `_instance_guard`, not a bare `_`,
             // which would drop and release it immediately) for the whole server
@@ -122,7 +122,7 @@ async fn async_main(merged_path: String, cli: Cli) -> Result<ExitCode, MainError
                             return Err(MainError::Bootstrap(bootstrap::BootstrapError::new(
                                 bootstrap::BootstrapErrorCode::PeerAlreadyRunning,
                                 "instance_guard.acquire",
-                                "another aioncore already owns this data directory",
+                                "another dreamcore already owns this data directory",
                             )));
                         }
                         Err(error) => {

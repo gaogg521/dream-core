@@ -1,4 +1,4 @@
-//! `aioncore antigravity-hook`: agy's PreToolUse gate.
+//! `dreamcore antigravity-hook`: agy's PreToolUse gate.
 //!
 //! agy runs this once per tool call, writing the request to our stdin and
 //! reading the decision from our stdout. We forward the request to the running
@@ -24,7 +24,7 @@ pub(crate) async fn run_antigravity_hook() -> ExitCode {
     let body = serde_json::to_string(&decision).unwrap_or_else(|_| {
         // Serializing our own type cannot realistically fail, but agy MUST get
         // parseable JSON or it will treat the hook as broken.
-        r#"{"decision":"deny","reason":"aionui hook could not serialize its answer"}"#.to_owned()
+        r#"{"decision":"deny","reason":"dream hook could not serialize its answer"}"#.to_owned()
     });
     let mut stdout = tokio::io::stdout();
     let _ = stdout.write_all(body.as_bytes()).await;
@@ -35,17 +35,17 @@ pub(crate) async fn run_antigravity_hook() -> ExitCode {
 async fn decide() -> AntigravityHookOutput {
     let mut raw = String::new();
     if let Err(e) = tokio::io::stdin().read_to_string(&mut raw).await {
-        return AntigravityHookOutput::deny(format!("aionui hook could not read the request: {e}"));
+        return AntigravityHookOutput::deny(format!("dream hook could not read the request: {e}"));
     }
     let input: AntigravityHookInput = match serde_json::from_str(&raw) {
         Ok(v) => v,
-        Err(e) => return AntigravityHookOutput::deny(format!("aionui hook could not parse the request: {e}")),
+        Err(e) => return AntigravityHookOutput::deny(format!("dream hook could not parse the request: {e}")),
     };
 
     let base_url = match std::env::var(AntigravityHookConfig::ENV_BASE_URL) {
         Ok(v) if !v.trim().is_empty() => v,
         _ => {
-            return AntigravityHookOutput::deny("aionui hook is not configured (missing callback address)");
+            return AntigravityHookOutput::deny("dream hook is not configured (missing callback address)");
         }
     };
     let token = std::env::var(AntigravityHookConfig::ENV_TOKEN).unwrap_or_default();
@@ -60,7 +60,7 @@ async fn decide() -> AntigravityHookOutput {
     );
     let client = match reqwest::Client::builder().timeout(CALLBACK_TIMEOUT).build() {
         Ok(c) => c,
-        Err(e) => return AntigravityHookOutput::deny(format!("aionui hook could not build its client: {e}")),
+        Err(e) => return AntigravityHookOutput::deny(format!("dream hook could not build its client: {e}")),
     };
 
     match client
@@ -78,7 +78,7 @@ async fn decide() -> AntigravityHookOutput {
         }
         // The user closed Dream UI, the turn was cancelled, or nobody answered in
         // time. Denying is the only safe reading of "no answer".
-        Err(e) => AntigravityHookOutput::deny(format!("aionui did not answer: {e}")),
+        Err(e) => AntigravityHookOutput::deny(format!("dream did not answer: {e}")),
     }
 }
 
@@ -105,13 +105,13 @@ fn decision_from_response(status: reqwest::StatusCode, body: &str) -> Antigravit
             .ok()
             .and_then(|v| v["code"].as_str().map(str::to_owned));
         return match code {
-            Some(code) => AntigravityHookOutput::deny(format!("aionui refused the request: HTTP {status} ({code})")),
-            None => AntigravityHookOutput::deny(format!("aionui refused the request: HTTP {status}")),
+            Some(code) => AntigravityHookOutput::deny(format!("dream refused the request: HTTP {status} ({code})")),
+            None => AntigravityHookOutput::deny(format!("dream refused the request: HTTP {status}")),
         };
     }
     match serde_json::from_str::<AntigravityHookOutput>(body) {
         Ok(out) => out,
-        Err(e) => AntigravityHookOutput::deny(format!("aionui returned an unreadable decision: {e}")),
+        Err(e) => AntigravityHookOutput::deny(format!("dream returned an unreadable decision: {e}")),
     }
 }
 

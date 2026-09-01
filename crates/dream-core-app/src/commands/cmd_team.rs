@@ -97,9 +97,9 @@ struct RuntimeEnv {
 impl RuntimeEnv {
     fn headers(&self) -> reqwest::header::HeaderMap {
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert("x-aionui-user-id", self.user_id.parse().unwrap());
-        headers.insert("x-aionui-conversation-id", self.conversation_id.parse().unwrap());
-        headers.insert("x-aionui-runtime-token", self.runtime_token.parse().unwrap());
+        headers.insert("x-dream-user-id", self.user_id.parse().unwrap());
+        headers.insert("x-dream-conversation-id", self.conversation_id.parse().unwrap());
+        headers.insert("x-dream-runtime-token", self.runtime_token.parse().unwrap());
         headers
     }
 }

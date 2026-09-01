@@ -1,4 +1,4 @@
-//! E2E coverage for the agent-facing `aioncore diagnose` CLI.
+//! E2E coverage for the agent-facing `dreamcore diagnose` CLI.
 
 use axum::extract::{Path, State};
 use axum::routing::get;
