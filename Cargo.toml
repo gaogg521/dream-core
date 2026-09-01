@@ -249,3 +249,14 @@ debug = "line-tables-only"
 split-debuginfo = "unpacked"
 incremental = false
 
+
+# LOCAL DEV ONLY - point the engine deps at the sibling checkout so uncommitted
+# dream-engine changes (e.g. the Ollama native transport) are visible here.
+# Remove before committing; the committed build tracks the git branch above.
+[patch."https://github.com/gaogg521/dream-engine.git"]
+dream-engine-agent = { path = "../dream-engine/crates/dream-engine-agent" }
+dream-engine-providers = { path = "../dream-engine/crates/dream-engine-providers" }
+dream-engine-types = { path = "../dream-engine/crates/dream-engine-types" }
+dream-engine-protocol = { path = "../dream-engine/crates/dream-engine-protocol" }
+dream-engine-config = { path = "../dream-engine/crates/dream-engine-config" }
+dream-engine-mcp = { path = "../dream-engine/crates/dream-engine-mcp" }
