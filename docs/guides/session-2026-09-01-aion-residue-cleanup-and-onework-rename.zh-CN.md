@@ -247,3 +247,58 @@
 7. **注释改写的语义红线**：指"历史版本"的注释（pre-fork、legacy 名、older than
    the rename）不能盲改，本会话在 comment-only pass 里加了 legacy-note 守卫 + 事后
    diff 复核，仍人工修回了两处（"legacy `aioncore` name"、"(pre-fork) aioncore"）。
+
+## 九、复核发现并修复的 bug（另一会话，2026-09-01 当天）
+
+用户要求对本次改名做一次独立全量复核。除了下面两条**流程问题**（未改代码，仅记录、
+由用户后续处理）：
+
+- **改动被直接推送、未经 PR review**：本文档 §六原写"改动未提交，待 review"，实际
+  dream-core `310fea6` / dream-ui `1a49271` 当时已经 push 完毕。dream-ui 的 205 文件
+  改动直接进了 `main`，没走 PR；dream-core 的 153 文件改动落在了一个语义不相关的分支
+  `fix/enterprise-bootstrap-and-admin-ui` 上（该分支自身还领先 main 4 个不相关 commit：
+  Ollama provider 接线、企业版首启等）。
+- **文件数对不上**：本文档和 MIGRATION-STATUS.md 原写 dream-core 141 文件 / dream-ui
+  196 文件，实际 commit 是 153 / 205——差值主要是几个企业版相关文件（`admin.rs`、
+  `enterprise-image.yml` 等，抽查确认改动本身合法，只是当时没数进统计）。
+
+复核在 §六"验证记录"里点名的**验证盲区**——`dream-core-channel` 的 6 个渠道插件
+（telegram/lark/dingtalk/weixin/slack/discord）在 `Cargo.toml` 里 `default = []`，
+`cargo nextest run -p dream-core-channel`（不带 `--features`）根本不会编译这些插件的
+代码，实测确认（`cargo test -p dream-core-channel --lib` 直接 0 tests matched）——真
+找到并修复了 5 处代码 bug：
+
+1. **`diagnose logs tail` 命令对新装实例必定失效**：`cmd_diagnose.rs` 的
+   `collect_aioncore_logs` 只匹配文件名以 `.aioncore.log` 结尾，但实际日志文件名是
+   `dreamcore.log`/`dream-engine.log`（`tracing_init.rs` 的 `DailyDatedLogWriter`）——
+   两者完全对不上，该函数此前 0 测试覆盖。已改为匹配
+   `.dreamcore.log`/`.dream-engine.log`/`.aioncore.log`/`.aionrs.log` 四种后缀（跟
+   dream-ui `logs.ts` 的 `LOG_SUFFIXES` 对齐），并补了 2 条回归测试
+   （`collect_dreamcore_logs_finds_current_and_legacy_suffixes`、
+   `tail_latest_log_reads_the_most_recently_written_dreamcore_log`）。
+2. **dingtalk 测试断言停在旧值**：`plugins/dingtalk/types.rs` 的
+   `register_stream_request_includes_credentials` 测试构造的输入是
+   `ua: Some("dreamcore".into())`（生产代码已改对），但断言写的还是
+   `assert_eq!(json["ua"], "aioncore")`——开 `dingtalk` feature 跑必定 panic。改成
+   断言 `"dreamcore"`。
+3. **discord 测试断言停在旧值**：`plugins/discord/types_test.rs` 的
+   `identify_has_op_and_intents` 断言 `browser == "aionui"`，但生产代码
+   （`discord/types.rs:187`）已经发送 `browser: "dream"`——同样开 `discord` feature
+   跑必定 panic。改成断言 `"dream"`。
+4. **`main.rs` 一行日志文案半改**：`instance_guard.acquire` 分支里返回给调用方的错误
+   文案已经是"another dreamcore already owns this data directory"，但紧挨着的
+   `tracing::info!` 那行还写着"another aioncore owns the data directory; yielding"。
+   同步改成 dreamcore。
+5. **`services.rs` 的二进制路径兜底值没跟着改**：`current_exe()` 失败时的 fallback
+   写的是 `PathBuf::from("aioncore")`，但二进制早已改名 `dreamcore`，这条兜底路径找
+   的文件理论上已经不存在。改成 `"dreamcore"`。
+
+抽查过程中确认**没有额外问题**的地方：dream-en 的 `af7d0ba`（`ONE_HOST`/
+`ONE_DATA_DIR`/`ONE_ADMIN_PORT` 与 `admin.rs`/`cli.rs` 实际读的 env 名核对一致）、
+one-work-content 的 moltbook 技能移除、dream-ui 生产代码里抽查的十几处
+`aionui`/`aioncore` 残留（基本都命中 §五白名单，如 `LEGACY_BUTLER_ASSISTANT_ID`、
+`__aionui_theme` 回退等）、dream-engine（无残留）。
+
+验证：`cargo nextest run -p dream-core-app -p dream-core-channel --features
+dream-core-channel/dingtalk,dream-core-channel/discord` 全绿（app 874/874 不变，
+说明修复不影响既有行为）。

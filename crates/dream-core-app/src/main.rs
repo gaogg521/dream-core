@@ -117,7 +117,7 @@ async fn async_main(merged_path: String, cli: Cli) -> Result<ExitCode, MainError
                         Ok(None) => {
                             tracing::info!(
                                 stage = "instance_guard.acquire",
-                                "another aioncore owns the data directory; yielding"
+                                "another dreamcore owns the data directory; yielding"
                             );
                             return Err(MainError::Bootstrap(bootstrap::BootstrapError::new(
                                 bootstrap::BootstrapErrorCode::PeerAlreadyRunning,
