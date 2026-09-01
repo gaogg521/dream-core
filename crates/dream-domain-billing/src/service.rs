@@ -12,7 +12,7 @@ use dream_core_common::license::{
     Feature, Tier, estimate_cost_micros, estimate_media_cost_micros, tier_allows, tier_seat_limit,
 };
 use dream_core_common::{generate_prefixed_id, now_ms};
-use dream_core_db::{day_bucket_expr, DbBackend, DbPool, db_params};
+use dream_core_db::{day_bucket_expr, DbPool, db_params};
 
 use crate::error::BillingError;
 use crate::models::{
@@ -398,6 +398,28 @@ impl BillingService {
              ON DUPLICATE KEY UPDATE tier = new.tier, seat_limit = new.seat_limit, \
                  expires_at = NULL, updated_at = new.updated_at",
             &db_params![enterprise_id, tier.as_str(), seat_limit, now_ms()],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Idempotently seed the deployment's default company license as
+    /// `enterprise` tier with unlimited seats. Called once at startup from the
+    /// app-layer bootstrap, so an auto-provisioned install is not *more*
+    /// restricted than one grandfathered by `billing_001_init.sql` (which set
+    /// every pre-existing `one_enterprises` row to `enterprise`).
+    ///
+    /// `DO NOTHING` on conflict — a later [`Self::activate_license`] or a
+    /// deliberate [`Self::set_tier`] downgrade is never overwritten on
+    /// restart. (`set_tier` cannot be used here: it rejects the
+    /// free→enterprise raise as [`BillingError::UpgradeRequiresLicense`].)
+    pub async fn ensure_default_license(&self, enterprise_id: &str) -> Result<(), BillingError> {
+        self.upsert(
+            "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at) \
+             VALUES (?, ?, NULL, NULL, ?) ON CONFLICT(enterprise_id) DO NOTHING",
+            "INSERT IGNORE INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at) \
+             VALUES (?, ?, NULL, NULL, ?)",
+            &db_params![enterprise_id, Tier::Enterprise.as_str(), now_ms()],
         )
         .await?;
         Ok(())
@@ -3517,5 +3539,54 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn ensure_default_license_sets_enterprise_tier_with_unlimited_seats() {
+        let (svc, _sqlite) = service().await;
+        svc.ensure_default_license("ent-boot").await.unwrap();
+        let license = svc.license_of("ent-boot").await.unwrap();
+        assert_eq!(license.tier, Tier::Enterprise);
+        assert_eq!(license.seat_limit, None);
+        assert_eq!(license.expires_at, None);
+    }
+
+    #[tokio::test]
+    async fn ensure_default_license_never_clobbers_an_existing_row() {
+        let (svc, _sqlite) = service().await;
+        // An admin deliberately downgraded to free with a seat cap.
+        svc.set_tier("ent-boot", Tier::Free, Some(3)).await.unwrap();
+        // A later restart re-runs the bootstrap — it must be a no-op.
+        svc.ensure_default_license("ent-boot").await.unwrap();
+        svc.ensure_default_license("ent-boot").await.unwrap();
+        let license = svc.license_of("ent-boot").await.unwrap();
+        assert_eq!(license.tier, Tier::Free);
+        assert_eq!(license.seat_limit, Some(3));
+    }
+
+    /// Real MySQL: exercises `ensure_default_license`'s `INSERT IGNORE` branch.
+    /// Requires `DREAM_TEST_MYSQL_URL`; skipped when unset.
+    #[tokio::test]
+    async fn ensure_default_license_round_trip_on_mysql() {
+        let Some(mysql_db) = dream_core_db::testing::mysql_test_pool().await else {
+            eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
+            return;
+        };
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS one_enterprises (id VARCHAR(255) PRIMARY KEY, provider VARCHAR(64) NULL, external_id VARCHAR(255) NULL, display_name VARCHAR(255) NULL, created_at BIGINT NULL, updated_at BIGINT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_as_cs;",
+        )
+        .execute(mysql_db.pool.mysql())
+        .await
+        .unwrap();
+        crate::migrate::run_one_billing_migrations(&mysql_db.pool).await.unwrap();
+        let svc = BillingService::new(mysql_db.pool.clone(), Arc::new(ManualBillingProvider));
+
+        svc.ensure_default_license("ent-boot").await.unwrap();
+        svc.ensure_default_license("ent-boot").await.unwrap(); // idempotent
+        let license = svc.license_of("ent-boot").await.unwrap();
+        assert_eq!(license.tier, Tier::Enterprise);
+        assert_eq!(license.seat_limit, None);
+
+        mysql_db.cleanup().await.unwrap();
     }
 }
