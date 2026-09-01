@@ -902,7 +902,7 @@ fn tail_latest_log(
     command: &str,
 ) -> Result<Value, DiagnoseError> {
     let mut files = Vec::new();
-    collect_aioncore_logs(log_dir, 0, &mut files).map_err(|_| {
+    collect_dreamcore_logs(log_dir, 0, &mut files).map_err(|_| {
         DiagnoseError::new(
             DiagnoseErrorCode::LogReadFailed,
             command,
@@ -919,8 +919,12 @@ fn tail_latest_log(
         .max_by_key(|(_, modified)| *modified)
         .map(|(path, _)| path)
         .ok_or_else(|| {
-            DiagnoseError::new(DiagnoseErrorCode::LogNotFound, command, "no *.aioncore.log files found")
-                .field("path", log_dir.display().to_string())
+            DiagnoseError::new(
+                DiagnoseErrorCode::LogNotFound,
+                command,
+                "no *.dreamcore.log/*.dream-engine.log files found",
+            )
+            .field("path", log_dir.display().to_string())
         })?;
     let raw = std::fs::read_to_string(&latest).map_err(|_| {
         DiagnoseError::new(DiagnoseErrorCode::LogReadFailed, command, "failed to read log file")
@@ -953,7 +957,12 @@ fn tail_latest_log(
     }))
 }
 
-fn collect_aioncore_logs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> io::Result<()> {
+/// Log file suffixes to search for, kept in sync with dream-ui's
+/// `LOG_SUFFIXES` in `packages/desktop/src/process/feedback/logs.ts`:
+/// current names plus legacy ones so historical logs remain readable.
+const DREAMCORE_LOG_SUFFIXES: [&str; 4] = [".dreamcore.log", ".dream-engine.log", ".aioncore.log", ".aionrs.log"];
+
+fn collect_dreamcore_logs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> io::Result<()> {
     if depth > MAX_LOG_SEARCH_DEPTH || !dir.is_dir() {
         return Ok(());
     }
@@ -961,11 +970,11 @@ fn collect_aioncore_logs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> io
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            collect_aioncore_logs(&path, depth + 1, out)?;
+            collect_dreamcore_logs(&path, depth + 1, out)?;
         } else if path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.ends_with(".aioncore.log"))
+            .is_some_and(|name| DREAMCORE_LOG_SUFFIXES.iter().any(|suffix| name.ends_with(suffix)))
         {
             out.push(path);
         }
@@ -1196,5 +1205,41 @@ mod tests {
     #[test]
     fn path_segments_are_percent_encoded() {
         assert_eq!(encode_path_segment("a/b c"), "a%2Fb%20c");
+    }
+
+    #[test]
+    fn collect_dreamcore_logs_finds_current_and_legacy_suffixes() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "2026-09-01.dreamcore.log",
+            "2026-09-01.dream-engine.log",
+            "2026-08-01.aioncore.log",
+            "2026-08-01.aionrs.log",
+            "not-a-log.txt",
+        ] {
+            std::fs::write(dir.path().join(name), "").unwrap();
+        }
+        let mut files = Vec::new();
+        collect_dreamcore_logs(dir.path(), 0, &mut files).unwrap();
+        let names: Vec<_> = files.iter().filter_map(|p| p.file_name()?.to_str()).collect();
+        assert_eq!(names.len(), 4, "{names:?}");
+        assert!(names.contains(&"2026-09-01.dreamcore.log"));
+        assert!(names.contains(&"2026-09-01.dream-engine.log"));
+        assert!(names.contains(&"2026-08-01.aioncore.log"));
+        assert!(names.contains(&"2026-08-01.aionrs.log"));
+    }
+
+    #[test]
+    fn tail_latest_log_reads_the_most_recently_written_dreamcore_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let older = dir.path().join("2026-09-01.dreamcore.log");
+        let newer = dir.path().join("2026-09-01.dream-engine.log");
+        std::fs::write(&older, "old line\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&newer, "new line\n").unwrap();
+
+        let result = tail_latest_log(dir.path(), 10, false, None, "diagnose logs tail").unwrap();
+        assert_eq!(result["file"], newer.display().to_string());
+        assert_eq!(result["lines"], json!(["new line"]));
     }
 }

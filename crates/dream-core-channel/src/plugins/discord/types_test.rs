@@ -16,7 +16,7 @@ fn identify_has_op_and_intents() {
     assert_eq!(v["op"], op::IDENTIFY);
     assert_eq!(v["d"]["token"], "tok");
     assert_eq!(v["d"]["intents"], DISCORD_INTENTS);
-    assert_eq!(v["d"]["properties"]["browser"], "aionui");
+    assert_eq!(v["d"]["properties"]["browser"], "dream");
 }
 
 #[test]

@@ -806,7 +806,7 @@ mod tests {
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["clientId"], "my_client_id");
         assert_eq!(json["clientSecret"], "my_secret");
-        assert_eq!(json["ua"], "aioncore");
+        assert_eq!(json["ua"], "dreamcore");
         assert_eq!(json["subscriptions"][0]["type"], "EVENT");
         assert_eq!(json["subscriptions"][0]["topic"], "*");
         assert_eq!(json["subscriptions"][1]["type"], "CALLBACK");
