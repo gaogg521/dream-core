@@ -9,9 +9,10 @@ use axum::routing::{delete, get, post};
 use dream_core_api_types::{
     ApiResponse, ClientPreferencesResponse, CreateProviderRequest, DetectProtocolRequest, EnsureNodeRuntimeRequest,
     EnsureNodeRuntimeResponse, FeedbackDiagnosticsQuery, FeedbackDiagnosticsResponse, FetchModelsAnonymousRequest,
-    FetchModelsRequest, FetchModelsResponse, ProtocolDetectionResponse, ProviderResponse, SystemInfoResponse,
-    SystemSettingsResponse, TrialKeyResponse, TrialQuotaStatusResponse, UpdateCheckRequest, UpdateCheckResult,
-    UpdateClientPreferencesRequest, UpdateProviderRequest, UpdateSettingsRequest,
+    FetchModelsRequest, FetchModelsResponse, MeteredAccessResponse, MeteredClaimRequest, MeteredCreateOrderRequest,
+    MeteredOrderResponse, MeteredQuotaQuery, MeteredQuotaStatusResponse, ProtocolDetectionResponse, ProviderResponse,
+    SystemInfoResponse, SystemSettingsResponse, TrialKeyResponse, TrialQuotaStatusResponse, UpdateCheckRequest,
+    UpdateCheckResult, UpdateClientPreferencesRequest, UpdateProviderRequest, UpdateSettingsRequest,
 };
 use dream_core_auth::{CurrentUser, is_webui_proxied};
 use dream_core_common::ApiError;
@@ -19,6 +20,7 @@ use dream_core_common::ApiError;
 use crate::client_pref::ClientPrefService;
 use crate::diagnostics::FeedbackDiagnosticsService;
 use crate::error::SystemError;
+use crate::metered_access::MeteredAccessService;
 use crate::model_fetcher::ModelFetchService;
 use crate::protocol::ProtocolDetectionService;
 use crate::provider::ProviderService;
@@ -42,6 +44,9 @@ pub struct SystemRouterState {
     /// `TrialKeyService` doc comment for why dream-core itself never holds
     /// the vendor Management Key this depends on.
     pub trial_key_service: TrialKeyService,
+    /// Mode B: relays metered-proxy trial claims / quota / orders to the same
+    /// broker. `TrialKeyService` and this share nothing but the install id.
+    pub metered_access_service: MeteredAccessService,
     /// Materializes company model channels as local providers. `None` on
     /// deployments that never wire it — the endpoint then reports plainly
     /// instead of silently doing nothing.
@@ -90,6 +95,10 @@ impl From<SystemError> for ApiError {
 /// - `POST /api/providers/fetch-models`      — fetch models anonymously (pre-create preview)
 /// - `POST /api/providers/trial-key`         — issue a capped-spend trial model key for first-time users
 /// - `GET  /api/providers/trial-key/quota`   — where this install's trial allowance stands
+/// - `POST /api/providers/metered/claim`     — open a metered-proxy trial account (mode B)
+/// - `GET  /api/providers/metered/quota`     — where this install's metered balance stands
+/// - `POST /api/providers/metered/orders`    — create a top-up order
+/// - `GET  /api/providers/metered/orders/{id}` — poll a top-up order
 /// - `POST /api/providers/detect-protocol`   — detect API protocol
 /// - `GET  /api/system/info`                 — system directory & platform info
 /// - `POST /api/system/check-update`         — check GitHub for new versions
@@ -110,6 +119,12 @@ pub fn system_routes(state: SystemRouterState) -> Router {
         .route("/api/providers/fetch-models", post(fetch_models_anonymous))
         .route("/api/providers/trial-key", post(request_trial_key))
         .route("/api/providers/trial-key/quota", get(trial_key_quota))
+        // Mode B: metered proxy. Literal segments, registered before `/{id}`
+        // for the same reason as the routes above.
+        .route("/api/providers/metered/claim", post(metered_claim))
+        .route("/api/providers/metered/quota", get(metered_quota))
+        .route("/api/providers/metered/orders", post(metered_create_order))
+        .route("/api/providers/metered/orders/{id}", get(metered_get_order))
         .route("/api/providers/{id}", delete(delete_provider).put(update_provider))
         .route("/api/providers/{id}/models", post(fetch_models))
         .route("/api/providers/sync-model-channels", post(sync_model_channels))
@@ -493,6 +508,63 @@ async fn trial_key_quota(
     let result = state
         .trial_key_service
         .read_quota_status()
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+/// Opens a metered-proxy trial account for the given vendor. Only `vendor` is
+/// caller-supplied; the dedup id is this install's own.
+async fn metered_claim(
+    State(state): State<SystemRouterState>,
+    body: Result<Json<MeteredClaimRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<MeteredAccessResponse>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    let result = state
+        .metered_access_service
+        .claim(&req.vendor)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+/// Where this install's metered balance stands. GET — the install id is
+/// resolved locally; `vendor` rides in the query string.
+async fn metered_quota(
+    State(state): State<SystemRouterState>,
+    Query(query): Query<MeteredQuotaQuery>,
+) -> Result<Json<ApiResponse<MeteredQuotaStatusResponse>>, ApiError> {
+    let result = state
+        .metered_access_service
+        .read_quota_status(&query.vendor)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+/// Creates a top-up order; the response carries the gateway's pay
+/// instructions.
+async fn metered_create_order(
+    State(state): State<SystemRouterState>,
+    body: Result<Json<MeteredCreateOrderRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<MeteredOrderResponse>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    let result = state
+        .metered_access_service
+        .create_order(&req.vendor, &req.package_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+/// Polls one top-up order's status.
+async fn metered_get_order(
+    State(state): State<SystemRouterState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<MeteredOrderResponse>>, ApiError> {
+    let result = state
+        .metered_access_service
+        .get_order(&id)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(result)))

@@ -388,6 +388,99 @@ pub struct TrialQuotaStatusResponse {
     pub exhausted: bool,
 }
 
+/// Request body for `POST /api/providers/metered/claim`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeteredClaimRequest {
+    pub vendor: String,
+}
+
+/// Query for `GET /api/providers/metered/quota`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeteredQuotaQuery {
+    pub vendor: String,
+}
+
+/// Request body for `POST /api/providers/metered/orders`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeteredCreateOrderRequest {
+    pub vendor: String,
+    pub package_id: String,
+}
+
+/// Response for `POST /api/providers/metered/claim` (body `{ "vendor": "..." }`).
+///
+/// Mode B (metered proxy): for an upstream token platform that cannot cap a
+/// key, the broker forwards inference under one master key and meters spend
+/// against a local ledger. dream-core relays the broker's claim; the frontend
+/// turns it into a `platform: "custom"` [`CreateProviderRequest`] whose
+/// `base_url` is the broker's own proxy address and whose `api_key` is the
+/// returned `device_token`.
+///
+/// Distinct from [`TrialKeyResponse`] on purpose — there is no real upstream
+/// key to hand out here, and amounts are the vendor's own currency, not USD.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeteredAccessResponse {
+    /// Stable id of the metered vendor (`baoyun`), for telling issuers apart.
+    pub vendor: String,
+    /// The broker's own proxy address for this vendor — the client's provider
+    /// `base_url`. Not the upstream vendor URL.
+    pub base_url: String,
+    /// Plaintext device token, returned once. The client's provider `api_key`;
+    /// used as the bearer on proxied calls. Rotates on every claim.
+    pub device_token: String,
+    /// Curated starter model list, first is the default.
+    pub models: Vec<String>,
+    /// ISO 4217 code every amount on this vendor is in, e.g. `CNY`.
+    pub currency: String,
+    /// One-time free grant handed to a fresh account, in minor units (e.g.
+    /// cents / 分).
+    pub free_grant_cents: i64,
+    /// Balance left right now, in minor units. `<= 0` means the proxy will
+    /// hard-block the next call.
+    pub remaining_cents: i64,
+}
+
+/// Where a metered account's balance stands, from the broker's local ledger.
+///
+/// Response for `GET /api/providers/metered/quota?vendor=...`. Not the USD
+/// shape of [`TrialQuotaStatusResponse`] — a metered account has a free grant,
+/// purchased credit, and consumption, all in the vendor's currency.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeteredQuotaStatusResponse {
+    pub vendor: String,
+    pub currency: String,
+    pub free_grant_cents: i64,
+    pub purchased_cents: i64,
+    pub consumed_cents: i64,
+    pub remaining_cents: i64,
+    pub exhausted: bool,
+}
+
+/// A top-up order, as the broker reports it.
+///
+/// Response for `POST /api/providers/metered/orders` (creates one, `payment`
+/// carries the gateway's pay instructions) and
+/// `GET /api/providers/metered/orders/{id}` (polls one, `payment` absent).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeteredOrderResponse {
+    pub id: String,
+    pub vendor: String,
+    pub package_id: String,
+    /// What the user pays, in the vendor's minor units.
+    pub amount_cents: i64,
+    /// What lands in the balance once paid.
+    pub credit_cents: i64,
+    pub currency: String,
+    /// `pending` | `paid` | `failed` | `expired`.
+    pub status: String,
+    /// `mock` | `alipay` | `wechat`.
+    pub gateway: String,
+    /// The gateway's pay instructions (QR / redirect / mock marker). Present
+    /// only on the create response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment: Option<serde_json::Value>,
+}
+
 /// Request body for `POST /api/providers/detect-protocol`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectProtocolRequest {

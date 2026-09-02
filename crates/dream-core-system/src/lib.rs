@@ -6,8 +6,10 @@ pub mod client_pref;
 pub mod content_inspection;
 pub mod diagnostics;
 pub mod error;
+pub mod install_id;
 pub mod keep_awake;
 pub mod managed_provider;
+pub mod metered_access;
 pub mod model_fetcher;
 pub mod protocol;
 pub mod provider;
@@ -24,6 +26,7 @@ pub use content_inspection::{ContentBlock, ContentInspectionService, PendingFind
 pub use diagnostics::FeedbackDiagnosticsService;
 pub use error::SystemError;
 pub use keep_awake::{KeepAwakeController, NoopKeepAwakeController, SystemKeepAwakeController};
+pub use metered_access::MeteredAccessService;
 pub use model_fetcher::ModelFetchService;
 pub use protocol::ProtocolDetectionService;
 pub use provider::ProviderService;

@@ -42,6 +42,11 @@ fn build_state(db: &dream_core_db::Database) -> SystemRouterState {
             http_client.clone(),
             Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone())),
         ),
+        metered_access_service: dream_core_system::MeteredAccessService::new(
+            None,
+            http_client.clone(),
+            Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone())),
+        ),
         content_inspection: std::sync::Arc::new(dream_core_system::ContentInspectionService::new()),
         model_fetch_service: ModelFetchService::new(provider_repo, TEST_KEY, http_client.clone()),
         protocol_detection_service: ProtocolDetectionService::new(http_client.clone()),
