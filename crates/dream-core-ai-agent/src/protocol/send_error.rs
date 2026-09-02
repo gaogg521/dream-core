@@ -710,6 +710,12 @@ pub(crate) fn looks_like_spent_allowance(lower: &str) -> bool {
             "exceeded your current quota",
             "usage limit reached",
             "spending limit",
+            // The trial broker's mode-B proxy answers a spent metered balance
+            // with a structured 402 carrying this stable code (and message).
+            // It is our own machine token, not upstream prose — matching it
+            // is the deliberate contract, not a guess at wording.
+            "quota_exhausted",
+            "trial allowance for this vendor is spent",
         ],
     )
 }
@@ -721,6 +727,21 @@ fn classify_provider_text(lower: &str) -> Option<ClassifiedError> {
             AgentErrorCode::UserLlmProviderAwsSsoExpired,
             false,
             AgentErrorResolutionKind::CheckProviderCredentials,
+            Some(AgentErrorResolutionTarget::ProviderSettings),
+        ));
+    }
+    // Ahead of BOTH the generic 402/billing block and the 403 block below: a
+    // spent allowance is a valid key with no budget left, not an account that
+    // needs money (402) and not denied access (403). OpenRouter reports it as
+    // a 403; the trial broker's mode-B proxy reports it as a structured 402.
+    // Matching on the status alone lands the user in the wrong place either
+    // way — the distinguishing signal is the phrasing / broker code.
+    if looks_like_spent_allowance(lower) {
+        return Some(provider_error(
+            "The model key's spending allowance is used up",
+            AgentErrorCode::UserLlmProviderQuotaExhausted,
+            false,
+            AgentErrorResolutionKind::CheckProviderBilling,
             Some(AgentErrorResolutionTarget::ProviderSettings),
         ));
     }
@@ -742,19 +763,6 @@ fn classify_provider_text(lower: &str) -> Option<ClassifiedError> {
         return Some(provider_error(
             "The model provider account requires billing attention",
             AgentErrorCode::UserLlmProviderBillingRequired,
-            false,
-            AgentErrorResolutionKind::CheckProviderBilling,
-            Some(AgentErrorResolutionTarget::ProviderSettings),
-        ));
-    }
-    // Must stay ahead of the generic 403 branch below: OpenRouter reports an
-    // exhausted key as a 403, so matching on the status alone sends a user
-    // whose credentials are perfectly fine off to re-check them. The
-    // distinguishing signal is the phrasing, not the code.
-    if looks_like_spent_allowance(lower) {
-        return Some(provider_error(
-            "The model key's spending allowance is used up",
-            AgentErrorCode::UserLlmProviderQuotaExhausted,
             false,
             AgentErrorResolutionKind::CheckProviderBilling,
             Some(AgentErrorResolutionTarget::ProviderSettings),
@@ -1935,6 +1943,33 @@ mod tests {
                 AgentErrorResolutionKind::CheckProviderBilling,
             );
         }
+    }
+
+    /// The trial broker's mode-B proxy reports a spent metered balance as a
+    /// structured 402. It must map to QuotaExhausted (valid token, no budget),
+    /// not the generic 402 -> BillingRequired (the *account* needs money) —
+    /// so the spent-allowance check has to sit ahead of the 402 block too.
+    #[test]
+    fn classifies_the_broker_structured_402_as_spent_quota_not_billing() {
+        let detail = r#"1ONE CLI agent error: provider api error 402: {"error":"quota_exhausted","message":"the trial allowance for this vendor is spent","code":"QUOTA_EXHAUSTED","vendor":"baoyun","currency":"CNY","remaining_cents":0}"#;
+        assert_classification(
+            detail,
+            AgentErrorCode::UserLlmProviderQuotaExhausted,
+            AgentErrorOwnership::UserLlmProvider,
+            AgentErrorResolutionKind::CheckProviderBilling,
+        );
+    }
+
+    /// A genuine account-billing 402 (no spent-allowance signal) must still
+    /// land on BillingRequired — the reorder above must not swallow it.
+    #[test]
+    fn a_plain_account_billing_402_is_still_billing_required() {
+        assert_classification(
+            "API error 402: Your credit balance is too low to access this model. Please purchase credits.",
+            AgentErrorCode::UserLlmProviderBillingRequired,
+            AgentErrorOwnership::UserLlmProvider,
+            AgentErrorResolutionKind::CheckProviderBilling,
+        );
     }
 
     /// The upstream text for an exhausted company-issued key names our
