@@ -1084,6 +1084,10 @@ struct UpsertModelChannelBody {
     models: String,
     #[serde(default)]
     model_settings: Option<String>,
+    /// JSON object mapping model name -> wire protocol. Only meaningful when
+    /// `platform = 'new-api'`.
+    #[serde(default)]
+    model_protocols: Option<String>,
     #[serde(default = "default_true")]
     enabled: bool,
     #[serde(default = "default_scope_org")]
@@ -1118,6 +1122,7 @@ async fn upsert_model_channel(
             body.api_key.as_deref(),
             &body.models,
             body.model_settings.as_deref(),
+            body.model_protocols.as_deref(),
             body.enabled,
             &body.scope,
             body.team_id.as_deref(),
