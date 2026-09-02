@@ -545,6 +545,7 @@ impl OrgService {
             username.as_deref(),
             "org.join",
             Some(&invite.id),
+            None,
         )
         .await;
 
@@ -661,6 +662,7 @@ impl OrgService {
             Some(user_id),
             username.as_deref(),
             "org.auto_join_domain",
+            None,
             None,
         )
         .await;
@@ -1001,7 +1003,7 @@ impl OrgService {
 
         self.invalidate_user_tokens(user_id).await?;
         let username = self.lookup_username(user_id).await;
-        self.audit(&tenant_id, Some(user_id), username.as_deref(), "org.create", Some(name))
+        self.audit(&tenant_id, Some(user_id), username.as_deref(), "org.create", Some(name), None)
             .await;
 
         Ok((tenant_id, name.to_string()))
@@ -1050,6 +1052,7 @@ impl OrgService {
             None,
             "org.create_for_enterprise",
             Some(name),
+            None,
         )
         .await;
         Ok((tenant_id, name.to_string(), code))
@@ -1355,6 +1358,7 @@ impl OrgService {
             username.as_deref(),
             "org.reset_local",
             Some(&archive_path_str),
+            None,
         )
         .await;
 
@@ -1412,6 +1416,7 @@ impl OrgService {
             username.as_deref(),
             "org.exit",
             None,
+            None,
         )
         .await;
         let release_enterprise_id = self.enterprise_seat_to_release(user_id, &membership.tenant_id).await?;
@@ -1437,6 +1442,7 @@ impl OrgService {
             actor_username.as_deref(),
             "org.backup.export",
             Some(&format!("{} tables", bundle.tables.len())),
+            None,
         )
         .await;
         Ok(bundle)
@@ -1460,6 +1466,7 @@ impl OrgService {
                 "{} tables / {} rows",
                 report.tables_applied, report.rows_applied
             )),
+            None,
         )
         .await;
         Ok(report)
@@ -1534,6 +1541,7 @@ impl OrgService {
             actor_username.as_deref(),
             "org.member.remove",
             Some(target_user_id),
+            None,
         )
         .await;
         let release_enterprise_id = self.enterprise_seat_to_release(target_user_id, tenant_id).await?;
@@ -1692,6 +1700,11 @@ impl OrgService {
     /// this" without a raw user id — callers should always resolve it via
     /// `lookup_username`/an already-in-scope actor username rather than
     /// leaving it `None`.
+    ///
+    /// `latency_ms` is the wall-clock the handler measured (`Instant::now()`
+    /// at its top); pass `None` where a handler is not timed. This records a
+    /// SUCCESS — the call fires after the operation returned Ok. For the error
+    /// path use [`Self::audit_failure`].
     pub async fn audit(
         &self,
         tenant_id: &str,
@@ -1699,13 +1712,45 @@ impl OrgService {
         username: Option<&str>,
         action: &str,
         resource: Option<&str>,
+        latency_ms: Option<i64>,
     ) {
-        let result = self.db.execute(
-            "INSERT INTO one_audit_logs (id, tenant_id, user_id, username, action, resource, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        &db_params![short_id("audit"), tenant_id, user_id, username, action, resource, now_ms() as i64])
+        self.write_audit(tenant_id, user_id, username, action, resource, latency_ms, "success")
+            .await;
+    }
+
+    /// Record an audited operation that FAILED. Same shape as [`Self::audit`]
+    /// but stamps `result = 'failure'`; `resource` may be absent when the
+    /// failure happened before the target id was known.
+    pub async fn audit_failure(
+        &self,
+        tenant_id: &str,
+        user_id: Option<&str>,
+        username: Option<&str>,
+        action: &str,
+        resource: Option<&str>,
+        latency_ms: Option<i64>,
+    ) {
+        self.write_audit(tenant_id, user_id, username, action, resource, latency_ms, "failure")
+            .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn write_audit(
+        &self,
+        tenant_id: &str,
+        user_id: Option<&str>,
+        username: Option<&str>,
+        action: &str,
+        resource: Option<&str>,
+        latency_ms: Option<i64>,
+        result: &str,
+    ) {
+        let write = self.db.execute(
+            "INSERT INTO one_audit_logs (id, tenant_id, user_id, username, action, resource, latency_ms, result, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &db_params![short_id("audit"), tenant_id, user_id, username, action, resource, latency_ms, result, now_ms() as i64])
         .await;
-        if let Err(e) = result {
+        if let Err(e) = write {
             tracing::warn!(error = %e, action, "one-org audit write failed");
         }
     }
@@ -1745,7 +1790,7 @@ impl OrgService {
     pub async fn list_audit_logs(&self, tenant_id: &str, limit: i64) -> Result<Vec<AuditLogRow>, OrgError> {
         let limit = limit.clamp(1, 500);
         let rows = self.db.fetch_all_as::<AuditLogRow>(
-            "SELECT id, tenant_id, user_id, username, action, resource, ip_address, user_agent, created_at \
+            "SELECT id, tenant_id, user_id, username, action, resource, ip_address, user_agent, created_at, latency_ms, result \
              FROM one_audit_logs WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?",
         &db_params![tenant_id, limit])
         .await?;
@@ -2311,6 +2356,7 @@ impl OrgService {
             actor_username.as_deref(),
             "set_role",
             Some(&format!("user={target_user_id} role={role}")),
+            None,
         )
         .await;
         Ok(())
@@ -3971,6 +4017,36 @@ mod tests {
         let create_entry = logs.iter().find(|l| l.action == "org.create").unwrap();
         assert_eq!(create_entry.user_id.as_deref(), Some(SYSTEM_DEFAULT_USER_ID));
         assert_eq!(create_entry.username.as_deref(), Some("admin"));
+
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn audit_records_latency_and_result() {
+        // Migration 014 added `latency_ms` (nullable) and `result` (default
+        // 'success'). `audit()` stamps success; `audit_failure()` stamps
+        // failure; both carry the caller's measured wall-clock.
+        let (db, service, _user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+
+        service
+            .audit(&tenant_id, Some("u1"), Some("admin"), "test.ok", Some("r1"), Some(7))
+            .await;
+        service
+            .audit_failure(&tenant_id, Some("u1"), Some("admin"), "test.boom", None, Some(42))
+            .await;
+
+        let logs = service.list_audit_logs(&tenant_id, 10).await.unwrap();
+        let ok = logs.iter().find(|l| l.action == "test.ok").unwrap();
+        assert_eq!(ok.result, "success");
+        assert_eq!(ok.latency_ms, Some(7));
+        let boom = logs.iter().find(|l| l.action == "test.boom").unwrap();
+        assert_eq!(boom.result, "failure");
+        assert_eq!(boom.latency_ms, Some(42));
+        // The tenant-create audit predates any explicit result → column default.
+        let created = logs.iter().find(|l| l.action == "org.create").unwrap();
+        assert_eq!(created.result, "success");
+        assert_eq!(created.latency_ms, None);
 
         db.close().await;
     }

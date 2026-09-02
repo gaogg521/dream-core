@@ -326,6 +326,12 @@ pub struct AuditLogRow {
     pub ip_address: Option<String>,
     pub user_agent: Option<String>,
     pub created_at: i64,
+    /// Wall-clock ms the audited handler took. `None` for rows written before
+    /// migration 014 and for the few call sites that don't time themselves.
+    pub latency_ms: Option<i64>,
+    /// `'success'` | `'failure'` (migration 014). Rows predating it default to
+    /// `'success'` — every `audit()` call fires only after an Ok result.
+    pub result: String,
 }
 
 /// One agent tool-call, for the agent-run audit (P1-1 "可审计的本地优先").
