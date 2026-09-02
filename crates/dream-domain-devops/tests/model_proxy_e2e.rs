@@ -101,6 +101,7 @@ async fn fixture() -> Fixture {
             Some(COMPANY_SECRET),
             r#"["gpt-image-2"]"#,
             None,
+            None,
             true,
             "org",
             None,

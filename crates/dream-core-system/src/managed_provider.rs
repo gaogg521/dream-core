@@ -51,6 +51,10 @@ pub struct ManagedChannelPayload {
     /// an image or video model and have the client route it correctly.
     #[serde(default)]
     pub model_settings: Option<serde_json::Value>,
+    /// Per-model wire protocol overrides, same shape as a normal provider's
+    /// `model_protocols`. Only set for `platform = 'new-api'` channels.
+    #[serde(default)]
+    pub model_protocols: Option<serde_json::Value>,
 }
 
 fn default_platform() -> String {
@@ -147,6 +151,16 @@ impl ManagedProviderSync {
                 .map_err(|e| SystemError::Internal(format!("failed to serialize channel model settings: {e}")))?,
             None => "{}".to_owned(),
         };
+        // A JSON object of per-model protocol overrides, or nothing — the local
+        // provider column is nullable and an absent value must stay absent so
+        // the client falls back to name-based protocol detection.
+        let model_protocols = match &channel.model_protocols {
+            Some(value) => Some(
+                serde_json::to_string(value)
+                    .map_err(|e| SystemError::Internal(format!("failed to serialize channel model protocols: {e}")))?,
+            ),
+            None => None,
+        };
 
         // Replace rather than update: the channel definition on the server is
         // the whole truth for these rows, and a partial update would let a
@@ -168,7 +182,7 @@ impl ManagedProviderSync {
                 enabled: true,
                 capabilities: "[]",
                 context_limit: None,
-                model_protocols: None,
+                model_protocols: model_protocols.as_deref(),
                 model_enabled: None,
                 model_health: None,
                 model_settings: &model_settings,
@@ -199,6 +213,7 @@ mod tests {
             token: token.to_owned(),
             models: vec!["gpt-image-2".to_owned()],
             model_settings: None,
+            model_protocols: None,
         }
     }
 
@@ -226,6 +241,38 @@ mod tests {
         assert_eq!(rows[0].base_url, "https://one.corp.example/api/one/model-proxy/ochan_1");
         assert_eq!(rows[0].managed_by.as_deref(), Some("enterprise"));
         assert!(rows[0].enabled);
+    }
+
+    /// A `new-api` channel's per-model settings and protocol overrides both
+    /// land on the local provider row verbatim, so the member's client routes
+    /// and speaks the right wire format per model. An absent `model_protocols`
+    /// stays absent (name-based detection takes over).
+    #[tokio::test]
+    async fn per_model_settings_and_protocols_pass_through_to_the_local_row() {
+        let (sync, repo, _db) = sync_service().await;
+        let mut chan = channel("ochan_1", "corp-newapi", "onech-tok");
+        chan.platform = "new-api".to_owned();
+        chan.models = vec!["claude-sonnet-4".to_owned(), "gpt-4o".to_owned()];
+        chan.model_settings = Some(serde_json::json!({ "gpt-4o": { "model_kind": "multimodal" } }));
+        chan.model_protocols = Some(serde_json::json!({ "claude-sonnet-4": "anthropic" }));
+
+        sync.sync(TEST_USER_ID, &[chan, channel("ochan_2", "plain", "onech-tok2")], true)
+            .await
+            .unwrap();
+
+        let rows = repo.list(TEST_USER_ID).await.unwrap();
+        let newapi = rows.iter().find(|p| p.name == "corp-newapi").unwrap();
+        assert_eq!(newapi.platform, "new-api");
+        assert_eq!(
+            newapi.model_protocols.as_deref(),
+            Some(r#"{"claude-sonnet-4":"anthropic"}"#)
+        );
+        let settings: serde_json::Value = serde_json::from_str(&newapi.model_settings).unwrap();
+        assert_eq!(settings["gpt-4o"]["model_kind"], "multimodal");
+
+        // A channel with no protocol overrides leaves the column null.
+        let plain = rows.iter().find(|p| p.name == "plain").unwrap();
+        assert!(plain.model_protocols.is_none());
     }
 
     /// What lands on the member's disk is the revocable token, never a vendor
