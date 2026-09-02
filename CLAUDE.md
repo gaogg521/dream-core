@@ -31,8 +31,13 @@
 > `POST /api/providers/trial-key`。本仓库的实现细节见
 > [session-2026-08-25-openrouter-trial-model.zh-CN.md](./docs/guides/session-2026-08-25-openrouter-trial-model.zh-CN.md)，
 > 跨三仓（含新建的 `dream-trial-broker`）完整背景见 dream-ui 同名文档。
-> **注意：功能默认关闭**——`DREAM_TRIAL_BROKER_URL` 环境变量尚未在任何地方配置，broker 也
-> 尚未部署。
+> **注意：功能默认关闭**——`DREAM_TRIAL_BROKER_URL` 环境变量尚未在任何地方配置。
+
+> **2026-09-02**：上面那套是"模式 A"（broker 发限额上游 key）。新增"模式 B"（计量代理，
+> 给不能限额 key 的中转站如宝云用）：`MeteredAccessService` + `POST /api/providers/
+> metered/{claim,quota,orders}`，broker 自己代理推理并本地计费。dream-core 侧细节见
+> [session-2026-09-02-baoyun-metered-phase2.zh-CN.md](./docs/guides/session-2026-09-02-baoyun-metered-phase2.zh-CN.md)。
+> **同样默认关闭**（读同一个 `DREAM_TRIAL_BROKER_URL`）；前端（Phase 3）未做。
 
 ## 三仓架构
 
