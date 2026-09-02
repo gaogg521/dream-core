@@ -24,14 +24,6 @@ use serde::Deserialize;
 
 use crate::error::SystemError;
 
-/// The account this deployment's own local-only settings live under — same
-/// constant value as `PROVIDER_CREDENTIAL_OWNER` in `routes.rs` (not shared
-/// directly to avoid a cross-module coupling for one string; both are pinned
-/// to the same "single desktop install" identity).
-const LOCAL_INSTALL_OWNER: &str = "system_default_user";
-
-const INSTALL_ID_PREF_KEY: &str = "trial_broker_install_id";
-
 #[derive(Deserialize)]
 struct BrokerErrorBody {
     #[serde(default)]
@@ -149,32 +141,10 @@ impl TrialKeyService {
     }
 
     /// This deployment's stable id for the broker's per-device dedup check.
-    /// Generated once and persisted alongside this install's other local
-    /// settings — never regenerated, so a device that already claimed a
-    /// trial key keeps getting the same 409 on every retry rather than
-    /// silently minting a fresh identity to route around the broker's limit.
+    /// Shared with [`crate::metered_access`] so mode A and mode B present the
+    /// same identity for one device — see [`crate::install_id`].
     async fn get_or_create_install_id(&self) -> Result<String, SystemError> {
-        let existing = self
-            .client_pref_repo
-            .get_by_keys(LOCAL_INSTALL_OWNER, &[INSTALL_ID_PREF_KEY])
-            .await
-            .map_err(|e| SystemError::Internal(format!("failed to read install id: {e}")))?;
-
-        if let Some(row) = existing.into_iter().next() {
-            let id: String = serde_json::from_str(&row.value).unwrap_or(row.value);
-            if !id.trim().is_empty() {
-                return Ok(id);
-            }
-        }
-
-        let id = dream_core_common::generate_prefixed_id("install");
-        let serialized = serde_json::to_string(&id)
-            .map_err(|e| SystemError::Internal(format!("failed to serialize install id: {e}")))?;
-        self.client_pref_repo
-            .upsert_batch(LOCAL_INSTALL_OWNER, &[(INSTALL_ID_PREF_KEY, serialized.as_str())])
-            .await
-            .map_err(|e| SystemError::Internal(format!("failed to persist install id: {e}")))?;
-        Ok(id)
+        crate::install_id::get_or_create_install_id(&self.client_pref_repo).await
     }
 }
 
