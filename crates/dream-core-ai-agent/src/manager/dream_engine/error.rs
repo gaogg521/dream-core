@@ -139,10 +139,11 @@ fn aionrs_provider_error_to_send_error(error: &ProviderError, detail: String) ->
 
 fn aionrs_provider_status_to_send_error(status: u16, detail: String) -> AgentSendError {
     // Status alone cannot tell "your key is not allowed to do this" from "your
-    // key's allowance is spent" — OpenRouter reports both as 403 — and the two
-    // send the user somewhere completely different. Check the wording first,
-    // for any status, so a provider that answers 429 or 402 for the same
-    // condition lands in the same place.
+    // key's allowance is spent" — OpenRouter reports both as 403, the trial
+    // broker's mode-B proxy reports the latter as a structured 402 — and the
+    // two send the user somewhere completely different. Check the wording (and
+    // the broker's `quota_exhausted` code) first, for any status, so 402 / 403
+    // / 429 for the same condition all land in the same place.
     if looks_like_spent_allowance(&detail.to_ascii_lowercase()) {
         return provider_send_error(
             "The model key's spending allowance is used up",

@@ -187,6 +187,22 @@ fn spent_allowance_is_not_reported_as_permission_denied() {
     assert_eq!(send_error.code(), Some(AgentErrorCode::UserLlmProviderQuotaExhausted));
 }
 
+/// The trial broker's mode-B proxy answers a spent metered balance with a
+/// structured 402. This path checks the wording before the status, so the
+/// broker's `quota_exhausted` code must land it on QuotaExhausted rather than
+/// the generic 402 -> BillingRequired.
+#[test]
+fn broker_structured_402_is_reported_as_spent_quota() {
+    let error = DreamEngineAgentError::Provider(ProviderError::Api {
+        status: 402,
+        message: r#"{"error":"quota_exhausted","message":"the trial allowance for this vendor is spent","code":"QUOTA_EXHAUSTED","vendor":"baoyun","currency":"CNY","remaining_cents":0}"#
+            .to_owned(),
+    });
+    let send_error = engine_error_to_send_error(&error);
+
+    assert_eq!(send_error.code(), Some(AgentErrorCode::UserLlmProviderQuotaExhausted));
+}
+
 /// The upstream text names our OpenRouter workspace and the key's management
 /// handle. It was rendered in the chat bubble, persisted to the message store,
 /// and shipped in feedback attachments.
