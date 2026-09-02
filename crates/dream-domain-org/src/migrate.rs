@@ -59,6 +59,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "013_runtime_control",
         include_str!("../migrations/013_runtime_control.sql"),
     ),
+    (
+        "014_audit_outcome",
+        include_str!("../migrations/014_audit_outcome.sql"),
+    ),
 ];
 
 /// Embedded MySQL migrations (final-state ports, not a replay of the SQLite
@@ -116,6 +120,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "013_runtime_control",
         include_str!("../migrations_mysql/013_runtime_control.sql"),
+    ),
+    (
+        "014_audit_outcome",
+        include_str!("../migrations_mysql/014_audit_outcome.sql"),
     ),
 ];
 
