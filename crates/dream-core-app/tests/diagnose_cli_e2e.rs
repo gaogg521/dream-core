@@ -1,4 +1,4 @@
-//! E2E coverage for the agent-facing `aioncore diagnose` CLI.
+//! E2E coverage for the agent-facing `dreamcore diagnose` CLI.
 
 use axum::extract::{Path, State};
 use axum::routing::get;
@@ -438,7 +438,7 @@ async fn diagnose_overview_aggregates_common_failure_signals() {
 }
 
 #[tokio::test]
-async fn diagnose_logs_tail_reads_latest_aioncore_log_and_filters_errors() {
+async fn diagnose_logs_tail_reads_latest_dreamcore_log_and_filters_errors() {
     let temp = tempfile::TempDir::new().unwrap();
     let log_dir = temp.path().join("2026").join("07").join("08");
     std::fs::create_dir_all(&log_dir).unwrap();

@@ -1,4 +1,4 @@
-//! E2E coverage for the agent-facing `aioncore team` CLI fallback.
+//! E2E coverage for the agent-facing `dreamcore team` CLI fallback.
 
 use std::process::Stdio;
 
