@@ -82,6 +82,14 @@ pub struct SsoProviderConfigDto {
     pub enabled: bool,
     pub configured: bool,
     pub config: serde_json::Value,
+    /// Names of the secret fields that currently hold a stored value — the
+    /// key names only, never the values. Without this the settings form
+    /// cannot tell "no secret has ever been saved" from "a secret is saved
+    /// but never echoed", so both render as an identical empty box and an
+    /// admin has no way to know whether the field is actually configured.
+    /// `configured` cannot stand in for it: it is provider-wide, and for
+    /// `oidc`/`ldap` it does not include the secret at all.
+    pub secret_fields_set: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
