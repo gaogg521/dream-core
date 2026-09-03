@@ -31,6 +31,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/009_security_policy_templates.sql"),
     ),
     ("010_config_vault", include_str!("../migrations/010_config_vault.sql")),
+    (
+        "011_resource_grant_modes",
+        include_str!("../migrations/011_resource_grant_modes.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -73,6 +77,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "010_config_vault",
         include_str!("../migrations_mysql/010_config_vault.sql"),
+    ),
+    (
+        "011_resource_grant_modes",
+        include_str!("../migrations_mysql/011_resource_grant_modes.sql"),
     ),
 ];
 

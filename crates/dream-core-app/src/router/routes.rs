@@ -1897,8 +1897,13 @@ impl dream_domain_devops::grants::ResourceGrantSource for MatrixGrantSource {
             Ok(dto) => dream_domain_devops::grants::ExtraGrants {
                 all: dto.all,
                 ids: dto.resource_ids,
+                restrictive: dto.restrictive,
             },
             Err(e) => {
+                // `Default` is additive with no grants — the viewer keeps
+                // exactly what scope/visibility already allowed. Never
+                // restrictive: a matrix this process could not read must not
+                // be the reason a member's list comes back empty.
                 tracing::warn!(user_id = viewer_user_id, resource_type, error = %e, "resource matrix unreadable; no extra grants");
                 Default::default()
             }

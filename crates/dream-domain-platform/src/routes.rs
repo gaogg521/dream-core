@@ -24,8 +24,11 @@
 //!   so `grant_resource` returns 400 instead of recording a grant that
 //!   nothing would ever consult. See `PlatformService::GRANT_RESOURCE_TYPES`.
 //!
-//! A grant only ever *adds* reachability on the enforced paths, and never
-//! widens tenancy (see `DevopsService::widen_with_grants`).
+//! A grant adds reachability on the enforced paths by default, and never
+//! changes tenancy (see `DevopsService::apply_grants`). A tenant may opt one
+//! resource type into whitelist semantics via `resource-grants/modes`, where
+//! granted means *only* the granted ones — off unless explicitly set, because
+//! its failure mode is "the member sees nothing".
 
 use axum::extract::{Multipart, Path, Query, State};
 use axum::response::IntoResponse;
@@ -42,8 +45,9 @@ use crate::error::PlatformError;
 use crate::models::{
     ApiKeyDto, CollaborationConfigDto, ConfigBulkImportDto, ConfigEntryDto, ConfigSetDto, ConfigSetReferencesDto,
     ContainerConfigDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto, FileVaultReconcileEntry,
-    ImChannelMemberDto, IpAllowlistConfigDto, MyNotificationsDto, NewApiKeyDto, NotificationDto,
-    PolicyTemplateBindingDto, ResourceGrantDto, SceneDto, SecurityPolicyDto, SecurityPolicyTemplateDto, SiemConfigDto,
+    GrantMode, GrantModeDto, ImChannelMemberDto, IpAllowlistConfigDto, MyNotificationsDto, NewApiKeyDto,
+    NotificationDto, PolicyTemplateBindingDto, ResourceGrantDto, SceneDto, SecurityPolicyDto,
+    SecurityPolicyTemplateDto, SiemConfigDto,
 };
 use crate::rbac::{RequirePlatformAdmin, RequirePlatformMember};
 use crate::service::ConfigImportRow;
@@ -80,6 +84,10 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
         .route(
             "/api/one/admin/platform/resource-grants/effective",
             get(effective_resource_grants),
+        )
+        .route(
+            "/api/one/admin/platform/resource-grants/modes",
+            get(list_grant_modes).put(set_grant_mode),
         )
         .route("/api/one/admin/platform/im-channels", get(list_im_channels))
         .route("/api/one/admin/platform/scenes", get(list_scenes).post(create_scene))
@@ -497,6 +505,14 @@ struct EffectiveGrantsQuery {
     resource_type: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetGrantModeBody {
+    resource_type: String,
+    /// `"additive"` | `"restrictive"`.
+    mode: String,
+}
+
 /// What one member can reach for one resource type, resolved through their
 /// own grants and their department chain. Admin-gated, same as every other
 /// route here — a self-service "what can I see" endpoint for a caller to ask
@@ -515,6 +531,49 @@ async fn effective_resource_grants(
         .effective_resource_ids(&actor.tenant_id, &query.member_id, &query.resource_type)
         .await?;
     Ok(Json(ApiResponse::ok(dto)))
+}
+
+/// Whether the matrix is read as a whitelist, per resource type.
+///
+/// Always answers for all four types, reporting the untouched ones as
+/// `additive` rather than omitting them: the console states the mode for every
+/// type, so an admin is never left inferring one from a blank.
+async fn list_grant_modes(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<Vec<GrantModeDto>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_grant_modes(&actor.tenant_id).await?,
+    )))
+}
+
+/// Switch one resource type between additive and whitelist.
+///
+/// Turning restrictive on is a real access change: every member of this tenant
+/// immediately stops reaching anything that type's grants do not name. That is
+/// the intent — it is what an admin configuring a matrix believes they already
+/// bought — but it is why the mode is per type and explicit, rather than a
+/// global default anyone inherits.
+async fn set_grant_mode(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<SetGrantModeBody>,
+) -> Result<Json<ApiResponse<()>>, PlatformError> {
+    let mode = match body.mode.as_str() {
+        "additive" => GrantMode::Additive,
+        "restrictive" => GrantMode::Restrictive,
+        other => {
+            return Err(PlatformError::BadRequest(format!(
+                "mode must be 'additive' or 'restrictive', got '{other}'"
+            )));
+        }
+    };
+    state
+        .service
+        .set_grant_mode(&actor.tenant_id, &body.resource_type, mode, &user.id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
 }
 
 // --- E5 scene management ---

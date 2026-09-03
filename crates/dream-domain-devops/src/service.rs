@@ -152,49 +152,82 @@ impl DevopsService {
         }
     }
 
-    /// Widen a member-visibility predicate with the viewer's matrix grants.
+    /// Build the member-visibility predicate for a viewer, given their matrix
+    /// grants.
     ///
-    /// Returns the SQL and the values to bind *after* the viewer id already
-    /// bound for `base`, in textual placeholder order.
+    /// Returns the SQL and **every** value it binds, in textual placeholder
+    /// order — callers bind exactly this list and nothing of their own. The
+    /// restrictive branches drop `base` entirely, so a caller that pre-bound
+    /// `base`'s own viewer id would be one parameter out; owning the whole list
+    /// here is what keeps that impossible.
     ///
-    /// A grant widens **visibility** — "this member may reach an admin-only
-    /// skill" — and must never widen **tenancy**. The three shared registries
-    /// (`one_skill_registry` / `one_mcp_registry` / `one_rag_documents`) have
-    /// no `tenant_id` column, so the scope clause in
-    /// [`Self::member_tenant_reach_where`] is their ONLY tenant dimension (see
-    /// `012_collaboration_tenant_scope.sql`'s own header, which calls the
-    /// read-side equivalent a security bug). Both branches therefore keep that
-    /// clause: a wildcard means "every resource of this type *this viewer's
-    /// scopes contain*", not "every row in the table", and an explicit id is
-    /// honoured only within those scopes. `grant_resource` does not (and,
-    /// across a crate boundary, cannot) verify that a granted resource id
-    /// belongs to the granting tenant, so this is the layer that has to hold
-    /// the line.
-    pub(crate) fn widen_with_grants(
+    /// A grant may change **visibility** — "this member may reach an admin-only
+    /// skill", or under a whitelist "…and nothing else" — but must never change
+    /// **tenancy**. The three shared registries (`one_skill_registry` /
+    /// `one_mcp_registry` / `one_rag_documents`) have no `tenant_id` column, so
+    /// the scope clause in [`Self::member_tenant_reach_where`] is their ONLY
+    /// tenant dimension (see `012_collaboration_tenant_scope.sql`'s own header,
+    /// which calls the read-side equivalent a security bug). Every branch below
+    /// therefore keeps that clause: a wildcard means "every resource of this
+    /// type *this viewer's scopes contain*", not "every row in the table", and
+    /// an explicit id is honoured only within those scopes. `grant_resource`
+    /// does not (and, across a crate boundary, cannot) verify that a granted
+    /// resource id belongs to the granting tenant, so this is the layer that
+    /// has to hold the line.
+    pub(crate) fn apply_grants(
         base: &str,
         grants: &crate::grants::ExtraGrants,
         prefix: &str,
         viewer_user_id: &str,
     ) -> (String, Vec<String>) {
+        let viewer = || viewer_user_id.to_owned();
+        let id_placeholders = || vec!["?"; grants.ids.len()].join(", ");
+
+        // Whitelist mode: the grants REPLACE `base` rather than widening it, so
+        // an ungranted resource stays unreachable however permissive its own
+        // `visibility` column is.
+        if grants.restrictive {
+            if grants.all {
+                return (Self::member_tenant_reach_where(prefix), vec![viewer()]);
+            }
+            if grants.ids.is_empty() {
+                // Opted in and granted nothing: nothing is reachable. A
+                // constant-false predicate rather than an early return, so each
+                // caller's own `AND published = 1` and ORDER BY still compose.
+                return ("1 = 0".to_owned(), Vec::new());
+            }
+            let mut binds = Vec::with_capacity(grants.ids.len() + 1);
+            binds.push(viewer());
+            binds.extend(grants.ids.iter().cloned());
+            return (
+                format!(
+                    "({} AND {prefix}id IN ({}))",
+                    Self::member_tenant_reach_where(prefix),
+                    id_placeholders()
+                ),
+                binds,
+            );
+        }
+
+        // Additive (the default): grants only ever add to `base`.
         if grants.all {
             return (
                 format!("(({base}) OR {})", Self::member_tenant_reach_where(prefix)),
-                vec![viewer_user_id.to_owned()],
+                vec![viewer(), viewer()],
             );
         }
         if grants.ids.is_empty() {
-            return (base.to_owned(), Vec::new());
+            return (base.to_owned(), vec![viewer()]);
         }
-        let placeholders = vec!["?"; grants.ids.len()].join(", ");
-        // Bind order matches placeholder order: `base`'s viewer id is bound by
-        // the caller, then the tenant-reach clause's viewer id, then the ids.
-        let mut binds = Vec::with_capacity(grants.ids.len() + 1);
-        binds.push(viewer_user_id.to_owned());
+        let mut binds = Vec::with_capacity(grants.ids.len() + 2);
+        binds.push(viewer());
+        binds.push(viewer());
         binds.extend(grants.ids.iter().cloned());
         (
             format!(
-                "(({base}) OR ({} AND {prefix}id IN ({placeholders})))",
-                Self::member_tenant_reach_where(prefix)
+                "(({base}) OR ({} AND {prefix}id IN ({})))",
+                Self::member_tenant_reach_where(prefix),
+                id_placeholders()
             ),
             binds,
         )
@@ -749,7 +782,7 @@ impl DevopsService {
     /// row's `visibility`.
     ///
     /// Split out so a matrix grant can widen visibility while keeping tenancy
-    /// intact — see [`Self::widen_with_grants`] for why that separation is
+    /// intact — see [`Self::apply_grants`] for why that separation is
     /// load-bearing.
     pub(crate) fn member_tenant_reach_where(prefix: &str) -> String {
         format!(
@@ -868,16 +901,19 @@ impl DevopsService {
             .extra_grants(viewer_user_id, crate::grants::resource_type::SKILL)
             .await;
         let (predicate, grant_ids) =
-            Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "", viewer_user_id);
+            Self::apply_grants(&Self::member_visibility_where(""), &grants, "", viewer_user_id);
         // P1-1 round 1: ANDed on, never part of the widen-able predicate — a
         // matrix grant widens tenant reach/visibility, it must not also
         // resurrect an unpublished draft.
         let sql = format!(
             "SELECT {COLS} FROM one_skill_registry WHERE ({predicate}) AND published = 1 ORDER BY updated_at DESC"
         );
-        let mut params = db_params![viewer_user_id];
-        for id in &grant_ids {
-            params.push(id.as_str().into());
+        // `apply_grants` owns every bind in its predicate — including the
+        // viewer id — because the restrictive branches drop `base` and with it
+        // the placeholder a caller-side pre-bind would have been feeding.
+        let mut params: Vec<dream_core_db::DbValue> = Vec::with_capacity(grant_ids.len());
+        for value in &grant_ids {
+            params.push(value.as_str().into());
         }
         let mut rows = self.db.fetch_all_as::<SkillRegistryDto>(&sql, &params).await?;
         // P1-5 consumption side: this branch is the member's team-sync fetch,
@@ -1036,15 +1072,18 @@ impl DevopsService {
             .extra_grants(viewer_user_id, crate::grants::resource_type::MCP)
             .await;
         let (predicate, grant_ids) =
-            Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "", viewer_user_id);
+            Self::apply_grants(&Self::member_visibility_where(""), &grants, "", viewer_user_id);
         // P1-1 round 1: see list_skills's identical comment on why this is
         // ANDed on outside the widen-able predicate.
         let sql = format!(
             "SELECT {COLS} FROM one_mcp_registry WHERE ({predicate}) AND published = 1 ORDER BY updated_at DESC"
         );
-        let mut params = db_params![viewer_user_id];
-        for id in &grant_ids {
-            params.push(id.as_str().into());
+        // `apply_grants` owns every bind in its predicate — including the
+        // viewer id — because the restrictive branches drop `base` and with it
+        // the placeholder a caller-side pre-bind would have been feeding.
+        let mut params: Vec<dream_core_db::DbValue> = Vec::with_capacity(grant_ids.len());
+        for value in &grant_ids {
+            params.push(value.as_str().into());
         }
         Ok(self.db.fetch_all_as::<McpRegistryDto>(&sql, &params).await?)
     }
@@ -1187,11 +1226,14 @@ impl DevopsService {
             .extra_grants(viewer_user_id, crate::grants::resource_type::KNOWLEDGE)
             .await;
         let (predicate, grant_ids) =
-            Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "", viewer_user_id);
+            Self::apply_grants(&Self::member_visibility_where(""), &grants, "", viewer_user_id);
         let sql = format!("SELECT {COLS} FROM one_rag_documents WHERE {predicate} ORDER BY created_at DESC");
-        let mut params = db_params![viewer_user_id];
-        for id in &grant_ids {
-            params.push(id.as_str().into());
+        // `apply_grants` owns every bind in its predicate — including the
+        // viewer id — because the restrictive branches drop `base` and with it
+        // the placeholder a caller-side pre-bind would have been feeding.
+        let mut params: Vec<dream_core_db::DbValue> = Vec::with_capacity(grant_ids.len());
+        for value in &grant_ids {
+            params.push(value.as_str().into());
         }
         Ok(self.db.fetch_all_as::<RagDocumentDto>(&sql, &params).await?)
     }
@@ -1564,11 +1606,9 @@ impl DevopsService {
                 .extra_grants(viewer_user_id, crate::grants::resource_type::KNOWLEDGE)
                 .await;
             let (predicate, extra) =
-                Self::widen_with_grants(&Self::member_visibility_where("d."), &grants, "d.", viewer_user_id);
-            let mut binds = Vec::with_capacity(extra.len() + 1);
-            binds.push(viewer_user_id.to_owned());
-            binds.extend(extra);
-            (Some(predicate), binds)
+                Self::apply_grants(&Self::member_visibility_where("d."), &grants, "d.", viewer_user_id);
+            // `extra` is already the complete bind list for `predicate`.
+            (Some(predicate), extra)
         };
 
         // Dense half. The ACL lives in the join, exactly as before.
@@ -2266,6 +2306,7 @@ mod tests {
         seed_org(&svc).await;
         let (open, restricted) = seed_two_skills(&svc).await;
         svc.set_grants(std::sync::Arc::new(FixedGrants(crate::grants::ExtraGrants {
+            restrictive: false,
             all: false,
             ids: vec![restricted.clone()],
         })));
@@ -2284,6 +2325,101 @@ mod tests {
         );
     }
 
+    /// The gap this mode exists to close: an admin who grants a member exactly
+    /// one skill reads that as a whitelist. Additively it is not one — the
+    /// member still reaches every `visibility = 'all'` skill in their scopes.
+    #[tokio::test]
+    async fn restrictive_mode_makes_the_matrix_an_actual_whitelist() {
+        let svc = service().await;
+        seed_org(&svc).await;
+        let (open, restricted) = seed_two_skills(&svc).await;
+        svc.set_grants(std::sync::Arc::new(FixedGrants(crate::grants::ExtraGrants {
+            restrictive: true,
+            all: false,
+            ids: vec![restricted.clone()],
+        })));
+
+        let ids: Vec<_> = svc
+            .list_skills("member1")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert!(ids.contains(&restricted), "the granted skill is reachable");
+        assert!(
+            !ids.contains(&open),
+            "an ungranted skill is NOT reachable, however permissive its own visibility"
+        );
+    }
+
+    /// Opted in and granted nothing means nothing — the whole point of a
+    /// whitelist, and the reason entering this mode must be explicit.
+    #[tokio::test]
+    async fn restrictive_mode_with_no_grants_reaches_nothing() {
+        let svc = service().await;
+        seed_org(&svc).await;
+        let _ = seed_two_skills(&svc).await;
+        svc.set_grants(std::sync::Arc::new(FixedGrants(crate::grants::ExtraGrants {
+            restrictive: true,
+            all: false,
+            ids: Vec::new(),
+        })));
+
+        assert!(
+            svc.list_skills("member1").await.unwrap().is_empty(),
+            "a whitelist with nothing on it grants nothing"
+        );
+    }
+
+    /// A wildcard under a whitelist still means "everything my scopes contain",
+    /// not "every row in the table" — tenancy binds in both modes, because
+    /// these registries have no tenant column of their own.
+    #[tokio::test]
+    async fn restrictive_mode_wildcard_still_respects_tenancy_and_visibility_widening() {
+        let svc = service().await;
+        seed_org(&svc).await;
+        let (open, restricted) = seed_two_skills(&svc).await;
+        svc.set_grants(std::sync::Arc::new(FixedGrants(crate::grants::ExtraGrants {
+            restrictive: true,
+            all: true,
+            ids: Vec::new(),
+        })));
+
+        let ids: Vec<_> = svc
+            .list_skills("member1")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert!(ids.contains(&open), "wildcard reaches the org-wide skill");
+        assert!(
+            ids.contains(&restricted),
+            "wildcard reaches the admin-only one too, as it does additively"
+        );
+    }
+
+    /// The default must stay bit-for-bit what it was: no source wired at all is
+    /// the personal edition and every pre-matrix install, and it may not start
+    /// hiding things.
+    #[tokio::test]
+    async fn with_no_grant_source_the_baseline_is_untouched() {
+        let svc = service().await;
+        seed_org(&svc).await;
+        let (open, restricted) = seed_two_skills(&svc).await;
+
+        let ids: Vec<_> = svc
+            .list_skills("member1")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert!(ids.contains(&open), "the baseline still reaches org-wide skills");
+        assert!(!ids.contains(&restricted), "and still hides admin-only ones");
+    }
+
     /// A wildcard grant covers resources created after it was written, which is
     /// why it cannot be stored as an enumeration of ids.
     #[tokio::test]
@@ -2292,6 +2428,7 @@ mod tests {
         seed_org(&svc).await;
         let (_open, restricted) = seed_two_skills(&svc).await;
         svc.set_grants(std::sync::Arc::new(FixedGrants(crate::grants::ExtraGrants {
+            restrictive: false,
             all: true,
             ids: Vec::new(),
         })));
@@ -2358,6 +2495,7 @@ mod tests {
         let (_open, restricted) = seed_two_skills(&svc).await;
         seed_other_tenant_skill(&svc, "t2-skill", "t2", "all").await;
         svc.set_grants(std::sync::Arc::new(FixedGrants(crate::grants::ExtraGrants {
+            restrictive: false,
             all: true,
             ids: Vec::new(),
         })));
@@ -2391,6 +2529,7 @@ mod tests {
         seed_org(&svc).await;
         seed_other_tenant_skill(&svc, "t2-skill", "t2", "admin").await;
         svc.set_grants(std::sync::Arc::new(FixedGrants(crate::grants::ExtraGrants {
+            restrictive: false,
             all: false,
             ids: vec!["t2-skill".to_owned()],
         })));

@@ -175,9 +175,10 @@ impl DevopsService {
             .extra_grants(viewer_user_id, crate::grants::resource_type::MODEL_CHANNEL)
             .await;
         let (predicate, grant_binds) =
-            Self::widen_with_grants(&Self::member_visibility_where(""), &grants, "", viewer_user_id);
+            Self::apply_grants(&Self::member_visibility_where(""), &grants, "", viewer_user_id);
         let sql = format!("SELECT {COLS} FROM one_provider_registry WHERE {predicate} ORDER BY updated_at DESC");
-        let mut params = db_params![viewer_user_id];
+        // `apply_grants` owns every bind in its predicate, viewer id included.
+        let mut params: Vec<dream_core_db::DbValue> = Vec::with_capacity(grant_binds.len());
         for bind in &grant_binds {
             params.push(bind.as_str().into());
         }
