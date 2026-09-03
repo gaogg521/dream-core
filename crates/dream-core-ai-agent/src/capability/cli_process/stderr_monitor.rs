@@ -68,8 +68,13 @@ pub(super) fn force_kill(pid: u32, process_group_id: Option<u32>) -> Result<(), 
         //   128 — "not found" (already exited): treat as success, identical to
         //         the unix branch's behaviour
         //   other — unexpected; surface as Internal so callers can log
+        // CREATE_NO_WINDOW: dreamcore is windowless under Electron, so a bare
+        // `taskkill` spawn flashes a console window on every force-kill.
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let result = std::process::Command::new("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
+            .creation_flags(CREATE_NO_WINDOW)
             .output();
 
         match result {
