@@ -25,6 +25,7 @@ const COMPANY_SECRET: &str = "sk-company-credential";
 struct Seen {
     path: String,
     authorization: String,
+    x_api_key: String,
     body: String,
     custom_header: String,
 }
@@ -41,6 +42,11 @@ async fn spawn_upstream(seen: Arc<Mutex<Seen>>) -> SocketAddr {
         slot.path = path;
         slot.authorization = headers
             .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        slot.x_api_key = headers
+            .get("x-api-key")
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default()
             .to_owned();
@@ -89,6 +95,10 @@ struct Fixture {
 }
 
 async fn fixture() -> Fixture {
+    fixture_with_platform("openai").await
+}
+
+async fn fixture_with_platform(platform: &str) -> Fixture {
     let seen = Arc::new(Mutex::new(Seen::default()));
     let addr = spawn_upstream(seen.clone()).await;
     let svc = service().await;
@@ -96,7 +106,7 @@ async fn fixture() -> Fixture {
         .upsert_provider_channel(
             None,
             "corp-gateway",
-            "openai",
+            platform,
             &format!("http://{addr}"),
             Some(COMPANY_SECRET),
             r#"["gpt-image-2"]"#,
@@ -173,6 +183,38 @@ async fn the_company_credential_is_substituted_for_the_members_token() {
     // Everything the vendor genuinely needs still gets through.
     assert_eq!(seen.custom_header, "enable");
     assert_eq!(seen.body, r#"{"model":"x"}"#);
+}
+
+/// Anthropic's client-side transport never sends `Authorization: Bearer` — it
+/// sends `x-api-key` (see `dream-engine-providers/src/transport.rs`,
+/// `AnthropicTransport::build_projected_request`). The proxy's front door
+/// must accept that shape too, and must swap it for the real company secret
+/// on the way out rather than forwarding the member's own channel token.
+#[tokio::test]
+async fn an_anthropic_channel_accepts_x_api_key_at_the_front_door_and_swaps_it_going_out() {
+    let f = fixture_with_platform("anthropic").await;
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/one/model-proxy/{}/v1/messages", f.channel_id))
+        .header("x-api-key", &f.token)
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"model":"claude"}"#))
+        .unwrap();
+
+    let response = f.app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let seen = f.seen.lock().unwrap();
+    assert_eq!(seen.path, "v1/messages");
+    assert_eq!(seen.x_api_key, COMPANY_SECRET);
+    assert!(
+        !seen.x_api_key.contains(&f.token),
+        "the member's channel token leaked upstream"
+    );
+    // Anthropic never gets a Bearer header — sending both would be a
+    // protocol violation the vendor might reject or silently ignore.
+    assert!(seen.authorization.is_empty());
 }
 
 #[tokio::test]
