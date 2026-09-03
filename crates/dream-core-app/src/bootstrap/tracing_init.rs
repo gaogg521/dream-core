@@ -31,16 +31,22 @@ const NOISE_SUPPRESSIONS: &[&str] = &[
     "dream_engine_providers=info",
 ];
 
+// The dream-engine tracing targets whose output belongs in the dedicated
+// engine log file, not the main backend one. Must be the crates' real module
+// paths: the rebrand renamed the crates `aion_* -> dream_engine_*` but left
+// `aion_compact` / `aion_tools` / `aion_skills` / `aion_memory` here, so those
+// four crates' logs were neither suppressed from `dreamcore.log` nor leveled
+// into the engine file — a silent string mismatch `cargo build` can't catch.
 const AIONRS_TARGETS: &[&str] = &[
     "dream_engine_agent",
     "dream_engine_config",
-    "aion_compact",
+    "dream_engine_compact",
     "dream_engine_mcp",
     "dream_engine_providers",
     "dream_engine_protocol",
-    "aion_tools",
-    "aion_skills",
-    "aion_memory",
+    "dream_engine_tools",
+    "dream_engine_skills",
+    "dream_engine_memory",
 ];
 
 const RAW_AIONRS_PAYLOAD_TARGETS: &[&str] = &["dream_engine_agent", "dream_engine_providers"];
@@ -97,6 +103,12 @@ fn build_aionrs_level(log_level: Option<&str>) -> String {
 pub struct LogGuards {
     _backend: tracing_appender::non_blocking::WorkerGuard,
     _aionrs: tracing_appender::non_blocking::WorkerGuard,
+    /// The log root that was actually selected — the custom `--log-dir` when it
+    /// was usable, otherwise the default. Bridged to `ONE_LOG_DIR` by
+    /// `init_environment` so `/api/system/info` (and the Settings screen it
+    /// feeds) reports the directory logs are really written to, the same way
+    /// `--work-dir` is bridged to `ONE_WORK_DIR`.
+    pub log_root: PathBuf,
 }
 
 const LOGGING_INIT_MESSAGE: &str = "failed to initialize logging";
@@ -188,6 +200,7 @@ pub fn init_tracing(
     log_level: Option<&str>,
 ) -> Result<LogGuards, BootstrapError> {
     let selection = select_log_root(custom_log_dir, default_log_dir)?;
+    let log_root = selection.root.clone();
     let log_dir = selection.root.as_path();
     let active_log_dir = selection.active_dir.as_path();
 
@@ -210,7 +223,7 @@ pub fn init_tracing(
     };
 
     // Backend file layer — excludes aion_* targets
-    let file_appender = DailyDatedLogWriter::new(log_dir.to_path_buf(), "aioncore.log");
+    let file_appender = DailyDatedLogWriter::new(log_dir.to_path_buf(), "dreamcore.log");
     let (non_blocking, backend_guard) = tracing_appender::non_blocking(file_appender);
 
     let backend_file_layer = fmt::layer()
@@ -232,7 +245,7 @@ pub fn init_tracing(
         .with_field("filter", aionrs_level.clone())
         .with_field("logDir", active_log_dir.display().to_string())
     })?;
-    let aionrs_appender = DailyDatedLogWriter::new(log_dir.to_path_buf(), "aionrs.log");
+    let aionrs_appender = DailyDatedLogWriter::new(log_dir.to_path_buf(), "dream-engine.log");
     let (aionrs_non_blocking, aionrs_guard) = tracing_appender::non_blocking(aionrs_appender);
     let aionrs_layer = fmt::layer()
         .json()
@@ -272,6 +285,7 @@ pub fn init_tracing(
     Ok(LogGuards {
         _backend: backend_guard,
         _aionrs: aionrs_guard,
+        log_root,
     })
 }
 
@@ -402,7 +416,7 @@ mod tests {
             );
             assert!(
                 tracing::enabled!(target: "dream_core_ai_agent::protocol::acp", Level::DEBUG),
-                "AionUi ACP sanitized debug summaries should still be available"
+                "ACP sanitized debug summaries should still be available"
             );
         });
     }
@@ -417,7 +431,7 @@ mod tests {
             );
             assert!(
                 tracing::enabled!(target: "dream_core_ai_agent::protocol::acp", Level::DEBUG),
-                "AionUi ACP sanitized debug summaries should still be available"
+                "ACP sanitized debug summaries should still be available"
             );
         });
     }
@@ -436,7 +450,7 @@ mod tests {
             );
             assert!(
                 tracing::enabled!(target: "dream_core_ai_agent::manager::dream_engine::agent", Level::DEBUG),
-                "AionUi aionrs lifecycle debug logs should still be available"
+                "dream-engine lifecycle debug logs should still be available"
             );
         });
     }
@@ -444,9 +458,16 @@ mod tests {
     #[test]
     fn aionrs_file_level_suppresses_raw_provider_targets_even_when_debug_enabled() {
         let level = build_aionrs_level(Some("debug"));
+        // Raw-payload targets are pinned to info even when the rest go to debug.
         assert!(level.contains("dream_engine_agent=info"), "{level}");
         assert!(level.contains("dream_engine_providers=info"), "{level}");
-        assert!(level.contains("aion_tools=debug"), "{level}");
+        // Everything else in AIONRS_TARGETS follows the requested level — and the
+        // targets must be the crates' real module paths (post-rebrand
+        // `dream_engine_*`), not the stale `aion_*` names.
+        assert!(level.contains("dream_engine_tools=debug"), "{level}");
+        assert!(level.contains("dream_engine_skills=debug"), "{level}");
+        assert!(level.contains("dream_engine_memory=debug"), "{level}");
+        assert!(!level.contains("aion_tools"), "stale target name leaked: {level}");
     }
 
     #[test]
@@ -484,7 +505,7 @@ mod tests {
         let days = std::sync::Arc::new(std::sync::Mutex::new(vec![second_day, first_day]));
         let mut writer = DailyDatedLogWriter::new_with_date_provider(
             tmp.path().to_path_buf(),
-            "aioncore.log",
+            "dreamcore.log",
             Box::new({
                 let days = std::sync::Arc::clone(&days);
                 move || days.lock().expect("date queue").pop().expect("date")
@@ -495,14 +516,14 @@ mod tests {
         std::io::Write::write_all(&mut writer, b"july 3\n").expect("write second day");
         std::io::Write::flush(&mut writer).expect("flush");
 
-        let first_path = tmp.path().join("2026/07/02/2026-07-02.aioncore.log");
-        let second_path = tmp.path().join("2026/07/03/2026-07-03.aioncore.log");
+        let first_path = tmp.path().join("2026/07/02/2026-07-02.dreamcore.log");
+        let second_path = tmp.path().join("2026/07/03/2026-07-03.dreamcore.log");
         assert_eq!(std::fs::read_to_string(first_path).expect("first day log"), "july 2\n");
         assert_eq!(
             std::fs::read_to_string(second_path).expect("second day log"),
             "july 3\n"
         );
-        assert!(!tmp.path().join("2026/07/02/2026-07-03.aioncore.log").exists());
+        assert!(!tmp.path().join("2026/07/02/2026-07-03.dreamcore.log").exists());
     }
 
     #[test]
@@ -580,9 +601,13 @@ mod tests {
         std::fs::write(&custom, b"not a directory").expect("occupy custom path");
         let default = tmp.path().join("default-logs");
 
-        let _guards = init_tracing(Some(&custom), &default, Some("info"))
+        let guards = init_tracing(Some(&custom), &default, Some("info"))
             .expect("bootstrap must survive an unusable custom log dir");
 
         assert!(dated_log_dir(&default).is_dir());
+        // `log_root` must be the directory logs actually landed in (the
+        // fallback here), not the unusable requested one — `init_environment`
+        // bridges this to `ONE_LOG_DIR` for `/api/system/info`.
+        assert_eq!(guards.log_root, default);
     }
 }

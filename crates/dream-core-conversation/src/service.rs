@@ -4951,7 +4951,7 @@ impl ConversationService {
     ) -> Option<String> {
         let service = self.runtime_token_service.as_ref()?;
         // Every conversation gets a helper-scoped token so the in-conversation
-        // CLI (`aioncore config` / `diagnose`) can authenticate in DreamPro
+        // CLI (`dreamcore config` / `diagnose`) can authenticate in DreamPro
         // mode; team-bound conversations additionally get the team-tools scopes.
         let mut scopes = vec![RuntimeTokenScope::ConversationHelper];
         if build_opts.context.team.is_some() {

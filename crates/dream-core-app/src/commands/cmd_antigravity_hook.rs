@@ -1,4 +1,4 @@
-//! `aioncore antigravity-hook`: agy's PreToolUse gate.
+//! `dreamcore antigravity-hook`: agy's PreToolUse gate.
 //!
 //! agy runs this once per tool call, writing the request to our stdin and
 //! reading the decision from our stdout. We forward the request to the running

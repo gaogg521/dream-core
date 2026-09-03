@@ -1,4 +1,4 @@
-//! E2E coverage for the agent-facing `aioncore config` CLI.
+//! E2E coverage for the agent-facing `dreamcore config` CLI.
 
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;

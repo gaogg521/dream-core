@@ -206,7 +206,7 @@ pub struct AuthState {
     /// and injects a fixed default user, same as `local: true` did.
     pub identity_mode: AuthIdentityMode,
     /// Optional second credential channel for agent-subprocess helper CLIs
-    /// (`aioncore config` / `diagnose`), which cannot carry a JWT or cookies.
+    /// (`dreamcore config` / `diagnose`), which cannot carry a JWT or cookies.
     /// `None` disables the channel (requests without a JWT are rejected).
     pub runtime_token_verifier: Option<Arc<dyn IRuntimeTokenVerifier>>,
     /// IP-allowlist check, `None` to skip enforcement entirely (the default
