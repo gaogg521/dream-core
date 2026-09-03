@@ -97,6 +97,12 @@ fn build_aionrs_level(log_level: Option<&str>) -> String {
 pub struct LogGuards {
     _backend: tracing_appender::non_blocking::WorkerGuard,
     _aionrs: tracing_appender::non_blocking::WorkerGuard,
+    /// The log root that was actually selected — the custom `--log-dir` when it
+    /// was usable, otherwise the default. Bridged to `ONE_LOG_DIR` by
+    /// `init_environment` so `/api/system/info` (and the Settings screen it
+    /// feeds) reports the directory logs are really written to, the same way
+    /// `--work-dir` is bridged to `ONE_WORK_DIR`.
+    pub log_root: PathBuf,
 }
 
 const LOGGING_INIT_MESSAGE: &str = "failed to initialize logging";
@@ -188,6 +194,7 @@ pub fn init_tracing(
     log_level: Option<&str>,
 ) -> Result<LogGuards, BootstrapError> {
     let selection = select_log_root(custom_log_dir, default_log_dir)?;
+    let log_root = selection.root.clone();
     let log_dir = selection.root.as_path();
     let active_log_dir = selection.active_dir.as_path();
 
@@ -272,6 +279,7 @@ pub fn init_tracing(
     Ok(LogGuards {
         _backend: backend_guard,
         _aionrs: aionrs_guard,
+        log_root,
     })
 }
 
@@ -580,9 +588,13 @@ mod tests {
         std::fs::write(&custom, b"not a directory").expect("occupy custom path");
         let default = tmp.path().join("default-logs");
 
-        let _guards = init_tracing(Some(&custom), &default, Some("info"))
+        let guards = init_tracing(Some(&custom), &default, Some("info"))
             .expect("bootstrap must survive an unusable custom log dir");
 
         assert!(dated_log_dir(&default).is_dir());
+        // `log_root` must be the directory logs actually landed in (the
+        // fallback here), not the unusable requested one — `init_environment`
+        // bridges this to `ONE_LOG_DIR` for `/api/system/info`.
+        assert_eq!(guards.log_root, default);
     }
 }
