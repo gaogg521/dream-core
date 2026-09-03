@@ -25,8 +25,8 @@ use crate::ip_allowlist::ip_allowed;
 use crate::models::{
     ApiKeyDto, CollaborationConfigDto, ConfigBulkImportDto, ConfigEntryDto, ConfigSetDto, ConfigSetReference,
     ConfigSetReferencesDto, ContainerConfigDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto,
-    FileVaultReconcileEntry, ImChannelMemberDto, ImChannelPluginDto, IpAllowlistConfigDto, MyNotificationDto,
-    MyNotificationsDto, NewApiKeyDto, NotificationDto, PolicyTemplateBindingDto, ResourceGrantDto,
+    FileVaultReconcileEntry, GrantMode, GrantModeDto, ImChannelMemberDto, ImChannelPluginDto, IpAllowlistConfigDto,
+    MyNotificationDto, MyNotificationsDto, NewApiKeyDto, NotificationDto, PolicyTemplateBindingDto, ResourceGrantDto,
     SENSITIVE_PLACEHOLDER, SceneDto, SecurityPolicyDto, SecurityPolicyTemplateDto, SiemConfigDto,
 };
 use crate::siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
@@ -843,7 +843,101 @@ impl PlatformService {
             } else {
                 resource_ids.into_iter().collect()
             },
+            restrictive: self.grant_mode(tenant_id, resource_type).await == GrantMode::Restrictive,
         })
+    }
+
+    /// This tenant's matrix mode for one resource type.
+    ///
+    /// Infallible on purpose, and additive on every unhappy path — no row, an
+    /// unreadable table, a value written by a newer version. Restrictive mode
+    /// is the only setting in this crate whose failure mode is "the member
+    /// sees nothing", so it is never entered by accident: it takes an explicit,
+    /// readable `restrictive` row to turn on.
+    pub async fn grant_mode(&self, tenant_id: &str, resource_type: &str) -> GrantMode {
+        let row: Result<Option<String>, _> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT mode FROM one_resource_grant_modes WHERE tenant_id = ? AND resource_type = ?",
+                &db_params![tenant_id, resource_type],
+            )
+            .await;
+        match row {
+            Ok(Some(value)) => GrantMode::from_str_lossy(&value),
+            Ok(None) => GrantMode::Additive,
+            Err(e) => {
+                tracing::warn!(
+                    tenant_id,
+                    resource_type,
+                    error = %e,
+                    "grant mode unreadable; falling back to additive"
+                );
+                GrantMode::Additive
+            }
+        }
+    }
+
+    /// Every resource type's mode for one tenant, for the matrix UI. Types with
+    /// no row are reported explicitly as `additive` rather than omitted, so the
+    /// console can state the mode for all four instead of leaving blanks the
+    /// admin has to interpret.
+    pub async fn list_grant_modes(&self, tenant_id: &str) -> Result<Vec<GrantModeDto>, PlatformError> {
+        let rows: Vec<(String, String, String, i64)> = self
+            .db
+            .fetch_all_as::<(String, String, String, i64)>(
+                "SELECT resource_type, mode, updated_by, updated_at FROM one_resource_grant_modes \
+                 WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?;
+        Ok(GRANT_RESOURCE_TYPES
+            .iter()
+            .map(|resource_type| {
+                rows.iter()
+                    .find(|(rt, ..)| rt == resource_type)
+                    .map(|(rt, mode, by, at)| GrantModeDto {
+                        resource_type: rt.clone(),
+                        mode: GrantMode::from_str_lossy(mode).as_str().to_owned(),
+                        updated_by: by.clone(),
+                        updated_at: *at,
+                    })
+                    .unwrap_or_else(|| GrantModeDto {
+                        resource_type: (*resource_type).to_owned(),
+                        mode: GrantMode::Additive.as_str().to_owned(),
+                        updated_by: String::new(),
+                        updated_at: 0,
+                    })
+            })
+            .collect())
+    }
+
+    /// Set one resource type's matrix mode for a tenant.
+    pub async fn set_grant_mode(
+        &self,
+        tenant_id: &str,
+        resource_type: &str,
+        mode: GrantMode,
+        updated_by: &str,
+    ) -> Result<(), PlatformError> {
+        if !GRANT_RESOURCE_TYPES.contains(&resource_type) {
+            return Err(PlatformError::BadRequest(format!(
+                "unknown resource type '{resource_type}'"
+            )));
+        }
+        let now = now_ms();
+        self.upsert(
+            "INSERT INTO one_resource_grant_modes (tenant_id, resource_type, mode, updated_by, updated_at) \
+             VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(tenant_id, resource_type) DO UPDATE SET mode = excluded.mode, \
+                 updated_by = excluded.updated_by, updated_at = excluded.updated_at",
+            "INSERT INTO one_resource_grant_modes (tenant_id, resource_type, mode, updated_by, updated_at) \
+             VALUES (?, ?, ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE mode = new.mode, updated_by = new.updated_by, \
+                 updated_at = new.updated_at",
+            &db_params![tenant_id, resource_type, mode.as_str(), updated_by, now],
+        )
+        .await?;
+        Ok(())
     }
 
     // --- Scene management (E5) ---
@@ -4046,6 +4140,93 @@ mod tests {
             assert!(!eff.all, "alice is not in a scene carrying the {rt} package");
             assert!(eff.resource_ids.is_empty());
         }
+    }
+
+    // --- matrix mode (additive vs whitelist) ---
+
+    /// The default has to stay additive: every install that predates this
+    /// setting reads the matrix exactly as it always did.
+    #[tokio::test]
+    async fn grant_mode_defaults_to_additive_for_every_type() {
+        let (_db, service) = setup().await;
+        for rt in GRANT_RESOURCE_TYPES {
+            assert_eq!(service.grant_mode("t1", rt).await, GrantMode::Additive);
+        }
+        let listed = service.list_grant_modes("t1").await.unwrap();
+        assert_eq!(listed.len(), GRANT_RESOURCE_TYPES.len(), "all four are reported");
+        assert!(
+            listed.iter().all(|m| m.mode == "additive"),
+            "an untouched type is reported explicitly, not omitted"
+        );
+    }
+
+    /// The mode is per resource type, so an admin can put model channels on a
+    /// whitelist without also blanking everyone's skills.
+    #[tokio::test]
+    async fn grant_mode_is_set_per_resource_type_and_reaches_effective_grants() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "alice", "t1", "member").await;
+        service
+            .set_grant_mode("t1", "skill", GrantMode::Restrictive, "admin1")
+            .await
+            .unwrap();
+
+        assert_eq!(service.grant_mode("t1", "skill").await, GrantMode::Restrictive);
+        assert_eq!(
+            service.grant_mode("t1", "mcp").await,
+            GrantMode::Additive,
+            "one type flipping must not drag the others with it"
+        );
+
+        // The flag has to arrive on the DTO the devops seam actually reads.
+        let eff = service.effective_resource_ids("t1", "alice", "skill").await.unwrap();
+        assert!(eff.restrictive);
+        let eff_mcp = service.effective_resource_ids("t1", "alice", "mcp").await.unwrap();
+        assert!(!eff_mcp.restrictive);
+    }
+
+    /// Tenants must not inherit each other's mode — a whitelist is an access
+    /// decision, and leaking it sideways would blank a tenant that never opted in.
+    #[tokio::test]
+    async fn grant_mode_does_not_leak_across_tenants() {
+        let (_db, service) = setup().await;
+        service
+            .set_grant_mode("t1", "skill", GrantMode::Restrictive, "admin1")
+            .await
+            .unwrap();
+        assert_eq!(service.grant_mode("t2", "skill").await, GrantMode::Additive);
+    }
+
+    #[tokio::test]
+    async fn grant_mode_round_trips_back_to_additive_and_rejects_unknown_types() {
+        let (_db, service) = setup().await;
+        service
+            .set_grant_mode("t1", "skill", GrantMode::Restrictive, "admin1")
+            .await
+            .unwrap();
+        service
+            .set_grant_mode("t1", "skill", GrantMode::Additive, "admin1")
+            .await
+            .unwrap();
+        assert_eq!(service.grant_mode("t1", "skill").await, GrantMode::Additive);
+
+        assert!(
+            service
+                .set_grant_mode("t1", "employee", GrantMode::Restrictive, "admin1")
+                .await
+                .is_err(),
+            "employee is not one of the matrix types"
+        );
+    }
+
+    /// A value this build does not recognise — a row from a newer version —
+    /// reads as additive, never as a whitelist.
+    #[test]
+    fn an_unrecognised_mode_value_reads_as_additive() {
+        assert_eq!(GrantMode::from_str_lossy("restrictive"), GrantMode::Restrictive);
+        assert_eq!(GrantMode::from_str_lossy("additive"), GrantMode::Additive);
+        assert_eq!(GrantMode::from_str_lossy("something_new"), GrantMode::Additive);
+        assert_eq!(GrantMode::from_str_lossy(""), GrantMode::Additive);
     }
 
     // --- E5 security policy baseline ---

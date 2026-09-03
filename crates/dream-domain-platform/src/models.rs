@@ -1,7 +1,7 @@
 //! Redacted DTOs for the platform-config admin UI. Secrets are never echoed
 //! back — only a `has*` presence flag, same as `dream_domain_org::SmtpConfigDto`.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Redacted container-runtime config (P1-3). A real run additionally requires a
 /// `ContainerRuntime` implementation wired at the app layer; until then a probe
@@ -82,6 +82,51 @@ pub struct ResourceGrantDto {
 pub struct EffectiveGrantDto {
     pub all: bool,
     pub resource_ids: Vec<String>,
+    /// Whether this tenant reads the matrix as a whitelist for this resource
+    /// type (`one_resource_grant_modes`). `false` — the default, and the value
+    /// every failure path resolves to — keeps the historical additive
+    /// behaviour, where a grant only ever adds reachability.
+    pub restrictive: bool,
+}
+
+/// How one tenant reads the matrix for one resource type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GrantMode {
+    /// Grants add reachability on top of `scope`/`visibility`. The default.
+    Additive,
+    /// Only granted resources are reachable, within the viewer's own scopes.
+    Restrictive,
+}
+
+impl GrantMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GrantMode::Additive => "additive",
+            GrantMode::Restrictive => "restrictive",
+        }
+    }
+
+    /// Anything unrecognised — including a row written by a newer version —
+    /// reads as additive. Widening on a bad read is recoverable; blanking every
+    /// member's resource list is not.
+    pub fn from_str_lossy(value: &str) -> Self {
+        match value {
+            "restrictive" => GrantMode::Restrictive,
+            _ => GrantMode::Additive,
+        }
+    }
+}
+
+/// One tenant's matrix mode for one resource type, as the admin console reads
+/// and writes it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantModeDto {
+    pub resource_type: String,
+    pub mode: String,
+    pub updated_by: String,
+    pub updated_at: i64,
 }
 
 /// Security policy baseline (E5). One per tenant — see the migration's own

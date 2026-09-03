@@ -12,18 +12,26 @@
 //! layer implements, the same seam every other cross-domain dependency here
 //! uses (`TenantResolver`, `CredentialRevoker`, …).
 //!
-//! # Grants only ever add
+//! # Grants add, unless the tenant opted into a whitelist
 //!
-//! A grant cannot take reachability away. That is what makes wiring this in
-//! safe for every existing install: with no matrix configured the resolver
-//! contributes nothing, the registries' own predicates decide alone, and
-//! behaviour is bit-for-bit what it was. It also means the personal edition —
-//! where there is no source at all — needs no special case.
+//! By default a grant cannot take reachability away. That is what makes wiring
+//! this in safe for every existing install: with no matrix configured the
+//! resolver contributes nothing, the registries' own predicates decide alone,
+//! and behaviour is bit-for-bit what it was. It also means the personal edition
+//! — where there is no source at all — needs no special case.
 //!
-//! If restrictive semantics are ever wanted ("granted means *only* the granted
-//! ones"), that is a different feature with a migration story: every existing
-//! deployment would go from "members see the team's skills" to "members see
-//! nothing" the moment it switched on. It is deliberately not what this is.
+//! Additive is not what an administrator assumes, though. Someone who grants a
+//! department exactly three skills reads that as a whitelist, and is not told
+//! the department still reaches every `visibility = 'all'` skill in its scopes.
+//! So a tenant may opt one resource type into [`ExtraGrants::restrictive`],
+//! where granted means *only* the granted ones.
+//!
+//! That mode is deliberately hard to enter by accident, because its failure
+//! mode is "the member sees nothing": it requires an explicit, readable
+//! setting, and every unhappy path on the way to reading it — no tenant, an
+//! unreadable matrix, an unreadable mode row, a value from a newer version —
+//! resolves back to additive. Widening on a bad read is recoverable; blanking
+//! a member's whole skill list is not.
 
 use async_trait::async_trait;
 
@@ -47,11 +55,22 @@ pub struct ExtraGrants {
     pub all: bool,
     /// Explicitly granted resource ids.
     pub ids: Vec<String>,
+    /// When true the tenant reads the matrix as a whitelist for this resource
+    /// type: the grants below are the *only* thing reachable, instead of an
+    /// addition to what `scope`/`visibility` already allow.
+    ///
+    /// `false` is the default and the value every failure path resolves to —
+    /// see this module's header for why that asymmetry is deliberate.
+    pub restrictive: bool,
 }
 
 impl ExtraGrants {
     /// True when this contributes nothing, so callers can skip the extra SQL
     /// entirely rather than building a predicate that can never match.
+    ///
+    /// Only meaningful in additive mode: under [`Self::restrictive`] an empty
+    /// grant set is not "nothing to add", it is "nothing is reachable", which
+    /// is a predicate the caller must still apply.
     pub fn is_empty(&self) -> bool {
         !self.all && self.ids.is_empty()
     }
