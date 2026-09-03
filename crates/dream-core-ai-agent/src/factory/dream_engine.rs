@@ -911,6 +911,9 @@ pub(crate) fn build_dream_engine_config(
         dream_engine_config::config::ProviderType::Bedrock => {
             dream_engine_config::compat::ProviderCompat::bedrock_defaults().transport
         }
+        dream_engine_config::config::ProviderType::Ollama => {
+            dream_engine_config::compat::ProviderCompat::ollama_defaults().transport
+        }
     };
     config.compat.transport.default_max_tokens = default_transport.default_max_tokens;
     config.compat.transport.model_max_tokens = default_transport.model_max_tokens;

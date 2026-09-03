@@ -519,6 +519,9 @@ $RECYCLE.BIN/
 
 # Build artifacts
 /target
+# Alternate Cargo target dir used to keep test builds off the main target/
+# (see AGENTS.md "NEVER run two builds against the same target/").
+/target-test
 debug/
 *.d
 *.o

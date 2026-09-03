@@ -2642,7 +2642,7 @@ dependencies = [
 [[package]]
 name = "dream-engine-agent"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#fb0b0b54e68e9ba262f1b30d443367871a95be4a"
+source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#d321217dddc92ce60be95f53699e817785c21928"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2673,7 +2673,7 @@ dependencies = [
 [[package]]
 name = "dream-engine-compact"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#fb0b0b54e68e9ba262f1b30d443367871a95be4a"
+source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#d321217dddc92ce60be95f53699e817785c21928"
 dependencies = [
  "regex",
  "serde",
@@ -2685,7 +2685,7 @@ dependencies = [
 [[package]]
 name = "dream-engine-config"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#fb0b0b54e68e9ba262f1b30d443367871a95be4a"
+source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#d321217dddc92ce60be95f53699e817785c21928"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2710,7 +2710,7 @@ dependencies = [
 [[package]]
 name = "dream-engine-mcp"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#fb0b0b54e68e9ba262f1b30d443367871a95be4a"
+source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#d321217dddc92ce60be95f53699e817785c21928"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2731,7 +2731,7 @@ dependencies = [
 [[package]]
 name = "dream-engine-memory"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#fb0b0b54e68e9ba262f1b30d443367871a95be4a"
+source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#d321217dddc92ce60be95f53699e817785c21928"
 dependencies = [
  "chrono",
  "dream-engine-config",
@@ -2745,7 +2745,7 @@ dependencies = [
 [[package]]
 name = "dream-engine-process"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#fb0b0b54e68e9ba262f1b30d443367871a95be4a"
+source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#d321217dddc92ce60be95f53699e817785c21928"
 dependencies = [
  "libc",
  "tokio",
@@ -2756,7 +2756,7 @@ dependencies = [
 [[package]]
 name = "dream-engine-protocol"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#fb0b0b54e68e9ba262f1b30d443367871a95be4a"
+source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#d321217dddc92ce60be95f53699e817785c21928"
 dependencies = [
  "dream-engine-types",
  "serde",
@@ -2769,7 +2769,7 @@ dependencies = [
 [[package]]
 name = "dream-engine-providers"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#fb0b0b54e68e9ba262f1b30d443367871a95be4a"
+source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#d321217dddc92ce60be95f53699e817785c21928"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2798,7 +2798,7 @@ dependencies = [
 [[package]]
 name = "dream-engine-skills"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#fb0b0b54e68e9ba262f1b30d443367871a95be4a"
+source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#d321217dddc92ce60be95f53699e817785c21928"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2825,7 +2825,7 @@ dependencies = [
 [[package]]
 name = "dream-engine-tools"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#fb0b0b54e68e9ba262f1b30d443367871a95be4a"
+source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#d321217dddc92ce60be95f53699e817785c21928"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2848,7 +2848,7 @@ dependencies = [
 [[package]]
 name = "dream-engine-types"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#fb0b0b54e68e9ba262f1b30d443367871a95be4a"
+source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#d321217dddc92ce60be95f53699e817785c21928"
 dependencies = [
  "async-trait",
  "base64",
@@ -7392,7 +7392,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 [[package]]
 name = "workspace-hack"
 version = "0.1.0"
-source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#fb0b0b54e68e9ba262f1b30d443367871a95be4a"
+source = "git+https://github.com/gaogg521/dream-engine.git?branch=main#d321217dddc92ce60be95f53699e817785c21928"
 dependencies = [
  "bitflags 2.13.1",
  "cc",
