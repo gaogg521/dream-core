@@ -80,6 +80,7 @@ fn generate_token() -> Result<String, DevopsError> {
 /// needs, including the decrypted key it is about to use and immediately drop.
 pub struct ResolvedChannel {
     pub id: String,
+    pub platform: String,
     pub upstream_base_url: String,
     pub api_key: String,
     pub user_id: String,
@@ -398,15 +399,15 @@ impl DevopsService {
         channel_id: &str,
         token: &str,
     ) -> Result<Option<ResolvedChannel>, DevopsError> {
-        let row: Option<(String, String, String)> = self.db.fetch_optional_as::<(String, String, String)>(
-            "SELECT t.user_id, r.upstream_base_url, r.api_key_encrypted \
+        let row: Option<(String, String, String, String)> = self.db.fetch_optional_as::<(String, String, String, String)>(
+            "SELECT t.user_id, r.platform, r.upstream_base_url, r.api_key_encrypted \
              FROM one_provider_channel_tokens t \
              JOIN one_provider_registry r ON r.id = t.channel_id \
              WHERE t.token_hash = ? AND t.channel_id = ? AND t.revoked_at IS NULL AND r.enabled = 1",
         &db_params![hash_token(token), channel_id])
         .await?;
 
-        let Some((user_id, upstream_base_url, api_key_encrypted)) = row else {
+        let Some((user_id, platform, upstream_base_url, api_key_encrypted)) = row else {
             return Ok(None);
         };
         if api_key_encrypted.is_empty() {
@@ -424,6 +425,7 @@ impl DevopsService {
 
         Ok(Some(ResolvedChannel {
             id: channel_id.to_owned(),
+            platform,
             upstream_base_url,
             api_key,
             user_id,

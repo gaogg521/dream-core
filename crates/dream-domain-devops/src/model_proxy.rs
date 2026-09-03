@@ -55,10 +55,12 @@ use crate::state::OneDevopsRouterState;
 const PROXY_BODY_LIMIT: usize = 64 * 1024 * 1024;
 
 /// Headers that describe *this* hop and must not be copied to the next one.
-/// `authorization` is replaced with the company credential; `host` must follow
+/// `authorization` and `x-api-key` are replaced with the company credential
+/// (whichever of the two the destination protocol wants); `host` must follow
 /// the upstream URL; the rest are connection-level.
 const HOP_BY_HOP: &[&str] = &[
     "authorization",
+    "x-api-key",
     "host",
     "connection",
     "keep-alive",
@@ -99,6 +101,45 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
     (!token.is_empty()).then(|| token.to_owned())
 }
 
+/// `x-api-key` value from the request, if present.
+fn api_key_header(headers: &HeaderMap) -> Option<String> {
+    let raw = headers.get("x-api-key")?.to_str().ok()?;
+    let token = raw.trim();
+    (!token.is_empty()).then(|| token.to_owned())
+}
+
+/// The channel token, however the caller's local transport happened to send
+/// it.
+///
+/// The member's desktop doesn't know it's talking to this proxy instead of
+/// the real vendor: it builds the request the same way it would for a direct
+/// connection, which means the credential shape follows the *destination*
+/// platform, not a proxy-specific convention. OpenAI-compatible transports
+/// (including the `gemini` platform, which is mapped to the OpenAI-compatible
+/// transport client-side) send `Authorization: Bearer`; Anthropic sends
+/// `x-api-key`. Both carry the same channel token and are checked the same
+/// way once extracted.
+fn channel_token(headers: &HeaderMap) -> Option<String> {
+    bearer_token(headers).or_else(|| api_key_header(headers))
+}
+
+/// The header name and value used to present the real vendor credential to
+/// `channel.upstream_base_url`, chosen by the destination platform's
+/// protocol — the one place a company channel's Anthropic secret differs in
+/// transport from every other platform this proxy serves.
+///
+/// `gemini` is deliberately absent: it is materialized to members as the
+/// OpenAI-compatible transport (see `resolve_dream_engine_url_and_compat` in
+/// dream-core-ai-agent), so it already needs `Authorization: Bearer` like
+/// every other non-Anthropic platform.
+fn credential_header(platform: &str, api_key: &str) -> (&'static str, String) {
+    if platform == "anthropic" {
+        ("x-api-key", api_key.to_owned())
+    } else {
+        ("Authorization", format!("Bearer {api_key}"))
+    }
+}
+
 /// One flat error shape for every rejection.
 ///
 /// Deliberately indistinguishable across "no token", "revoked token", "token
@@ -124,7 +165,7 @@ async fn handle_proxy(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    let Some(token) = bearer_token(&headers) else {
+    let Some(token) = channel_token(&headers) else {
         return unauthorized();
     };
 
@@ -164,7 +205,8 @@ async fn handle_proxy(
             request = request.header(name.as_str(), value.as_bytes());
         }
     }
-    request = request.header("Authorization", format!("Bearer {}", channel.api_key));
+    let (credential_name, credential_value) = credential_header(&channel.platform, &channel.api_key);
+    request = request.header(credential_name, credential_value);
     // Stream the request body straight through: an image-to-image payload can
     // be tens of megabytes and there is no reason for it to land in memory.
     request = request.body(reqwest::Body::wrap_stream(
@@ -245,11 +287,62 @@ mod tests {
     fn the_callers_credentials_are_not_forwarded() {
         assert!(is_hop_by_hop("Authorization"));
         assert!(is_hop_by_hop("authorization"));
+        assert!(is_hop_by_hop("x-api-key"));
+        assert!(is_hop_by_hop("X-Api-Key"));
         assert!(is_hop_by_hop("Host"));
         assert!(is_hop_by_hop("Content-Length"));
         // …while everything the model API actually needs passes through.
         assert!(!is_hop_by_hop("content-type"));
         assert!(!is_hop_by_hop("accept"));
         assert!(!is_hop_by_hop("x-dashscope-async"));
+    }
+
+    #[test]
+    fn an_x_api_key_header_is_read_as_a_channel_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", HeaderValue::from_static("onech-abc"));
+        assert_eq!(api_key_header(&headers).as_deref(), Some("onech-abc"));
+
+        headers.insert("x-api-key", HeaderValue::from_static("   "));
+        assert!(api_key_header(&headers).is_none());
+    }
+
+    /// Anthropic's client-side transport sends `x-api-key`, never `Authorization:
+    /// Bearer` — the front door has to recognize whichever one the caller's
+    /// local transport used for the destination platform.
+    #[test]
+    fn channel_token_accepts_either_bearer_or_x_api_key() {
+        let mut bearer_only = HeaderMap::new();
+        bearer_only.insert("authorization", HeaderValue::from_static("Bearer onech-abc"));
+        assert_eq!(channel_token(&bearer_only).as_deref(), Some("onech-abc"));
+
+        let mut api_key_only = HeaderMap::new();
+        api_key_only.insert("x-api-key", HeaderValue::from_static("onech-def"));
+        assert_eq!(channel_token(&api_key_only).as_deref(), Some("onech-def"));
+
+        // Bearer wins when a caller somehow sends both — matches the order
+        // `channel_token` tries them in.
+        let mut both = HeaderMap::new();
+        both.insert("authorization", HeaderValue::from_static("Bearer onech-bearer"));
+        both.insert("x-api-key", HeaderValue::from_static("onech-apikey"));
+        assert_eq!(channel_token(&both).as_deref(), Some("onech-bearer"));
+
+        assert!(channel_token(&HeaderMap::new()).is_none());
+    }
+
+    #[test]
+    fn anthropic_channels_forward_an_x_api_key_header() {
+        let (name, value) = credential_header("anthropic", "real-vendor-secret");
+        assert_eq!(name, "x-api-key");
+        assert_eq!(value, "real-vendor-secret");
+    }
+
+    #[test]
+    fn every_other_platform_forwards_a_bearer_header() {
+        for platform in ["openai", "gemini", "custom", "new-api", ""] {
+            let (name, value) = credential_header(platform, "real-vendor-secret");
+            assert_eq!(name, "Authorization", "platform = {platform}");
+            assert_eq!(value, "Bearer real-vendor-secret", "platform = {platform}");
+        }
     }
 }
