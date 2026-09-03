@@ -11,6 +11,7 @@ pub mod keep_awake;
 pub mod managed_provider;
 pub mod metered_access;
 pub mod model_fetcher;
+pub mod model_platforms;
 pub mod protocol;
 pub mod provider;
 pub mod routes;

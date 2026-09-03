@@ -10,9 +10,10 @@ use dream_core_api_types::{
     ApiResponse, ClientPreferencesResponse, CreateProviderRequest, DetectProtocolRequest, EnsureNodeRuntimeRequest,
     EnsureNodeRuntimeResponse, FeedbackDiagnosticsQuery, FeedbackDiagnosticsResponse, FetchModelsAnonymousRequest,
     FetchModelsRequest, FetchModelsResponse, MeteredAccessResponse, MeteredClaimRequest, MeteredCreateOrderRequest,
-    MeteredOrderResponse, MeteredQuotaQuery, MeteredQuotaStatusResponse, ProtocolDetectionResponse, ProviderResponse,
-    SystemInfoResponse, SystemSettingsResponse, TrialKeyResponse, TrialQuotaStatusResponse, UpdateCheckRequest,
-    UpdateCheckResult, UpdateClientPreferencesRequest, UpdateProviderRequest, UpdateSettingsRequest,
+    MeteredOrderResponse, MeteredQuotaQuery, MeteredQuotaStatusResponse, ModelPlatformsResponse,
+    ProtocolDetectionResponse, ProviderResponse, SystemInfoResponse, SystemSettingsResponse, TrialKeyResponse,
+    TrialQuotaStatusResponse, UpdateCheckRequest, UpdateCheckResult, UpdateClientPreferencesRequest,
+    UpdateProviderRequest, UpdateSettingsRequest,
 };
 use dream_core_auth::{CurrentUser, is_webui_proxied};
 use dream_core_common::ApiError;
@@ -100,6 +101,7 @@ impl From<SystemError> for ApiError {
 /// - `POST /api/providers/metered/orders`    — create a top-up order
 /// - `GET  /api/providers/metered/orders/{id}` — poll a top-up order
 /// - `POST /api/providers/detect-protocol`   — detect API protocol
+/// - `GET  /api/model-platforms`             — canonical model platform preset list
 /// - `GET  /api/system/info`                 — system directory & platform info
 /// - `POST /api/system/check-update`         — check GitHub for new versions
 /// - `POST /api/system/ensure-node-runtime`  — prepare managed Node runtime
@@ -116,6 +118,7 @@ pub fn system_routes(state: SystemRouterState) -> Router {
         // axum matches the literals instead of treating "detect-protocol" /
         // "fetch-models" as a provider id.
         .route("/api/providers/detect-protocol", post(detect_protocol))
+        .route("/api/model-platforms", get(list_model_platforms))
         .route("/api/providers/fetch-models", post(fetch_models_anonymous))
         .route("/api/providers/trial-key", post(request_trial_key))
         .route("/api/providers/trial-key/quota", get(trial_key_quota))
@@ -590,6 +593,14 @@ async fn detect_protocol(
 async fn get_system_info() -> Json<ApiResponse<SystemInfoResponse>> {
     let info = crate::sysinfo::get_system_info();
     Json(ApiResponse::ok(info))
+}
+
+/// The canonical model platform preset list — see `crate::model_platforms`
+/// for why this exists instead of each frontend keeping its own copy.
+/// Deliberately not gated by `enterprise` or any per-tenant resource check:
+/// it is product metadata, not a tenant resource, and both editions need it.
+async fn list_model_platforms() -> Json<ApiResponse<ModelPlatformsResponse>> {
+    Json(ApiResponse::ok(crate::model_platforms::model_platforms_response()))
 }
 
 async fn check_update(

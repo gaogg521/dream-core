@@ -174,6 +174,35 @@ async fn test_system_info_snake_case_keys() {
 }
 
 // ===========================================================================
+// GET /api/model-platforms
+// ===========================================================================
+
+/// Both editions fetch from this endpoint — real HTTP round trip proves the
+/// route is actually wired into `system_routes`, not just present as a
+/// callable Rust function.
+#[tokio::test]
+async fn test_model_platforms_returns_the_canonical_list() {
+    let app = setup().await;
+    let resp = app.oneshot(get_request("/api/model-platforms")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let json = body_json(resp).await;
+    assert_eq!(json["success"], true);
+    let platforms = json["data"]["platforms"].as_array().unwrap();
+    assert_eq!(platforms.len(), 30);
+
+    let anthropic = platforms.iter().find(|p| p["value"] == "Anthropic").unwrap();
+    assert_eq!(anthropic["platform"], "anthropic");
+    assert_eq!(anthropic["base_url"], "https://api.anthropic.com");
+
+    // Platforms with no base_url (the "type it yourself" ones) omit the key
+    // entirely rather than sending `null` — the frontend distinguishes "no
+    // preset default" from "preset default is an empty string".
+    let vertex = platforms.iter().find(|p| p["value"] == "gemini-vertex-ai").unwrap();
+    assert!(vertex.get("base_url").is_none());
+}
+
+// ===========================================================================
 // POST /api/system/check-update — with wiremock
 // ===========================================================================
 

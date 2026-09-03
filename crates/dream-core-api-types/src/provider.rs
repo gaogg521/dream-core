@@ -550,6 +550,44 @@ pub struct ProtocolDetectionResponse {
     pub multi_key_result: Option<MultiKeyResult>,
 }
 
+/// One entry in the model platform preset picker — a provider template that
+/// fills in an upstream address and a protocol family.
+///
+/// This is the canonical copy: dream-ui and dream-en both used to hand-keep
+/// their own duplicate of this list as a static frontend constant (dream-ui
+/// `renderer/utils/model/modelPlatforms.ts`, dream-en
+/// `console/components/modelPlatformPresets.ts`), which only stayed in sync
+/// because someone remembered to update both. Serving it from here removes
+/// that manual step — either frontend that starts fetching this list gets a
+/// new preset the moment it lands here, with no frontend deploy required.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelPlatformPreset {
+    /// Display label in the picker.
+    pub name: String,
+    /// Stable picker key. Not persisted — cosmetic only.
+    pub value: String,
+    /// Protocol family the engine dispatches on. This is what a client
+    /// materializes into `providers.platform` / `one_provider_registry.platform`.
+    pub platform: String,
+    /// Preset upstream address, auto-filled into the provider/channel form.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// Relative path under `/api/assets/logos/`, for a frontend that renders
+    /// one (dream-en's admin console does not).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logo_path: Option<String>,
+    /// i18n key for the display name, for a frontend with a translation table
+    /// keyed by it (dream-en's admin console has none — `name` is shown as-is).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub i18n_key: Option<String>,
+}
+
+/// Response for `GET /api/model-platforms`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelPlatformsResponse {
+    pub platforms: Vec<ModelPlatformPreset>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
