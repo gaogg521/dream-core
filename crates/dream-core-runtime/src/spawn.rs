@@ -293,7 +293,19 @@ fn configure_platform_spawn(cmd: &mut Command) {
     cmd.process_group(0);
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn configure_platform_spawn(cmd: &mut Command) {
+    // CREATE_NO_WINDOW — dreamcore runs windowless under Electron, so a child
+    // console app spawned without this gets a fresh conhost.exe window that
+    // flashes on screen. Every agent CLI, git call, MCP server and shell tool
+    // routed through this Builder was doing that. Stdio is still piped/inherited
+    // normally; this only suppresses the console window.
+    // windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(any(unix, windows)))]
 fn configure_platform_spawn(_cmd: &mut Command) {}
 
 #[cfg(unix)]
