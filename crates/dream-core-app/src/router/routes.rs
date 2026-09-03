@@ -3412,7 +3412,7 @@ mod tests {
                 .await
                 .unwrap();
             let billing = std::sync::Arc::new(dream_domain_billing::BillingService::new(
-                db.pool().clone(),
+                dream_core_db::DbPool::Sqlite(db.pool().clone()),
                 std::sync::Arc::new(dream_domain_billing::ManualBillingProvider),
             ));
             (db, billing)
@@ -3826,7 +3826,7 @@ mod tests {
             .await
             .unwrap();
         let service = Arc::new(dream_domain_platform::PlatformService::new(
-            db.pool().clone(),
+            dream_core_db::DbPool::Sqlite(db.pool().clone()),
             [9u8; 32],
         ));
         (db, service)
