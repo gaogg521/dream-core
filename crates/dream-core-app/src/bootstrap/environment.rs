@@ -40,8 +40,15 @@ pub fn init_environment(cli: &Cli, merged_path: &str) -> Result<ServerEnvironmen
     let work_dir = resolve_work_dir(cli.work_dir.clone(), &cli.data_dir);
 
     // SAFETY: called before any service initialization; no concurrent reads.
+    //
+    // Bridge both resolved dirs to the env names the rest of the process reads
+    // for `/api/system/info` (dream-core-system `sysinfo.rs`). `--work-dir`
+    // already had this; `--log-dir` did not, so a custom log directory set
+    // from the desktop app's Settings moved the files but the screen kept
+    // showing the old path.
     unsafe {
         std::env::set_var("ONE_WORK_DIR", &work_dir);
+        std::env::set_var("ONE_LOG_DIR", &log_guard.log_root);
     }
 
     let mut identity_mode: IdentityMode = cli.identity_mode.into();

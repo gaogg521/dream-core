@@ -1,4 +1,4 @@
-//! `aioncore diagnose` subcommand: agent-facing read-only troubleshooting CLI.
+//! `dreamcore diagnose` subcommand: agent-facing read-only troubleshooting CLI.
 
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
@@ -318,7 +318,7 @@ async fn request_json(
         DiagnoseError::new(
             DiagnoseErrorCode::HttpRequestFailed,
             command,
-            "failed to call AionUi backend",
+            "failed to call the One Work backend",
         )
         .field("path", path)
     })?;
@@ -328,7 +328,7 @@ async fn request_json(
         DiagnoseError::new(
             DiagnoseErrorCode::ResponseReadFailed,
             command,
-            "failed to read 1One Work backend response",
+            "failed to read the One Work backend response",
         )
         .field("path", path)
     })?;
@@ -337,7 +337,7 @@ async fn request_json(
         return Err(DiagnoseError::new(
             DiagnoseErrorCode::HttpStatusError,
             command,
-            "1One Work backend returned an error status",
+            "the One Work backend returned an error status",
         )
         .field("path", path)
         .field("status", status.as_u16().to_string()));
@@ -351,7 +351,7 @@ async fn request_json(
         DiagnoseError::new(
             DiagnoseErrorCode::ResponseJsonInvalid,
             command,
-            "1One Work backend returned invalid JSON",
+            "the One Work backend returned invalid JSON",
         )
         .field("path", path)
     })?;
@@ -370,7 +370,7 @@ fn extract_api_data(value: Value, command: &str) -> Result<Value, DiagnoseError>
     Err(DiagnoseError::new(
         DiagnoseErrorCode::HttpStatusError,
         command,
-        "1One Work backend returned an unsuccessful response",
+        "the One Work backend returned an unsuccessful response",
     ))
 }
 
@@ -902,7 +902,7 @@ fn tail_latest_log(
     command: &str,
 ) -> Result<Value, DiagnoseError> {
     let mut files = Vec::new();
-    collect_aioncore_logs(log_dir, 0, &mut files).map_err(|_| {
+    collect_backend_logs(log_dir, 0, &mut files).map_err(|_| {
         DiagnoseError::new(
             DiagnoseErrorCode::LogReadFailed,
             command,
@@ -919,7 +919,7 @@ fn tail_latest_log(
         .max_by_key(|(_, modified)| *modified)
         .map(|(path, _)| path)
         .ok_or_else(|| {
-            DiagnoseError::new(DiagnoseErrorCode::LogNotFound, command, "no *.aioncore.log files found")
+            DiagnoseError::new(DiagnoseErrorCode::LogNotFound, command, "no backend log files found")
                 .field("path", log_dir.display().to_string())
         })?;
     let raw = std::fs::read_to_string(&latest).map_err(|_| {
@@ -953,7 +953,11 @@ fn tail_latest_log(
     }))
 }
 
-fn collect_aioncore_logs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> io::Result<()> {
+/// Suffix written by the backend's file layer today, plus the pre-rebrand one
+/// so an install that already has `*.aioncore.log` history stays diagnosable.
+const BACKEND_LOG_SUFFIXES: [&str; 2] = [".dreamcore.log", ".aioncore.log"];
+
+fn collect_backend_logs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> io::Result<()> {
     if depth > MAX_LOG_SEARCH_DEPTH || !dir.is_dir() {
         return Ok(());
     }
@@ -961,11 +965,11 @@ fn collect_aioncore_logs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> io
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            collect_aioncore_logs(&path, depth + 1, out)?;
+            collect_backend_logs(&path, depth + 1, out)?;
         } else if path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.ends_with(".aioncore.log"))
+            .is_some_and(|name| BACKEND_LOG_SUFFIXES.iter().any(|suffix| name.ends_with(suffix)))
         {
             out.push(path);
         }
