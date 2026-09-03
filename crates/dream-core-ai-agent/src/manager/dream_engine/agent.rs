@@ -166,6 +166,7 @@ fn resolve_aionui_config(cli_args: &CliArgs) -> Result<Config, AgentError> {
         ProviderType::Anthropic | ProviderType::Vertex => ProviderCompat::anthropic_defaults().transport,
         ProviderType::OpenAI => ProviderCompat::openai_defaults().transport,
         ProviderType::Bedrock => ProviderCompat::bedrock_defaults().transport,
+        ProviderType::Ollama => ProviderCompat::ollama_defaults().transport,
     };
     config.compat.transport.default_max_tokens = default_transport.default_max_tokens;
     config.compat.transport.model_max_tokens = default_transport.model_max_tokens;
