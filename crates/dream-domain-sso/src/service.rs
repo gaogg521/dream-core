@@ -192,12 +192,14 @@ impl SsoService {
             .into_iter()
             .map(|row| {
                 let configured = has_minimal_config(&row.provider, &row.config);
+                let secret_fields_set = secret_fields_with_values(&row.provider, &row.config);
                 let config = redact_secret_fields(&row.provider, &row.config);
                 SsoProviderConfigDto {
                     provider: row.provider,
                     enabled: row.enabled,
                     configured,
                     config,
+                    secret_fields_set,
                 }
             })
             .collect())
@@ -506,6 +508,30 @@ fn secret_keys(provider: &str) -> &'static [&'static str] {
     }
 }
 
+/// Which of this provider's secret fields currently hold a value — key names
+/// only, so the settings form can show "already saved" without the value ever
+/// leaving the server. `"******"` is excluded for the same reason
+/// `has_minimal_config` excludes it: an older client that round-tripped the
+/// redaction placeholder back into storage did not actually configure a
+/// secret.
+fn secret_fields_with_values(provider: &str, config_json: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(config_json) else {
+        return Vec::new();
+    };
+    let Some(obj) = value.as_object() else {
+        return Vec::new();
+    };
+    secret_keys(provider)
+        .iter()
+        .filter(|key| {
+            obj.get(**key)
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.trim().is_empty() && s != "******")
+        })
+        .map(|key| (*key).to_owned())
+        .collect()
+}
+
 /// Strip secret fields from a stored config JSON, keeping the rest so the
 /// admin form can pre-fill non-secret values (App ID, Redirect URI, ...).
 fn redact_secret_fields(provider: &str, config_json: &str) -> serde_json::Value {
@@ -643,6 +669,41 @@ mod tests {
             "feishu",
             r#"{"appId":"cli_x","appSecret":"******"}"#
         ));
+    }
+
+    #[test]
+    fn secret_fields_with_values_reports_only_keys_that_hold_a_real_value() {
+        assert_eq!(
+            secret_fields_with_values("feishu", r#"{"appId":"cli_x","appSecret":"s3cret"}"#),
+            vec!["appSecret".to_owned()]
+        );
+        // Configured but secretless, blank, and the redaction placeholder all
+        // mean "no secret stored" — the form must show an empty box, not a
+        // mask that implies a value is saved.
+        assert!(secret_fields_with_values("feishu", r#"{"appId":"cli_x"}"#).is_empty());
+        assert!(secret_fields_with_values("feishu", r#"{"appId":"cli_x","appSecret":"  "}"#).is_empty());
+        assert!(secret_fields_with_values("feishu", r#"{"appId":"cli_x","appSecret":"******"}"#).is_empty());
+        assert!(secret_fields_with_values("feishu", "").is_empty());
+    }
+
+    /// `configured` cannot substitute for this signal: `has_minimal_config`
+    /// never looks at the secret for these two providers, so a mask driven by
+    /// it would claim a stored secret that does not exist.
+    #[test]
+    fn secret_fields_with_values_covers_providers_configured_ignores() {
+        assert!(has_minimal_config("oidc", r#"{"issuer":"https://x","clientId":"c"}"#));
+        assert!(secret_fields_with_values("oidc", r#"{"issuer":"https://x","clientId":"c"}"#).is_empty());
+        assert_eq!(
+            secret_fields_with_values("oidc", r#"{"issuer":"https://x","clientId":"c","clientSecret":"s"}"#),
+            vec!["clientSecret".to_owned()]
+        );
+
+        assert!(has_minimal_config("ldap", r#"{"url":"ldap://x"}"#));
+        assert!(secret_fields_with_values("ldap", r#"{"url":"ldap://x"}"#).is_empty());
+        assert_eq!(
+            secret_fields_with_values("ldap", r#"{"url":"ldap://x","bindPassword":"p"}"#),
+            vec!["bindPassword".to_owned()]
+        );
     }
 
     #[test]
