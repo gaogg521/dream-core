@@ -26,6 +26,9 @@ pub struct OneSsoRouterState {
     /// or any build without the enterprise dimension — means directory sync has
     /// nowhere to write and therefore never runs.
     pub directory_sink: Option<Arc<dyn DirectorySink>>,
+    /// 登录二次认证（MFA · TOTP）服务。None —— 单机/测试组装未接 —— SSO
+    /// 回调与 LDAP 登录不做第二步，管理端点返回 503。
+    pub mfa: Option<Arc<dream_core_auth::mfa::MfaService>>,
 }
 
 impl OneSsoRouterState {
@@ -36,7 +39,14 @@ impl OneSsoRouterState {
             company_admin_check: None,
             org_auto_join: None,
             directory_sink: None,
+            mfa: None,
         }
+    }
+
+    /// 挂上 MFA 服务（登录闸 + 管理端点）。见 `dream_core_auth::mfa`。
+    pub fn with_mfa(mut self, mfa: Arc<dream_core_auth::mfa::MfaService>) -> Self {
+        self.mfa = Some(mfa);
+        self
     }
 
     pub fn with_enterprise_sync(mut self, sync: Arc<dyn EnterpriseSync>) -> Self {

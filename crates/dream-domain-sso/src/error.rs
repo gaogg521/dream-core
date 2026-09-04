@@ -86,6 +86,15 @@ impl From<dream_core_db::DbError> for SsoError {
     }
 }
 
+impl From<dream_core_auth::mfa::MfaError> for SsoError {
+    fn from(e: dream_core_auth::mfa::MfaError) -> Self {
+        match e {
+            dream_core_auth::mfa::MfaError::BadRequest(m) => Self::BadRequest(m),
+            other => Self::Internal(other.message()),
+        }
+    }
+}
+
 impl From<dream_core_auth::AuthError> for SsoError {
     fn from(e: dream_core_auth::AuthError) -> Self {
         Self::Internal(format!("auth error: {e}"))

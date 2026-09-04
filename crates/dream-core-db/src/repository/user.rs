@@ -35,6 +35,22 @@ pub trait IUserRepository: Send + Sync {
     /// Finds an active local password user by username.
     async fn find_by_username(&self, username: &str) -> Result<Option<User>, DbError>;
 
+    // --- MFA (TOTP) binding, migration 055 ---
+
+    /// Persists an MFA binding: encrypted TOTP secret, enabled flag and bind
+    /// time in one write. Called only after the enrollment code verified.
+    async fn set_mfa_binding(&self, user_id: &str, secret_cipher: &str, bound_at: i64) -> Result<(), DbError>;
+
+    /// Updates the replay-guard watermark with the verified time-step.
+    async fn set_mfa_last_step(&self, user_id: &str, step: i64) -> Result<(), DbError>;
+
+    /// Admin reset — clears cipher/enable/bound-at/watermark in one write.
+    /// Exempt/force flags are NOT touched here.
+    async fn clear_mfa_binding(&self, user_id: &str) -> Result<(), DbError>;
+
+    /// Admin flags: exempt and/or per-user force.
+    async fn set_mfa_flags(&self, user_id: &str, exempt: bool, force: bool) -> Result<(), DbError>;
+
     /// Idempotently creates or returns an external identity projection.
     async fn ensure_external_user(
         &self,

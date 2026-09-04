@@ -114,6 +114,12 @@ impl IUserRepository for SqliteUserRepository {
             updated_at: now,
             last_login: None,
             must_change_password: false,
+            mfa_secret_cipher: None,
+            mfa_enabled: false,
+            mfa_bound_at: None,
+            mfa_exempt: false,
+            mfa_force: false,
+            mfa_last_step: None,
         })
     }
 
@@ -127,6 +133,53 @@ impl IUserRepository for SqliteUserRepository {
         .await?;
 
         Ok(user)
+    }
+
+    async fn set_mfa_binding(&self, user_id: &str, secret_cipher: &str, bound_at: i64) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE users SET mfa_secret_cipher = ?, mfa_enabled = 1, mfa_bound_at = ?,              mfa_last_step = NULL, updated_at = ? WHERE id = ?",
+        )
+        .bind(secret_cipher)
+        .bind(bound_at)
+        .bind(dream_core_common::now_ms())
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(())
+    }
+
+    async fn set_mfa_last_step(&self, user_id: &str, step: i64) -> Result<(), DbError> {
+        sqlx::query("UPDATE users SET mfa_last_step = ? WHERE id = ?")
+            .bind(step)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn clear_mfa_binding(&self, user_id: &str) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE users SET mfa_secret_cipher = NULL, mfa_enabled = 0, mfa_bound_at = NULL,              mfa_last_step = NULL, updated_at = ? WHERE id = ?",
+        )
+        .bind(dream_core_common::now_ms())
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn set_mfa_flags(&self, user_id: &str, exempt: bool, force: bool) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE users SET mfa_exempt = ?, mfa_force = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(exempt)
+        .bind(force)
+        .bind(dream_core_common::now_ms())
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     async fn ensure_external_user(

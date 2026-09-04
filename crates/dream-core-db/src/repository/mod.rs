@@ -4,6 +4,8 @@ pub mod assistant;
 pub mod assistant_marketplace;
 pub mod channel;
 pub mod claude_bridge_config;
+pub mod mfa;
+pub use mfa::{MfaAuditRow, MfaMode, MfaStore, SqliteMfaStore};
 mod client_preference;
 pub mod codex_bridge_config;
 pub mod conversation;
