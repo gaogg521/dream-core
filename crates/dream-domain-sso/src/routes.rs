@@ -34,6 +34,11 @@ pub fn one_sso_admin_routes(state: OneSsoRouterState) -> Router {
         .route("/api/one/admin/sso/providers", get(list_provider_configs))
         .route("/api/one/admin/sso/{provider}", put(upsert_provider))
         .route("/api/one/admin/sso/directory/sync", post(run_directory_sync_now))
+        .route("/api/one/admin/mfa/policy", get(mfa_policy_get).put(mfa_policy_put))
+        .route("/api/one/admin/mfa/users", get(mfa_users_overview))
+        .route("/api/one/admin/mfa/users/{id}/reset", post(mfa_user_reset))
+        .route("/api/one/admin/mfa/users/{id}/flags", put(mfa_user_flags))
+        .route("/api/one/admin/mfa/audit", get(mfa_audit_list))
         .with_state(state)
 }
 
@@ -371,6 +376,33 @@ async fn callback(
         hook.auto_join_by_email(&user_id, &display_name).await;
     }
 
+    // 登录二次认证闸：需要 MFA 时不签发会话，改把用户导向 Web 登录页的
+    // 第二步（挑战 token 只存哈希，≤5 分钟一次性）。桌面深链流程在挑战期间
+    // 暂不支持（v1 限制，见交付说明）——浏览器里完成两步后仍可直接使用控制台。
+    if let Some(mfa) = state.mfa.as_ref() {
+        if let dream_core_auth::mfa::MfaDecision::Challenge(purpose) =
+            mfa.decide_for_user(&user_id, &username).await?
+        {
+            let (mfa_token, _expires_at, _purpose) = mfa
+                .create_challenge_for_user(
+                    &user_id,
+                    &username,
+                    purpose,
+                    None,
+                    entry.redirect_target.as_deref(),
+                    entry.desktop,
+                    Some(entry.deep_link_scheme.clone()),
+                )
+                .await?;
+            let login_path = format!(
+                "/admin/login?mfa_token={}&mfa_purpose={}",
+                urlencode(&mfa_token),
+                purpose.as_str()
+            );
+            return Ok(Redirect::to(&login_path).into_response());
+        }
+    }
+
     let session = state
         .service
         .issue_session(&user_id, &username, entry.redirect_target.clone(), entry.desktop)?;
@@ -528,6 +560,33 @@ async fn ldap_login(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_owned);
+
+    // 登录二次认证闸：需要 MFA 时返回挑战（JSON），前端进入第二步。
+    if let Some(mfa) = state.mfa.as_ref() {
+        if let dream_core_auth::mfa::MfaDecision::Challenge(purpose) =
+            mfa.decide_for_user(&user_id, &username).await?
+        {
+            let (mfa_token, expires_at, purpose) = mfa
+                .create_challenge_for_user(
+                    &user_id,
+                    &username,
+                    purpose,
+                    None,
+                    redirect_target.as_deref(),
+                    false,
+                    None,
+                )
+                .await?;
+            return Ok(Json(ApiResponse::ok(serde_json::json!({
+                "mfaRequired": true,
+                "mfaToken": mfa_token,
+                "purpose": purpose.as_str(),
+                "expiresAt": expires_at,
+            })))
+            .into_response());
+        }
+    }
+
     let session = state
         .service
         .issue_session(&user_id, &username, redirect_target, false)?;
@@ -545,6 +604,89 @@ async fn ldap_login(
 
 /// Admin-only: status + non-secret config values, so the settings form can
 /// pre-fill fields the admin already saved instead of always starting blank.
+// ---------------------------------------------------------------------------
+// 登录二次认证（MFA）· 管理端点（RequireSsoAdmin 已由路由分层守卫）
+// ---------------------------------------------------------------------------
+
+/// MFA 未接线（单机/测试组装）时的统一占位响应。
+fn mfa_unavailable<T>(body: T) -> (axum::http::StatusCode, Json<T>) {
+    (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(body))
+}
+
+async fn mfa_policy_get(
+    State(state): State<OneSsoRouterState>,
+    _admin: RequireSsoAdmin,
+) -> Result<Response, SsoError> {
+    let Some(mfa) = state.mfa.as_ref() else {
+        return Ok(mfa_unavailable(ApiResponse::<serde_json::Value> { success: false, data: None, message: Some("MFA service not wired".into()) }).into_response());
+    };
+    let mode = mfa.admin_policy_get().await.map_err(sso_err)?;
+    Ok(Json(ApiResponse::ok(serde_json::json!({ "mode": mode.as_str() }))).into_response())
+}
+
+async fn mfa_policy_put(
+    State(state): State<OneSsoRouterState>,
+    admin: RequireSsoAdmin,
+    Json(body): Json<UpdateMfaPolicyBody>,
+) -> Result<Response, SsoError> {
+    let Some(mfa) = state.mfa.as_ref() else {
+        return Ok(mfa_unavailable(ApiResponse::<serde_json::Value> { success: false, data: None, message: Some("MFA service not wired".into()) }).into_response());
+    };
+    let mode = dream_core_db::MfaMode::parse(&body.mode);
+    mfa.admin_policy_set(mode, &admin.user_id).await.map_err(sso_err)?;
+    Ok(Json(ApiResponse::ok(serde_json::json!({ "mode": mode.as_str() }))).into_response())
+}
+
+async fn mfa_users_overview(
+    State(state): State<OneSsoRouterState>,
+    _admin: RequireSsoAdmin,
+) -> Result<Response, SsoError> {
+    let Some(mfa) = state.mfa.as_ref() else {
+        return Ok(mfa_unavailable(ApiResponse::<serde_json::Value> { success: false, data: None, message: Some("MFA service not wired".into()) }).into_response());
+    };
+    let rows = mfa.admin_users_overview().await.map_err(sso_err)?;
+    Ok(Json(ApiResponse::ok(rows)).into_response())
+}
+
+async fn mfa_user_reset(
+    State(state): State<OneSsoRouterState>,
+    admin: RequireSsoAdmin,
+    Path(user_id): Path<String>,
+    Json(body): Json<ResetMfaBody>,
+) -> Result<Response, SsoError> {
+    let Some(mfa) = state.mfa.as_ref() else {
+        return Ok(mfa_unavailable(ApiResponse::<serde_json::Value> { success: false, data: None, message: Some("MFA service not wired".into()) }).into_response());
+    };
+    mfa.admin_reset(&user_id, &admin.user_id, &body.reason).await.map_err(sso_err)?;
+    Ok(Json(ApiResponse::ok(())).into_response())
+}
+
+async fn mfa_user_flags(
+    State(state): State<OneSsoRouterState>,
+    admin: RequireSsoAdmin,
+    Path(user_id): Path<String>,
+    Json(body): Json<UpdateMfaFlagsBody>,
+) -> Result<Response, SsoError> {
+    let Some(mfa) = state.mfa.as_ref() else {
+        return Ok(mfa_unavailable(ApiResponse::<serde_json::Value> { success: false, data: None, message: Some("MFA service not wired".into()) }).into_response());
+    };
+    mfa.admin_set_flags(&user_id, body.exempt, body.force, &admin.user_id).await.map_err(sso_err)?;
+    Ok(Json(ApiResponse::ok(())).into_response())
+}
+
+async fn mfa_audit_list(
+    State(state): State<OneSsoRouterState>,
+    _admin: RequireSsoAdmin,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Response, SsoError> {
+    let Some(mfa) = state.mfa.as_ref() else {
+        return Ok(mfa_unavailable(ApiResponse::<serde_json::Value> { success: false, data: None, message: Some("MFA service not wired".into()) }).into_response());
+    };
+    let limit: i64 = query.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100);
+    let rows = mfa.admin_audit_list(limit).await.map_err(sso_err)?;
+    Ok(Json(ApiResponse::ok(rows)).into_response())
+}
+
 async fn list_provider_configs(
     State(state): State<OneSsoRouterState>,
     _admin: RequireSsoAdmin,
@@ -604,6 +746,28 @@ setTimeout(function () {{ try {{ window.close(); }} catch (e) {{}} }}, 5000);
 </body>
 </html>"#
     )
+}
+
+/// MFA 管理端点请求体。
+#[derive(Debug, serde::Deserialize)]
+pub struct UpdateMfaPolicyBody {
+    pub mode: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ResetMfaBody {
+    pub reason: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct UpdateMfaFlagsBody {
+    pub exempt: bool,
+    pub force: bool,
+}
+
+/// dream-core-db / auth 错误统一转 SsoError::BadRequest 语义的桥接。
+fn sso_err(e: dream_core_auth::mfa::MfaError) -> SsoError {
+    SsoError::BadRequest(e.message())
 }
 
 fn urlencode(s: &str) -> String {

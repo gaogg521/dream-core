@@ -51,6 +51,7 @@ async fn test_app_with_options_and_hook(
     let qr_token_store = Arc::new(QrTokenStore::new());
 
     let state = AuthRouterState {
+        mfa: None,
         jwt_service: jwt_service.clone(),
         user_repo: user_repo.clone(),
         fs_adopter: None,

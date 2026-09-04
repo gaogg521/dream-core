@@ -2296,6 +2296,7 @@ pub(crate) fn build_governance_plane(
             services.jwt_service.clone(),
             services.cookie_config.clone(),
         )))
+        .with_mfa(mfa_service.clone())
         // Enterprise-org sync: a successful SSO login upserts the caller's company
         // + membership into one-enterprise. No-op (aside from the upsert) for
         // personal edition / WebUI-only builds since it never touches
@@ -2681,7 +2682,14 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let boot = Instant::now();
     tracing::info!("startup: route tree build with states started");
 
+    let mfa_service = std::sync::Arc::new(dream_core_auth::mfa::MfaService::new(
+        services.user_repo.clone(),
+        services.mfa_store.clone(),
+        crate::config::derive_encryption_key(&services.data_secret_raw),
+    ));
+
     let auth_state = AuthRouterState {
+        mfa: Some(mfa_service.clone()),
         jwt_service: services.jwt_service.clone(),
         user_repo: services.user_repo.clone(),
         fs_adopter: Some(Arc::new(SkillFilesystemAdopter {

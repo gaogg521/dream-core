@@ -34,6 +34,7 @@ pub struct AppServices {
     pub db: dream_core_db::DbPool,
     pub jwt_service: Arc<JwtService>,
     pub user_repo: Arc<dyn IUserRepository>,
+    pub mfa_store: Arc<dyn dream_core_db::MfaStore>,
     pub cookie_config: Arc<CookieConfig>,
     pub qr_token_store: Arc<QrTokenStore>,
     pub ws_manager: Arc<WebSocketManager>,
@@ -157,6 +158,8 @@ impl AppServices {
         let dump_prompts = config.dump_prompts;
         let app_version = config.app_version.clone();
         let user_repo: Arc<dyn IUserRepository> = Arc::new(SqliteUserRepository::new(database.pool().clone()));
+        let mfa_store: Arc<dyn dream_core_db::MfaStore> =
+            Arc::new(dream_core_db::SqliteMfaStore::new(database.pool().clone()));
 
         // Resolve JWT secret: env var → system user db field → random generation
         let env_secret = std::env::var("JWT_SECRET").ok();
@@ -570,7 +573,8 @@ impl AppServices {
             conversation_repo,
             acp_session_sync: acp_agent_service,
             jwt_secret_raw: secret,
-            data_secret_raw: data_secret,
+            data_secret_raw: data_secret.clone(),
+            mfa_store,
             data_dir,
             dump_prompts,
             work_dir,

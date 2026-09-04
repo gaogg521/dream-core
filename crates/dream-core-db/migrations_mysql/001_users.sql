@@ -39,6 +39,13 @@ CREATE TABLE IF NOT EXISTS users (
     status             VARCHAR(16) NOT NULL DEFAULT 'active'
                            CHECK (status IN ('active', 'disabled')),
     session_generation BIGINT NOT NULL DEFAULT 0,
+    -- MFA (TOTP) binding + policy flags (SQLite migration 055 parity)
+    mfa_secret_cipher  TEXT NULL,
+    mfa_enabled        INTEGER NOT NULL DEFAULT 0,
+    mfa_bound_at       BIGINT NULL,
+    mfa_exempt         INTEGER NOT NULL DEFAULT 0,
+    mfa_force          INTEGER NOT NULL DEFAULT 0,
+    mfa_last_step      BIGINT NULL,
     created_at         BIGINT NOT NULL,
     updated_at         BIGINT NOT NULL,
     last_login         BIGINT NULL,

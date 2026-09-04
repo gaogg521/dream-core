@@ -68,6 +68,18 @@ pub struct User {
     /// rather than chosen by its owner (the enterprise first-boot bootstrap).
     /// Cleared by a successful `POST /api/auth/change-password`.
     pub must_change_password: bool,
+    // --- MFA (TOTP) binding, SQLite migration 055 ---
+    /// AES-256-GCM ciphertext of the TOTP secret (key derived from
+    /// `data_secret`). NULL = never enrolled.
+    pub mfa_secret_cipher: Option<String>,
+    pub mfa_enabled: bool,
+    pub mfa_bound_at: Option<TimestampMs>,
+    /// Admin-marked exempt from the second factor (service/API accounts).
+    pub mfa_exempt: bool,
+    /// Admin-marked per-user mandatory enrollment (bites in optional mode).
+    pub mfa_force: bool,
+    /// Last TOTP time-step that passed verification — replay guard.
+    pub mfa_last_step: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
