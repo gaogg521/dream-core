@@ -762,9 +762,17 @@ impl OrgService {
     /// that has never synced) joins the deployment's root project group with
     /// no department. That is deliberately not "do nothing": leaving them
     /// tenant-less is what produced the fail-open hole above, and an admin can
-    /// see and re-file a member who is in the roster. `org_unit_path` is still
-    /// recorded from whatever the IdP gave us (LDAP derives one from the DN),
-    /// so the department is visible even when it is not yet a mapped node.
+    /// see and re-file a member who is in the roster. The IdP's own
+    /// `org_unit_path` is still recorded either way (LDAP derives one from the
+    /// DN), so the department reads correctly in the roster even when it is not
+    /// a mapped node.
+    ///
+    /// **Name / department / job title** come from `sso_profile_for`, the same
+    /// `one_sso_identities` snapshot the invite-code path copies onto a
+    /// membership row — not from this call's arguments. `users.username` is an
+    /// ASCII login identifier (`sanitize_username` turns "赵高" into an
+    /// `sso_…` placeholder on purpose), so the roster's human-readable name has
+    /// to come from the identity snapshot or it shows the placeholder.
     ///
     /// Best-effort, like `auto_join_by_email`: designed for the SSO login hook
     /// and must never fail a login. Idempotent — already being in any project
@@ -774,7 +782,6 @@ impl OrgService {
         &self,
         user_id: &str,
         department_external_id: Option<&str>,
-        org_unit_path: Option<&str>,
         all_departments: &[DirectoryDepartmentRef],
     ) -> Result<Option<SsoAutoJoinOutcome>, OrgError> {
         // Idempotence, and the "never re-file" guarantee: membership in ANY
@@ -805,17 +812,26 @@ impl OrgService {
             },
         };
 
+        // Same identity snapshot the invite path copies onto a membership row,
+        // so the roster shows "赵高 / 信息安全中心 / 信息安全总监" rather than
+        // the `sso_…` ASCII placeholder that lives in `users.username`.
         let now = now_ms() as i64;
+        let (display_name, org_unit_path, job_title, org_profile_source) = match self.sso_profile_for(user_id).await {
+            Some((d, o, j, p)) => (d, o, j, Some(p)),
+            None => (None, None, None, None),
+        };
+        let org_profile_synced_at = org_profile_source.as_ref().map(|_| now);
+
         let mut tx = self.db.begin().await?;
         let user_org_sql = match tx.backend() {
             DbBackend::Sqlite => {
-                "INSERT INTO one_user_org (user_id, tenant_id, role, org_unit_path, department_id, org_profile_source, org_profile_synced_at, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, 'sso', ?, ?, ?) \
+                "INSERT INTO one_user_org (user_id, tenant_id, role, display_name, org_unit_path, job_title, department_id, org_profile_source, org_profile_synced_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
                  ON CONFLICT(user_id, tenant_id) DO UPDATE SET updated_at = excluded.updated_at"
             }
             DbBackend::MySql => {
-                "INSERT INTO one_user_org (user_id, tenant_id, role, org_unit_path, department_id, org_profile_source, org_profile_synced_at, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, 'sso', ?, ?, ?) AS new \
+                "INSERT INTO one_user_org (user_id, tenant_id, role, display_name, org_unit_path, job_title, department_id, org_profile_source, org_profile_synced_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
                  ON DUPLICATE KEY UPDATE updated_at = new.updated_at"
             }
         };
@@ -825,9 +841,12 @@ impl OrgService {
                 user_id,
                 &tenant_id,
                 ROLE_MEMBER,
-                org_unit_path,
+                display_name.as_deref(),
+                org_unit_path.as_deref(),
+                job_title.as_deref(),
                 department_id.as_deref(),
-                now,
+                org_profile_source.as_deref(),
+                org_profile_synced_at,
                 now,
                 now
             ],
@@ -3332,13 +3351,19 @@ mod tests {
         ];
 
         let alice = create_user(&user_repo, "alice").await;
+        // `users.username` for a Chinese name is an `sso_…` ASCII placeholder
+        // (see `sanitize_username`), so the roster's human-readable identity
+        // has to come off this snapshot or the admin sees the placeholder.
+        seed_sso_identity(
+            service.pool(),
+            &alice,
+            "赵高",
+            "研发中心 / 后端组 / API 小组",
+            "信息安全总监",
+        )
+        .await;
         let outcome = service
-            .auto_join_after_sso(
-                &alice,
-                Some("d_api"),
-                Some("研发中心 / 后端组 / API 小组"),
-                &departments,
-            )
+            .auto_join_after_sso(&alice, Some("d_api"), &departments)
             .await
             .unwrap()
             .expect("should have been placed");
@@ -3346,12 +3371,14 @@ mod tests {
         // Walked d_api -> d_backend -> d_rd and stopped at the mapped node.
         assert_eq!(outcome.department_id.as_deref(), Some(local_dept.as_str()));
 
-        // The row a security check reads is actually there, with the IdP's
-        // department path recorded.
-        let (tid, dept, path): (String, Option<String>, Option<String>) = service
+        // The row a security check reads is actually there, carrying the whole
+        // IdP profile — name included, which is what the admin roster shows.
+        type MembershipRow = (String, Option<String>, Option<String>, Option<String>, Option<String>);
+        let (tid, dept, path, name, title): MembershipRow = service
             .db
-            .fetch_optional_as::<(String, Option<String>, Option<String>)>(
-                "SELECT tenant_id, department_id, org_unit_path FROM one_user_org WHERE user_id = ?",
+            .fetch_optional_as::<MembershipRow>(
+                "SELECT tenant_id, department_id, org_unit_path, display_name, job_title \
+                 FROM one_user_org WHERE user_id = ?",
                 &db_params![&alice],
             )
             .await
@@ -3360,11 +3387,13 @@ mod tests {
         assert_eq!(tid, tenant_id);
         assert_eq!(dept.as_deref(), Some(local_dept.as_str()));
         assert_eq!(path.as_deref(), Some("研发中心 / 后端组 / API 小组"));
+        assert_eq!(name.as_deref(), Some("赵高"), "the roster must show the human name");
+        assert_eq!(title.as_deref(), Some("信息安全总监"));
 
         // Idempotent: a returning user is never re-filed.
         assert!(
             service
-                .auto_join_after_sso(&alice, Some("d_api"), None, &departments)
+                .auto_join_after_sso(&alice, Some("d_api"), &departments)
                 .await
                 .unwrap()
                 .is_none()
@@ -3380,8 +3409,9 @@ mod tests {
         // placed, or the platform security gate reads them as "not in an
         // enterprise" and waves every tool call through.
         let bob = create_user(&user_repo, "bob").await;
+        seed_sso_identity(service.pool(), &bob, "1onetest", "123u / users / 公用&临时账户", "").await;
         let outcome = service
-            .auto_join_after_sso(&bob, None, Some("123u / users / 公用&临时账户"), &[])
+            .auto_join_after_sso(&bob, None, &[])
             .await
             .unwrap()
             .expect("must fall back rather than leave them ungoverned");
@@ -3407,7 +3437,7 @@ mod tests {
             name: "销售部".into(),
         }];
         let outcome = service
-            .auto_join_after_sso(&carol, Some("d_sales"), None, &departments)
+            .auto_join_after_sso(&carol, Some("d_sales"), &departments)
             .await
             .unwrap()
             .expect("unmapped branch still gets placed");
@@ -3439,7 +3469,7 @@ mod tests {
         // invite's) placement wins.
         assert!(
             service
-                .auto_join_after_sso(&dave, Some("d_sales"), None, &departments)
+                .auto_join_after_sso(&dave, Some("d_sales"), &departments)
                 .await
                 .unwrap()
                 .is_none()
@@ -3476,7 +3506,7 @@ mod tests {
         ];
         let eve = create_user(&user_repo, "eve").await;
         let outcome = service
-            .auto_join_after_sso(&eve, Some("a"), None, &departments)
+            .auto_join_after_sso(&eve, Some("a"), &departments)
             .await
             .unwrap()
             .expect("terminates and falls back");

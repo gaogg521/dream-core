@@ -3,6 +3,8 @@
 //! Direct translation of the 1ONE TS reference (`FeishuAuthProvider.ts`),
 //! kept in Rust so the crate has no Node dependency.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::SsoError;
@@ -455,13 +457,101 @@ impl FeishuProvider {
         )))
     }
 
-    /// Every department in the company, flattened.
+    /// Every department in the company, with its parent link where we can get
+    /// one.
     ///
     /// Asks for the root's descendants recursively rather than walking the tree
     /// ourselves: one paged call instead of one call per node, which for a
     /// thousand-department tenant is the difference between a sync that
     /// finishes and one that gets rate-limited.
+    ///
+    /// ⚠️ Some tenants answer that call with `parent_department_id` absent from
+    /// every row — verified 2026-09-04 against a live tenant, where all 246
+    /// departments came back parentless from both this endpoint and the
+    /// single-department detail endpoint, while `fetch_child=false` on one of
+    /// them plainly listed its 8 children. The hierarchy is real; this response
+    /// shape just does not carry it (Feishu omits fields the app has no scope
+    /// for rather than failing). A flat tree is not a cosmetic problem: subtree
+    /// mapping stops cascading, so an admin who maps one top branch places
+    /// nobody beneath it, and `auto_join_after_sso` cannot walk upward to find
+    /// it.
+    ///
+    /// So: take the cheap answer when it carries a hierarchy, and only fall
+    /// back to a per-node walk when it demonstrably does not. Costs zero extra
+    /// calls on tenants that answer properly.
     pub async fn fetch_all_departments(
+        config: &FeishuProviderConfig,
+        tenant_token: &str,
+    ) -> Result<Vec<DirectoryDepartment>, SsoError> {
+        let flat = Self::fetch_departments_flattened(config, tenant_token).await?;
+        if flat.len() < 2 || flat.iter().any(|d| d.parent_external_id.is_some()) {
+            return Ok(flat);
+        }
+        tracing::info!(
+            departments = flat.len(),
+            "feishu directory: no parent links in the flattened listing; rebuilding the tree by walking children"
+        );
+        Self::rebuild_department_parents(config, tenant_token, flat).await
+    }
+
+    /// Re-derive each department's parent from *which* department listed it as
+    /// a child, since the payload did not say. One `fetch_child=false` call per
+    /// department; bounded by [`MAX_PAGES`] the same way the flat listing is.
+    ///
+    /// Best-effort per node: a call that fails leaves that department's subtree
+    /// flat rather than failing the whole sync — a partially-linked tree is
+    /// strictly better than none, and `apply_directory_snapshot` is a mirror
+    /// refresh, not a transaction.
+    async fn rebuild_department_parents(
+        config: &FeishuProviderConfig,
+        tenant_token: &str,
+        mut departments: Vec<DirectoryDepartment>,
+    ) -> Result<Vec<DirectoryDepartment>, SsoError> {
+        let ids: Vec<String> = departments.iter().map(|d| d.external_id.clone()).collect();
+        let mut parent_of: HashMap<String, String> = HashMap::new();
+        for parent_id in &ids {
+            let url = format!(
+                "{}{CONTACT_DEPARTMENT_PATH}/{parent_id}/{CONTACT_DEPARTMENT_CHILDREN_SEGMENT}",
+                config.base()
+            );
+            let children: Vec<FeishuListedDepartment> = match Self::collect_pages(
+                &url,
+                tenant_token,
+                &[("department_id_type", "open_department_id"), ("fetch_child", "false")],
+                "department children",
+            )
+            .await
+            {
+                Ok(rows) => rows,
+                Err(error) => {
+                    tracing::warn!(%error, parent_id, "feishu directory: child listing failed; subtree stays flat");
+                    continue;
+                }
+            };
+            for child in children {
+                if let Some(child_id) = child.open_department_id.or(child.department_id) {
+                    let child_id = child_id.trim().to_owned();
+                    if !child_id.is_empty() && child_id != *parent_id {
+                        parent_of.insert(child_id, parent_id.clone());
+                    }
+                }
+            }
+        }
+        let linked = parent_of.len();
+        for department in &mut departments {
+            if let Some(parent) = parent_of.get(&department.external_id) {
+                department.parent_external_id = Some(parent.clone());
+            }
+        }
+        tracing::info!(
+            departments = departments.len(),
+            linked,
+            "feishu directory: department tree rebuilt"
+        );
+        Ok(departments)
+    }
+
+    async fn fetch_departments_flattened(
         config: &FeishuProviderConfig,
         tenant_token: &str,
     ) -> Result<Vec<DirectoryDepartment>, SsoError> {
@@ -1028,6 +1118,97 @@ mod tests {
         // The root id is not a real parent — a top-level department must come
         // back parentless or the tree cannot be assembled.
         assert_eq!(departments[0].parent_external_id, None);
+        assert_eq!(departments[1].parent_external_id.as_deref(), Some("od_1"));
+    }
+
+    /// The tenant shape verified on 2026-09-04: the flattened listing returns
+    /// every department with `parent_department_id` absent, so the hierarchy
+    /// has to be re-derived from which department lists whom as a child.
+    /// Without this the tree is flat, subtree mapping stops cascading, and
+    /// nobody below a mapped branch gets placed.
+    #[tokio::test]
+    async fn fetch_all_departments_rebuilds_the_tree_when_the_payload_omits_parents() {
+        let server = MockServer::start().await;
+        mount_tenant_token(&server).await;
+
+        // Per-department child listings, mounted before the flat one so
+        // wiremock's most-recent-first matching reaches them.
+        Mock::given(method("GET"))
+            .and(path("/open-apis/contact/v3/departments/od_rd/children"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0, "msg": "ok",
+                "data": { "has_more": false, "items": [
+                    // Note: still no parent_department_id in the payload.
+                    { "open_department_id": "od_sec", "name": "信息安全中心" }
+                ]}
+            })))
+            .mount(&server)
+            .await;
+        for leaf in ["od_sec", "od_hr"] {
+            Mock::given(method("GET"))
+                .and(path(format!("/open-apis/contact/v3/departments/{leaf}/children")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "code": 0, "msg": "ok", "data": { "has_more": false, "items": [] }
+                })))
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("GET"))
+            .and(path(DEPT_CHILDREN_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0, "msg": "ok",
+                "data": { "has_more": false, "items": [
+                    { "open_department_id": "od_rd", "name": "研发技术中心" },
+                    { "open_department_id": "od_sec", "name": "信息安全中心" },
+                    { "open_department_id": "od_hr", "name": "组织与人才部" }
+                ]}
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = feishu_config_with_base(&server.uri());
+        let departments = FeishuProvider::fetch_all_departments(&cfg, "t-tenant").await.unwrap();
+
+        assert_eq!(departments.len(), 3, "every department is still returned");
+        let parent_of = |id: &str| {
+            departments
+                .iter()
+                .find(|d| d.external_id == id)
+                .and_then(|d| d.parent_external_id.clone())
+        };
+        assert_eq!(
+            parent_of("od_sec").as_deref(),
+            Some("od_rd"),
+            "the child listing is the only place this link exists"
+        );
+        // Genuinely top-level departments stay parentless.
+        assert_eq!(parent_of("od_rd"), None);
+        assert_eq!(parent_of("od_hr"), None);
+    }
+
+    /// The rebuild is a fallback, not the default: a tenant whose payload does
+    /// carry parents must not pay one extra request per department.
+    #[tokio::test]
+    async fn fetch_all_departments_skips_the_rebuild_when_parents_are_present() {
+        let server = MockServer::start().await;
+        mount_tenant_token(&server).await;
+        // Deliberately NO per-department mocks: reaching one is a 404 the
+        // rebuild would log and swallow, so assert on the parent links instead
+        // — they can only be the payload's.
+        Mock::given(method("GET"))
+            .and(path(DEPT_CHILDREN_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0, "msg": "ok",
+                "data": { "has_more": false, "items": [
+                    { "open_department_id": "od_1", "parent_department_id": "0", "name": "研发中心" },
+                    { "open_department_id": "od_2", "parent_department_id": "od_1", "name": "后端组" }
+                ]}
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = feishu_config_with_base(&server.uri());
+        let departments = FeishuProvider::fetch_all_departments(&cfg, "t-tenant").await.unwrap();
         assert_eq!(departments[1].parent_external_id.as_deref(), Some("od_1"));
     }
 

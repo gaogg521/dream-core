@@ -23,6 +23,25 @@ fn main() -> ExitCode {
     // only sound while this process is still single-threaded.
     unsafe { dream_core_common::adopt_legacy_env() };
 
+    // rustls 0.23 refuses to pick a crypto backend on its own once more than
+    // one is reachable in the dependency graph (ours pulls in both ring and
+    // aws-lc-rs transitively), and the "choice" it wants is process-global.
+    // Any library that builds its own `ClientConfig` internally therefore
+    // PANICS on first use — the panic is on a worker thread, so the process
+    // survives and the request just dies with no response.
+    //
+    // That is exactly how LDAPS behaved: `ldaps://…:636` dropped the
+    // connection with no error while plaintext `ldap://…:389` worked, so the
+    // only usable LDAP config was the one that puts AD passwords on the wire
+    // in clear text. Verified against a real domain controller 2026-09-04; the
+    // LDAP unit tests never open a TLS connection, so all six stayed green.
+    //
+    // Installing ring here fixes every such caller at once, and is what the
+    // hand-rolled `CryptoProvider::get_default().unwrap_or_else(ring)` dance
+    // in the DingTalk and Discord channel plugins was already working around
+    // locally. `Err` means someone already installed one — equally fine.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     match run_main() {
         Ok(exit_code) => exit_code,
         Err(error) => {

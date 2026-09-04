@@ -141,6 +141,27 @@ struct AuthorizeQuery {
 /// requesting a scheme this build does not know falls through to `aionui` and
 /// the callback reaches an app that stopped listening for it: login succeeds in
 /// the browser and never arrives.
+/// Is `target` a path on THIS origin, safe to hand to `Redirect::to`?
+///
+/// The post-login redirect target is a caller-supplied query param, and the
+/// browser follows it with the session cookie already set — so an unvalidated
+/// value is an open redirect straight out of a successful login. It used to be
+/// neutralized by accident: everything was wrapped as `format!("/#{target}")`,
+/// which pins any value to this origin's fragment. Now that the caller states
+/// the whole path, that accident is gone and the check has to be explicit.
+///
+/// Rejects anything that could leave the origin:
+/// - not starting with `/` (relative, or a `https://…` / `javascript:` URL),
+/// - starting with `//` or `/\`, which browsers read as protocol-relative and
+///   send to another host,
+/// - containing a control character, CR or LF (header splitting).
+fn is_safe_local_redirect(target: &str) -> bool {
+    target.starts_with('/')
+        && !target.starts_with("//")
+        && !target.starts_with("/\\")
+        && !target.chars().any(|c| c.is_control())
+}
+
 fn sanitize_deep_link_scheme(raw: Option<&str>) -> &'static str {
     match raw {
         Some("dream") => "dream",
@@ -194,11 +215,18 @@ async fn authorize(
         return Err(SsoError::ProviderDisabled(provider.as_str().into()));
     }
 
+    // Screened here as well as at the callback: the callback's check is the
+    // one that actually protects the redirect, but rejecting an off-origin
+    // target up front means a bad value never rides through a whole OAuth
+    // round trip only to be silently swapped for the default at the end.
+    // Desktop logins hand the target to a deep link instead, so they are not
+    // path-shaped and are left alone here.
     let redirect_target = query
         .redirect
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
+        .filter(|s| matches!(query.desktop.as_deref(), Some("1") | Some("true")) || is_safe_local_redirect(s))
         .map(str::to_owned);
     let desktop = matches!(query.desktop.as_deref(), Some("1") | Some("true"));
     let want_json = matches!(query.format.as_deref(), Some("json"));
@@ -382,8 +410,7 @@ async fn callback(
     // placement below reads the directory mirror attached to it. Idempotent, so
     // a user the email hook just joined is left alone here.
     if let Some(hook) = state.org_auto_join.as_ref() {
-        hook.auto_join_after_sso(&user_id, &personal_external_id, org_unit_path.as_deref())
-            .await;
+        hook.auto_join_after_sso(&user_id, &personal_external_id).await;
     }
 
     // 登录二次认证闸：需要 MFA 时不签发会话，改把用户导向 Web 登录页的
@@ -440,14 +467,25 @@ async fn callback(
         let deep_link = format!("{}://sso-callback?{params}", entry.deep_link_scheme);
         Ok(Html(desktop_callback_page(&deep_link)).into_response())
     } else {
-        // Browser: Set-Cookie + redirect to the SPA.
+        // Browser: Set-Cookie + redirect to whichever SPA started this.
+        //
+        // Two different SPAs land here and they route differently: dream-ui's
+        // WebUI is a HashRouter (`/#/guid`), while dream-en's admin console is
+        // a BrowserRouter served under `/admin/`. This used to hardcode
+        // `format!("/#{target}")` — the WebUI's shape — so the admin console
+        // could never be redirected back to: it asks for `/`, got `/#/`, and
+        // the browser landed on the server root, which on an enterprise server
+        // is not the console (a bare 404 in a deployment that serves no WebUI).
+        // The caller now states the full path it wants.
         let target = session
             .redirect_target
             .as_deref()
+            .map(str::trim)
             .filter(|s| !s.is_empty())
-            .unwrap_or("/guid");
-        let location = format!("/#{target}");
-        Ok(([(header::SET_COOKIE, session.cookie)], Redirect::to(&location)).into_response())
+            .filter(|s| is_safe_local_redirect(s))
+            .map(str::to_owned)
+            .unwrap_or_else(|| "/#/guid".to_owned());
+        Ok(([(header::SET_COOKIE, session.cookie)], Redirect::to(&target)).into_response())
     }
 }
 
@@ -590,8 +628,7 @@ async fn ldap_login(
         .await;
     }
     if let Some(hook) = state.org_auto_join.as_ref() {
-        hook.auto_join_after_sso(&user_id, &personal_external_id, org_unit_path.as_deref())
-            .await;
+        hook.auto_join_after_sso(&user_id, &personal_external_id).await;
     }
 
     let redirect_target = body
@@ -860,6 +897,27 @@ const _: fn() = || {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn post_login_redirect_only_accepts_paths_on_this_origin() {
+        // The two real callers: dream-en's admin console (BrowserRouter under
+        // /admin) and dream-ui's WebUI (HashRouter).
+        assert!(is_safe_local_redirect("/admin/"));
+        assert!(is_safe_local_redirect("/#/guid"));
+        assert!(is_safe_local_redirect("/settings/enterprise?tab=identity"));
+
+        // Off-origin. The browser follows these WITH the session cookie
+        // already set, so a successful login would hand the user to an
+        // attacker's page.
+        assert!(!is_safe_local_redirect("https://evil.example.com/steal"));
+        assert!(!is_safe_local_redirect("//evil.example.com/steal"));
+        assert!(!is_safe_local_redirect("/\\evil.example.com"));
+        assert!(!is_safe_local_redirect("javascript:alert(1)"));
+        assert!(!is_safe_local_redirect("guid"));
+        // Header splitting.
+        assert!(!is_safe_local_redirect("/ok\r\nSet-Cookie: a=b"));
+        assert!(!is_safe_local_redirect("/ok\nLocation: https://evil.example.com"));
+    }
 
     #[test]
     fn desktop_callback_page_embeds_deep_link_for_script_redirect_and_manual_fallback() {

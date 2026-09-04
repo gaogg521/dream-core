@@ -965,8 +965,7 @@ fn tail_latest_log(
 /// `.dream-engine.log` matters as much as `.dreamcore.log`: the engine writes
 /// to its own file layer (see `bootstrap::tracing_init`), so omitting it means
 /// a diagnose bundle silently carries no engine logs at all.
-const BACKEND_LOG_SUFFIXES: [&str; 4] =
-    [".dreamcore.log", ".dream-engine.log", ".aioncore.log", ".aionrs.log"];
+const BACKEND_LOG_SUFFIXES: [&str; 4] = [".dreamcore.log", ".dream-engine.log", ".aioncore.log", ".aionrs.log"];
 
 fn collect_backend_logs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> io::Result<()> {
     if depth > MAX_LOG_SEARCH_DEPTH || !dir.is_dir() {

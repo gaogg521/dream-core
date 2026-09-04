@@ -352,6 +352,15 @@ impl EnterpriseService {
             seat_status,
             now,
         } = input;
+        // COALESCE in the conflict clauses below, not a plain overwrite: this
+        // upsert has two callers with different knowledge. `sync_member` comes
+        // from an IdP profile and knows the name/department/title;
+        // `ensure_member` (project-group join) knows only that a seat is owed
+        // and passes None for all three. A plain `= excluded.display_name`
+        // therefore let the seat call blank out what the SSO call had just
+        // written — which is exactly what happened once SSO login started
+        // doing both in one request, and had always been latent for anyone who
+        // logged in via SSO and later joined a group by invite code.
         let display_name = display_name.map(str::trim).filter(|s| !s.is_empty());
         let department = department.map(str::trim).filter(|s| !s.is_empty());
         let job_title = job_title.map(str::trim).filter(|s| !s.is_empty());
@@ -360,15 +369,19 @@ impl EnterpriseService {
              (user_id, enterprise_id, display_name, department, job_title, role, seat_status, joined_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, 'member', ?, ?, ?) \
              ON CONFLICT(user_id) DO UPDATE SET enterprise_id = excluded.enterprise_id, \
-                 display_name = excluded.display_name, department = excluded.department, \
-                 job_title = excluded.job_title, seat_status = excluded.seat_status, \
+                 display_name = COALESCE(excluded.display_name, one_enterprise_members.display_name), \
+                 department = COALESCE(excluded.department, one_enterprise_members.department), \
+                 job_title = COALESCE(excluded.job_title, one_enterprise_members.job_title), \
+                 seat_status = excluded.seat_status, \
                  updated_at = excluded.updated_at",
             "INSERT INTO one_enterprise_members \
              (user_id, enterprise_id, display_name, department, job_title, role, seat_status, joined_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, 'member', ?, ?, ?) AS new \
              ON DUPLICATE KEY UPDATE enterprise_id = new.enterprise_id, \
-                 display_name = new.display_name, department = new.department, \
-                 job_title = new.job_title, seat_status = new.seat_status, \
+                 display_name = COALESCE(new.display_name, one_enterprise_members.display_name), \
+                 department = COALESCE(new.department, one_enterprise_members.department), \
+                 job_title = COALESCE(new.job_title, one_enterprise_members.job_title), \
+                 seat_status = new.seat_status, \
                  updated_at = new.updated_at",
             &db_params![
                 user_id,
