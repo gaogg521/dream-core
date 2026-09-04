@@ -37,8 +37,23 @@ pub struct MemoryItemDto {
     pub tags: Vec<String>,
     /// `"active" | "trimmed"`.
     pub status: String,
+    /// The member who wrote this item via the member routes. `None` for
+    /// admin-, extractor- or refinement-written rows — only an admin may
+    /// delete those.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author_user_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// One member's recall preference. Absent row = recall enabled: the opt-out
+/// model, and the only shape a privacy-respecting default can take (a fresh
+/// member must not silently lose memory because they never asked for memory
+/// either).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberMemoryPrefsDto {
+    pub recall_enabled: bool,
 }
 
 /// Per-tenant memory-extraction settings (P2-2 followups §A.6). Absence of a

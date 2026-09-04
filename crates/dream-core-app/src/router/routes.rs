@@ -1267,6 +1267,12 @@ impl dream_core_conversation::MemoryContextProvider for OneMemoryContextProvider
             Ok(Some(a)) => a,
             _ => return Vec::new(),
         };
+        // The member's recall opt-out is read fail-closed (the service answers
+        // `false` on read error): a preference to not be remembered must win
+        // over recall, even when the preference row itself is unreachable.
+        if !self.memory.recall_enabled(&actor.tenant_id, user_id).await {
+            return Vec::new();
+        }
         match self
             .memory
             .search_relevant(&actor.tenant_id, user_id, &actor.role, query, 5)
@@ -2285,6 +2291,15 @@ pub(crate) fn build_governance_plane(
         .route_layer(from_fn_with_state(license_gate.clone(), license_module_gate_middleware))
         .route_layer(from_fn_with_state(password_gate.clone(), require_password_changed_gate))
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
+    // Built per plane: `create_router_with_all_state` owns its own
+    // `mfa_service` for the personal plane, and neither builder's locals are
+    // visible to the other.
+    let mfa_service = std::sync::Arc::new(dream_core_auth::mfa::MfaService::new(
+        services.user_repo.clone(),
+        services.mfa_store.clone(),
+        crate::config::derive_encryption_key(&services.data_secret_raw),
+    ));
 
     // one-sso routes. Public half (providers/authorize/callback) is
     // unauthenticated so OAuth can run before the user has a session;

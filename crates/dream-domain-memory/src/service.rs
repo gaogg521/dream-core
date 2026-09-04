@@ -5,7 +5,7 @@
 //! and grants can open any of them up, write access always requiring an
 //! explicit `write` grant or an admin.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use dream_core_db::{DbPool, db_params};
 
@@ -40,6 +40,12 @@ pub struct MemoryActor {
 
 pub struct MemoryService {
     db: DbPool,
+    /// Short-TTL cache for the member recall preference, keyed
+    /// `{tenant_id}|{user_id}` → `(recall_enabled, cached_at_ms)`. Recall runs
+    /// every turn, so the preference must not cost a query each time; 60s
+    /// bounds how long a just-made opt-out can stay invisible to new turns.
+    /// Only successes are cached — a failed read must not pin a stale answer.
+    recall_pref_cache: std::sync::Mutex<HashMap<String, (bool, i64)>>,
 }
 
 fn is_admin_role(role: &str) -> bool {
@@ -90,6 +96,7 @@ type ItemRow = (
     String,
     i64,
     i64,
+    Option<String>,
 );
 
 fn item_row_to_dto(row: ItemRow) -> MemoryItemDto {
@@ -104,6 +111,7 @@ fn item_row_to_dto(row: ItemRow) -> MemoryItemDto {
         status,
         created_at,
         updated_at,
+        author_user_id,
     ) = row;
     MemoryItemDto {
         id,
@@ -114,12 +122,13 @@ fn item_row_to_dto(row: ItemRow) -> MemoryItemDto {
         source_conversation_id,
         tags: serde_json::from_str(&tags).unwrap_or_default(),
         status,
+        author_user_id,
         created_at,
         updated_at,
     }
 }
 
-const ITEM_COLUMNS: &str = "id, collection_id, content, content_hash, importance, source_conversation_id, tags, status, created_at, updated_at";
+const ITEM_COLUMNS: &str = "id, collection_id, content, content_hash, importance, source_conversation_id, tags, status, created_at, updated_at, author_user_id";
 
 /// A raw grant, kept as data so readability can be evaluated in bulk
 /// (search and coverage both need the whole tenant's grant set at once).
@@ -250,7 +259,10 @@ impl MemoryService {
     }
 
     pub fn new(db: DbPool) -> Self {
-        Self { db }
+        Self {
+            db,
+            recall_pref_cache: std::sync::Mutex::new(HashMap::new()),
+        }
     }
 
     /// Resolve the caller's active-tenant membership (same cross-crate query
@@ -623,9 +635,9 @@ impl MemoryService {
         let now = now_ms();
         self.db.execute(
             "INSERT INTO one_memory_items \
-                 (id, tenant_id, collection_id, content, content_hash, importance, source_conversation_id, tags, status, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
-        &db_params![&id, tenant_id, collection_id, content, sha256_hex(content), importance, source_conversation_id, serde_json::to_string(tags).unwrap_or_else(|_| "[]".into()), now, now])
+                 (id, tenant_id, collection_id, content, content_hash, importance, source_conversation_id, tags, status, created_at, updated_at, author_user_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)",
+            &db_params![&id, tenant_id, collection_id, content, sha256_hex(content), importance, source_conversation_id, serde_json::to_string(tags).unwrap_or_else(|_| "[]".into()), now, now, caller_id])
         .await?;
         self.get_item(tenant_id, collection_id, &id)
             .await?
@@ -712,6 +724,129 @@ impl MemoryService {
             .fetch_all_as::<ItemRow>(&sql, &params)
             .await?;
         Ok(rows.into_iter().map(item_row_to_dto).collect())
+    }
+
+    /// A member deletes one item. Three deleters, and only these:
+    /// the owner of a `personal` collection (any item in it), the item's
+    /// author (whoever can write can retract), and an admin (governance).
+    /// Deletion is a hard delete — unlike refinement's soft trim, a member
+    /// asking for a memory to be gone means gone.
+    pub async fn delete_item(
+        &self,
+        tenant_id: &str,
+        caller_id: &str,
+        caller_role: &str,
+        collection_id: &str,
+        item_id: &str,
+    ) -> Result<(), MemoryError> {
+        let row = self
+            .load_collection(tenant_id, collection_id)
+            .await?
+            .ok_or_else(|| MemoryError::NotFound("memory collection not found".into()))?;
+        let collection = collection_row_to_model(&row);
+        let admin = is_admin_role(caller_role);
+        let owner_of_personal = collection.scope == "personal" && collection.owner_user_id.as_deref() == Some(caller_id);
+
+        let item = self
+            .get_item(tenant_id, collection_id, item_id)
+            .await?
+            .ok_or_else(|| MemoryError::NotFound("memory item not found".into()))?;
+        if !(admin || owner_of_personal || item.author_user_id.as_deref() == Some(caller_id)) {
+            return Err(MemoryError::Forbidden(
+                "you can only delete memory items you wrote, or those in your own personal collection".into(),
+            ));
+        }
+        self.db
+            .execute(
+                "DELETE FROM one_memory_items WHERE tenant_id = ? AND collection_id = ? AND id = ?",
+                &db_params![tenant_id, collection_id, item_id],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// The member's recall preference. Absent row = enabled (opt-out model).
+    pub async fn member_prefs(
+        &self,
+        tenant_id: &str,
+        caller_id: &str,
+    ) -> Result<crate::models::MemberMemoryPrefsDto, MemoryError> {
+        let recall_enabled = self.load_recall_enabled(tenant_id, caller_id).await?;
+        Ok(crate::models::MemberMemoryPrefsDto { recall_enabled })
+    }
+
+    /// Save the member's recall preference and drop any cached value — a just
+    /// made opt-out must reach new turns immediately, not after the TTL.
+    pub async fn set_member_prefs(
+        &self,
+        tenant_id: &str,
+        caller_id: &str,
+        recall_enabled: bool,
+    ) -> Result<crate::models::MemberMemoryPrefsDto, MemoryError> {
+        let now = now_ms();
+        self.upsert(
+            "INSERT INTO one_memory_member_prefs (tenant_id, user_id, recall_enabled, updated_at) \
+                 VALUES (?, ?, ?, ?) \
+             ON CONFLICT(tenant_id, user_id) \
+             DO UPDATE SET recall_enabled = excluded.recall_enabled, updated_at = excluded.updated_at",
+            "INSERT INTO one_memory_member_prefs (tenant_id, user_id, recall_enabled, updated_at) \
+                 VALUES (?, ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE recall_enabled = new.recall_enabled, updated_at = new.updated_at",
+            &db_params![tenant_id, caller_id, recall_enabled, now],
+        )
+        .await?;
+        if let Ok(mut cache) = self.recall_pref_cache.lock() {
+            cache.remove(&format!("{tenant_id}|{caller_id}"));
+        }
+        Ok(crate::models::MemberMemoryPrefsDto { recall_enabled })
+    }
+
+    /// Whether turn-start injection may recall this member's memory.
+    ///
+    /// Fail-CLOSED on purpose: a read error returns `false` (do not inject).
+    /// This is the member's privacy preference — transiently ignoring it is
+    /// worse than transiently losing recall, so unlike the grant-mode reads
+    /// (whose failure must widen to the historical behaviour) an error here
+    /// never resolves to "inject anyway". Failures are not cached: the next
+    /// turn retries.
+    pub async fn recall_enabled(&self, tenant_id: &str, user_id: &str) -> bool {
+        let key = format!("{tenant_id}|{user_id}");
+        let now = now_ms();
+        if let Ok(cache) = self.recall_pref_cache.lock() {
+            if let Some((enabled, cached_at)) = cache.get(&key) {
+                if now.saturating_sub(*cached_at) < 60_000 {
+                    return *enabled;
+                }
+            }
+        }
+        match self.load_recall_enabled(tenant_id, user_id).await {
+            Ok(enabled) => {
+                if let Ok(mut cache) = self.recall_pref_cache.lock() {
+                    cache.insert(key, (enabled, now));
+                }
+                enabled
+            }
+            Err(error) => {
+                tracing::debug!(error = %error, "member recall preference unreadable; failing closed (no injection)");
+                false
+            }
+        }
+    }
+
+    async fn load_recall_enabled(&self, tenant_id: &str, user_id: &str) -> Result<bool, MemoryError> {
+        let result = self
+            .db
+            .fetch_optional_as::<(i64,)>(
+                "SELECT recall_enabled FROM one_memory_member_prefs WHERE tenant_id = ? AND user_id = ?",
+                &db_params![tenant_id, user_id],
+            )
+            .await;
+        match result {
+            Ok(Some((enabled,))) => Ok(enabled != 0),
+            Ok(None) => Ok(true),
+            Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => Ok(true),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Relevance search for turn-start context injection (P2-2). Unlike
@@ -1744,5 +1879,141 @@ mod tests {
             "NOT_FOUND"
         );
         assert!(service.list_grants("t1", "memc_missing").await.unwrap_err().code() == "NOT_FOUND");
+    }
+
+    // --- Member deletion rights & recall preference (member memory management) ---
+
+    async fn seed_collection_raw(pool: &sqlx::SqlitePool, tenant_id: &str, id: &str, scope: &str, owner: Option<&str>) {
+        sqlx::query(
+            "INSERT INTO one_memory_collections \
+                 (id, tenant_id, scope, department_id, owner_user_id, name, description, created_at, updated_at) \
+             VALUES (?, ?, ?, NULL, ?, 'n', '', 0, 0)",
+        )
+        .bind(id)
+        .bind(tenant_id)
+        .bind(scope)
+        .bind(owner)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn seed_write_grant(pool: &sqlx::SqlitePool, tenant_id: &str, collection_id: &str, user_id: &str) {
+        sqlx::query(
+            "INSERT INTO one_memory_grants \
+                 (id, tenant_id, collection_id, subject_type, subject_id, access, granted_by, created_at) \
+             VALUES ('g1', ?, ?, 'member', ?, 'write', 'admin1', 0)",
+        )
+        .bind(tenant_id)
+        .bind(collection_id)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn member_deletes_items_in_own_personal_collection() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "m1", "t1", "member").await;
+        seed_collection_raw(db.pool(), "t1", "pc1", "personal", Some("m1")).await;
+
+        service
+            .add_item("t1", "m1", "member", "pc1", "my note", 0.5, None, &[])
+            .await
+            .unwrap();
+        let items = service.list_items("t1", "m1", "member", "pc1", 10).await.unwrap();
+        assert_eq!(items.len(), 1);
+
+        service.delete_item("t1", "m1", "member", "pc1", &items[0].id).await.unwrap();
+        assert!(service.list_items("t1", "m1", "member", "pc1", 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn member_cannot_delete_someone_elses_item_in_a_global_collection() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "admin1", "t1", "org_admin").await;
+        seed_membership(db.pool(), "m1", "t1", "member").await;
+        seed_collection_raw(db.pool(), "t1", "gc1", "global", None).await;
+        service
+            .add_item("t1", "admin1", "org_admin", "gc1", "company fact", 0.5, None, &[])
+            .await
+            .unwrap();
+        let items = service.list_items("t1", "admin1", "org_admin", "gc1", 10).await.unwrap();
+
+        let error = service
+            .delete_item("t1", "m1", "member", "gc1", &items[0].id)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "FORBIDDEN");
+        // The refused deletion must not have removed anything.
+        assert_eq!(service.list_items("t1", "admin1", "org_admin", "gc1", 10).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn member_can_delete_an_item_they_authored_in_a_shared_collection() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "admin1", "t1", "org_admin").await;
+        seed_membership(db.pool(), "m1", "t1", "member").await;
+        seed_collection_raw(db.pool(), "t1", "gc1", "global", None).await;
+        seed_write_grant(db.pool(), "t1", "gc1", "m1").await;
+
+        let item = service
+            .add_item("t1", "m1", "member", "gc1", "my own entry", 0.5, None, &[])
+            .await
+            .unwrap();
+        assert_eq!(item.author_user_id.as_deref(), Some("m1"));
+
+        service.delete_item("t1", "m1", "member", "gc1", &item.id).await.unwrap();
+        assert!(service.list_items("t1", "m1", "member", "gc1", 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn admin_deletes_any_item_and_missing_items_are_not_found() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "admin1", "t1", "org_admin").await;
+        seed_membership(db.pool(), "m1", "t1", "member").await;
+        seed_collection_raw(db.pool(), "t1", "pc1", "personal", Some("m1")).await;
+        service
+            .add_item("t1", "m1", "member", "pc1", "private note", 0.5, None, &[])
+            .await
+            .unwrap();
+        let items = service.list_items("t1", "m1", "member", "pc1", 10).await.unwrap();
+
+        service.delete_item("t1", "admin1", "org_admin", "pc1", &items[0].id).await.unwrap();
+        assert!(service.list_items("t1", "m1", "member", "pc1", 10).await.unwrap().is_empty());
+
+        assert_eq!(
+            service.delete_item("t1", "admin1", "org_admin", "pc1", "memi_missing").await.unwrap_err().code(),
+            "NOT_FOUND"
+        );
+        assert_eq!(
+            service
+                .delete_item("t1", "m1", "member", "pc_missing", "memi_whatever")
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND"
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_preference_defaults_on_and_opt_out_applies_immediately() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "m1", "t1", "member").await;
+
+        // Absent row = recall enabled.
+        assert!(service.member_prefs("t1", "m1").await.unwrap().recall_enabled);
+        assert!(service.recall_enabled("t1", "m1").await);
+
+        service.set_member_prefs("t1", "m1", false).await.unwrap();
+        assert!(!service.member_prefs("t1", "m1").await.unwrap().recall_enabled);
+        // The write must invalidate the 60s cache, not wait it out.
+        assert!(!service.recall_enabled("t1", "m1").await);
+
+        service.set_member_prefs("t1", "m1", true).await.unwrap();
+        assert!(service.recall_enabled("t1", "m1").await);
+        // Per-member: another member's preference is unaffected.
+        assert!(service.recall_enabled("t1", "someone_else").await);
     }
 }
