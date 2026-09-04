@@ -101,7 +101,7 @@ impl dream_domain_sso::OrgAutoJoin for OrgAutoJoinAdapter {
         }
     }
 
-    async fn auto_join_after_sso(&self, user_id: &str, personal_external_id: &str, org_unit_path: Option<&str>) {
+    async fn auto_join_after_sso(&self, user_id: &str, personal_external_id: &str) {
         // The directory lookup is what makes this "join the group my own
         // Feishu department was mapped into" rather than "join something".
         // Both halves degrade to None independently: no directory, no company,
@@ -116,7 +116,7 @@ impl dream_domain_sso::OrgAutoJoin for OrgAutoJoinAdapter {
         };
         match self
             .org
-            .auto_join_after_sso(user_id, department_external_id.as_deref(), org_unit_path, &departments)
+            .auto_join_after_sso(user_id, department_external_id.as_deref(), &departments)
             .await
         {
             Ok(Some(outcome)) => {

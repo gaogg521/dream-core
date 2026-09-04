@@ -43,6 +43,10 @@ slack = ["dream-core-channel/slack"]
 discord = ["dream-core-channel/discord"]
 
 [dependencies]
+# Installing the process-wide rustls crypto provider in `main` — see the
+# comment there. Needed directly here because the choice is global and has
+# to be made before any library builds its own TLS config.
+rustls = { workspace = true, features = ["ring"] }
 dream-core-common.workspace = true
 dream-core-assets.workspace = true
 dream-core-db.workspace = true

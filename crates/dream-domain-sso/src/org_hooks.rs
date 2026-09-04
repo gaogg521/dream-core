@@ -44,5 +44,5 @@ pub trait OrgAutoJoin: Send + Sync {
     ///
     /// Best-effort and **must never fail the login**: implementations swallow
     /// their own errors. Idempotent — a returning member is left untouched.
-    async fn auto_join_after_sso(&self, user_id: &str, personal_external_id: &str, org_unit_path: Option<&str>);
+    async fn auto_join_after_sso(&self, user_id: &str, personal_external_id: &str);
 }
