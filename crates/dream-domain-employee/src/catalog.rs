@@ -48,6 +48,8 @@ use dream_core_db::{DbPool, db_params};
 
 use dream_core_common::now_ms;
 
+use crate::service::is_missing_table_error;
+
 use crate::error::EmployeeError;
 use crate::models::{CatalogEntryDto, CatalogEntryRow, PersonalAgentRow};
 
@@ -132,15 +134,21 @@ pub(crate) async fn list_catalog(pool: &DbPool, tenant_id: &str) -> Result<Vec<C
 
     // Grant counts per employee id, batched — the "authorization summary"
     // column of the catalog page (placeholder + instance both count: grants
-    // may pre-date instantiation, see the module docs).
-    let grants: HashMap<String, i64> = pool
+    // may pre-date instantiation, see the module docs). Grants now live in
+    // the unified matrix (migration 012); a missing table (personal builds)
+    // simply means nothing is granted.
+    let grants: HashMap<String, i64> = match pool
         .fetch_all_as::<(String, i64)>(
-            "SELECT employee_id, COUNT(*) FROM one_employee_grants WHERE tenant_id = ? GROUP BY employee_id",
+            "SELECT resource_id, COUNT(*) FROM one_resource_grants \
+             WHERE tenant_id = ? AND resource_type = 'employee' GROUP BY resource_id",
             &db_params![tenant_id],
         )
-        .await?
-        .into_iter()
-        .collect();
+        .await
+    {
+        Ok(rows) => rows.into_iter().collect(),
+        Err(e) if is_missing_table_error(&e) => HashMap::new(),
+        Err(e) => return Err(e.into()),
+    };
 
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -218,13 +226,33 @@ mod tests {
     use crate::migrate::run_one_employee_migrations;
     // Both are crate-private free functions in service.rs (made pub(crate)
     // for testability, same convention as the other free functions there).
-    use crate::service::{grant_employee_access, select_agent_for_use};
+    use crate::service::{grant_employee_access, is_missing_table_error, select_agent_for_use};
 
     async fn test_pool() -> dream_core_db::DbPool {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
             .await
             .unwrap();
+        // The unified grants matrix lives in dream-domain-platform's
+        // migrations; this crate's tests create its minimal shape directly
+        // (personal builds without the platform never have it, and the read
+        // paths treat that as "no grants").
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS one_resource_grants (\
+                 id TEXT PRIMARY KEY NOT NULL,\
+                 tenant_id TEXT NOT NULL,\
+                 subject_type TEXT NOT NULL,\
+                 subject_id TEXT NOT NULL,\
+                 resource_type TEXT NOT NULL,\
+                 resource_id TEXT NOT NULL,\
+                 permission TEXT NOT NULL DEFAULT 'use',\
+                 granted_by TEXT NOT NULL,\
+                 created_at INTEGER NOT NULL,\
+                 UNIQUE(tenant_id, subject_type, subject_id, resource_type, resource_id));",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
         dream_core_db::DbPool::Sqlite(db.pool().clone())
     }
 

@@ -467,6 +467,10 @@ struct CreateGrantBody {
     subject_id: String,
     resource_type: String,
     resource_id: String,
+    /// `'use' | 'manage'` — only meaningful for `resource_type = 'employee'`;
+    /// every other type stores `'use`' regardless.
+    #[serde(default)]
+    permission: Option<String>,
 }
 
 async fn create_resource_grant(
@@ -483,6 +487,7 @@ async fn create_resource_grant(
             &body.subject_id,
             &body.resource_type,
             &body.resource_id,
+            body.permission.as_deref().unwrap_or("use"),
             &user.id,
         )
         .await?;

@@ -52,21 +52,14 @@ pub const GRANT_SUBJECT_TYPES: [&str; 3] = ["member", "department", "scene"];
 /// access to — governing a feature that isn't built would be fabricating
 /// both, not just the governance layer.
 ///
-/// `employee` is deliberately NOT in this list. Digital employees
-/// (`dream-domain-employee`) are an owner-centric asset (only `private` or
-/// tenant-wide `shared`, see `EmployeeService::set_visibility`), not a
-/// registry with per-subject grants like the other four — bolting the
-/// authorization matrix onto it is a product decision that hasn't been
-/// made, not a wiring gap. `grant_resource` rejects it explicitly (see
-/// `EMPLOYEE_NOT_SUPPORTED_MESSAGE`) instead of silently accepting and
-/// doing nothing.
-pub const GRANT_RESOURCE_TYPES: [&str; 4] = ["skill", "mcp", "model_channel", "knowledge"];
-
-/// Returned by `grant_resource`/`validate_grant_kinds` for `resource_type ==
-/// "employee"` — distinguishable from the generic "unknown resource type"
-/// message so callers (and admins reading the error) can tell "this type
-/// doesn't exist" apart from "this type exists but isn't supported yet".
-const EMPLOYEE_NOT_SUPPORTED_MESSAGE: &str = "resource type 'employee' is not supported yet";
+/// `employee` IS in this list (migration 012 folded `one_employee_grants`
+/// into this table): digital employees are owner-centric assets whose
+/// `shared` visibility never conferred use by itself — a grant row is what
+/// makes one usable by anyone but its owner — which is exactly the
+/// whitelist shape a matrix row expresses. Their `permission` column adds
+/// the `use < manage` ladder the old table carried, and their matrix mode
+/// has no dial: the read path is always restrictive (see `grant_mode`).
+pub const GRANT_RESOURCE_TYPES: [&str; 5] = ["skill", "mcp", "model_channel", "knowledge", "employee"];
 
 /// `resource_id` sentinel meaning "every resource of this type, now and
 /// whenever a new one is added" — the escape hatch for "give this department
@@ -568,9 +561,6 @@ impl PlatformService {
                 "unknown subject type '{subject_type}'"
             )));
         }
-        if resource_type == "employee" {
-            return Err(PlatformError::BadRequest(EMPLOYEE_NOT_SUPPORTED_MESSAGE.into()));
-        }
         if !GRANT_RESOURCE_TYPES.contains(&resource_type) {
             return Err(PlatformError::BadRequest(format!(
                 "unknown resource type '{resource_type}'"
@@ -591,6 +581,7 @@ impl PlatformService {
         subject_id: &str,
         resource_type: &str,
         resource_id: &str,
+        permission: &str,
         granted_by: &str,
     ) -> Result<ResourceGrantDto, PlatformError> {
         Self::validate_grant_kinds(subject_type, resource_type)?;
@@ -607,6 +598,20 @@ impl PlatformService {
         if resource_id.is_empty() {
             return Err(PlatformError::BadRequest("resource id must not be empty".into()));
         }
+        // Only digital employees distinguish use from manage; the other four
+        // types are reachability-only and always store the 'use' default.
+        let permission = if resource_type == "employee" {
+            match permission {
+                "use" | "manage" => permission,
+                _ => {
+                    return Err(PlatformError::BadRequest(
+                        "employee grants are 'use' or 'manage'".into(),
+                    ))
+                }
+            }
+        } else {
+            "use"
+        };
 
         let existing: Option<(String,)> = self.db.fetch_optional_as::<(String,)>(
             "SELECT id FROM one_resource_grants \
@@ -620,9 +625,9 @@ impl PlatformService {
                 let id = generate_prefixed_id("grant");
                 self.db.execute(
                     "INSERT INTO one_resource_grants \
-                     (id, tenant_id, subject_type, subject_id, resource_type, resource_id, granted_by, created_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                &db_params![&id, tenant_id, subject_type, subject_id, resource_type, resource_id, granted_by, now_ms()])
+                     (id, tenant_id, subject_type, subject_id, resource_type, resource_id, permission, granted_by, created_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                &db_params![&id, tenant_id, subject_type, subject_id, resource_type, resource_id, permission, granted_by, now_ms()])
                 .await?;
                 id
             }
@@ -633,21 +638,24 @@ impl PlatformService {
     }
 
     async fn get_grant(&self, tenant_id: &str, id: &str) -> Result<Option<ResourceGrantDto>, PlatformError> {
-        type Row = (String, String, String, String, String, String, i64);
+        type Row = (String, String, String, String, String, String, String, i64);
         let row: Option<Row> = self.db.fetch_optional_as::<Row>(
-            "SELECT id, subject_type, subject_id, resource_type, resource_id, granted_by, created_at \
+            "SELECT id, subject_type, subject_id, resource_type, resource_id, permission, granted_by, created_at \
              FROM one_resource_grants WHERE tenant_id = ? AND id = ?",
         &db_params![tenant_id, id])
         .await?;
         Ok(row.map(
-            |(id, subject_type, subject_id, resource_type, resource_id, granted_by, created_at)| ResourceGrantDto {
-                id,
-                subject_type,
-                subject_id,
-                resource_type,
-                resource_id,
-                granted_by,
-                created_at,
+            |(id, subject_type, subject_id, resource_type, resource_id, permission, granted_by, created_at)| {
+                ResourceGrantDto {
+                    id,
+                    subject_type,
+                    subject_id,
+                    resource_type,
+                    resource_id,
+                    permission,
+                    granted_by,
+                    created_at,
+                }
             },
         ))
     }
@@ -675,7 +683,7 @@ impl PlatformService {
         subject_id: Option<&str>,
         resource_type: Option<&str>,
     ) -> Result<Vec<ResourceGrantDto>, PlatformError> {
-        let mut sql = "SELECT id, subject_type, subject_id, resource_type, resource_id, granted_by, created_at \
+        let mut sql = "SELECT id, subject_type, subject_id, resource_type, resource_id, permission, granted_by, created_at \
                         FROM one_resource_grants WHERE tenant_id = ?"
             .to_owned();
         if subject_type.is_some() {
@@ -689,7 +697,7 @@ impl PlatformService {
         }
         sql.push_str(" ORDER BY created_at DESC");
 
-        type Row = (String, String, String, String, String, String, i64);
+        type Row = (String, String, String, String, String, String, String, i64);
         let mut params = db_params![tenant_id];
         if let Some(v) = subject_type {
             params.push(v.into());
@@ -704,14 +712,17 @@ impl PlatformService {
         Ok(rows
             .into_iter()
             .map(
-                |(id, subject_type, subject_id, resource_type, resource_id, granted_by, created_at)| ResourceGrantDto {
-                    id,
-                    subject_type,
-                    subject_id,
-                    resource_type,
-                    resource_id,
-                    granted_by,
-                    created_at,
+                |(id, subject_type, subject_id, resource_type, resource_id, permission, granted_by, created_at)| {
+                    ResourceGrantDto {
+                        id,
+                        subject_type,
+                        subject_id,
+                        resource_type,
+                        resource_id,
+                        permission,
+                        granted_by,
+                        created_at,
+                    }
                 },
             )
             .collect())
@@ -855,6 +866,15 @@ impl PlatformService {
     /// sees nothing", so it is never entered by accident: it takes an explicit,
     /// readable `restrictive` row to turn on.
     pub async fn grant_mode(&self, tenant_id: &str, resource_type: &str) -> GrantMode {
+        // Employees are the one deliberate exception to the fail-additive
+        // rule: their historical behavior (one_employee_grants' design) IS a
+        // whitelist — a shared employee was never usable tenant-wide without
+        // a row — so "fail to the historical behavior" here means
+        // Restrictive, always. No mode row for 'employee' is honored; the
+        // enforcement in dream-domain-employee never consults this table.
+        if resource_type == "employee" {
+            return GrantMode::Restrictive;
+        }
         let row: Result<Option<String>, _> = self
             .db
             .fetch_optional_scalar(
@@ -901,9 +921,18 @@ impl PlatformService {
                         updated_by: by.clone(),
                         updated_at: *at,
                     })
+                    // 'employee' has no dial: its listing entry is the fixed
+                    // Restrictive the enforcement always applies, regardless
+                    // of any stray row in the table.
                     .unwrap_or_else(|| GrantModeDto {
                         resource_type: (*resource_type).to_owned(),
-                        mode: GrantMode::Additive.as_str().to_owned(),
+                        mode: if *resource_type == "employee" {
+                            GrantMode::Restrictive
+                        } else {
+                            GrantMode::Additive
+                        }
+                        .as_str()
+                        .to_owned(),
                         updated_by: String::new(),
                         updated_at: 0,
                     })
@@ -1064,6 +1093,7 @@ impl PlatformService {
                     &scene_id,
                     resource_type,
                     GRANT_ALL_RESOURCES,
+                    "use",
                     Self::BUILTIN_SCENE_GRANTOR,
                 )
                 .await?;
@@ -3624,11 +3654,11 @@ mod tests {
     async fn grant_resource_is_idempotent_and_lists() {
         let (_db, service) = setup().await;
         let first = service
-            .grant_resource("t1", "member", "alice", "skill", "sk_1", "admin1")
+            .grant_resource("t1", "member", "alice", "skill", "sk_1", "use", "admin1")
             .await
             .unwrap();
         let second = service
-            .grant_resource("t1", "member", "alice", "skill", "sk_1", "admin1")
+            .grant_resource("t1", "member", "alice", "skill", "sk_1", "use", "admin1")
             .await
             .unwrap();
         assert_eq!(first.id, second.id, "re-granting the same tuple must not duplicate it");
@@ -3646,7 +3676,7 @@ mod tests {
     async fn knowledge_is_a_valid_grant_resource_type() {
         let (_db, service) = setup().await;
         let grant = service
-            .grant_resource("t1", "member", "alice", "knowledge", "doc_1", "admin1")
+            .grant_resource("t1", "member", "alice", "knowledge", "doc_1", "use", "admin1")
             .await
             .unwrap();
         assert_eq!(grant.resource_type, "knowledge");
@@ -3657,7 +3687,7 @@ mod tests {
         let (_db, service) = setup().await;
         assert_eq!(
             service
-                .grant_resource("t1", "robot", "alice", "skill", "sk_1", "admin1")
+                .grant_resource("t1", "robot", "alice", "skill", "sk_1", "use", "admin1")
                 .await
                 .unwrap_err()
                 .code(),
@@ -3665,7 +3695,7 @@ mod tests {
         );
         assert_eq!(
             service
-                .grant_resource("t1", "member", "alice", "spaceship", "sk_1", "admin1")
+                .grant_resource("t1", "member", "alice", "spaceship", "sk_1", "use", "admin1")
                 .await
                 .unwrap_err()
                 .code(),
@@ -3673,44 +3703,42 @@ mod tests {
         );
     }
 
-    /// `employee` used to silently pass validation, write a row, and return
-    /// 200 while nothing ever consulted it — worse than not having the
-    /// feature. It must now be rejected with a message distinguishable from
-    /// the generic "unknown resource type" (the type isn't unknown, it's
-    /// deliberately unsupported), and the remaining four types must keep
-    /// working exactly as before.
+    /// `employee` joined the matrix via migration 012 (folded from
+    /// `one_employee_grants`): it grants with a `permission` ladder
+    /// (`use` < `manage`) that only employees carry, an invalid ladder value
+    /// is a 400, and the other four types stay reachability-only with the
+    /// `use` default no matter what is passed.
     #[tokio::test]
-    async fn grant_resource_rejects_employee_with_a_distinct_message() {
+    async fn employee_grants_carry_a_permission_ladder() {
         let (_db, service) = setup().await;
-        let err = service
-            .grant_resource("t1", "member", "alice", "employee", "emp_1", "admin1")
+        let grant = service
+            .grant_resource("t1", "member", "alice", "employee", "emp_1", "manage", "admin1")
             .await
-            .unwrap_err();
-        assert_eq!(err.code(), "BAD_REQUEST");
-        assert_eq!(
-            err.to_string(),
-            "Bad request: resource type 'employee' is not supported yet"
-        );
-        assert_ne!(
-            err.to_string(),
-            "Bad request: unknown resource type 'employee'",
-            "employee must not be reported as merely unknown"
-        );
-        assert!(service.list_grants("t1", None, None, None).await.unwrap().is_empty());
+            .unwrap();
+        assert_eq!(grant.permission, "manage");
 
-        for resource_type in ["skill", "mcp", "knowledge", "model_channel"] {
+        assert_eq!(
             service
-                .grant_resource("t1", "member", "alice", resource_type, "res_1", "admin1")
+                .grant_resource("t1", "member", "alice", "employee", "emp_2", "admin", "admin1")
                 .await
-                .unwrap_or_else(|e| panic!("{resource_type} must still be grantable: {e}"));
-        }
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+
+        // Reachability-only types store 'use' even if a caller insists.
+        let skill = service
+            .grant_resource("t1", "member", "alice", "skill", "sk_1", "manage", "admin1")
+            .await
+            .unwrap();
+        assert_eq!(skill.permission, "use");
     }
 
     #[tokio::test]
     async fn revoke_resource_removes_it_and_404s_on_a_second_attempt() {
         let (_db, service) = setup().await;
         let grant = service
-            .grant_resource("t1", "member", "alice", "mcp", "mcp_1", "admin1")
+            .grant_resource("t1", "member", "alice", "mcp", "mcp_1", "use", "admin1")
             .await
             .unwrap();
 
@@ -3730,7 +3758,7 @@ mod tests {
     async fn revoke_resource_is_scoped_to_tenant() {
         let (_db, service) = setup().await;
         let grant = service
-            .grant_resource("t1", "member", "alice", "mcp", "mcp_1", "admin1")
+            .grant_resource("t1", "member", "alice", "mcp", "mcp_1", "use", "admin1")
             .await
             .unwrap();
         assert_eq!(
@@ -3746,7 +3774,7 @@ mod tests {
         let (db, service) = setup().await;
         seed_membership(db.pool(), "alice", "t1", "member").await;
         service
-            .grant_resource("t1", "member", "alice", "model_channel", "ch_1", "admin1")
+            .grant_resource("t1", "member", "alice", "model_channel", "ch_1", "use", "admin1")
             .await
             .unwrap();
 
@@ -3775,7 +3803,7 @@ mod tests {
 
         // Granted on the grandparent, not alice's own department.
         service
-            .grant_resource("t1", "department", "d_company", "skill", "sk_1", "admin1")
+            .grant_resource("t1", "department", "d_company", "skill", "sk_1", "use", "admin1")
             .await
             .unwrap();
 
@@ -3796,11 +3824,11 @@ mod tests {
         let (db, service) = setup().await;
         seed_membership(db.pool(), "alice", "t1", "member").await;
         service
-            .grant_resource("t1", "member", "alice", "skill", "sk_1", "admin1")
+            .grant_resource("t1", "member", "alice", "skill", "sk_1", "use", "admin1")
             .await
             .unwrap();
         service
-            .grant_resource("t1", "member", "alice", "skill", GRANT_ALL_RESOURCES, "admin1")
+            .grant_resource("t1", "member", "alice", "skill", GRANT_ALL_RESOURCES, "use", "admin1")
             .await
             .unwrap();
 
@@ -3932,7 +3960,7 @@ mod tests {
         seed_membership(db.pool(), "alice", "t1", "member").await;
         let scene = service.create_scene("t1", "Ops", None, &[]).await.unwrap();
         service
-            .grant_resource("t1", "scene", &scene.id, "mcp", "mcp_1", "admin1")
+            .grant_resource("t1", "scene", &scene.id, "mcp", "mcp_1", "use", "admin1")
             .await
             .unwrap();
 
@@ -3961,7 +3989,7 @@ mod tests {
         let scene = service.create_scene("t1", "Ops", None, &[]).await.unwrap();
         service.add_scene_member("t1", &scene.id, "alice").await.unwrap();
         service
-            .grant_resource("t1", "scene", &scene.id, "mcp", "mcp_1", "admin1")
+            .grant_resource("t1", "scene", &scene.id, "mcp", "mcp_1", "use", "admin1")
             .await
             .unwrap();
 
@@ -4150,12 +4178,19 @@ mod tests {
     async fn grant_mode_defaults_to_additive_for_every_type() {
         let (_db, service) = setup().await;
         for rt in GRANT_RESOURCE_TYPES {
-            assert_eq!(service.grant_mode("t1", rt).await, GrantMode::Additive);
+            // 'employee' is the one type whose untouched default is the
+            // whitelist it has always been.
+            let expected = if rt == "employee" { GrantMode::Restrictive } else { GrantMode::Additive };
+            assert_eq!(service.grant_mode("t1", rt).await, expected);
         }
         let listed = service.list_grant_modes("t1").await.unwrap();
-        assert_eq!(listed.len(), GRANT_RESOURCE_TYPES.len(), "all four are reported");
+        assert_eq!(listed.len(), GRANT_RESOURCE_TYPES.len(), "every type is reported");
         assert!(
-            listed.iter().all(|m| m.mode == "additive"),
+            listed.iter().all(|m| {
+                let expected =
+                    if m.resource_type == "employee" { GrantMode::Restrictive } else { GrantMode::Additive };
+                m.mode == expected.as_str()
+            }),
             "an untouched type is reported explicitly, not omitted"
         );
     }
@@ -4212,11 +4247,19 @@ mod tests {
 
         assert!(
             service
-                .set_grant_mode("t1", "employee", GrantMode::Restrictive, "admin1")
+                .set_grant_mode("t1", "spaceship", GrantMode::Restrictive, "admin1")
                 .await
                 .is_err(),
-            "employee is not one of the matrix types"
+            "unknown types are rejected"
         );
+        // 'employee' has no dial: a stored row is accepted for forward
+        // compatibility, but the mode stays Restrictive — the enforcement in
+        // dream-domain-employee never consults this table.
+        service
+            .set_grant_mode("t1", "employee", GrantMode::Additive, "admin1")
+            .await
+            .unwrap();
+        assert_eq!(service.grant_mode("t1", "employee").await, GrantMode::Restrictive);
     }
 
     /// A value this build does not recognise — a row from a newer version —
@@ -5097,7 +5140,7 @@ mod tests {
         let (db, service) = setup().await;
         seed_membership(db.pool(), "alice", "t1", "member").await;
         let grant = service
-            .grant_resource("t1", "member", "  alice  ", "skill", "  *  ", "admin1")
+            .grant_resource("t1", "member", "  alice  ", "skill", "  *  ", "use", "admin1")
             .await
             .unwrap();
         assert_eq!(grant.subject_id, "alice");

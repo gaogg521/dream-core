@@ -68,6 +68,9 @@ pub struct ResourceGrantDto {
     pub subject_id: String,
     pub resource_type: String,
     pub resource_id: String,
+    /// `'use' | 'manage'` — only employees distinguish them; every other
+    /// type stores the `'use`' default (reachability only).
+    pub permission: String,
     pub granted_by: String,
     pub created_at: i64,
 }

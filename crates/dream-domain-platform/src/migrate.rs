@@ -35,6 +35,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "011_resource_grant_modes",
         include_str!("../migrations/011_resource_grant_modes.sql"),
     ),
+    (
+        "012_employee_grant_unification",
+        include_str!("../migrations/012_employee_grant_unification.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -81,6 +85,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "011_resource_grant_modes",
         include_str!("../migrations_mysql/011_resource_grant_modes.sql"),
+    ),
+    (
+        "012_employee_grant_unification",
+        include_str!("../migrations_mysql/012_employee_grant_unification.sql"),
     ),
 ];
 
