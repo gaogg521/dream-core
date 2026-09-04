@@ -161,6 +161,7 @@ mod tests {
             company_admin_check,
             org_auto_join: None,
             directory_sink: None,
+            mfa: None,
         }
     }
 
