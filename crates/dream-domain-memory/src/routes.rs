@@ -51,7 +51,15 @@ pub fn one_memory_routes(state: OneMemoryRouterState) -> Router {
             "/api/one/memory/collections/{id}/items",
             get(member_list_items).post(member_add_item),
         )
+        .route(
+            "/api/one/memory/collections/{id}/items/{item_id}",
+            delete(member_delete_item),
+        )
         .route("/api/one/memory/search", get(member_search))
+        .route(
+            "/api/one/memory/preferences",
+            get(member_get_prefs).put(member_put_prefs),
+        )
         .with_state(state)
 }
 
@@ -320,6 +328,51 @@ async fn member_search(
                 query.collection_id.as_deref(),
                 query.limit.unwrap_or(50),
             )
+            .await?,
+    )))
+}
+
+/// Deleting follows the member deletion rights: the owner of a `personal`
+/// collection, the item's author, or an admin — the service is the arbiter.
+async fn member_delete_item(
+    State(state): State<OneMemoryRouterState>,
+    RequireMemoryMember(actor): RequireMemoryMember,
+    Extension(user): Extension<CurrentUser>,
+    Path((id, item_id)): Path<(String, String)>,
+) -> Result<Json<ApiResponse<()>>, MemoryError> {
+    state
+        .service
+        .delete_item(&actor.tenant_id, &user.id, &actor.role, &id, &item_id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn member_get_prefs(
+    State(state): State<OneMemoryRouterState>,
+    RequireMemoryMember(actor): RequireMemoryMember,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<crate::models::MemberMemoryPrefsDto>>, MemoryError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.member_prefs(&actor.tenant_id, &user.id).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PutMemberPrefsBody {
+    recall_enabled: bool,
+}
+
+async fn member_put_prefs(
+    State(state): State<OneMemoryRouterState>,
+    RequireMemoryMember(actor): RequireMemoryMember,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<PutMemberPrefsBody>,
+) -> Result<Json<ApiResponse<crate::models::MemberMemoryPrefsDto>>, MemoryError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .set_member_prefs(&actor.tenant_id, &user.id, body.recall_enabled)
             .await?,
     )))
 }

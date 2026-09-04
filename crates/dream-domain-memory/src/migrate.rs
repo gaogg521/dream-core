@@ -17,6 +17,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "002_memory_config",
         include_str!("../migrations/002_memory_config.sql"),
     ),
+    (
+        "003_member_memory",
+        include_str!("../migrations/003_member_memory.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -27,6 +31,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "002_memory_config",
         include_str!("../migrations_mysql/002_memory_config.sql"),
+    ),
+    (
+        "003_member_memory",
+        include_str!("../migrations_mysql/003_member_memory.sql"),
     ),
 ];
 
