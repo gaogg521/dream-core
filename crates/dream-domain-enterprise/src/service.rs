@@ -36,7 +36,8 @@ struct UpsertMemberInput<'a> {
 
 impl EnterpriseService {
     pub fn new(db: DbPool) -> Self {
-        Self { db,
+        Self {
+            db,
             session_revoker: std::sync::Arc::new(NoopSessionRevoker),
             disband_cascade: std::sync::Arc::new(NoopCompanyDisbandCascade),
         }
@@ -66,12 +67,7 @@ impl EnterpriseService {
 
     /// Runs `sqlite_sql` or `mysql_sql` by backend — the two dialects
     /// diverge on upsert syntax only; params are shared.
-    async fn upsert(
-        &self,
-        sqlite_sql: &str,
-        mysql_sql: &str,
-        params: &[DbValue],
-    ) -> Result<u64, EnterpriseError> {
+    async fn upsert(&self, sqlite_sql: &str, mysql_sql: &str, params: &[DbValue]) -> Result<u64, EnterpriseError> {
         let sql = match self.db.backend() {
             DbBackend::Sqlite => sqlite_sql,
             DbBackend::MySql => mysql_sql,
@@ -110,7 +106,21 @@ impl EnterpriseService {
         let external_id = external_id.trim();
         let now = now_ms() as i64;
 
-        let enterprise_id = if let Some(id) = self.manual_company_id().await? {
+        // `deployment_company_id`, not `manual_company_id`: this server hosts
+        // ONE company, and first-run bootstrap provisions it with
+        // `origin = 'bootstrap'` — which `manual_company_id` (origin =
+        // 'manual' only) does not see. That gap split a single IdP tenant
+        // across two company rows on every default deployment: the T6
+        // directory sync resolves its target with `deployment_company_id` and
+        // wrote 246 departments / 754 people into the bootstrap company, while
+        // this path fell through to `upsert_sso_company` and filed the humans
+        // who actually logged in under a second, empty one. Verified against a
+        // live Feishu tenant on 2026-09-04.
+        //
+        // The `upsert_sso_company` fallback stays for the deployment that has
+        // no company at all yet (bootstrap disabled / pre-bootstrap install),
+        // where binding to the IdP's tenant is the only identifier available.
+        let enterprise_id = if let Some(id) = self.deployment_company_id().await? {
             id
         } else if !external_id.is_empty() {
             self.upsert_sso_company(provider, external_id, now).await?
@@ -127,10 +137,12 @@ impl EnterpriseService {
         // "invited" card out of the Members tab now that they have a real one.
         let personal_external_id = personal_external_id.trim();
         if !personal_external_id.is_empty() {
-            self.db.execute(
-                "DELETE FROM one_enterprise_invites WHERE enterprise_id = ? AND provider = ? AND external_id = ?",
-            &db_params![&enterprise_id, provider, personal_external_id])
-            .await?;
+            self.db
+                .execute(
+                    "DELETE FROM one_enterprise_invites WHERE enterprise_id = ? AND provider = ? AND external_id = ?",
+                    &db_params![&enterprise_id, provider, personal_external_id],
+                )
+                .await?;
         }
         tracing::info!(
             user_id,
@@ -216,9 +228,13 @@ impl EnterpriseService {
     /// no separate "assign a seat" admin action, "log in again" is the only
     /// mechanism and it has to actually work.
     async fn resolve_seat_status(&self, user_id: &str, enterprise_id: &str) -> Result<&'static str, EnterpriseError> {
-        let existing: Option<(String, String)> =
-            self.db.fetch_optional_as::<(String, String)>("SELECT enterprise_id, seat_status FROM one_enterprise_members WHERE user_id = ?", &db_params![user_id])
-                .await?;
+        let existing: Option<(String, String)> = self
+            .db
+            .fetch_optional_as::<(String, String)>(
+                "SELECT enterprise_id, seat_status FROM one_enterprise_members WHERE user_id = ?",
+                &db_params![user_id],
+            )
+            .await?;
         if let Some((existing_enterprise, existing_status)) = existing
             && existing_enterprise == enterprise_id
             && existing_status == SEAT_STATUS_ACTIVE
@@ -275,10 +291,10 @@ impl EnterpriseService {
 
     /// The explicitly-set-up ("manual") company on this server, if any.
     async fn manual_company_id(&self) -> Result<Option<String>, EnterpriseError> {
-        Ok(
-            self.db.fetch_optional_scalar("SELECT id FROM one_enterprises WHERE origin = 'manual' LIMIT 1", &[])
-                .await?,
-        )
+        Ok(self
+            .db
+            .fetch_optional_scalar("SELECT id FROM one_enterprises WHERE origin = 'manual' LIMIT 1", &[])
+            .await?)
     }
 
     /// The single company this deployment hosts (explicit preferred, else the
@@ -291,26 +307,32 @@ impl EnterpriseService {
         if let Some(id) = self.manual_company_id().await? {
             return Ok(Some(id));
         }
-        Ok(
-            self.db.fetch_optional_scalar("SELECT id FROM one_enterprises ORDER BY created_at ASC LIMIT 1", &[])
-                .await?,
-        )
+        Ok(self
+            .db
+            .fetch_optional_scalar("SELECT id FROM one_enterprises ORDER BY created_at ASC LIMIT 1", &[])
+            .await?)
     }
 
     /// Find-or-create the SSO-derived company for `(provider, external_id)`.
     async fn upsert_sso_company(&self, provider: &str, external_id: &str, now: i64) -> Result<String, EnterpriseError> {
-        if let Some(id) =
-            self.db.fetch_optional_scalar::<String>("SELECT id FROM one_enterprises WHERE provider = ? AND external_id = ?", &db_params![provider, external_id])
-                .await?
+        if let Some(id) = self
+            .db
+            .fetch_optional_scalar::<String>(
+                "SELECT id FROM one_enterprises WHERE provider = ? AND external_id = ?",
+                &db_params![provider, external_id],
+            )
+            .await?
         {
             return Ok(id);
         }
         let id = uuid::Uuid::now_v7().simple().to_string();
-        self.db.execute(
-            "INSERT INTO one_enterprises (id, provider, external_id, display_name, origin, created_at, updated_at) \
+        self.db
+            .execute(
+                "INSERT INTO one_enterprises (id, provider, external_id, display_name, origin, created_at, updated_at) \
              VALUES (?, ?, ?, NULL, 'sso', ?, ?)",
-        &db_params![&id, provider, external_id, now, now])
-        .await?;
+                &db_params![&id, provider, external_id, now, now],
+            )
+            .await?;
         Ok(id)
     }
 
@@ -348,7 +370,17 @@ impl EnterpriseService {
                  display_name = new.display_name, department = new.department, \
                  job_title = new.job_title, seat_status = new.seat_status, \
                  updated_at = new.updated_at",
-        &db_params![user_id, enterprise_id, display_name, department, job_title, seat_status, now, now])
+            &db_params![
+                user_id,
+                enterprise_id,
+                display_name,
+                department,
+                job_title,
+                seat_status,
+                now,
+                now
+            ],
+        )
         .await?;
         Ok(())
     }
@@ -370,7 +402,8 @@ impl EnterpriseService {
              VALUES (?, ?, ?, ?, ?) AS new \
              ON DUPLICATE KEY UPDATE enterprise_id = new.enterprise_id, \
                  role = new.role, updated_at = new.updated_at",
-        &db_params![user_id, enterprise_id, role, now, now])
+            &db_params![user_id, enterprise_id, role, now, now],
+        )
         .await?;
         Ok(())
     }
@@ -384,12 +417,15 @@ impl EnterpriseService {
     /// multi-membership: role is scoped to the caller's *active* tenant (active
     /// membership first, else most-recently-joined).
     async fn caller_is_system_admin(&self, user_id: &str) -> Result<bool, EnterpriseError> {
-        let role: Option<String> = self.db.fetch_optional_scalar(
-            "SELECT uo.role FROM one_user_org uo WHERE uo.user_id = ? \
+        let role: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT uo.role FROM one_user_org uo WHERE uo.user_id = ? \
              ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC, \
                       uo.created_at DESC, uo.tenant_id ASC LIMIT 1",
-        &db_params![user_id])
-        .await?;
+                &db_params![user_id],
+            )
+            .await?;
         Ok(match role {
             Some(r) => r == ROLE_SYSTEM_ADMIN,
             None => user_id == SYSTEM_DEFAULT_USER_ID,
@@ -398,17 +434,23 @@ impl EnterpriseService {
 
     /// The company the caller belongs to (`one_enterprise_members.enterprise_id`).
     pub async fn company_of(&self, user_id: &str) -> Result<Option<String>, EnterpriseError> {
-        Ok(
-            self.db.fetch_optional_scalar("SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?", &db_params![user_id])
-                .await?,
-        )
+        Ok(self
+            .db
+            .fetch_optional_scalar(
+                "SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?",
+                &db_params![user_id],
+            )
+            .await?)
     }
 
     async fn member_role(&self, user_id: &str) -> Result<Option<String>, EnterpriseError> {
-        Ok(
-            self.db.fetch_optional_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ?", &db_params![user_id])
-                .await?,
-        )
+        Ok(self
+            .db
+            .fetch_optional_scalar(
+                "SELECT role FROM one_enterprise_members WHERE user_id = ?",
+                &db_params![user_id],
+            )
+            .await?)
     }
 
     /// Whether this deployment has a company set up at all (v1: at most one).
@@ -418,7 +460,9 @@ impl EnterpriseService {
     /// config, not any random project group's org_admin". Without this
     /// distinction the SSO admin gate could not tell those two cases apart.
     pub async fn company_exists(&self) -> Result<bool, EnterpriseError> {
-        let count: i64 = self.db.fetch_one_scalar("SELECT COUNT(*) FROM one_enterprises", &[])
+        let count: i64 = self
+            .db
+            .fetch_one_scalar("SELECT COUNT(*) FROM one_enterprises", &[])
             .await?;
         Ok(count > 0)
     }
@@ -436,9 +480,13 @@ impl EnterpriseService {
 
     /// True when the caller is an admin of the specific `enterprise_id`.
     pub async fn is_company_admin_of(&self, user_id: &str, enterprise_id: &str) -> Result<bool, EnterpriseError> {
-        let role: Option<String> =
-            self.db.fetch_optional_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?", &db_params![user_id, enterprise_id])
-                .await?;
+        let role: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT role FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?",
+                &db_params![user_id, enterprise_id],
+            )
+            .await?;
         Ok(role.as_deref().map(is_company_admin_role).unwrap_or(false))
     }
 
@@ -460,11 +508,16 @@ impl EnterpriseService {
             return Err(EnterpriseError::CompanyExists);
         }
         let now = now_ms() as i64;
-        let existing: Option<String> =
-            self.db.fetch_optional_scalar("SELECT id FROM one_enterprises ORDER BY created_at ASC LIMIT 1", &[])
-                .await?;
+        let existing: Option<String> = self
+            .db
+            .fetch_optional_scalar("SELECT id FROM one_enterprises ORDER BY created_at ASC LIMIT 1", &[])
+            .await?;
         let enterprise_id = if let Some(id) = existing {
-            self.db.execute("UPDATE one_enterprises SET display_name = ?, origin = 'manual', updated_at = ? WHERE id = ?", &db_params![name, now, &id])
+            self.db
+                .execute(
+                    "UPDATE one_enterprises SET display_name = ?, origin = 'manual', updated_at = ? WHERE id = ?",
+                    &db_params![name, now, &id],
+                )
                 .await?;
             id
         } else {
@@ -536,7 +589,11 @@ impl EnterpriseService {
             return Err(EnterpriseError::NameRequired);
         }
         let now = now_ms() as i64;
-        self.db.execute("UPDATE one_enterprises SET display_name = ?, updated_at = ? WHERE id = ?", &db_params![name, now, enterprise_id])
+        self.db
+            .execute(
+                "UPDATE one_enterprises SET display_name = ?, updated_at = ? WHERE id = ?",
+                &db_params![name, now, enterprise_id],
+            )
             .await?;
         tracing::info!(user_id, enterprise_id, "company renamed");
         self.company_overview(user_id)
@@ -554,15 +611,23 @@ impl EnterpriseService {
         let Some(company_id) = company_id else {
             return Ok(None);
         };
-        let row: Option<(Option<String>, String)> =
-            self.db.fetch_optional_as::<(Option<String>, String)>("SELECT display_name, origin FROM one_enterprises WHERE id = ?", &db_params![&company_id])
-                .await?;
+        let row: Option<(Option<String>, String)> = self
+            .db
+            .fetch_optional_as::<(Option<String>, String)>(
+                "SELECT display_name, origin FROM one_enterprises WHERE id = ?",
+                &db_params![&company_id],
+            )
+            .await?;
         let Some((name, origin)) = row else {
             return Ok(None);
         };
-        let member_count: i64 =
-            self.db.fetch_one_scalar("SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ?", &db_params![&company_id])
-                .await?;
+        let member_count: i64 = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ?",
+                &db_params![&company_id],
+            )
+            .await?;
         let viewer_role = self.member_role(user_id).await?;
         Ok(Some(CompanyOverviewDto {
             company_id,
@@ -576,12 +641,15 @@ impl EnterpriseService {
     /// All members of a company, for the admin console (LEFT JOIN upstream
     /// `users` for the login username).
     pub async fn list_members(&self, enterprise_id: &str) -> Result<Vec<CompanyMemberDto>, EnterpriseError> {
-        let rows = self.db.fetch_all_as(
-            "SELECT m.user_id, u.username, m.display_name, m.department, m.job_title, m.role, m.seat_status \
+        let rows = self
+            .db
+            .fetch_all_as(
+                "SELECT m.user_id, u.username, m.display_name, m.department, m.job_title, m.role, m.seat_status \
              FROM one_enterprise_members m LEFT JOIN users u ON u.id = m.user_id \
              WHERE m.enterprise_id = ? ORDER BY m.joined_at ASC",
-        &db_params![enterprise_id])
-        .await?;
+                &db_params![enterprise_id],
+            )
+            .await?;
         Ok(rows
             .into_iter()
             .map(
@@ -610,25 +678,35 @@ impl EnterpriseService {
         if role != ROLE_COMPANY_ADMIN && role != ROLE_COMPANY_MEMBER {
             return Err(EnterpriseError::InvalidRole(role.to_string()));
         }
-        let current: Option<String> =
-            self.db.fetch_optional_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?", &db_params![target_user_id, enterprise_id])
-                .await?;
+        let current: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT role FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?",
+                &db_params![target_user_id, enterprise_id],
+            )
+            .await?;
         let Some(current) = current else {
             return Err(EnterpriseError::MemberNotFound);
         };
         if is_company_admin_role(&current) && role != ROLE_COMPANY_ADMIN {
-            let admin_count: i64 =
-                self.db.fetch_one_scalar("SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND role = ?", &db_params![enterprise_id, ROLE_COMPANY_ADMIN])
-                    .await?;
+            let admin_count: i64 = self
+                .db
+                .fetch_one_scalar(
+                    "SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND role = ?",
+                    &db_params![enterprise_id, ROLE_COMPANY_ADMIN],
+                )
+                .await?;
             if admin_count <= 1 {
                 return Err(EnterpriseError::LastCompanyAdmin);
             }
         }
         let now = now_ms() as i64;
-        self.db.execute(
-            "UPDATE one_enterprise_members SET role = ?, updated_at = ? WHERE user_id = ? AND enterprise_id = ?",
-        &db_params![role, now, target_user_id, enterprise_id])
-        .await?;
+        self.db
+            .execute(
+                "UPDATE one_enterprise_members SET role = ?, updated_at = ? WHERE user_id = ? AND enterprise_id = ?",
+                &db_params![role, now, target_user_id, enterprise_id],
+            )
+            .await?;
         Ok(())
     }
 
@@ -683,23 +761,35 @@ impl EnterpriseService {
     /// member's sessions, guarded by the same "can't leave a company with
     /// zero admins" rule regardless of who initiated the departure.
     async fn release_member(&self, enterprise_id: &str, target_user_id: &str) -> Result<(), EnterpriseError> {
-        let current: Option<String> =
-            self.db.fetch_optional_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?", &db_params![target_user_id, enterprise_id])
-                .await?;
+        let current: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT role FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?",
+                &db_params![target_user_id, enterprise_id],
+            )
+            .await?;
         let Some(current) = current else {
             return Err(EnterpriseError::MemberNotFound);
         };
         // Same guard as demoting the last admin: a company with zero admins
         // can never be administered again.
         if is_company_admin_role(&current) {
-            let admin_count: i64 =
-                self.db.fetch_one_scalar("SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND role = ?", &db_params![enterprise_id, ROLE_COMPANY_ADMIN])
-                    .await?;
+            let admin_count: i64 = self
+                .db
+                .fetch_one_scalar(
+                    "SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND role = ?",
+                    &db_params![enterprise_id, ROLE_COMPANY_ADMIN],
+                )
+                .await?;
             if admin_count <= 1 {
                 return Err(EnterpriseError::LastCompanyAdmin);
             }
         }
-        self.db.execute("DELETE FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?", &db_params![target_user_id, enterprise_id])
+        self.db
+            .execute(
+                "DELETE FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?",
+                &db_params![target_user_id, enterprise_id],
+            )
             .await?;
         // After the delete, never before: a guard rejection above must not cost
         // somebody their session, and a revocation failure must not leave the
@@ -746,7 +836,18 @@ impl EnterpriseService {
              ON DUPLICATE KEY UPDATE \
                  id = new.id, display_name = new.display_name, department = new.department, \
                  job_title = new.job_title, created_by = new.created_by, created_at = new.created_at",
-        &db_params![&id, enterprise_id, provider, external_id, display_name, department, job_title, created_by, now])
+            &db_params![
+                &id,
+                enterprise_id,
+                provider,
+                external_id,
+                display_name,
+                department,
+                job_title,
+                created_by,
+                now
+            ],
+        )
         .await?;
         Ok(CompanyInviteDto {
             id,
@@ -760,11 +861,14 @@ impl EnterpriseService {
     }
 
     pub async fn list_invites(&self, enterprise_id: &str) -> Result<Vec<CompanyInviteDto>, EnterpriseError> {
-        let rows = self.db.fetch_all_as(
-            "SELECT id, provider, external_id, display_name, department, job_title, created_at \
+        let rows = self
+            .db
+            .fetch_all_as(
+                "SELECT id, provider, external_id, display_name, department, job_title, created_at \
              FROM one_enterprise_invites WHERE enterprise_id = ? ORDER BY created_at DESC",
-        &db_params![enterprise_id])
-        .await?;
+                &db_params![enterprise_id],
+            )
+            .await?;
         Ok(rows
             .into_iter()
             .map(
@@ -784,7 +888,10 @@ impl EnterpriseService {
     pub async fn revoke_invite(&self, enterprise_id: &str, invite_id: &str) -> Result<(), EnterpriseError> {
         let rows = self
             .db
-            .execute("DELETE FROM one_enterprise_invites WHERE id = ? AND enterprise_id = ?", &db_params![invite_id, enterprise_id])
+            .execute(
+                "DELETE FROM one_enterprise_invites WHERE id = ? AND enterprise_id = ?",
+                &db_params![invite_id, enterprise_id],
+            )
             .await?;
         if rows == 0 {
             return Err(EnterpriseError::InviteNotFound);
@@ -817,18 +924,27 @@ impl EnterpriseService {
                 "only a company admin can disband the company".into(),
             ));
         }
-        let member_ids: Vec<String> =
-            self.db.fetch_all_scalar("SELECT user_id FROM one_enterprise_members WHERE enterprise_id = ?", &db_params![enterprise_id])
-                .await?;
+        let member_ids: Vec<String> = self
+            .db
+            .fetch_all_scalar(
+                "SELECT user_id FROM one_enterprise_members WHERE enterprise_id = ?",
+                &db_params![enterprise_id],
+            )
+            .await?;
 
         // one-org (project groups) + one-billing (usage/license history)
         // cleanup first: if either fails partway, the company record — and
         // this member's own admin access to retry — stays in place.
         let deleted_project_groups = self.disband_cascade.disband(enterprise_id).await;
 
-        self.db.execute("DELETE FROM one_enterprise_members WHERE enterprise_id = ?", &db_params![enterprise_id])
+        self.db
+            .execute(
+                "DELETE FROM one_enterprise_members WHERE enterprise_id = ?",
+                &db_params![enterprise_id],
+            )
             .await?;
-        self.db.execute("DELETE FROM one_enterprises WHERE id = ?", &db_params![enterprise_id])
+        self.db
+            .execute("DELETE FROM one_enterprises WHERE id = ?", &db_params![enterprise_id])
             .await?;
 
         for member_id in &member_ids {
@@ -852,13 +968,16 @@ impl EnterpriseService {
     /// enterprise membership (local/LDAP account, or hasn't logged in via an
     /// SSO company since this feature landed).
     pub async fn identity_of(&self, user_id: &str) -> Result<Option<EnterpriseIdentityDto>, EnterpriseError> {
-        let row = self.db.fetch_optional_as(
-            "SELECT e.provider, e.external_id, e.display_name, m.display_name, m.department, m.job_title, m.role \
+        let row = self
+            .db
+            .fetch_optional_as(
+                "SELECT e.provider, e.external_id, e.display_name, m.display_name, m.department, m.job_title, m.role \
              FROM one_enterprise_members m \
              JOIN one_enterprises e ON e.id = m.enterprise_id \
              WHERE m.user_id = ?",
-        &db_params![user_id])
-        .await?;
+                &db_params![user_id],
+            )
+            .await?;
         Ok(row.map(
             |(provider, company_id, company_name, display_name, department, job_title, role)| EnterpriseIdentityDto {
                 provider,
@@ -1237,7 +1356,9 @@ mod tests {
     // init_database_memory). Mirrors the real multi-crate DB.
     async fn service_with_governance() -> (EnterpriseService, sqlx::SqlitePool) {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
         sqlx::query(
             "CREATE TABLE one_user_org (user_id TEXT, tenant_id TEXT, role TEXT NOT NULL DEFAULT 'member', \
              created_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, tenant_id))",
@@ -1326,7 +1447,10 @@ mod tests {
     #[tokio::test]
     async fn ensure_deployment_company_creates_bootstrap_company_and_admin() {
         let (svc, sqlite) = service_with_governance().await;
-        let ent = svc.ensure_deployment_company("system_default_user", "BootCo").await.unwrap();
+        let ent = svc
+            .ensure_deployment_company("system_default_user", "BootCo")
+            .await
+            .unwrap();
 
         let origin: String = sqlx::query_scalar("SELECT origin FROM one_enterprises WHERE id = ?")
             .bind(&ent)
@@ -1335,7 +1459,10 @@ mod tests {
             .unwrap();
         assert_eq!(origin, "bootstrap");
         assert!(svc.is_company_admin("system_default_user").await.unwrap());
-        assert_eq!(svc.deployment_company_id().await.unwrap().as_deref(), Some(ent.as_str()));
+        assert_eq!(
+            svc.deployment_company_id().await.unwrap().as_deref(),
+            Some(ent.as_str())
+        );
         // origin != 'manual' → "设立企业" is still available.
         assert!(svc.manual_company_id().await.unwrap().is_none());
     }
@@ -1351,9 +1478,15 @@ mod tests {
         .await
         .unwrap();
 
-        let ent = svc.ensure_deployment_company("system_default_user", "BootCo").await.unwrap();
+        let ent = svc
+            .ensure_deployment_company("system_default_user", "BootCo")
+            .await
+            .unwrap();
         assert_eq!(ent, "sso-1");
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprises").fetch_one(&sqlite).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprises")
+            .fetch_one(&sqlite)
+            .await
+            .unwrap();
         assert_eq!(count, 1);
         assert!(svc.is_company_admin("system_default_user").await.unwrap());
     }
@@ -1361,20 +1494,32 @@ mod tests {
     #[tokio::test]
     async fn ensure_deployment_company_is_idempotent() {
         let (svc, sqlite) = service_with_governance().await;
-        let first = svc.ensure_deployment_company("system_default_user", "BootCo").await.unwrap();
-        let second = svc.ensure_deployment_company("system_default_user", "BootCo").await.unwrap();
+        let first = svc
+            .ensure_deployment_company("system_default_user", "BootCo")
+            .await
+            .unwrap();
+        let second = svc
+            .ensure_deployment_company("system_default_user", "BootCo")
+            .await
+            .unwrap();
         assert_eq!(first, second);
-        let companies: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprises").fetch_one(&sqlite).await.unwrap();
-        let members: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprise_members").fetch_one(&sqlite).await.unwrap();
+        let companies: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprises")
+            .fetch_one(&sqlite)
+            .await
+            .unwrap();
+        let members: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprise_members")
+            .fetch_one(&sqlite)
+            .await
+            .unwrap();
         assert_eq!((companies, members), (1, 1));
     }
 
     #[tokio::test]
     async fn setup_company_adopts_a_bootstrap_company() {
         let (svc, sqlite) = service_with_governance().await;
-        svc.ensure_deployment_company("system_default_user", "BootCo").await.unwrap();
+        svc.ensure_deployment_company("system_default_user", "BootCo")
+            .await
+            .unwrap();
 
         // "设立企业" still works: it renames + claims the pre-provisioned company.
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
@@ -1383,7 +1528,10 @@ mod tests {
         assert_eq!(overview.member_count, 1);
         assert_eq!(overview.viewer_role.as_deref(), Some("admin"));
 
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprises").fetch_one(&sqlite).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprises")
+            .fetch_one(&sqlite)
+            .await
+            .unwrap();
         assert_eq!(count, 1);
     }
 
@@ -1434,8 +1582,11 @@ mod tests {
     async fn removing_a_company_member_cuts_off_their_access() {
         let revoker = std::sync::Arc::new(RecordingRevoker::default());
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let svc = EnterpriseService::new(dream_core_db::DbPool::Sqlite(db.pool().clone())).with_session_revoker(revoker.clone());
+        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
+        let svc = EnterpriseService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()))
+            .with_session_revoker(revoker.clone());
 
         svc.sync_member("u1", "feishu", "co", "", None, None, None)
             .await
@@ -1458,8 +1609,11 @@ mod tests {
     async fn a_rejected_removal_revokes_nothing() {
         let revoker = std::sync::Arc::new(RecordingRevoker::default());
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let svc = EnterpriseService::new(dream_core_db::DbPool::Sqlite(db.pool().clone())).with_session_revoker(revoker.clone());
+        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
+        let svc = EnterpriseService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()))
+            .with_session_revoker(revoker.clone());
 
         svc.sync_member("u1", "feishu", "co", "", None, None, None)
             .await
@@ -1484,8 +1638,11 @@ mod tests {
     async fn leave_company_releases_the_members_own_seat() {
         let revoker = std::sync::Arc::new(RecordingRevoker::default());
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        let svc = EnterpriseService::new(dream_core_db::DbPool::Sqlite(db.pool().clone())).with_session_revoker(revoker.clone());
+        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
+        let svc = EnterpriseService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()))
+            .with_session_revoker(revoker.clone());
 
         svc.sync_member("u1", "feishu", "co", "", None, None, None)
             .await
@@ -1511,7 +1668,9 @@ mod tests {
     #[tokio::test]
     async fn leave_company_refuses_the_last_admin() {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
         let svc = EnterpriseService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()));
 
         svc.sync_member("u1", "feishu", "co", "", None, None, None)
@@ -1551,7 +1710,9 @@ mod tests {
         let revoker = std::sync::Arc::new(RecordingRevoker::default());
         let cascade = std::sync::Arc::new(RecordingDisbandCascade::default());
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
         sqlx::query(
             "CREATE TABLE one_user_org (user_id TEXT, tenant_id TEXT, role TEXT NOT NULL DEFAULT 'member', \
              created_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, tenant_id))",

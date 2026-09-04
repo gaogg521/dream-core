@@ -16,7 +16,7 @@ use serde::Serialize;
 use dream_core_auth::{generate_random_secret_string, hash_password, verify_password};
 use dream_core_common::license::{Feature, Tier, tier_allows};
 use dream_core_common::{decrypt_string, encrypt_string, now_ms};
-use dream_core_db::{DbBackend, DbPool, DbValue, db_params, IConversationRepository, IUserRepository};
+use dream_core_db::{DbBackend, DbPool, DbValue, IConversationRepository, IUserRepository, db_params};
 
 use crate::credential_revoker::{CredentialRevoker, NoopCredentialRevoker};
 use crate::directory_bridge::DirectoryDepartmentRef;
@@ -27,8 +27,8 @@ use crate::models::{
     AdminUserDto, AgentAuditEntry, AuditLogRow, DEFAULT_ENTERPRISE_TENANT_ID, DEFAULT_TENANT_ID, DepartmentDto,
     DirectoryMapReport, EnterpriseTenantDto, HeartbeatOutcome, IntegrationDto, InviteDto, InviteRow, MyTenantDto,
     OrgContextDto, ROLE_MEMBER, ROLE_ORG_ADMIN, ROLE_SYSTEM_ADMIN, ResetLocalResult, RuntimeNodeDto, RuntimeNodeRow,
-    SYSTEM_DEFAULT_USER_ID, SmtpConfigDto, TenantRow, UserOrgRow, is_admin_role, is_enterprise_tenant_id,
-    is_system_admin_role,
+    SYSTEM_DEFAULT_USER_ID, SmtpConfigDto, SsoAutoJoinOutcome, TenantRow, UserOrgRow, is_admin_role,
+    is_enterprise_tenant_id, is_system_admin_role,
 };
 use crate::node_review::NodeReviewSink;
 
@@ -192,26 +192,37 @@ impl OrgService {
         // Preferred: the explicit active-tenant pointer, but only when it still
         // points at a group the user actually belongs to (the JOIN drops a
         // pointer left dangling by a `leave`).
-        let active: Option<String> = self.db.fetch_optional_scalar(
-            "SELECT at.tenant_id FROM one_active_tenant at \
+        let active: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT at.tenant_id FROM one_active_tenant at \
              JOIN one_user_org uo ON uo.user_id = at.user_id AND uo.tenant_id = at.tenant_id \
              WHERE at.user_id = ?",
-        &db_params![user_id])
-        .await?;
+                &db_params![user_id],
+            )
+            .await?;
         if let Some(tenant_id) = active {
             return Ok(tenant_id);
         }
         // Fallback: any membership, most-recently-joined first.
-        let any: Option<String> = self.db.fetch_optional_scalar(
-            "SELECT tenant_id FROM one_user_org WHERE user_id = ? ORDER BY created_at DESC, tenant_id ASC LIMIT 1",
-        &db_params![user_id])
-        .await?;
+        let any: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT tenant_id FROM one_user_org WHERE user_id = ? ORDER BY created_at DESC, tenant_id ASC LIMIT 1",
+                &db_params![user_id],
+            )
+            .await?;
         Ok(any.unwrap_or_else(|| DEFAULT_TENANT_ID.to_string()))
     }
 
     /// The user's membership row in a specific tenant, if any.
     async fn membership_row(&self, user_id: &str, tenant_id: &str) -> Result<Option<UserOrgRow>, OrgError> {
-        let row = self.db.fetch_optional_as::<UserOrgRow>("SELECT * FROM one_user_org WHERE user_id = ? AND tenant_id = ?", &db_params![user_id, tenant_id])
+        let row = self
+            .db
+            .fetch_optional_as::<UserOrgRow>(
+                "SELECT * FROM one_user_org WHERE user_id = ? AND tenant_id = ?",
+                &db_params![user_id, tenant_id],
+            )
             .await?;
         Ok(row)
     }
@@ -272,9 +283,13 @@ impl OrgService {
     /// re-resolves tenant/role server-side, so a switch takes effect on the
     /// next request without re-authentication.
     pub async fn set_active_tenant(&self, user_id: &str, tenant_id: &str) -> Result<(), OrgError> {
-        let is_member: bool =
-            self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_user_org WHERE user_id = ? AND tenant_id = ?", &db_params![user_id, tenant_id])
-                .await?;
+        let is_member: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_user_org WHERE user_id = ? AND tenant_id = ?",
+                &db_params![user_id, tenant_id],
+            )
+            .await?;
         if !is_member {
             return Err(OrgError::NotInEnterprise);
         }
@@ -312,7 +327,9 @@ impl OrgService {
     }
 
     async fn get_tenant(&self, tenant_id: &str) -> Result<Option<TenantRow>, OrgError> {
-        let row = self.db.fetch_optional_as::<TenantRow>("SELECT * FROM one_tenants WHERE id = ?", &db_params![tenant_id])
+        let row = self
+            .db
+            .fetch_optional_as::<TenantRow>("SELECT * FROM one_tenants WHERE id = ?", &db_params![tenant_id])
             .await?;
         Ok(row)
     }
@@ -337,7 +354,9 @@ impl OrgService {
     // --- invites ---
 
     async fn find_active_invite_by_code(&self, code: &str) -> Result<Option<InviteRow>, OrgError> {
-        let row = self.db.fetch_optional_as::<InviteRow>("SELECT * FROM one_tenant_invites WHERE code = ?", &db_params![code])
+        let row = self
+            .db
+            .fetch_optional_as::<InviteRow>("SELECT * FROM one_tenant_invites WHERE code = ?", &db_params![code])
             .await?;
         Ok(row.filter(|invite| invite.is_active(now_ms() as i64)))
     }
@@ -369,7 +388,12 @@ impl OrgService {
         let now = now_ms() as i64;
         let mut code = generate_invite_code();
         for _ in 0..5 {
-            let exists: bool = self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_tenant_invites WHERE code = ?", &db_params![&code])
+            let exists: bool = self
+                .db
+                .fetch_one_scalar(
+                    "SELECT COUNT(*) > 0 FROM one_tenant_invites WHERE code = ?",
+                    &db_params![&code],
+                )
                 .await?;
             if !exists {
                 break;
@@ -382,14 +406,18 @@ impl OrgService {
             .map(|days| now + days * 24 * 60 * 60 * 1000);
         let id = short_id("inv");
 
-        self.db.execute(
-            "INSERT INTO one_tenant_invites \
+        self.db
+            .execute(
+                "INSERT INTO one_tenant_invites \
              (id, tenant_id, code, created_by, max_uses, use_count, expires_at, created_at, revoked) \
              VALUES (?, ?, ?, ?, ?, 0, ?, ?, 0)",
-        &db_params![&id, tenant_id, &code, created_by, max_uses, expires_at, now])
-        .await?;
+                &db_params![&id, tenant_id, &code, created_by, max_uses, expires_at, now],
+            )
+            .await?;
 
-        let row = self.db.fetch_one_as::<InviteRow>("SELECT * FROM one_tenant_invites WHERE id = ?", &db_params![&id])
+        let row = self
+            .db
+            .fetch_one_as::<InviteRow>("SELECT * FROM one_tenant_invites WHERE id = ?", &db_params![&id])
             .await?;
         let display = format_invite_code_for_display(&code);
         Ok((row.into(), display))
@@ -423,15 +451,23 @@ impl OrgService {
     }
 
     pub async fn list_invites(&self, tenant_id: &str) -> Result<Vec<InviteDto>, OrgError> {
-        let rows = self.db.fetch_all_as::<InviteRow>(
-            "SELECT * FROM one_tenant_invites WHERE tenant_id = ? ORDER BY created_at DESC",
-        &db_params![tenant_id])
-        .await?;
+        let rows = self
+            .db
+            .fetch_all_as::<InviteRow>(
+                "SELECT * FROM one_tenant_invites WHERE tenant_id = ? ORDER BY created_at DESC",
+                &db_params![tenant_id],
+            )
+            .await?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
     pub async fn revoke_invite(&self, tenant_id: &str, invite_id: &str) -> Result<(), OrgError> {
-        let result = self.db.execute("UPDATE one_tenant_invites SET revoked = 1 WHERE id = ? AND tenant_id = ?", &db_params![invite_id, tenant_id])
+        let result = self
+            .db
+            .execute(
+                "UPDATE one_tenant_invites SET revoked = 1 WHERE id = ? AND tenant_id = ?",
+                &db_params![invite_id, tenant_id],
+            )
             .await?;
         if result == 0 {
             return Err(OrgError::InvalidCode);
@@ -456,9 +492,13 @@ impl OrgService {
         // groups, so joining is only rejected when they are already in *this*
         // group (idempotency guard that also avoids burning an invite use).
         // The old "already in any enterprise" gate is gone.
-        let already_member: bool =
-            self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_user_org WHERE user_id = ? AND tenant_id = ?", &db_params![user_id, &invite.tenant_id])
-                .await?;
+        let already_member: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_user_org WHERE user_id = ? AND tenant_id = ?",
+                &db_params![user_id, &invite.tenant_id],
+            )
+            .await?;
         if already_member {
             return Err(OrgError::AlreadyInEnterprise);
         }
@@ -484,13 +524,15 @@ impl OrgService {
         // `rows_affected() == 0` means this request lost the race (someone
         // else's concurrent join just exhausted it), so it fails exactly
         // like an invite that was already inactive when read.
-        let claimed = tx.execute(
-            "UPDATE one_tenant_invites SET use_count = use_count + 1 \
+        let claimed = tx
+            .execute(
+                "UPDATE one_tenant_invites SET use_count = use_count + 1 \
              WHERE id = ? AND revoked = 0 \
                AND (expires_at IS NULL OR expires_at >= ?) \
                AND (max_uses IS NULL OR use_count < max_uses)",
-        &db_params![&invite.id, now])
-        .await?;
+                &db_params![&invite.id, now],
+            )
+            .await?;
         if claimed == 0 {
             return Err(OrgError::InvalidCode);
         }
@@ -518,7 +560,19 @@ impl OrgService {
         };
         tx.execute(
             user_org_sql,
-        &db_params![user_id, &invite.tenant_id, ROLE_MEMBER, &display_name, &org_unit_path, &job_title, &org_profile_source, org_profile_synced_at, now, now])
+            &db_params![
+                user_id,
+                &invite.tenant_id,
+                ROLE_MEMBER,
+                &display_name,
+                &org_unit_path,
+                &job_title,
+                &org_profile_source,
+                org_profile_synced_at,
+                now,
+                now
+            ],
+        )
         .await?;
         // The group just joined becomes the active one.
         let active_tenant_sql = match tx.backend() {
@@ -531,10 +585,8 @@ impl OrgService {
                  ON DUPLICATE KEY UPDATE tenant_id = new.tenant_id, updated_at = new.updated_at"
             }
         };
-        tx.execute(
-            active_tenant_sql,
-        &db_params![user_id, &invite.tenant_id, now])
-        .await?;
+        tx.execute(active_tenant_sql, &db_params![user_id, &invite.tenant_id, now])
+            .await?;
         tx.commit().await?;
 
         self.invalidate_user_tokens(user_id).await?;
@@ -569,7 +621,12 @@ impl OrgService {
         } else {
             Some(serde_json::to_string(&cleaned).unwrap_or_else(|_| "[]".to_owned()))
         };
-        let updated = self.db.execute("UPDATE one_tenants SET allowed_email_domains = ? WHERE id = ?", &db_params![json, tenant_id])
+        let updated = self
+            .db
+            .execute(
+                "UPDATE one_tenants SET allowed_email_domains = ? WHERE id = ?",
+                &db_params![json, tenant_id],
+            )
             .await?;
         if updated == 0 {
             return Err(OrgError::TenantNotFound);
@@ -578,7 +635,12 @@ impl OrgService {
     }
 
     pub async fn tenant_allowed_domains(&self, tenant_id: &str) -> Result<Vec<String>, OrgError> {
-        let json: Option<String> = self.db.fetch_optional_scalar("SELECT allowed_email_domains FROM one_tenants WHERE id = ?", &db_params![tenant_id])
+        let json: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT allowed_email_domains FROM one_tenants WHERE id = ?",
+                &db_params![tenant_id],
+            )
             .await?
             .flatten();
         Ok(json
@@ -599,9 +661,13 @@ impl OrgService {
         };
         let domain = domain.to_ascii_lowercase();
 
-        let rows: Vec<(String, Option<String>)> =
-            self.db.fetch_all_as::<(String, Option<String>)>("SELECT id, allowed_email_domains FROM one_tenants WHERE allowed_email_domains IS NOT NULL", &[])
-                .await?;
+        let rows: Vec<(String, Option<String>)> = self
+            .db
+            .fetch_all_as::<(String, Option<String>)>(
+                "SELECT id, allowed_email_domains FROM one_tenants WHERE allowed_email_domains IS NOT NULL",
+                &[],
+            )
+            .await?;
         let target_tenant = rows.into_iter().find_map(|(tenant_id, domains_json)| {
             let domains: Vec<String> = domains_json
                 .as_deref()
@@ -616,9 +682,13 @@ impl OrgService {
             return Ok(None);
         };
 
-        let already_member: bool =
-            self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_user_org WHERE user_id = ? AND tenant_id = ?", &db_params![user_id, &tenant_id])
-                .await?;
+        let already_member: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_user_org WHERE user_id = ? AND tenant_id = ?",
+                &db_params![user_id, &tenant_id],
+            )
+            .await?;
         if already_member {
             return Ok(None);
         }
@@ -635,10 +705,8 @@ impl OrgService {
                  ON DUPLICATE KEY UPDATE updated_at = new.updated_at"
             }
         };
-        tx.execute(
-            user_org_sql,
-        &db_params![user_id, &tenant_id, ROLE_MEMBER, now, now])
-        .await?;
+        tx.execute(user_org_sql, &db_params![user_id, &tenant_id, ROLE_MEMBER, now, now])
+            .await?;
         let active_tenant_sql = match tx.backend() {
             DbBackend::Sqlite => {
                 "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) \
@@ -649,10 +717,8 @@ impl OrgService {
                  ON DUPLICATE KEY UPDATE tenant_id = new.tenant_id, updated_at = new.updated_at"
             }
         };
-        tx.execute(
-            active_tenant_sql,
-        &db_params![user_id, &tenant_id, now])
-        .await?;
+        tx.execute(active_tenant_sql, &db_params![user_id, &tenant_id, now])
+            .await?;
         tx.commit().await?;
 
         self.invalidate_user_tokens(user_id).await?;
@@ -667,6 +733,197 @@ impl OrgService {
         )
         .await;
         Ok(Some(tenant_id))
+    }
+
+    /// Place a freshly SSO-authenticated user into a project group, so the
+    /// enterprise's capabilities and policies actually reach them.
+    ///
+    /// **Why this exists.** Every tenant-scoped capability and policy
+    /// (`one_security_policy`, `one_resource_grants`, memory, employees, model
+    /// channels) is resolved through `PlatformService::resolve_actor`, which
+    /// reads exactly one table: `one_user_org`. Before this, SSO login wrote a
+    /// `users` row and an `one_sso_identities` row but never a `one_user_org`
+    /// one — so an SSO user landed in a deployment they had correctly
+    /// authenticated against with `isEnterprise: false`, governed by nothing,
+    /// and invisible in the admin roster. `auto_join_by_email` did not cover
+    /// them either: it keys off an '@' in the display name, which Feishu /
+    /// DingTalk / WeCom / LDAP never produce.
+    ///
+    /// **Placement.** `department_external_id` is the person's primary
+    /// department in the company directory mirror. We walk it and its
+    /// ancestors upward through `all_departments`, looking for the first node
+    /// some project group has already mapped in (`one_departments.
+    /// directory_external_id`, written by `map_directory_subtree`). Walking
+    /// upward — not just the exact node — is what makes mapping a single top
+    /// branch enough to place everyone beneath it, which is how an admin
+    /// actually uses the subtree picker.
+    ///
+    /// **Fallback.** No directory match (LDAP, an unmapped branch, a directory
+    /// that has never synced) joins the deployment's root project group with
+    /// no department. That is deliberately not "do nothing": leaving them
+    /// tenant-less is what produced the fail-open hole above, and an admin can
+    /// see and re-file a member who is in the roster. `org_unit_path` is still
+    /// recorded from whatever the IdP gave us (LDAP derives one from the DN),
+    /// so the department is visible even when it is not yet a mapped node.
+    ///
+    /// Best-effort, like `auto_join_by_email`: designed for the SSO login hook
+    /// and must never fail a login. Idempotent — already being in any project
+    /// group returns `None` and touches nothing, so a returning user is never
+    /// re-filed and an admin's manual placement is never overwritten.
+    pub async fn auto_join_after_sso(
+        &self,
+        user_id: &str,
+        department_external_id: Option<&str>,
+        org_unit_path: Option<&str>,
+        all_departments: &[DirectoryDepartmentRef],
+    ) -> Result<Option<SsoAutoJoinOutcome>, OrgError> {
+        // Idempotence, and the "never re-file" guarantee: membership in ANY
+        // group means onboarding already happened (by invite, by an earlier
+        // login, or by an admin) and this hook has nothing to add.
+        let already_member: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_user_org WHERE user_id = ?",
+                &db_params![user_id],
+            )
+            .await?;
+        if already_member {
+            return Ok(None);
+        }
+
+        let placement = match department_external_id.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(dept) => self.resolve_mapped_department(dept, all_departments).await?,
+            None => None,
+        };
+        let (tenant_id, department_id) = match placement {
+            Some((tenant_id, department_id)) => (tenant_id, Some(department_id)),
+            None => match self.root_enterprise_tenant_id().await? {
+                // No enterprise root either → personal-edition shaped
+                // deployment. Authenticate only, exactly as before.
+                None => return Ok(None),
+                Some(root) => (root, None),
+            },
+        };
+
+        let now = now_ms() as i64;
+        let mut tx = self.db.begin().await?;
+        let user_org_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO one_user_org (user_id, tenant_id, role, org_unit_path, department_id, org_profile_source, org_profile_synced_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, 'sso', ?, ?, ?) \
+                 ON CONFLICT(user_id, tenant_id) DO UPDATE SET updated_at = excluded.updated_at"
+            }
+            DbBackend::MySql => {
+                "INSERT INTO one_user_org (user_id, tenant_id, role, org_unit_path, department_id, org_profile_source, org_profile_synced_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, 'sso', ?, ?, ?) AS new \
+                 ON DUPLICATE KEY UPDATE updated_at = new.updated_at"
+            }
+        };
+        tx.execute(
+            user_org_sql,
+            &db_params![
+                user_id,
+                &tenant_id,
+                ROLE_MEMBER,
+                org_unit_path,
+                department_id.as_deref(),
+                now,
+                now,
+                now
+            ],
+        )
+        .await?;
+        let active_tenant_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) \
+                 ON CONFLICT(user_id) DO UPDATE SET tenant_id = excluded.tenant_id, updated_at = excluded.updated_at"
+            }
+            DbBackend::MySql => {
+                "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) AS new \
+                 ON DUPLICATE KEY UPDATE tenant_id = new.tenant_id, updated_at = new.updated_at"
+            }
+        };
+        tx.execute(active_tenant_sql, &db_params![user_id, &tenant_id, now])
+            .await?;
+        tx.commit().await?;
+
+        // The session was minted before this row existed, so its cached
+        // membership is now stale — same reason `auto_join_by_email` does it.
+        self.invalidate_user_tokens(user_id).await?;
+        let username = self.lookup_username(user_id).await;
+        self.audit(
+            &tenant_id,
+            Some(user_id),
+            username.as_deref(),
+            "org.auto_join_sso",
+            None,
+            None,
+        )
+        .await;
+
+        // The caller drives `CompanySeatSync` with this, exactly as the invite
+        // route does — a project-group join under a company must issue a seat.
+        let enterprise_id: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT enterprise_id FROM one_tenants WHERE id = ?",
+                &db_params![&tenant_id],
+            )
+            .await?;
+        Ok(Some(SsoAutoJoinOutcome {
+            tenant_id,
+            department_id,
+            enterprise_id,
+        }))
+    }
+
+    /// Walk `department_external_id` and its ancestors upward, returning the
+    /// first `(tenant_id, local_department_id)` some project group has mapped
+    /// in. Cycle-safe: a malformed mirror with a parent loop would otherwise
+    /// spin here forever, and this runs on the login path.
+    async fn resolve_mapped_department(
+        &self,
+        department_external_id: &str,
+        all_departments: &[DirectoryDepartmentRef],
+    ) -> Result<Option<(String, String)>, OrgError> {
+        let mut current = Some(department_external_id.to_owned());
+        let mut seen = std::collections::HashSet::new();
+        while let Some(ext) = current {
+            if !seen.insert(ext.clone()) {
+                break;
+            }
+            if let Some((tenant_id, department_id)) = self
+                .db
+                .fetch_optional_as::<(String, String)>(
+                    "SELECT tenant_id, id FROM one_departments \
+                     WHERE directory_external_id = ? AND source = 'directory' \
+                     ORDER BY tenant_id ASC LIMIT 1",
+                    &db_params![&ext],
+                )
+                .await?
+            {
+                return Ok(Some((tenant_id, department_id)));
+            }
+            current = all_departments
+                .iter()
+                .find(|d| d.external_id == ext)
+                .and_then(|d| d.parent_external_id.clone());
+        }
+        Ok(None)
+    }
+
+    /// The deployment's root project group — the one first-run bootstrap
+    /// provisions (`bootstrap_enterprise_root_tenant`). Oldest enterprise
+    /// tenant wins, matching `EnterpriseService::deployment_company_id`'s
+    /// "one server = one company" rule on the other side of the seam.
+    async fn root_enterprise_tenant_id(&self) -> Result<Option<String>, OrgError> {
+        Ok(self
+            .db
+            .fetch_optional_scalar(
+                "SELECT id FROM one_tenants WHERE id <> ? ORDER BY created_at ASC, id ASC LIMIT 1",
+                &db_params![DEFAULT_TENANT_ID],
+            )
+            .await?)
     }
 
     // --- SMTP config + invite email (P2-4 onboarding) ---
@@ -687,11 +944,14 @@ impl OrgService {
             bool,
             i64,
         );
-        let row: Option<SmtpConfigRow> = self.db.fetch_optional_as::<SmtpConfigRow>(
-            "SELECT host, port, username, password_encrypted, from_address, enabled, updated_at \
+        let row: Option<SmtpConfigRow> = self
+            .db
+            .fetch_optional_as::<SmtpConfigRow>(
+                "SELECT host, port, username, password_encrypted, from_address, enabled, updated_at \
              FROM one_smtp_config WHERE id = 1",
-        &[])
-        .await?;
+                &[],
+            )
+            .await?;
         Ok(match row {
             Some((host, port, username, password_encrypted, from_address, enabled, updated_at)) => SmtpConfigDto {
                 host,
@@ -726,10 +986,11 @@ impl OrgService {
         from_address: &str,
         enabled: bool,
     ) -> Result<SmtpConfigDto, OrgError> {
-        let existing_password: Option<String> =
-            self.db.fetch_optional_scalar("SELECT password_encrypted FROM one_smtp_config WHERE id = 1", &[])
-                .await?
-                .flatten();
+        let existing_password: Option<String> = self
+            .db
+            .fetch_optional_scalar("SELECT password_encrypted FROM one_smtp_config WHERE id = 1", &[])
+            .await?
+            .flatten();
         let password_encrypted = match password {
             Some(p) if !p.is_empty() => {
                 Some(encrypt_string(p, &self.encryption_key).map_err(|e| OrgError::Internal(e.to_string()))?)
@@ -755,10 +1016,11 @@ impl OrgService {
     /// The decrypted SMTP password, for a real `EmailSender` implementation to
     /// consume. `None` when unset or decryption fails (never panics).
     pub async fn smtp_password(&self) -> Result<Option<String>, OrgError> {
-        let encrypted: Option<String> =
-            self.db.fetch_optional_scalar("SELECT password_encrypted FROM one_smtp_config WHERE id = 1", &[])
-                .await?
-                .flatten();
+        let encrypted: Option<String> = self
+            .db
+            .fetch_optional_scalar("SELECT password_encrypted FROM one_smtp_config WHERE id = 1", &[])
+            .await?
+            .flatten();
         Ok(encrypted.and_then(|e| decrypt_string(&e, &self.encryption_key).ok()))
     }
 
@@ -771,7 +1033,12 @@ impl OrgService {
         invite_id: &str,
         to: &str,
     ) -> Result<SendEmailResult, OrgError> {
-        let row = self.db.fetch_optional_as::<InviteRow>("SELECT * FROM one_tenant_invites WHERE id = ? AND tenant_id = ?", &db_params![invite_id, tenant_id])
+        let row = self
+            .db
+            .fetch_optional_as::<InviteRow>(
+                "SELECT * FROM one_tenant_invites WHERE id = ? AND tenant_id = ?",
+                &db_params![invite_id, tenant_id],
+            )
             .await?
             .ok_or(OrgError::InvalidCode)?;
         let tenant = self.get_tenant(tenant_id).await?.ok_or(OrgError::TenantNotFound)?;
@@ -798,11 +1065,14 @@ impl OrgService {
     /// All configured connectors for a project group (redacted — no secrets).
     pub async fn list_integrations(&self, tenant_id: &str) -> Result<Vec<IntegrationDto>, OrgError> {
         type IntegrationRow = (String, Option<String>, Option<String>, Option<String>, bool, i64);
-        let rows: Vec<IntegrationRow> = self.db.fetch_all_as::<IntegrationRow>(
-            "SELECT provider, base_url, config_json, secret_encrypted, enabled, updated_at \
+        let rows: Vec<IntegrationRow> = self
+            .db
+            .fetch_all_as::<IntegrationRow>(
+                "SELECT provider, base_url, config_json, secret_encrypted, enabled, updated_at \
              FROM one_integrations WHERE tenant_id = ? ORDER BY provider",
-        &db_params![tenant_id])
-        .await?;
+                &db_params![tenant_id],
+            )
+            .await?;
         Ok(rows
             .into_iter()
             .map(
@@ -822,11 +1092,14 @@ impl OrgService {
     /// provider has never been configured for the tenant.
     pub async fn get_integration(&self, tenant_id: &str, provider: &str) -> Result<IntegrationDto, OrgError> {
         type IntegrationRow = (Option<String>, Option<String>, Option<String>, bool, i64);
-        let row: Option<IntegrationRow> = self.db.fetch_optional_as::<IntegrationRow>(
-            "SELECT base_url, config_json, secret_encrypted, enabled, updated_at \
+        let row: Option<IntegrationRow> = self
+            .db
+            .fetch_optional_as::<IntegrationRow>(
+                "SELECT base_url, config_json, secret_encrypted, enabled, updated_at \
              FROM one_integrations WHERE tenant_id = ? AND provider = ?",
-        &db_params![tenant_id, provider])
-        .await?;
+                &db_params![tenant_id, provider],
+            )
+            .await?;
         Ok(match row {
             Some((base_url, config_json, secret_encrypted, enabled, updated_at)) => IntegrationDto {
                 provider: provider.to_owned(),
@@ -860,10 +1133,14 @@ impl OrgService {
         secret: Option<&str>,
         enabled: bool,
     ) -> Result<IntegrationDto, OrgError> {
-        let existing_secret: Option<String> =
-            self.db.fetch_optional_scalar("SELECT secret_encrypted FROM one_integrations WHERE tenant_id = ? AND provider = ?", &db_params![tenant_id, provider])
-                .await?
-                .flatten();
+        let existing_secret: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT secret_encrypted FROM one_integrations WHERE tenant_id = ? AND provider = ?",
+                &db_params![tenant_id, provider],
+            )
+            .await?
+            .flatten();
         let secret_encrypted = match secret {
             Some(s) if !s.is_empty() => {
                 Some(encrypt_string(s, &self.encryption_key).map_err(|e| OrgError::Internal(e.to_string()))?)
@@ -888,10 +1165,14 @@ impl OrgService {
     /// The decrypted connector secret, for a real `IntegrationProvider` to
     /// consume. `None` when unset or decryption fails (never panics).
     pub async fn integration_secret(&self, tenant_id: &str, provider: &str) -> Result<Option<String>, OrgError> {
-        let encrypted: Option<String> =
-            self.db.fetch_optional_scalar("SELECT secret_encrypted FROM one_integrations WHERE tenant_id = ? AND provider = ?", &db_params![tenant_id, provider])
-                .await?
-                .flatten();
+        let encrypted: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT secret_encrypted FROM one_integrations WHERE tenant_id = ? AND provider = ?",
+                &db_params![tenant_id, provider],
+            )
+            .await?
+            .flatten();
         Ok(encrypted.and_then(|e| decrypt_string(&e, &self.encryption_key).ok()))
     }
 
@@ -955,8 +1236,11 @@ impl OrgService {
         // SSO-company binding — the SSO company is a separate dimension
         // (one-enterprise); this is purely an invite-code tenant.
         let mut tx = self.db.begin().await?;
-        tx.execute("INSERT INTO one_tenants (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)", &db_params![&tenant_id, name, now, now])
-            .await?;
+        tx.execute(
+            "INSERT INTO one_tenants (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            &db_params![&tenant_id, name, now, now],
+        )
+        .await?;
         let user_org_sql = match tx.backend() {
             DbBackend::Sqlite => {
                 "INSERT INTO one_user_org \
@@ -983,7 +1267,19 @@ impl OrgService {
         };
         tx.execute(
             user_org_sql,
-        &db_params![user_id, &tenant_id, ROLE_SYSTEM_ADMIN, &display_name, &org_unit_path, &job_title, &org_profile_source, org_profile_synced_at, now, now])
+            &db_params![
+                user_id,
+                &tenant_id,
+                ROLE_SYSTEM_ADMIN,
+                &display_name,
+                &org_unit_path,
+                &job_title,
+                &org_profile_source,
+                org_profile_synced_at,
+                now,
+                now
+            ],
+        )
         .await?;
         let active_tenant_sql = match tx.backend() {
             DbBackend::Sqlite => {
@@ -995,16 +1291,21 @@ impl OrgService {
                  ON DUPLICATE KEY UPDATE tenant_id = new.tenant_id, updated_at = new.updated_at"
             }
         };
-        tx.execute(
-            active_tenant_sql,
-        &db_params![user_id, &tenant_id, now])
-        .await?;
+        tx.execute(active_tenant_sql, &db_params![user_id, &tenant_id, now])
+            .await?;
         tx.commit().await?;
 
         self.invalidate_user_tokens(user_id).await?;
         let username = self.lookup_username(user_id).await;
-        self.audit(&tenant_id, Some(user_id), username.as_deref(), "org.create", Some(name), None)
-            .await;
+        self.audit(
+            &tenant_id,
+            Some(user_id),
+            username.as_deref(),
+            "org.create",
+            Some(name),
+            None,
+        )
+        .await;
 
         Ok((tenant_id, name.to_string()))
     }
@@ -1035,12 +1336,16 @@ impl OrgService {
         let tenant_id = short_id("tenant");
         let now = now_ms() as i64;
         let mut tx = self.db.begin().await?;
-        tx.execute("INSERT INTO one_tenants (id, name, enterprise_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", &db_params![&tenant_id, name, enterprise_id, now, now])
-            .await?;
+        tx.execute(
+            "INSERT INTO one_tenants (id, name, enterprise_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            &db_params![&tenant_id, name, enterprise_id, now, now],
+        )
+        .await?;
         if let Some(admin) = initial_admin_user_id {
             tx.execute(
                 "INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            &db_params![admin, &tenant_id, ROLE_ORG_ADMIN, now, now])
+                &db_params![admin, &tenant_id, ROLE_ORG_ADMIN, now, now],
+            )
             .await?;
         }
         tx.commit().await?;
@@ -1137,10 +1442,13 @@ impl OrgService {
     /// Every project group on this server (id + name), for admin pickers such
     /// as the devops resource scope selector (P0-4). Ordered by creation.
     pub async fn list_all_tenants(&self) -> Result<Vec<crate::models::TenantSummaryDto>, OrgError> {
-        let rows = self.db.fetch_all_as::<crate::models::TenantSummaryDto>(
-            "SELECT id, name FROM one_tenants ORDER BY created_at ASC",
-        &[])
-        .await?;
+        let rows = self
+            .db
+            .fetch_all_as::<crate::models::TenantSummaryDto>(
+                "SELECT id, name FROM one_tenants ORDER BY created_at ASC",
+                &[],
+            )
+            .await?;
         Ok(rows)
     }
 
@@ -1150,7 +1458,12 @@ impl OrgService {
     /// so a company admin can't read or mint invite codes for a project
     /// group owned by a different company by guessing its id.
     pub async fn tenant_belongs_to_enterprise(&self, tenant_id: &str, enterprise_id: &str) -> Result<bool, OrgError> {
-        let owner: Option<String> = self.db.fetch_optional_scalar("SELECT enterprise_id FROM one_tenants WHERE id = ?", &db_params![tenant_id])
+        let owner: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT enterprise_id FROM one_tenants WHERE id = ?",
+                &db_params![tenant_id],
+            )
             .await?;
         Ok(owner.as_deref() == Some(enterprise_id))
     }
@@ -1166,7 +1479,12 @@ impl OrgService {
             .await?;
         let mut out = Vec::with_capacity(rows.len());
         for (tenant_id, name, created_at) in rows {
-            let member_count: i64 = self.db.fetch_one_scalar("SELECT COUNT(*) FROM one_user_org WHERE tenant_id = ?", &db_params![&tenant_id])
+            let member_count: i64 = self
+                .db
+                .fetch_one_scalar(
+                    "SELECT COUNT(*) FROM one_user_org WHERE tenant_id = ?",
+                    &db_params![&tenant_id],
+                )
                 .await?;
             out.push(EnterpriseTenantDto {
                 tenant_id,
@@ -1191,7 +1509,12 @@ impl OrgService {
     /// `CredentialRevoker`). Authorization is enforced by that caller; this
     /// trusts the `enterprise_id` it is given.
     pub async fn disband_tenants_for_enterprise(&self, enterprise_id: &str) -> Result<Vec<String>, OrgError> {
-        let tenants = self.db.fetch_all_as::<TenantRow>("SELECT * FROM one_tenants WHERE enterprise_id = ?", &db_params![enterprise_id])
+        let tenants = self
+            .db
+            .fetch_all_as::<TenantRow>(
+                "SELECT * FROM one_tenants WHERE enterprise_id = ?",
+                &db_params![enterprise_id],
+            )
             .await?;
         if tenants.is_empty() {
             return Ok(Vec::new());
@@ -1244,20 +1567,35 @@ impl OrgService {
         let tenant_ids: Vec<String> = tenants.iter().map(|t| t.id.clone()).collect();
         let mut tx = self.db.begin().await?;
         for tenant_id in &tenant_ids {
-            tx.execute("DELETE FROM one_tenant_invites WHERE tenant_id = ?", &db_params![tenant_id])
-                .await?;
+            tx.execute(
+                "DELETE FROM one_tenant_invites WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?;
             tx.execute("DELETE FROM one_user_org WHERE tenant_id = ?", &db_params![tenant_id])
                 .await?;
-            tx.execute("DELETE FROM one_active_tenant WHERE tenant_id = ?", &db_params![tenant_id])
-                .await?;
-            tx.execute("DELETE FROM one_runtime_nodes WHERE tenant_id = ?", &db_params![tenant_id])
-                .await?;
+            tx.execute(
+                "DELETE FROM one_active_tenant WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?;
+            tx.execute(
+                "DELETE FROM one_runtime_nodes WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?;
             tx.execute("DELETE FROM one_audit_logs WHERE tenant_id = ?", &db_params![tenant_id])
                 .await?;
-            tx.execute("DELETE FROM one_departments WHERE tenant_id = ?", &db_params![tenant_id])
-                .await?;
-            tx.execute("DELETE FROM one_integrations WHERE tenant_id = ?", &db_params![tenant_id])
-                .await?;
+            tx.execute(
+                "DELETE FROM one_departments WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?;
+            tx.execute(
+                "DELETE FROM one_integrations WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?;
             tx.execute("DELETE FROM one_tenants WHERE id = ?", &db_params![tenant_id])
                 .await?;
         }
@@ -1305,7 +1643,9 @@ impl OrgService {
             tenants: Vec<ArchivedTenant>,
         }
 
-        let tenants = self.db.fetch_all_as::<TenantRow>("SELECT * FROM one_tenants", &[])
+        let tenants = self
+            .db
+            .fetch_all_as::<TenantRow>("SELECT * FROM one_tenants", &[])
             .await?;
 
         let mut archived_tenants = Vec::with_capacity(tenants.len());
@@ -1403,7 +1743,11 @@ impl OrgService {
             self.ensure_not_last_admin(&membership.tenant_id, user_id).await?;
         }
 
-        self.db.execute("DELETE FROM one_user_org WHERE user_id = ? AND tenant_id = ?", &db_params![user_id, &membership.tenant_id])
+        self.db
+            .execute(
+                "DELETE FROM one_user_org WHERE user_id = ? AND tenant_id = ?",
+                &db_params![user_id, &membership.tenant_id],
+            )
             .await?;
         // If the group just left was the active one, repoint to another
         // membership (or clear the pointer so resolution falls back to default).
@@ -1526,7 +1870,11 @@ impl OrgService {
             self.ensure_not_last_admin(tenant_id, target_user_id).await?;
         }
 
-        self.db.execute("DELETE FROM one_user_org WHERE user_id = ? AND tenant_id = ?", &db_params![target_user_id, tenant_id])
+        self.db
+            .execute(
+                "DELETE FROM one_user_org WHERE user_id = ? AND tenant_id = ?",
+                &db_params![target_user_id, tenant_id],
+            )
             .await?;
         self.reselect_active_after_leave(target_user_id, tenant_id).await?;
         self.invalidate_user_tokens(target_user_id).await?;
@@ -1561,19 +1909,26 @@ impl OrgService {
         user_id: &str,
         left_tenant_id: &str,
     ) -> Result<Option<String>, OrgError> {
-        let enterprise_id: Option<String> =
-            self.db.fetch_optional_scalar::<Option<String>>("SELECT enterprise_id FROM one_tenants WHERE id = ?", &db_params![left_tenant_id])
-                .await?
-                .flatten();
+        let enterprise_id: Option<String> = self
+            .db
+            .fetch_optional_scalar::<Option<String>>(
+                "SELECT enterprise_id FROM one_tenants WHERE id = ?",
+                &db_params![left_tenant_id],
+            )
+            .await?
+            .flatten();
         let Some(enterprise_id) = enterprise_id else {
             return Ok(None);
         };
-        let still_has_another: bool = self.db.fetch_one_scalar(
-            "SELECT COUNT(*) > 0 FROM one_user_org uo \
+        let still_has_another: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_user_org uo \
              JOIN one_tenants t ON t.id = uo.tenant_id \
              WHERE uo.user_id = ? AND t.enterprise_id = ?",
-        &db_params![user_id, &enterprise_id])
-        .await?;
+                &db_params![user_id, &enterprise_id],
+            )
+            .await?;
         Ok(if still_has_another { None } else { Some(enterprise_id) })
     }
 
@@ -1582,22 +1937,35 @@ impl OrgService {
     /// (so resolution falls back to the personal-edition default). Keeps
     /// `one_active_tenant` from dangling.
     async fn reselect_active_after_leave(&self, user_id: &str, left_tenant: &str) -> Result<(), OrgError> {
-        let active: Option<String> = self.db.fetch_optional_scalar("SELECT tenant_id FROM one_active_tenant WHERE user_id = ?", &db_params![user_id])
+        let active: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT tenant_id FROM one_active_tenant WHERE user_id = ?",
+                &db_params![user_id],
+            )
             .await?;
         if active.as_deref() != Some(left_tenant) {
             return Ok(());
         }
-        let next: Option<String> = self.db.fetch_optional_scalar(
-            "SELECT tenant_id FROM one_user_org WHERE user_id = ? ORDER BY created_at DESC, tenant_id ASC LIMIT 1",
-        &db_params![user_id])
-        .await?;
+        let next: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT tenant_id FROM one_user_org WHERE user_id = ? ORDER BY created_at DESC, tenant_id ASC LIMIT 1",
+                &db_params![user_id],
+            )
+            .await?;
         match next {
             Some(t) => {
-                self.db.execute("UPDATE one_active_tenant SET tenant_id = ?, updated_at = ? WHERE user_id = ?", &db_params![&t, now_ms() as i64, user_id])
+                self.db
+                    .execute(
+                        "UPDATE one_active_tenant SET tenant_id = ?, updated_at = ? WHERE user_id = ?",
+                        &db_params![&t, now_ms() as i64, user_id],
+                    )
                     .await?;
             }
             None => {
-                self.db.execute("DELETE FROM one_active_tenant WHERE user_id = ?", &db_params![user_id])
+                self.db
+                    .execute("DELETE FROM one_active_tenant WHERE user_id = ?", &db_params![user_id])
                     .await?;
             }
         }
@@ -1610,18 +1978,25 @@ impl OrgService {
     /// orphaning the tenant. Allowed when the departing admin is also the
     /// tenant's last member (the tenant simply becomes empty, not orphaned).
     async fn ensure_not_last_admin(&self, tenant_id: &str, excluding_user_id: &str) -> Result<(), OrgError> {
-        let remaining_admins: i64 = self.db.fetch_one_scalar(
-            "SELECT COUNT(*) FROM one_user_org \
+        let remaining_admins: i64 = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_user_org \
              WHERE tenant_id = ? AND user_id != ? AND role IN ('system_admin', 'org_admin', 'admin')",
-        &db_params![tenant_id, excluding_user_id])
-        .await?;
+                &db_params![tenant_id, excluding_user_id],
+            )
+            .await?;
         if remaining_admins > 0 {
             return Ok(());
         }
 
-        let remaining_members: i64 =
-            self.db.fetch_one_scalar("SELECT COUNT(*) FROM one_user_org WHERE tenant_id = ? AND user_id != ?", &db_params![tenant_id, excluding_user_id])
-                .await?;
+        let remaining_members: i64 = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_user_org WHERE tenant_id = ? AND user_id != ?",
+                &db_params![tenant_id, excluding_user_id],
+            )
+            .await?;
         if remaining_members == 0 {
             return Ok(());
         }
@@ -1641,7 +2016,12 @@ impl OrgService {
             return Err(OrgError::BadRequest("password is required".into()));
         }
         let hash = hash_password(password)?;
-        let result = self.db.execute("UPDATE one_tenants SET exit_password_hash = ?, updated_at = ? WHERE id = ?", &db_params![&hash, now_ms() as i64, tenant_id])
+        let result = self
+            .db
+            .execute(
+                "UPDATE one_tenants SET exit_password_hash = ?, updated_at = ? WHERE id = ?",
+                &db_params![&hash, now_ms() as i64, tenant_id],
+            )
             .await?;
         if result == 0 {
             return Err(OrgError::TenantNotFound);
@@ -1650,7 +2030,12 @@ impl OrgService {
     }
 
     pub async fn clear_exit_password(&self, tenant_id: &str) -> Result<(), OrgError> {
-        let result = self.db.execute("UPDATE one_tenants SET exit_password_hash = NULL, updated_at = ? WHERE id = ?", &db_params![now_ms() as i64, tenant_id])
+        let result = self
+            .db
+            .execute(
+                "UPDATE one_tenants SET exit_password_hash = NULL, updated_at = ? WHERE id = ?",
+                &db_params![now_ms() as i64, tenant_id],
+            )
             .await?;
         if result == 0 {
             return Err(OrgError::TenantNotFound);
@@ -1661,7 +2046,12 @@ impl OrgService {
     // --- context / info ---
 
     pub async fn member_count(&self, tenant_id: &str) -> Result<i64, OrgError> {
-        let count: i64 = self.db.fetch_one_scalar("SELECT COUNT(*) FROM one_user_org WHERE tenant_id = ?", &db_params![tenant_id])
+        let count: i64 = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_user_org WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
             .await?;
         Ok(count)
     }
@@ -1688,7 +2078,9 @@ impl OrgService {
 
     /// Name of the enterprise hosted on this server, if any.
     pub async fn public_info(&self) -> Result<Option<String>, OrgError> {
-        let name: Option<String> = self.db.fetch_optional_scalar("SELECT name FROM one_tenants ORDER BY created_at ASC LIMIT 1", &[])
+        let name: Option<String> = self
+            .db
+            .fetch_optional_scalar("SELECT name FROM one_tenants ORDER BY created_at ASC LIMIT 1", &[])
             .await?;
         Ok(name)
     }
@@ -1772,17 +2164,25 @@ impl OrgService {
     /// `dream-common` matrix. No enterprise / billing not installed → allowed
     /// (personal-edition red line). Tolerant of absent tables.
     pub async fn enterprise_feature_allowed(&self, user_id: &str, feature: Feature) -> Result<bool, OrgError> {
-        let enterprise_id: Option<String> =
-            self.db.fetch_optional_scalar("SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?", &db_params![user_id])
-                .await
-                .unwrap_or(None);
+        let enterprise_id: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?",
+                &db_params![user_id],
+            )
+            .await
+            .unwrap_or(None);
         let Some(enterprise_id) = enterprise_id else {
             return Ok(true);
         };
-        let tier: Option<String> =
-            self.db.fetch_optional_scalar("SELECT tier FROM one_enterprise_license WHERE enterprise_id = ?", &db_params![&enterprise_id])
-                .await
-                .unwrap_or(None);
+        let tier: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT tier FROM one_enterprise_license WHERE enterprise_id = ?",
+                &db_params![&enterprise_id],
+            )
+            .await
+            .unwrap_or(None);
         let tier = tier.map(|t| Tier::parse(&t)).unwrap_or(Tier::Free);
         Ok(tier_allows(tier, feature))
     }
@@ -1853,12 +2253,10 @@ impl OrgService {
                 continue;
             };
             for conv in convs.items {
-                let Ok(page) =
-                    self.message_repo.list_messages_page(member, &conv.id, &page).await
-                else {
+                let Ok(page) = self.message_repo.list_messages_page(member, &conv.id, &page).await else {
                     continue;
                 };
-                    for row in page.items {
+                for row in page.items {
                     if row.r#type != "tool_call" && row.r#type != "acp_tool_call" {
                         continue;
                     }
@@ -1880,16 +2278,26 @@ impl OrgService {
                             continue;
                         }
                     }
-                    let detail = ["args.command", "args.path", "args.file_path", "args.pattern", "args.url",
-                                  "args.prompt", "input.command", "input.path", "input.prompt", "description"]
-                        .iter()
-                        .find_map(|path| {
-                            let mut v = Some(&content);
-                            for key in path.split('.') {
-                                v = v.and_then(|x| x.get(key));
-                            }
-                            v.and_then(|x| x.as_str()).map(str::to_owned)
-                        });
+                    let detail = [
+                        "args.command",
+                        "args.path",
+                        "args.file_path",
+                        "args.pattern",
+                        "args.url",
+                        "args.prompt",
+                        "input.command",
+                        "input.path",
+                        "input.prompt",
+                        "description",
+                    ]
+                    .iter()
+                    .find_map(|path| {
+                        let mut v = Some(&content);
+                        for key in path.split('.') {
+                            v = v.and_then(|x| x.get(key));
+                        }
+                        v.and_then(|x| x.as_str()).map(str::to_owned)
+                    });
                     entries.push(AgentAuditEntry {
                         id: row.id.clone(),
                         conversation_id: row.conversation_id.clone(),
@@ -1915,15 +2323,18 @@ impl OrgService {
     // --- admin: users ---
 
     pub async fn list_users(&self, tenant_id: &str) -> Result<Vec<AdminUserDto>, OrgError> {
-        let rows = self.db.fetch_all_as::<AdminUserDto>(
-            "SELECT uo.user_id, u.username, uo.tenant_id, uo.role, uo.display_name, uo.org_unit_path, \
+        let rows = self
+            .db
+            .fetch_all_as::<AdminUserDto>(
+                "SELECT uo.user_id, u.username, uo.tenant_id, uo.role, uo.display_name, uo.org_unit_path, \
                     uo.job_title, uo.department_id, u.last_login, uo.created_at \
              FROM one_user_org uo \
              JOIN users u ON u.id = uo.user_id \
              WHERE uo.tenant_id = ? \
              ORDER BY uo.created_at DESC",
-        &db_params![tenant_id])
-        .await?;
+                &db_params![tenant_id],
+            )
+            .await?;
         Ok(rows)
     }
 
@@ -1942,21 +2353,28 @@ impl OrgService {
             return Err(OrgError::BadRequest("department name is required".into()));
         }
         if let Some(pid) = parent_id {
-            let exists: bool =
-                self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_departments WHERE id = ? AND tenant_id = ?", &db_params![pid, tenant_id])
-                    .await?;
+            let exists: bool = self
+                .db
+                .fetch_one_scalar(
+                    "SELECT COUNT(*) > 0 FROM one_departments WHERE id = ? AND tenant_id = ?",
+                    &db_params![pid, tenant_id],
+                )
+                .await?;
             if !exists {
                 return Err(OrgError::DepartmentNotFound);
             }
         }
         let id = short_id("dept");
         let now = now_ms() as i64;
-        self.db.execute(
-            "INSERT INTO one_departments (id, tenant_id, parent_id, name, created_at, updated_at) \
+        self.db
+            .execute(
+                "INSERT INTO one_departments (id, tenant_id, parent_id, name, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?)",
-        &db_params![&id, tenant_id, parent_id, name, now, now])
-        .await?;
-        self.db.fetch_one_as::<DepartmentDto>("SELECT * FROM one_departments WHERE id = ?", &db_params![&id])
+                &db_params![&id, tenant_id, parent_id, name, now, now],
+            )
+            .await?;
+        self.db
+            .fetch_one_as::<DepartmentDto>("SELECT * FROM one_departments WHERE id = ?", &db_params![&id])
             .await
             .map_err(Into::into)
     }
@@ -1964,10 +2382,13 @@ impl OrgService {
     /// Every department in the tenant (flat; the frontend assembles the tree
     /// from `parent_id`).
     pub async fn list_departments(&self, tenant_id: &str) -> Result<Vec<DepartmentDto>, OrgError> {
-        let rows = self.db.fetch_all_as::<DepartmentDto>(
-            "SELECT * FROM one_departments WHERE tenant_id = ? ORDER BY created_at ASC",
-        &db_params![tenant_id])
-        .await?;
+        let rows = self
+            .db
+            .fetch_all_as::<DepartmentDto>(
+                "SELECT * FROM one_departments WHERE tenant_id = ? ORDER BY created_at ASC",
+                &db_params![tenant_id],
+            )
+            .await?;
         Ok(rows)
     }
 
@@ -1981,12 +2402,18 @@ impl OrgService {
         if name.is_empty() {
             return Err(OrgError::BadRequest("department name is required".into()));
         }
-        let updated = self.db.execute("UPDATE one_departments SET name = ?, updated_at = ? WHERE id = ? AND tenant_id = ?", &db_params![name, now_ms() as i64, department_id, tenant_id])
+        let updated = self
+            .db
+            .execute(
+                "UPDATE one_departments SET name = ?, updated_at = ? WHERE id = ? AND tenant_id = ?",
+                &db_params![name, now_ms() as i64, department_id, tenant_id],
+            )
             .await?;
         if updated == 0 {
             return Err(OrgError::DepartmentNotFound);
         }
-        self.db.fetch_one_as::<DepartmentDto>("SELECT * FROM one_departments WHERE id = ?", &db_params![department_id])
+        self.db
+            .fetch_one_as::<DepartmentDto>("SELECT * FROM one_departments WHERE id = ?", &db_params![department_id])
             .await
             .map_err(Into::into)
     }
@@ -1995,22 +2422,36 @@ impl OrgService {
     /// departments or assigned members — the caller must reassign those first,
     /// the same "explicit over surprising" rule as elsewhere in this crate.
     pub async fn delete_department(&self, tenant_id: &str, department_id: &str) -> Result<(), OrgError> {
-        let has_children: bool = self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_departments WHERE parent_id = ?", &db_params![department_id])
+        let has_children: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_departments WHERE parent_id = ?",
+                &db_params![department_id],
+            )
             .await?;
         if has_children {
             return Err(OrgError::BadRequest(
                 "department has sub-departments; move or delete them first".into(),
             ));
         }
-        let has_members: bool =
-            self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_user_org WHERE department_id = ? AND tenant_id = ?", &db_params![department_id, tenant_id])
-                .await?;
+        let has_members: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_user_org WHERE department_id = ? AND tenant_id = ?",
+                &db_params![department_id, tenant_id],
+            )
+            .await?;
         if has_members {
             return Err(OrgError::BadRequest(
                 "department still has members assigned; reassign them first".into(),
             ));
         }
-        let deleted = self.db.execute("DELETE FROM one_departments WHERE id = ? AND tenant_id = ?", &db_params![department_id, tenant_id])
+        let deleted = self
+            .db
+            .execute(
+                "DELETE FROM one_departments WHERE id = ? AND tenant_id = ?",
+                &db_params![department_id, tenant_id],
+            )
             .await?;
         if deleted == 0 {
             return Err(OrgError::DepartmentNotFound);
@@ -2026,17 +2467,24 @@ impl OrgService {
         department_id: Option<&str>,
     ) -> Result<(), OrgError> {
         if let Some(did) = department_id {
-            let exists: bool =
-                self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_departments WHERE id = ? AND tenant_id = ?", &db_params![did, tenant_id])
-                    .await?;
+            let exists: bool = self
+                .db
+                .fetch_one_scalar(
+                    "SELECT COUNT(*) > 0 FROM one_departments WHERE id = ? AND tenant_id = ?",
+                    &db_params![did, tenant_id],
+                )
+                .await?;
             if !exists {
                 return Err(OrgError::DepartmentNotFound);
             }
         }
-        let updated = self.db.execute(
-            "UPDATE one_user_org SET department_id = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ?",
-        &db_params![department_id, now_ms() as i64, user_id, tenant_id])
-        .await?;
+        let updated = self
+            .db
+            .execute(
+                "UPDATE one_user_org SET department_id = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ?",
+                &db_params![department_id, now_ms() as i64, user_id, tenant_id],
+            )
+            .await?;
         if updated == 0 {
             return Err(OrgError::Forbidden("user is not a member of this tenant".into()));
         }
@@ -2058,9 +2506,13 @@ impl OrgService {
             return Err(OrgError::BadRequest("a department cannot be its own parent".into()));
         }
         if let Some(pid) = new_parent_id {
-            let exists: bool =
-                self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_departments WHERE id = ? AND tenant_id = ?", &db_params![pid, tenant_id])
-                    .await?;
+            let exists: bool = self
+                .db
+                .fetch_one_scalar(
+                    "SELECT COUNT(*) > 0 FROM one_departments WHERE id = ? AND tenant_id = ?",
+                    &db_params![pid, tenant_id],
+                )
+                .await?;
             if !exists {
                 return Err(OrgError::DepartmentNotFound);
             }
@@ -2073,13 +2525,18 @@ impl OrgService {
                 ));
             }
         }
-        let updated =
-            self.db.execute("UPDATE one_departments SET parent_id = ?, updated_at = ? WHERE id = ? AND tenant_id = ?", &db_params![new_parent_id, now_ms() as i64, department_id, tenant_id])
-                .await?;
+        let updated = self
+            .db
+            .execute(
+                "UPDATE one_departments SET parent_id = ?, updated_at = ? WHERE id = ? AND tenant_id = ?",
+                &db_params![new_parent_id, now_ms() as i64, department_id, tenant_id],
+            )
+            .await?;
         if updated == 0 {
             return Err(OrgError::DepartmentNotFound);
         }
-        self.db.fetch_one_as::<DepartmentDto>("SELECT * FROM one_departments WHERE id = ?", &db_params![department_id])
+        self.db
+            .fetch_one_as::<DepartmentDto>("SELECT * FROM one_departments WHERE id = ?", &db_params![department_id])
             .await
             .map_err(Into::into)
     }
@@ -2099,10 +2556,14 @@ impl OrgService {
             if hops > 10_000 {
                 return Ok(false);
             }
-            let parent: Option<String> =
-                self.db.fetch_optional_scalar("SELECT parent_id FROM one_departments WHERE id = ? AND tenant_id = ?", &db_params![&current, tenant_id])
-                    .await?
-                    .flatten();
+            let parent: Option<String> = self
+                .db
+                .fetch_optional_scalar(
+                    "SELECT parent_id FROM one_departments WHERE id = ? AND tenant_id = ?",
+                    &db_params![&current, tenant_id],
+                )
+                .await?
+                .flatten();
             match parent {
                 Some(p) => current = p,
                 None => return Ok(false),
@@ -2236,11 +2697,14 @@ impl OrgService {
         // "fell out of scope" and try to remove an unrelated, still-valid
         // mapping this run never touched. `directory_map_root_external_id` is
         // what makes two independent mappings coexist safely.
-        let existing: Vec<(String, Option<String>, String)> = self.db.fetch_all_as::<(String, Option<String>, String)>(
-            "SELECT id, directory_external_id, name FROM one_departments \
+        let existing: Vec<(String, Option<String>, String)> = self
+            .db
+            .fetch_all_as::<(String, Option<String>, String)>(
+                "SELECT id, directory_external_id, name FROM one_departments \
              WHERE tenant_id = ? AND source = 'directory' AND directory_map_root_external_id = ?",
-        &db_params![tenant_id, root_external_id])
-        .await?;
+                &db_params![tenant_id, root_external_id],
+            )
+            .await?;
         let mut by_external: std::collections::HashMap<String, String> = existing
             .iter()
             .filter_map(|(id, ext, _)| ext.clone().map(|e| (e, id.clone())))
@@ -2270,8 +2734,11 @@ impl OrgService {
                 };
 
                 if let Some(existing_id) = by_external.get(&d.external_id).cloned() {
-                    tx.execute("UPDATE one_departments SET name = ?, parent_id = ?, updated_at = ? WHERE id = ?", &db_params![&d.name, &local_parent_id, now, &existing_id])
-                        .await?;
+                    tx.execute(
+                        "UPDATE one_departments SET name = ?, parent_id = ?, updated_at = ? WHERE id = ?",
+                        &db_params![&d.name, &local_parent_id, now, &existing_id],
+                    )
+                    .await?;
                     report.updated.push(d.name.clone());
                 } else {
                     let id = short_id("dept");
@@ -2280,7 +2747,17 @@ impl OrgService {
                          (id, tenant_id, parent_id, name, source, directory_external_id, \
                           directory_map_root_external_id, created_at, updated_at) \
                          VALUES (?, ?, ?, ?, 'directory', ?, ?, ?, ?)",
-                    &db_params![&id, tenant_id, &local_parent_id, &d.name, &d.external_id, root_external_id, now, now])
+                        &db_params![
+                            &id,
+                            tenant_id,
+                            &local_parent_id,
+                            &d.name,
+                            &d.external_id,
+                            root_external_id,
+                            now,
+                            now
+                        ],
+                    )
                     .await?;
                     by_external.insert(d.external_id.clone(), id);
                     report.created.push(d.name.clone());
@@ -2324,16 +2801,24 @@ impl OrgService {
         // Demoting the tenant's last admin to a non-admin role would leave no
         // one who can invite, configure SSO, or promote a replacement —
         // same guard as `leave()`.
-        let current_role: Option<String> =
-            self.db.fetch_optional_scalar("SELECT role FROM one_user_org WHERE tenant_id = ? AND user_id = ?", &db_params![tenant_id, target_user_id])
-                .await?;
+        let current_role: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT role FROM one_user_org WHERE tenant_id = ? AND user_id = ?",
+                &db_params![tenant_id, target_user_id],
+            )
+            .await?;
         if current_role.is_some_and(|r| is_admin_role(&r)) && !is_admin_role(role) {
             self.ensure_not_last_admin(tenant_id, target_user_id).await?;
         }
 
-        let result =
-            self.db.execute("UPDATE one_user_org SET role = ?, updated_at = ? WHERE tenant_id = ? AND user_id = ?", &db_params![role, now_ms() as i64, tenant_id, target_user_id])
-                .await?;
+        let result = self
+            .db
+            .execute(
+                "UPDATE one_user_org SET role = ?, updated_at = ? WHERE tenant_id = ? AND user_id = ?",
+                &db_params![role, now_ms() as i64, tenant_id, target_user_id],
+            )
+            .await?;
         if result == 0 {
             return Err(OrgError::BadRequest(format!(
                 "user {target_user_id} not in tenant {tenant_id}"
@@ -2365,12 +2850,15 @@ impl OrgService {
     // --- admin: runtime nodes ---
 
     pub async fn list_runtime_nodes(&self, tenant_id: &str) -> Result<Vec<RuntimeNodeDto>, OrgError> {
-        let rows = self.db.fetch_all_as::<RuntimeNodeRow>(
-            "SELECT id, tenant_id, user_id, machine_id, display_name, hostnames, ip_addresses, \
+        let rows = self
+            .db
+            .fetch_all_as::<RuntimeNodeRow>(
+                "SELECT id, tenant_id, user_id, machine_id, display_name, hostnames, ip_addresses, \
                     installed_agents, last_seen_at, updated_at, status, visibility \
              FROM one_runtime_nodes WHERE tenant_id = ? ORDER BY last_seen_at DESC",
-        &db_params![tenant_id])
-        .await?;
+                &db_params![tenant_id],
+            )
+            .await?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
@@ -2391,12 +2879,25 @@ impl OrgService {
         let agents_str = installed_agents.to_string();
 
         // Try UPDATE first; if no row affected, INSERT.
-        let updated = self.db.execute(
-            "UPDATE one_runtime_nodes SET user_id = ?, display_name = ?, hostnames = ?, \
+        let updated = self
+            .db
+            .execute(
+                "UPDATE one_runtime_nodes SET user_id = ?, display_name = ?, hostnames = ?, \
                     ip_addresses = ?, installed_agents = ?, last_seen_at = ?, updated_at = ? \
              WHERE tenant_id = ? AND machine_id = ?",
-        &db_params![user_id, display_name, &hostnames_str, &ip_str, &agents_str, now, now, tenant_id, machine_id])
-        .await?;
+                &db_params![
+                    user_id,
+                    display_name,
+                    &hostnames_str,
+                    &ip_str,
+                    &agents_str,
+                    now,
+                    now,
+                    tenant_id,
+                    machine_id
+                ],
+            )
+            .await?;
 
         if updated > 0 {
             let (id, status): (String, String) = self
@@ -2434,13 +2935,27 @@ impl OrgService {
         let status = if require_approval { "pending" } else { "approved" };
 
         let id = short_id("node");
-        self.db.execute(
-            "INSERT INTO one_runtime_nodes \
+        self.db
+            .execute(
+                "INSERT INTO one_runtime_nodes \
              (id, tenant_id, user_id, machine_id, display_name, hostnames, ip_addresses, \
               installed_agents, last_seen_at, updated_at, status, visibility) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'private')",
-        &db_params![&id, tenant_id, user_id, machine_id, display_name, &hostnames_str, &ip_str, &agents_str, now, now, status])
-        .await?;
+                &db_params![
+                    &id,
+                    tenant_id,
+                    user_id,
+                    machine_id,
+                    display_name,
+                    &hostnames_str,
+                    &ip_str,
+                    &agents_str,
+                    now,
+                    now,
+                    status
+                ],
+            )
+            .await?;
 
         if require_approval {
             if let Some(sink) = self.node_review_sink.read().ok().and_then(|g| g.clone()) {
@@ -2460,7 +2975,12 @@ impl OrgService {
     /// Whether new runtime nodes must be approved before they count as part
     /// of the fleet (P1-7). Absent row = open mode = the pre-P1-7 behavior.
     async fn runtime_requires_approval(&self, tenant_id: &str) -> Result<bool, OrgError> {
-        let row: Option<(i64,)> = self.db.fetch_optional_as::<(i64,)>("SELECT require_approval FROM one_runtime_policy WHERE tenant_id = ?", &db_params![tenant_id])
+        let row: Option<(i64,)> = self
+            .db
+            .fetch_optional_as::<(i64,)>(
+                "SELECT require_approval FROM one_runtime_policy WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
             .await?;
         Ok(row.map(|(r,)| r != 0).unwrap_or(false))
     }
@@ -2482,7 +3002,8 @@ impl OrgService {
             "INSERT INTO one_runtime_policy (tenant_id, require_approval, updated_at) VALUES (?, ?, ?) AS new \
              ON DUPLICATE KEY UPDATE require_approval = new.require_approval, \
                  updated_at = new.updated_at",
-        &db_params![tenant_id, require_approval as i64, now_ms() as i64])
+            &db_params![tenant_id, require_approval as i64, now_ms() as i64],
+        )
         .await?;
         Ok(())
     }
@@ -2496,9 +3017,13 @@ impl OrgService {
                 "node status must be 'approved' or 'blocked', got '{status}'"
             )));
         }
-        let updated =
-            self.db.execute("UPDATE one_runtime_nodes SET status = ?, updated_at = ? WHERE tenant_id = ? AND id = ?", &db_params![status, now_ms() as i64, tenant_id, node_id])
-                .await?;
+        let updated = self
+            .db
+            .execute(
+                "UPDATE one_runtime_nodes SET status = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+                &db_params![status, now_ms() as i64, tenant_id, node_id],
+            )
+            .await?;
         if updated == 0 {
             return Err(OrgError::RuntimeNodeNotFound);
         }
@@ -2520,9 +3045,13 @@ impl OrgService {
                 "node visibility must be 'private' or 'shared', got '{visibility}'"
             )));
         }
-        let row: Option<(String,)> =
-            self.db.fetch_optional_as::<(String,)>("SELECT user_id FROM one_runtime_nodes WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, node_id])
-                .await?;
+        let row: Option<(String,)> = self
+            .db
+            .fetch_optional_as::<(String,)>(
+                "SELECT user_id FROM one_runtime_nodes WHERE tenant_id = ? AND id = ?",
+                &db_params![tenant_id, node_id],
+            )
+            .await?;
         let Some((owner,)) = row else {
             return Err(OrgError::RuntimeNodeNotFound);
         };
@@ -2531,7 +3060,11 @@ impl OrgService {
                 "only the node's owner or an administrator can change its visibility".into(),
             ));
         }
-        self.db.execute("UPDATE one_runtime_nodes SET visibility = ?, updated_at = ? WHERE id = ?", &db_params![visibility, now_ms() as i64, node_id])
+        self.db
+            .execute(
+                "UPDATE one_runtime_nodes SET visibility = ?, updated_at = ? WHERE id = ?",
+                &db_params![visibility, now_ms() as i64, node_id],
+            )
             .await?;
         Ok(())
     }
@@ -2540,14 +3073,17 @@ impl OrgService {
     /// `shared` node of the tenant. The admin roster (`list_runtime_nodes`)
     /// sees everything regardless of visibility.
     pub async fn list_my_runtime_nodes(&self, tenant_id: &str, user_id: &str) -> Result<Vec<RuntimeNodeDto>, OrgError> {
-        let rows = self.db.fetch_all_as::<RuntimeNodeRow>(
-            "SELECT id, tenant_id, user_id, machine_id, display_name, hostnames, ip_addresses, \
+        let rows = self
+            .db
+            .fetch_all_as::<RuntimeNodeRow>(
+                "SELECT id, tenant_id, user_id, machine_id, display_name, hostnames, ip_addresses, \
                     installed_agents, last_seen_at, updated_at, status, visibility \
              FROM one_runtime_nodes \
              WHERE tenant_id = ? AND (user_id = ? OR visibility = 'shared') \
              ORDER BY last_seen_at DESC",
-        &db_params![tenant_id, user_id])
-        .await?;
+                &db_params![tenant_id, user_id],
+            )
+            .await?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
@@ -2559,7 +3095,12 @@ impl OrgService {
     /// for good" from "temporarily offline": delete it, and if it heartbeats
     /// again it simply reappears.
     pub async fn delete_runtime_node(&self, tenant_id: &str, node_id: &str) -> Result<(), OrgError> {
-        let deleted = self.db.execute("DELETE FROM one_runtime_nodes WHERE id = ? AND tenant_id = ?", &db_params![node_id, tenant_id])
+        let deleted = self
+            .db
+            .execute(
+                "DELETE FROM one_runtime_nodes WHERE id = ? AND tenant_id = ?",
+                &db_params![node_id, tenant_id],
+            )
             .await?;
         if deleted == 0 {
             return Err(OrgError::RuntimeNodeNotFound);
@@ -2576,7 +3117,9 @@ mod tests {
 
     async fn setup() -> (dream_core_db::Database, Arc<OrgService>, Arc<dyn IUserRepository>) {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        crate::migrate::run_one_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
         let user_repo: Arc<dyn IUserRepository> = Arc::new(SqliteUserRepository::new(db.pool().clone()));
         let data_dir = std::env::temp_dir().join(format!("one-org-test-{}", uuid::Uuid::now_v7()));
         let service = Arc::new(OrgService::new(
@@ -2741,6 +3284,203 @@ mod tests {
             service.auto_join_by_email(&carol, "carol@acme.com").await.unwrap(),
             None
         );
+    }
+
+    /// Mirrors what `map_directory_subtree` writes, without needing the
+    /// enterprise crate: a project-group department carrying the directory
+    /// node it was mapped from.
+    async fn map_department(service: &OrgService, tenant_id: &str, name: &str, directory_external_id: &str) -> String {
+        let id = format!("dept_{directory_external_id}");
+        let now = now_ms() as i64;
+        service
+            .db
+            .execute(
+                "INSERT INTO one_departments (id, tenant_id, parent_id, name, source, directory_external_id, created_at, updated_at) \
+                 VALUES (?, ?, NULL, ?, 'directory', ?, ?, ?)",
+                &db_params![&id, tenant_id, name, directory_external_id, now, now],
+            )
+            .await
+            .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn sso_auto_join_places_a_user_in_the_group_that_mapped_their_department() {
+        let (_db, service, user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        // Only the PARENT branch is mapped in — the common case, since an
+        // admin picks one subtree root rather than every leaf.
+        let local_dept = map_department(&service, &tenant_id, "研发中心", "d_rd").await;
+
+        // Directory tree: the person sits two levels below the mapped node.
+        let departments = vec![
+            DirectoryDepartmentRef {
+                external_id: "d_rd".into(),
+                parent_external_id: None,
+                name: "研发中心".into(),
+            },
+            DirectoryDepartmentRef {
+                external_id: "d_backend".into(),
+                parent_external_id: Some("d_rd".into()),
+                name: "后端组".into(),
+            },
+            DirectoryDepartmentRef {
+                external_id: "d_api".into(),
+                parent_external_id: Some("d_backend".into()),
+                name: "API 小组".into(),
+            },
+        ];
+
+        let alice = create_user(&user_repo, "alice").await;
+        let outcome = service
+            .auto_join_after_sso(
+                &alice,
+                Some("d_api"),
+                Some("研发中心 / 后端组 / API 小组"),
+                &departments,
+            )
+            .await
+            .unwrap()
+            .expect("should have been placed");
+        assert_eq!(outcome.tenant_id, tenant_id);
+        // Walked d_api -> d_backend -> d_rd and stopped at the mapped node.
+        assert_eq!(outcome.department_id.as_deref(), Some(local_dept.as_str()));
+
+        // The row a security check reads is actually there, with the IdP's
+        // department path recorded.
+        let (tid, dept, path): (String, Option<String>, Option<String>) = service
+            .db
+            .fetch_optional_as::<(String, Option<String>, Option<String>)>(
+                "SELECT tenant_id, department_id, org_unit_path FROM one_user_org WHERE user_id = ?",
+                &db_params![&alice],
+            )
+            .await
+            .unwrap()
+            .expect("one_user_org row must exist");
+        assert_eq!(tid, tenant_id);
+        assert_eq!(dept.as_deref(), Some(local_dept.as_str()));
+        assert_eq!(path.as_deref(), Some("研发中心 / 后端组 / API 小组"));
+
+        // Idempotent: a returning user is never re-filed.
+        assert!(
+            service
+                .auto_join_after_sso(&alice, Some("d_api"), None, &departments)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn sso_auto_join_falls_back_to_the_root_group_when_nothing_matches() {
+        let (_db, service, user_repo) = setup().await;
+        let (root, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Root").await.unwrap();
+
+        // LDAP: no directory id at all, only a DN-derived path. Must still be
+        // placed, or the platform security gate reads them as "not in an
+        // enterprise" and waves every tool call through.
+        let bob = create_user(&user_repo, "bob").await;
+        let outcome = service
+            .auto_join_after_sso(&bob, None, Some("123u / users / 公用&临时账户"), &[])
+            .await
+            .unwrap()
+            .expect("must fall back rather than leave them ungoverned");
+        assert_eq!(outcome.tenant_id, root);
+        assert_eq!(outcome.department_id, None);
+
+        let path: Option<String> = service
+            .db
+            .fetch_optional_scalar(
+                "SELECT org_unit_path FROM one_user_org WHERE user_id = ?",
+                &db_params![&bob],
+            )
+            .await
+            .unwrap()
+            .flatten();
+        assert_eq!(path.as_deref(), Some("123u / users / 公用&临时账户"));
+
+        // Feishu person whose branch nobody mapped → same fallback.
+        let carol = create_user(&user_repo, "carol").await;
+        let departments = vec![DirectoryDepartmentRef {
+            external_id: "d_sales".into(),
+            parent_external_id: None,
+            name: "销售部".into(),
+        }];
+        let outcome = service
+            .auto_join_after_sso(&carol, Some("d_sales"), None, &departments)
+            .await
+            .unwrap()
+            .expect("unmapped branch still gets placed");
+        assert_eq!(outcome.tenant_id, root);
+        assert_eq!(outcome.department_id, None);
+    }
+
+    #[tokio::test]
+    async fn sso_auto_join_never_overrides_an_existing_membership() {
+        let (_db, service, user_repo) = setup().await;
+        let (first, _, invite) = service
+            .create_tenant_for_enterprise("ent_first", "First", SYSTEM_DEFAULT_USER_ID, None)
+            .await
+            .unwrap();
+        let (second, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Second").await.unwrap();
+        let local_dept = map_department(&service, &second, "销售部", "d_sales").await;
+        let departments = vec![DirectoryDepartmentRef {
+            external_id: "d_sales".into(),
+            parent_external_id: None,
+            name: "销售部".into(),
+        }];
+
+        // Already onboarded by invite code into `first`.
+        let dave = create_user(&user_repo, "dave").await;
+        service.join_with_invite(&dave, &invite).await.unwrap();
+
+        // A later SSO login must NOT move them into `second`, even though the
+        // directory says their department was mapped there — an admin's (or an
+        // invite's) placement wins.
+        assert!(
+            service
+                .auto_join_after_sso(&dave, Some("d_sales"), None, &departments)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let tid: String = service
+            .db
+            .fetch_one_scalar(
+                "SELECT tenant_id FROM one_user_org WHERE user_id = ?",
+                &db_params![&dave],
+            )
+            .await
+            .unwrap();
+        assert_eq!(tid, first);
+        let _ = local_dept;
+    }
+
+    #[tokio::test]
+    async fn sso_auto_join_survives_a_cyclic_directory_tree() {
+        let (_db, service, user_repo) = setup().await;
+        let (root, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Root").await.unwrap();
+        // A malformed mirror where two nodes parent each other. This runs on
+        // the login path, so a loop here would hang every login.
+        let departments = vec![
+            DirectoryDepartmentRef {
+                external_id: "a".into(),
+                parent_external_id: Some("b".into()),
+                name: "A".into(),
+            },
+            DirectoryDepartmentRef {
+                external_id: "b".into(),
+                parent_external_id: Some("a".into()),
+                name: "B".into(),
+            },
+        ];
+        let eve = create_user(&user_repo, "eve").await;
+        let outcome = service
+            .auto_join_after_sso(&eve, Some("a"), None, &departments)
+            .await
+            .unwrap()
+            .expect("terminates and falls back");
+        assert_eq!(outcome.tenant_id, root);
     }
 
     #[tokio::test]
@@ -4238,17 +4978,25 @@ mod tests {
         let service = Arc::new(OrgService::new(
             mysql_db.pool.clone(),
             user_repo.clone(),
-            std::sync::Arc::new(dream_core_db::SqliteConversationRepository::new(sqlite_db.pool().clone())),
+            std::sync::Arc::new(dream_core_db::SqliteConversationRepository::new(
+                sqlite_db.pool().clone(),
+            )),
             data_dir,
             [7u8; 32],
         ));
 
-        let (g1, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Group One").await.unwrap();
+        let (g1, _) = service
+            .create_tenant(SYSTEM_DEFAULT_USER_ID, "Group One")
+            .await
+            .unwrap();
         let (g2, _, code2) = service
             .create_tenant_for_enterprise("ent1", "Group Two", SYSTEM_DEFAULT_USER_ID, None)
             .await
             .unwrap();
-        let (_, code1) = service.create_invite(&g1, SYSTEM_DEFAULT_USER_ID, None, None).await.unwrap();
+        let (_, code1) = service
+            .create_invite(&g1, SYSTEM_DEFAULT_USER_ID, None, None)
+            .await
+            .unwrap();
         let member = create_user(&user_repo, "multi").await;
 
         // `one_user_org` upsert on first join, then again on the second join
@@ -4672,7 +5420,9 @@ mod tests {
         let service = Arc::new(OrgService::new(
             mysql_db.pool.clone(),
             user_repo.clone(),
-            std::sync::Arc::new(dream_core_db::SqliteConversationRepository::new(sqlite_db.pool().clone())),
+            std::sync::Arc::new(dream_core_db::SqliteConversationRepository::new(
+                sqlite_db.pool().clone(),
+            )),
             data_dir,
             [7u8; 32],
         ));
@@ -4694,7 +5444,11 @@ mod tests {
             service.effective_role(SYSTEM_DEFAULT_USER_ID).await.unwrap(),
             ROLE_SYSTEM_ADMIN
         );
-        let tenants: i64 = service.db.fetch_one_scalar("SELECT COUNT(*) FROM one_tenants", &[]).await.unwrap();
+        let tenants: i64 = service
+            .db
+            .fetch_one_scalar("SELECT COUNT(*) FROM one_tenants", &[])
+            .await
+            .unwrap();
         assert_eq!(tenants, 1);
 
         sqlite_db.close().await;

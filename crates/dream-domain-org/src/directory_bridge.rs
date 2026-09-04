@@ -31,6 +31,21 @@ pub trait DirectoryTreeSource: Send + Sync {
     /// completed. Never partial: same "run the whole thing or say nothing"
     /// contract the mirror itself keeps (see `enterprise_003_directory`).
     async fn directory_departments(&self) -> Vec<DirectoryDepartmentRef>;
+
+    /// The primary department of the person the directory mirror holds under
+    /// `external_id`, or `None` when this deployment has no directory, the
+    /// person is not in it, or the mirror has no department for them.
+    ///
+    /// `external_id` is the person's own IdP id (Feishu `open_id`/`union_id`),
+    /// the same value `one_sso_identities.external_id` carries — which is what
+    /// lets an SSO login be tied back to a directory row (see
+    /// `one_directory_people`'s column comment). Deliberately NOT the company's
+    /// `tenant_key`: that one is shared by every employee.
+    ///
+    /// Used by `OrgService::auto_join_after_sso` to place a freshly
+    /// SSO-authenticated user into the project group whose department tree was
+    /// mapped from the branch of the company directory they actually sit in.
+    async fn person_department(&self, external_id: &str) -> Option<String>;
 }
 
 /// Default when nothing is wired: personal and standalone installs have no
@@ -41,5 +56,9 @@ pub struct NoopDirectoryTreeSource;
 impl DirectoryTreeSource for NoopDirectoryTreeSource {
     async fn directory_departments(&self) -> Vec<DirectoryDepartmentRef> {
         Vec::new()
+    }
+
+    async fn person_department(&self, _external_id: &str) -> Option<String> {
+        None
     }
 }

@@ -27,8 +27,8 @@
 use dream_core_common::now_ms;
 
 use crate::error::EnterpriseError;
-use dream_core_db::db_params;
 use crate::service::EnterpriseService;
+use dream_core_db::db_params;
 
 /// One department, as handed over by the fetch side.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,17 +144,24 @@ impl EnterpriseService {
         for chunk in input.departments.chunks(DIRECTORY_WRITE_CHUNK) {
             let mut tx = pool.begin().await?;
             for department in chunk {
-                let params = db_params![enterprise_id, &department.external_id, department.parent_external_id.as_deref(), &department.name, now, now];
+                let params = db_params![
+                    enterprise_id,
+                    &department.external_id,
+                    department.parent_external_id.as_deref(),
+                    &department.name,
+                    now,
+                    now
+                ];
                 match pool.backend() {
                     dream_core_db::DbBackend::Sqlite => {
-                tx.execute(
+                        tx.execute(
                     "INSERT INTO one_directory_departments                    (enterprise_id, external_id, parent_external_id, name, first_seen_at, last_seen_at)                  VALUES (?, ?, ?, ?, ?, ?)                  ON CONFLICT(enterprise_id, external_id) DO UPDATE SET                    parent_external_id = excluded.parent_external_id,                    name = excluded.name,                    last_seen_at = excluded.last_seen_at",
                     &params,
                 )
                 .await?;
                     }
                     dream_core_db::DbBackend::MySql => {
-                tx.execute(
+                        tx.execute(
                     "INSERT INTO one_directory_departments                    (enterprise_id, external_id, parent_external_id, name, first_seen_at, last_seen_at)                  VALUES (?, ?, ?, ?, ?, ?) AS new                  ON DUPLICATE KEY UPDATE                    parent_external_id = new.parent_external_id,                    name = new.name,                    last_seen_at = new.last_seen_at",
                     &params,
                 )
@@ -168,17 +175,26 @@ impl EnterpriseService {
         for chunk in input.people.chunks(DIRECTORY_WRITE_CHUNK) {
             let mut tx = pool.begin().await?;
             for person in chunk {
-                let params = db_params![enterprise_id, &person.external_id, person.name.as_deref(), person.job_title.as_deref(), person.department_external_id.as_deref(), i64::from(person.active), now, now];
+                let params = db_params![
+                    enterprise_id,
+                    &person.external_id,
+                    person.name.as_deref(),
+                    person.job_title.as_deref(),
+                    person.department_external_id.as_deref(),
+                    i64::from(person.active),
+                    now,
+                    now
+                ];
                 match pool.backend() {
                     dream_core_db::DbBackend::Sqlite => {
-                tx.execute(
+                        tx.execute(
                     "INSERT INTO one_directory_people                    (enterprise_id, external_id, name, job_title, department_external_id, active,                     first_seen_at, last_seen_at, missing_since)                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)                  ON CONFLICT(enterprise_id, external_id) DO UPDATE SET                    name = excluded.name,                    job_title = excluded.job_title,                    department_external_id = excluded.department_external_id,                    active = excluded.active,                    last_seen_at = excluded.last_seen_at",
                     &params,
                 )
                 .await?;
                     }
                     dream_core_db::DbBackend::MySql => {
-                tx.execute(
+                        tx.execute(
                     "INSERT INTO one_directory_people                    (enterprise_id, external_id, name, job_title, department_external_id, active,                     first_seen_at, last_seen_at, missing_since)                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL) AS new                  ON DUPLICATE KEY UPDATE                    name = new.name,                    job_title = new.job_title,                    department_external_id = new.department_external_id,                    active = new.active,                    last_seen_at = new.last_seen_at",
                     &params,
                 )
@@ -226,17 +242,27 @@ impl EnterpriseService {
         }
 
         let status = if input.complete { "ok" } else { "partial" };
-        let params = db_params![enterprise_id, &input.provider, &input.external_id_field, now, status, input.error.as_deref(), input.departments.len() as i64, input.people.len() as i64, now];
+        let params = db_params![
+            enterprise_id,
+            &input.provider,
+            &input.external_id_field,
+            now,
+            status,
+            input.error.as_deref(),
+            input.departments.len() as i64,
+            input.people.len() as i64,
+            now
+        ];
         match pool.backend() {
             dream_core_db::DbBackend::Sqlite => {
-        tx.execute(
+                tx.execute(
             "INSERT INTO one_directory_sync_state                (enterprise_id, provider, external_id_field, last_run_at, last_status, last_error,                 department_count, people_count, updated_at)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)              ON CONFLICT(enterprise_id) DO UPDATE SET                provider = excluded.provider,                external_id_field = excluded.external_id_field,                last_run_at = excluded.last_run_at,                last_status = excluded.last_status,                last_error = excluded.last_error,                department_count = excluded.department_count,                people_count = excluded.people_count,                updated_at = excluded.updated_at",
             &params,
         )
         .await?;
             }
             dream_core_db::DbBackend::MySql => {
-        tx.execute(
+                tx.execute(
             "INSERT INTO one_directory_sync_state                (enterprise_id, provider, external_id_field, last_run_at, last_status, last_error,                 department_count, people_count, updated_at)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) AS new              ON DUPLICATE KEY UPDATE                provider = new.provider,                external_id_field = new.external_id_field,                last_run_at = new.last_run_at,                last_status = new.last_status,                last_error = new.last_error,                department_count = new.department_count,                people_count = new.people_count,                updated_at = new.updated_at",
             &params,
         )
@@ -309,11 +335,19 @@ impl EnterpriseService {
              WHERE o.user_id IN ({placeholders}) \
              ORDER BY o.user_id, t.name, o.tenant_id"
         );
-        let params: Vec<dream_core_db::DbValue> =
-            user_ids.iter().map(|u| dream_core_db::DbValue::from(u.as_str())).collect();
-        let rows = match self.db.fetch_all_as::<(String, String, Option<String>)>(&sql, &params).await {
+        let params: Vec<dream_core_db::DbValue> = user_ids
+            .iter()
+            .map(|u| dream_core_db::DbValue::from(u.as_str()))
+            .collect();
+        let rows = match self
+            .db
+            .fetch_all_as::<(String, String, Option<String>)>(&sql, &params)
+            .await
+        {
             Ok(rows) => rows,
-            Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => return Ok(out),
+            Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => {
+                return Ok(out);
+            }
             Err(e) => return Err(e.into()),
         };
         for (user_id, tenant_id, name) in rows {
@@ -335,17 +369,44 @@ impl EnterpriseService {
         let rows = self
             .db
             .fetch_all_as::<DirectoryPersonDto>(
-            "SELECT p.external_id, p.name, p.job_title, d.name AS department, p.active \
+                "SELECT p.external_id, p.name, p.job_title, d.name AS department, p.active \
              FROM one_directory_people p \
              LEFT JOIN one_directory_departments d \
                ON d.enterprise_id = p.enterprise_id AND d.external_id = p.department_external_id \
              WHERE p.enterprise_id = ? AND p.missing_since IS NULL \
              ORDER BY d.name ASC, p.name ASC \
              LIMIT 5000",
-            &db_params![enterprise_id],
-        )
-        .await?;
+                &db_params![enterprise_id],
+            )
+            .await?;
         Ok(rows)
+    }
+
+    /// The primary department of one person in the mirror, by their own IdP id
+    /// (`one_sso_identities.external_id` for the same provider).
+    ///
+    /// A point lookup rather than filtering `list_directory_people`, because
+    /// the caller is the SSO login path: a real tenant's mirror is thousands of
+    /// rows (754 in the deployment this was verified against) and no login
+    /// should pull all of them to answer one question.
+    ///
+    /// Includes people flagged `missing_since` on purpose — unlike
+    /// `list_directory_people`, whose job is "who is actually here". Somebody
+    /// who just authenticated against the IdP is demonstrably still employed;
+    /// a stale mirror must not cost them their department placement.
+    pub async fn directory_person_department(
+        &self,
+        enterprise_id: &str,
+        external_id: &str,
+    ) -> Result<Option<String>, EnterpriseError> {
+        Ok(self
+            .db
+            .fetch_optional_scalar(
+                "SELECT department_external_id FROM one_directory_people \
+                 WHERE enterprise_id = ? AND external_id = ?",
+                &db_params![enterprise_id, external_id],
+            )
+            .await?)
     }
 
     /// Every department currently in the directory mirror, flat — for T6
@@ -358,11 +419,11 @@ impl EnterpriseService {
         let rows = self
             .db
             .fetch_all_as::<DirectoryDepartmentDto>(
-            "SELECT external_id, parent_external_id, name \
+                "SELECT external_id, parent_external_id, name \
              FROM one_directory_departments WHERE enterprise_id = ? ORDER BY name ASC",
-            &db_params![enterprise_id],
-        )
-        .await?;
+                &db_params![enterprise_id],
+            )
+            .await?;
         Ok(rows)
     }
 
@@ -374,11 +435,11 @@ impl EnterpriseService {
         let row = self
             .db
             .fetch_optional_as::<DirectorySyncStateDto>(
-            "SELECT provider, last_run_at, last_status, last_error, department_count, people_count \
+                "SELECT provider, last_run_at, last_status, last_error, department_count, people_count \
              FROM one_directory_sync_state WHERE enterprise_id = ?",
-            &db_params![enterprise_id],
-        )
-        .await?;
+                &db_params![enterprise_id],
+            )
+            .await?;
         Ok(row)
     }
 }
@@ -422,7 +483,9 @@ mod tests {
     /// the join can be exercised without depending on that crate.
     async fn service() -> (EnterpriseService, sqlx::SqlitePool) {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        crate::migrate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
         sqlx::query(
             "CREATE TABLE one_sso_identities (\
                 provider TEXT NOT NULL, external_id TEXT NOT NULL, user_id TEXT NOT NULL)",
@@ -458,7 +521,9 @@ mod tests {
     #[tokio::test]
     async fn snapshot_spanning_several_chunks_is_written_whole() {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        crate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
         let sqlite = db.pool().clone();
         let svc = EnterpriseService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()));
 
@@ -499,11 +564,16 @@ mod tests {
             eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
             return;
         };
-        crate::migrate::run_one_enterprise_migrations(&mysql_db.pool).await.unwrap();
+        crate::migrate::run_one_enterprise_migrations(&mysql_db.pool)
+            .await
+            .unwrap();
         let svc = EnterpriseService::new(mysql_db.pool.clone());
 
         let people = vec![person("od_p1", true), person("od_p2", true)];
-        let report1 = svc.apply_directory_snapshot("ent1", &snapshot(people.clone(), true)).await.unwrap();
+        let report1 = svc
+            .apply_directory_snapshot("ent1", &snapshot(people.clone(), true))
+            .await
+            .unwrap();
         assert_eq!(report1.people, 2);
         assert_eq!(report1.departments, 1);
 
@@ -511,12 +581,19 @@ mod tests {
         // hits its ON DUPLICATE KEY UPDATE / ON CONFLICT branch instead.
         let mut updated_people = people;
         updated_people[0].name = Some("renamed".into());
-        let report2 = svc.apply_directory_snapshot("ent1", &snapshot(updated_people, true)).await.unwrap();
+        let report2 = svc
+            .apply_directory_snapshot("ent1", &snapshot(updated_people, true))
+            .await
+            .unwrap();
         assert_eq!(report2.people, 2);
         assert_eq!(report2.newly_missing, 0);
 
         let people_rows = svc.list_directory_people("ent1").await.unwrap();
-        assert_eq!(people_rows.len(), 2, "the second pull updated in place, not duplicated rows");
+        assert_eq!(
+            people_rows.len(),
+            2,
+            "the second pull updated in place, not duplicated rows"
+        );
         assert!(
             people_rows.iter().any(|p| p.name.as_deref() == Some("renamed")),
             "the update-on-conflict branch must actually apply the new name"
@@ -557,7 +634,13 @@ mod tests {
             .unwrap();
     }
 
-    async fn join_group(svc: &EnterpriseService, sqlite: &sqlx::SqlitePool, user_id: &str, tenant_id: &str, name: &str) {
+    async fn join_group(
+        svc: &EnterpriseService,
+        sqlite: &sqlx::SqlitePool,
+        user_id: &str,
+        tenant_id: &str,
+        name: &str,
+    ) {
         sqlx::query("INSERT OR IGNORE INTO one_tenants (id, name) VALUES (?, ?)")
             .bind(tenant_id)
             .bind(name)
