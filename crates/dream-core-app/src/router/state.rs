@@ -661,7 +661,7 @@ async fn build_channel_message_service(
 }
 
 async fn startup_channel_owner_user_id(services: &AppServices) -> Option<String> {
-    if services.identity_mode == IdentityMode::AionPro {
+    if services.identity_mode == IdentityMode::DreamPro {
         return None;
     }
 
@@ -1108,7 +1108,7 @@ pub fn build_ws_state(services: &AppServices, router: Arc<dyn MessageRouter>) ->
         Box::pin(async move {
             let payload = jwt_service.verify(&token).ok()?;
             let user = user_repo.find_active_by_id(&payload.user_id).await.ok()??;
-            if identity_mode == IdentityMode::AionPro && user.user_type != dream_core_db::UserType::Aionpro {
+            if identity_mode == IdentityMode::DreamPro && user.user_type != dream_core_db::UserType::DreamPro {
                 return None;
             }
             (payload.session_generation == user.session_generation).then_some(user.id)
@@ -1316,10 +1316,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_ws_state_aionpro_rejects_local_user_token() {
+    async fn build_ws_state_dreampro_rejects_local_user_token() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         let config = AppConfig {
-            identity_mode: IdentityMode::AionPro,
+            identity_mode: IdentityMode::DreamPro,
             bootstrap_secret: Some("bootstrap-secret".to_owned()),
             ..AppConfig::default()
         };

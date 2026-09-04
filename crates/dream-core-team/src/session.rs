@@ -2642,7 +2642,7 @@ mod tests {
     }
 
     fn backend_path() -> Arc<PathBuf> {
-        Arc::new(PathBuf::from("/tmp/aioncore-test"))
+        Arc::new(PathBuf::from("/tmp/dreamcore-test"))
     }
 
     /// In-memory stub for [`IWorkerTaskManager`]. Only `get_task` is

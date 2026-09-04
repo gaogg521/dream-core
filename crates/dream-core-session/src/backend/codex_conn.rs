@@ -74,7 +74,9 @@ fn codex_app_server_args(extra_args: &[String]) -> Vec<String> {
 fn log_codex_runtime_policy(spawn_env: &[dream_core_common::EnvVar]) {
     let mut runtime_env_keys = spawn_env
         .iter()
-        .filter_map(|entry| entry.name.starts_with("AIONUI_").then_some(entry.name.as_str()))
+        .filter_map(|entry| {
+            (entry.name.starts_with("ONE_") || entry.name.starts_with("AIONUI_")).then_some(entry.name.as_str())
+        })
         .collect::<Vec<_>>();
     runtime_env_keys.sort_unstable();
     runtime_env_keys.dedup();
@@ -1790,7 +1792,7 @@ async fn reader_task(
                         // `turn/completed` DOES arrive later, `terminated`/I10 absorb it
                         // (no double terminal). `willRetry:true` is a transient retry →
                         // still falls through to map_notification → Heartbeat (NOT a
-                        // terminal). See protocols/design/aioncore-codex-turn-no-terminal-hang-prompt.md.
+                        // terminal). See protocols/design/dreamcore-codex-turn-no-terminal-hang-prompt.md.
                         if m == "error"
                             && params.get("willRetry").and_then(Value::as_bool) != Some(true)
                             && turn_in_flight.load(Ordering::SeqCst)

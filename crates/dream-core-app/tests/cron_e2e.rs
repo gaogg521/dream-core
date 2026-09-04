@@ -323,7 +323,7 @@ async fn cj3b_create_accepts_workspace_with_whitespace_segment() {
     let (mut app, services) = build_app().await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
     ensure_default_assistant(&mut app, &token, &csrf).await;
-    let dir = std::env::temp_dir().join(format!("aionui-cron-test-{}", dream_core_common::generate_short_id()));
+    let dir = std::env::temp_dir().join(format!("dream-cron-test-{}", dream_core_common::generate_short_id()));
     std::fs::create_dir(&dir).unwrap();
     let workspace = dir.join("Archive ");
     std::fs::create_dir(&workspace).unwrap();
@@ -436,7 +436,7 @@ async fn cj5b_run_now_legacy_workspace_with_whitespace_succeeds() {
     ensure_default_assistant(&mut app, &token, &csrf).await;
     let cron_repo = SqliteCronRepository::new(services.database.pool().clone());
     let now = dream_core_common::now_ms();
-    let dir = std::env::temp_dir().join(format!("aionui-cron-test-{}", dream_core_common::generate_short_id()));
+    let dir = std::env::temp_dir().join(format!("dream-cron-test-{}", dream_core_common::generate_short_id()));
     std::fs::create_dir(&dir).unwrap();
     let workspace = dir.join("Archive ");
     std::fs::create_dir(&workspace).unwrap();

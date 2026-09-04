@@ -47,6 +47,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ),
     ("014_api_assets", include_str!("../migrations/014_api_assets.sql")),
     ("015_market_sync", include_str!("../migrations/015_market_sync.sql")),
+    (
+        "016_provider_channel_model_protocols",
+        include_str!("../migrations/016_provider_channel_model_protocols.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -106,6 +110,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "015_market_sync",
         include_str!("../migrations_mysql/015_market_sync.sql"),
+    ),
+    (
+        "016_provider_channel_model_protocols",
+        include_str!("../migrations_mysql/016_provider_channel_model_protocols.sql"),
     ),
 ];
 

@@ -53,7 +53,7 @@ impl ISystemOpener for DefaultSystemOpener {
     fn copy_to_clipboard(&self, text: &str) -> Result<(), ShellError> {
         // arboard is cross-platform (mac/win/linux). Any failure — including a
         // headless/no-display environment (e.g. a remote WebUI server) — maps to a
-        // command error rather than a panic. aioncore is long-lived, so on X11 it
+        // command error rather than a panic. dreamcore is long-lived, so on X11 it
         // remains the clipboard owner and the content persists after this returns.
         let mut clipboard =
             arboard::Clipboard::new().map_err(|e| ShellError::CommandFailed(format!("clipboard: {e}")))?;

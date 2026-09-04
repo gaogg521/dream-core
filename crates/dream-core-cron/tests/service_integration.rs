@@ -920,7 +920,7 @@ async fn setup_with_conv_runtime_and_agent_metadata() -> (
         Arc::new(SqliteAssistantPreferenceRepository::new(pool.clone()));
     let acp_session_repo: Arc<dyn IAcpSessionRepository> = Arc::new(SqliteAcpSessionRepository::new(pool.clone()));
     let bc = Arc::new(MockBroadcaster::new());
-    let data_dir = std::env::temp_dir().join(format!("aionui-cron-test-{}", now_ms()));
+    let data_dir = std::env::temp_dir().join(format!("dream-cron-test-{}", now_ms()));
     std::fs::create_dir_all(&data_dir).unwrap();
 
     struct StubSkillResolver;
@@ -1038,7 +1038,7 @@ async fn setup_with_assistant_repos() -> (
         Arc::new(SqliteAssistantPreferenceRepository::new(pool.clone()));
     let acp_session_repo: Arc<dyn IAcpSessionRepository> = Arc::new(SqliteAcpSessionRepository::new(pool.clone()));
     let bc = Arc::new(MockBroadcaster::new());
-    let data_dir = std::env::temp_dir().join(format!("aionui-cron-test-{}", now_ms()));
+    let data_dir = std::env::temp_dir().join(format!("dream-cron-test-{}", now_ms()));
     std::fs::create_dir_all(&data_dir).unwrap();
 
     struct StubSkillResolver;
@@ -2895,8 +2895,8 @@ async fn conversation_cron_routes_create_list_and_update_claimed_job() {
                 .method(Method::POST)
                 .uri("/api/internal/conversation-cron/create")
                 .header("content-type", "application/json")
-                .header("x-aionui-user-id", "u1")
-                .header("x-aionui-conversation-id", "conv_1")
+                .header("x-dream-user-id", "u1")
+                .header("x-dream-conversation-id", "conv_1")
                 .body(Body::from(
                     serde_json::to_vec(&conversation_cron_request("first\nsecond\nthird")).unwrap(),
                 ))
@@ -2921,8 +2921,8 @@ async fn conversation_cron_routes_create_list_and_update_claimed_job() {
             Request::builder()
                 .method(Method::GET)
                 .uri("/api/internal/conversation-cron/list")
-                .header("x-aionui-user-id", "u1")
-                .header("x-aionui-conversation-id", "conv_1")
+                .header("x-dream-user-id", "u1")
+                .header("x-dream-conversation-id", "conv_1")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2941,8 +2941,8 @@ async fn conversation_cron_routes_create_list_and_update_claimed_job() {
                 .method(Method::PUT)
                 .uri(format!("/api/internal/conversation-cron/jobs/{}", payload.job_id))
                 .header("content-type", "application/json")
-                .header("x-aionui-user-id", "u1")
-                .header("x-aionui-conversation-id", "conv_1")
+                .header("x-dream-user-id", "u1")
+                .header("x-dream-conversation-id", "conv_1")
                 .body(Body::from(
                     serde_json::to_vec(&UpdateConversationCronRequest {
                         name: "Updated Route Job".into(),
@@ -2980,7 +2980,7 @@ async fn conversation_cron_routes_reject_missing_headers_unclaimed_and_wrong_use
                 .method(Method::POST)
                 .uri("/api/internal/conversation-cron/create")
                 .header("content-type", "application/json")
-                .header("x-aionui-conversation-id", "conv_1")
+                .header("x-dream-conversation-id", "conv_1")
                 .body(Body::from(
                     serde_json::to_vec(&conversation_cron_request("hello")).unwrap(),
                 ))
@@ -2990,7 +2990,7 @@ async fn conversation_cron_routes_reject_missing_headers_unclaimed_and_wrong_use
         .unwrap();
     assert_eq!(missing_header.status(), StatusCode::BAD_REQUEST);
     let body = String::from_utf8(to_bytes(missing_header.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
-    assert!(body.contains("x-aionui-user-id"));
+    assert!(body.contains("x-dream-user-id"));
 
     let unclaimed = app
         .clone()
@@ -2999,8 +2999,8 @@ async fn conversation_cron_routes_reject_missing_headers_unclaimed_and_wrong_use
                 .method(Method::POST)
                 .uri("/api/internal/conversation-cron/create")
                 .header("content-type", "application/json")
-                .header("x-aionui-user-id", "u1")
-                .header("x-aionui-conversation-id", "conv_1")
+                .header("x-dream-user-id", "u1")
+                .header("x-dream-conversation-id", "conv_1")
                 .body(Body::from(
                     serde_json::to_vec(&conversation_cron_request("hello")).unwrap(),
                 ))
@@ -3023,8 +3023,8 @@ async fn conversation_cron_routes_reject_missing_headers_unclaimed_and_wrong_use
                 .method(Method::POST)
                 .uri("/api/internal/conversation-cron/create")
                 .header("content-type", "application/json")
-                .header("x-aionui-user-id", "other_user")
-                .header("x-aionui-conversation-id", "conv_1")
+                .header("x-dream-user-id", "other_user")
+                .header("x-dream-conversation-id", "conv_1")
                 .body(Body::from(
                     serde_json::to_vec(&conversation_cron_request("hello")).unwrap(),
                 ))

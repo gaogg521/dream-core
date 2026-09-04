@@ -32,7 +32,7 @@ fn log_acp_process_exit(
     stderr_summary_present: bool,
 ) {
     tracing::warn!(
-        target: "aionui_feedback_diagnostics",
+        target: "dream_feedback_diagnostics",
         diagnostic_event = "feedback.runtime.acp_process_exit",
         conversation_id = %conversation_id,
         agent_id = %agent_id,
@@ -299,7 +299,7 @@ mod tests {
             super::log_acp_process_exit("conv-acp", "codex", Some(1), None, true);
         });
 
-        assert!(captured.contains("aionui_feedback_diagnostics"), "{captured}");
+        assert!(captured.contains("dream_feedback_diagnostics"), "{captured}");
         assert!(captured.contains("feedback.runtime.acp_process_exit"), "{captured}");
         assert!(captured.contains("conversation_id=conv-acp"), "{captured}");
         assert!(captured.contains("agent_id=codex"), "{captured}");

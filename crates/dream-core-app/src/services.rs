@@ -128,14 +128,14 @@ impl AppServices {
     }
 
     pub async fn from_config(database: Database, config: &AppConfig) -> anyhow::Result<Self> {
-        let backend_binary_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("aioncore"));
+        let backend_binary_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("dreamcore"));
         Self::from_config_with_backend_binary_path(database, config, backend_binary_path).await
     }
 
     /// Construct application services with an explicitly resolved backend binary.
     ///
     /// Runtime entry points should use [`Self::from_config`]. This variant lets
-    /// integration tests run the real `aioncore` MCP/helper subcommands instead
+    /// integration tests run the real `dreamcore` MCP/helper subcommands instead
     /// of accidentally respawning the test harness returned by `current_exe()`.
     pub async fn from_config_with_backend_binary_path(
         database: Database,
@@ -230,7 +230,7 @@ impl AppServices {
             }
         };
 
-        // Enterprise first-boot bootstrap: a fresh non-local (Webui/AionPro)
+        // Enterprise first-boot bootstrap: a fresh non-local (Webui/DreamPro)
         // deployment's seed admin account (`system_default_user`) has an empty
         // `password_hash` — `login_handler` treats that as "invalid
         // credentials", so with nothing else to set a password there is no

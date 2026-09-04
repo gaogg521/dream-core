@@ -85,6 +85,11 @@ pub struct ModelSettings {
     /// entered — a gateway's price is the user's contract with their vendor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media_unit_price_usd: Option<f64>,
+    /// The model's context window in tokens. Drives the engine's compaction
+    /// thresholds and, for Ollama, the server-side `num_ctx`. Absent = the
+    /// provider-level `context_limit` applies, then the engine default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
 }
 
 /// Health status values for a model.

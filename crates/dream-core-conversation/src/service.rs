@@ -59,7 +59,7 @@ use crate::convert::{
     row_to_message_response_compact, row_to_response, row_to_response_with_extra, search_row_to_item, string_to_enum,
 };
 use crate::error::ConversationError;
-use crate::session_context::{AionrsRuntimePermissionSeed, SessionContextBuilder};
+use crate::session_context::{DreamEngineRuntimePermissionSeed, SessionContextBuilder};
 use crate::skill_resolver::SkillResolver;
 use crate::skill_snapshot::{backfill_skills_if_missing, compute_initial_skills};
 use crate::turn_orchestrator::{ConversationTurnOrchestrator, ConversationTurnStatus, TurnStartInput};
@@ -651,7 +651,7 @@ impl ConversationService {
     }
 
     /// Resolve a send's file attachments to absolute paths and re-inline them
-    /// into the message content (`[[AION_FILES]]` form) at the send boundary.
+    /// into the message content (`[[DREAM_FILES]]` form) at the send boundary.
     /// Atomic — a bad reference fails the whole send. Empty `files` is a no-op
     /// (content unchanged), so callers without attachments never need the
     /// project service.
@@ -3994,7 +3994,7 @@ impl ConversationService {
 
         // Resolve file attachments at the send boundary before any persist/claim
         // (atomic: a bad reference fails the whole send). Produces the inlined
-        // `[[AION_FILES]]` content used for persistence, broadcast, and the turn.
+        // `[[DREAM_FILES]]` content used for persistence, broadcast, and the turn.
         let resolved = self
             .resolve_message_attachments(user_id, &req.content, &req.files)
             .await?;
@@ -4864,7 +4864,7 @@ impl ConversationService {
     async fn load_aionrs_permission_seed(
         &self,
         row: &dream_core_db::models::ConversationRow,
-    ) -> Result<Option<AionrsRuntimePermissionSeed>, ConversationError> {
+    ) -> Result<Option<DreamEngineRuntimePermissionSeed>, ConversationError> {
         if row.r#type != AgentType::DreamEngine.serde_name() {
             return Ok(None);
         }
@@ -4877,7 +4877,7 @@ impl ConversationService {
                     "Failed to load assistant snapshot for aionrs permission seed: {e}"
                 ))
             })?;
-        Ok(snapshot.map(|snapshot| AionrsRuntimePermissionSeed {
+        Ok(snapshot.map(|snapshot| DreamEngineRuntimePermissionSeed {
             default_permission_mode: snapshot.default_permission_mode,
             resolved_permission_value: snapshot.resolved_permission_value,
         }))

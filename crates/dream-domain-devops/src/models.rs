@@ -167,6 +167,9 @@ pub struct ProviderChannelDto {
     pub models: String,
     /// JSON object of per-model settings, same shape as `providers.model_settings`.
     pub model_settings: Option<String>,
+    /// JSON object mapping model name -> wire protocol, same shape as
+    /// `providers.model_protocols`. Only meaningful when `platform = 'new-api'`.
+    pub model_protocols: Option<String>,
     pub enabled: bool,
     pub scope: String,
     pub team_id: Option<String>,

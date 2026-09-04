@@ -32,7 +32,7 @@ const OLD_DIR_NAME: &str = ".builtin-skills.old";
 /// Total budget for acquiring the builtin-skills materialization lock.
 ///
 /// Why 15s: this lock is taken *after* the HTTP listener is bound and the
-/// `AIONCORE_LISTENING <port>` line has already been printed (dream-app
+/// `DREAMCORE_LISTENING <port>` line has already been printed (dream-app
 /// `async_main` binds the listener, then calls `init_data_layer`). So the
 /// parent process is no longer in its port-report window (60s) — it is in its
 /// `/health` polling window, which Dream UI caps at 30s

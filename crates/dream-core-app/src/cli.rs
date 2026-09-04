@@ -47,7 +47,7 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub local: bool,
 
-    /// Identity source mode. DreamPro mode requires AIONCORE_BOOTSTRAP_SECRET.
+    /// Identity source mode. DreamPro mode requires DREAMCORE_BOOTSTRAP_SECRET.
     #[arg(long, value_enum, default_value_t = IdentityModeArg::Webui)]
     pub identity_mode: IdentityModeArg,
 
@@ -87,7 +87,9 @@ pub(crate) enum ManagedResourcesModeArg {
 pub(crate) enum IdentityModeArg {
     Local,
     Webui,
-    Aionpro,
+    /// CLI value stays `dreampro`; `aionpro` accepted as a deploy-script alias.
+    #[value(alias = "aionpro")]
+    DreamPro,
 }
 
 impl From<IdentityModeArg> for dream_core_app::IdentityMode {
@@ -95,7 +97,7 @@ impl From<IdentityModeArg> for dream_core_app::IdentityMode {
         match value {
             IdentityModeArg::Local => Self::Local,
             IdentityModeArg::Webui => Self::WebUi,
-            IdentityModeArg::Aionpro => Self::AionPro,
+            IdentityModeArg::DreamPro => Self::DreamPro,
         }
     }
 }

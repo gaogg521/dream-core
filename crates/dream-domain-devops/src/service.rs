@@ -534,16 +534,28 @@ impl DevopsService {
     }
 
     /// Best-effort audit trail for policy-changing actions (registry writes,
-    /// requirement dispatch/breakdown). Writes into one-org's `one_audit_logs`
-    /// (shared pool). Silently skips when the table is absent (standalone /
-    /// one-org not initialized) and never fails the originating request.
-    pub async fn audit(&self, tenant_id: &str, user_id: &str, action: &str, resource: Option<&str>) {
-        let result = self.db.execute(
-            "INSERT INTO one_audit_logs (id, tenant_id, user_id, action, resource, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
-        &db_params![new_id("audit"), tenant_id, user_id, action, resource, now_ms()])
+    /// requirement dispatch/breakdown, market sync). Writes into one-org's
+    /// `one_audit_logs` (shared pool). Silently skips when the table is absent
+    /// (standalone / one-org not initialized) and never fails the originating
+    /// request. Records a SUCCESS; `result = 'failure'` goes through
+    /// [`Self::audit_failure`]. `latency_ms` is the caller's wall-clock or
+    /// `None` when the action is not timed.
+    pub async fn audit(&self, tenant_id: &str, user_id: &str, action: &str, resource: Option<&str>, latency_ms: Option<i64>) {
+        self.write_audit(tenant_id, user_id, action, resource, latency_ms, "success").await;
+    }
+
+    /// Audit a policy-changing action that FAILED (`result = 'failure'`).
+    pub async fn audit_failure(&self, tenant_id: &str, user_id: &str, action: &str, resource: Option<&str>, latency_ms: Option<i64>) {
+        self.write_audit(tenant_id, user_id, action, resource, latency_ms, "failure").await;
+    }
+
+    async fn write_audit(&self, tenant_id: &str, user_id: &str, action: &str, resource: Option<&str>, latency_ms: Option<i64>, result: &str) {
+        let write = self.db.execute(
+            "INSERT INTO one_audit_logs (id, tenant_id, user_id, action, resource, latency_ms, result, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        &db_params![new_id("audit"), tenant_id, user_id, action, resource, latency_ms, result, now_ms()])
         .await;
-        if let Err(e) = result {
+        if let Err(e) = write {
             tracing::debug!(error = %e, action, "one-devops audit skipped (table absent or write failed)");
         }
     }
@@ -2572,21 +2584,31 @@ mod tests {
         let svc = service().await;
 
         // Standalone: one_audit_logs table absent → silent no-op, no panic.
-        svc.audit("default", "u1", "devops.skill.upsert", Some("s1")).await;
+        svc.audit("default", "u1", "devops.skill.upsert", Some("s1"), None).await;
 
-        // Enterprise: table present → the action is recorded.
+        // Enterprise: table present → the action is recorded. Schema mirrors
+        // one-org migration 001 + 014 (latency_ms / result).
         sqlx::raw_sql(
-            "CREATE TABLE one_audit_logs (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT, username TEXT, action TEXT NOT NULL, resource TEXT, ip_address TEXT, user_agent TEXT, created_at INTEGER NOT NULL);",
+            "CREATE TABLE one_audit_logs (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT, username TEXT, action TEXT NOT NULL, resource TEXT, ip_address TEXT, user_agent TEXT, created_at INTEGER NOT NULL, latency_ms INTEGER, result TEXT NOT NULL DEFAULT 'success');",
         )
         .execute(svc.db.sqlite())
         .await
         .unwrap();
-        svc.audit("t1", "admin1", "devops.skill.delete", Some("s2")).await;
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_audit_logs WHERE action = 'devops.skill.delete'")
+        svc.audit("t1", "admin1", "devops.skill.delete", Some("s2"), Some(3)).await;
+        svc.audit_failure("t1", "admin1", "devops.market.sync", Some("src1"), Some(120)).await;
+        let (count, latency): (i64, Option<i64>) = sqlx::query_as(
+            "SELECT COUNT(*), MAX(latency_ms) FROM one_audit_logs WHERE action = 'devops.skill.delete'",
+        )
+        .fetch_one(svc.db.sqlite())
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(latency, Some(3));
+        let failed: String = sqlx::query_scalar("SELECT result FROM one_audit_logs WHERE action = 'devops.market.sync'")
             .fetch_one(svc.db.sqlite())
             .await
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(failed, "failure");
     }
 
     #[tokio::test]
@@ -3547,6 +3569,7 @@ mod tests {
                 Some("sk-real"),
                 "[]",
                 None,
+                None,
                 true,
                 "team",
                 Some("tB"),
@@ -3586,6 +3609,7 @@ mod tests {
                 Some("sk-real"),
                 "[]",
                 None,
+                None,
                 true,
                 "team",
                 Some("tB"),
@@ -3602,6 +3626,7 @@ mod tests {
                 "https://attacker.example",
                 Some("sk-stolen"),
                 "[]",
+                None,
                 None,
                 true,
                 "team",

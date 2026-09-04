@@ -11,9 +11,9 @@ use dream_core_api_types::{
 use dream_core_team::TeamSessionService;
 use serde_json::Value;
 
-const HEADER_USER_ID: &str = "x-aionui-user-id";
-const HEADER_CONVERSATION_ID: &str = "x-aionui-conversation-id";
-const HEADER_RUNTIME_TOKEN: &str = "x-aionui-runtime-token";
+const HEADER_USER_ID: &str = "x-dream-user-id";
+const HEADER_CONVERSATION_ID: &str = "x-dream-conversation-id";
+const HEADER_RUNTIME_TOKEN: &str = "x-dream-runtime-token";
 
 #[derive(Clone)]
 pub struct RuntimeTeamToolsState {

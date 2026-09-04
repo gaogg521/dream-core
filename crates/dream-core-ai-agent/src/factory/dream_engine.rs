@@ -25,13 +25,13 @@ use crate::error::AgentError;
 use crate::factory::AgentFactoryDeps;
 use crate::factory::context::FactoryContext;
 use crate::factory::session_mcp::load_session_mcp_rows;
-use crate::manager::dream_engine::{AionrsAgentManager, sanitize_session_messages};
+use crate::manager::dream_engine::{DreamEngineAgentManager, sanitize_session_messages};
 use crate::runtime_status::conversation_runtime_reporter;
-use crate::session_context::AionrsSessionBuildContext;
-use crate::types::{AionrsCompatOverrides, AionrsResolvedConfig};
+use crate::session_context::DreamEngineSessionBuildContext;
+use crate::types::{DreamEngineCompatOverrides, DreamEngineResolvedConfig};
 pub(super) async fn build(
     deps: Arc<AgentFactoryDeps>,
-    build_context: AionrsSessionBuildContext,
+    build_context: DreamEngineSessionBuildContext,
     model: ProviderWithModel,
     ctx: FactoryContext,
 ) -> Result<AgentInstance, AgentError> {
@@ -106,6 +106,11 @@ pub(super) async fn build(
 
     let provider = map_dream_engine_provider(&row.platform, &model_id, row.model_protocols.as_deref())?;
     let model_overrides = resolve_model_compat_overrides(&model_id, &row.model_settings)?;
+    // Per-model setting wins; the provider-level `context_limit` (shared with
+    // the Codex bridge) is the fallback for users who set it there.
+    let context_window = model_overrides
+        .context_window
+        .or_else(|| row.context_limit.and_then(|limit| u32::try_from(limit).ok()));
 
     let (base_url, mut compat_overrides) = resolve_dream_engine_url_and_compat_with_mode(
         &row.platform,
@@ -167,13 +172,14 @@ pub(super) async fn build(
         overrides.fork.as_ref(),
     )?;
 
-    let config = AionrsResolvedConfig {
+    let config = DreamEngineResolvedConfig {
         provider,
         api_key,
         model: model_id,
         base_url,
         system_prompt: overrides.system_prompt,
         max_tokens: None,
+        context_window,
         max_turns: overrides.max_turns,
         max_tool_call_malformed_turns: overrides.max_tool_call_malformed_turns,
         max_tool_call_failure_turns: overrides.max_tool_call_failure_turns,
@@ -221,7 +227,7 @@ pub(super) async fn build(
         }
     }
 
-    let agent = AionrsAgentManager::new(ctx.conversation_id, ctx.workspace, config, resume_session).await?;
+    let agent = DreamEngineAgentManager::new(ctx.conversation_id, ctx.workspace, config, resume_session).await?;
     Ok(AgentInstance::DreamEngine(Arc::new(agent)))
 }
 
@@ -343,6 +349,7 @@ pub(crate) fn map_dream_engine_provider(
         "bedrock" => return Ok("bedrock".to_owned()),
         "gemini" | "openai" => return Ok("openai".to_owned()),
         "gemini-vertex-ai" => return Ok("vertex".to_owned()),
+        "ollama" => return Ok("ollama".to_owned()),
         _ => {}
     }
 
@@ -369,7 +376,7 @@ fn resolve_dream_engine_url_and_compat(
     mapped_provider: &str,
     model_id: &str,
     is_full_url: bool,
-) -> (Option<String>, AionrsCompatOverrides) {
+) -> (Option<String>, DreamEngineCompatOverrides) {
     resolve_dream_engine_url_and_compat_with_mode(platform, raw_base_url, mapped_provider, model_id, is_full_url, None)
 }
 
@@ -380,8 +387,18 @@ pub(crate) fn resolve_dream_engine_url_and_compat_with_mode(
     model_id: &str,
     is_full_url: bool,
     openai_api_mode_override: Option<OpenAiApiMode>,
-) -> (Option<String>, AionrsCompatOverrides) {
-    let mut compat = AionrsCompatOverrides::default();
+) -> (Option<String>, DreamEngineCompatOverrides) {
+    let mut compat = DreamEngineCompatOverrides::default();
+
+    // Ollama's native transport owns the endpoint path (`/api/chat`) and needs
+    // the daemon root, not the OpenAI-compatible `/v1` prefix the UI presets
+    // (and the model-list fetcher) speak.
+    if platform == "ollama" {
+        let trimmed = raw_base_url.trim_end_matches('/');
+        let root = trimmed.strip_suffix("/v1").unwrap_or(trimmed);
+        return (Some(root.to_owned()).filter(|u| !u.is_empty()), compat);
+    }
+
     let openai_api_mode = resolve_openai_api_mode(platform, mapped_provider, model_id, openai_api_mode_override);
     let use_responses = openai_api_mode == Some(OpenAiApiMode::Responses);
 
@@ -481,6 +498,7 @@ fn rewrite_openai_api_url(url: &str, mode: OpenAiApiMode) -> Option<String> {
 pub(crate) struct ModelCompatOverrides {
     pub(crate) image_input: Option<ImageInputCapability>,
     pub(crate) openai_api_mode: Option<OpenAiApiMode>,
+    pub(crate) context_window: Option<u32>,
 }
 
 pub(crate) fn resolve_model_compat_overrides(
@@ -503,6 +521,7 @@ pub(crate) fn resolve_model_compat_overrides(
             ModelOpenAiApiMode::ChatCompletions => OpenAiApiMode::ChatCompletions,
             ModelOpenAiApiMode::Responses => OpenAiApiMode::Responses,
         }),
+        context_window: settings.context_window,
     })
 }
 
@@ -892,7 +911,7 @@ fn team_mcp_to_config(cfg: &TeamMcpStdioConfig) -> HashMap<String, McpServerConf
 /// the Codex compatibility bridge) so the two paths cannot drift apart.
 pub(crate) fn build_dream_engine_config(
     cli_args: &dream_engine_config::config::CliArgs,
-    compat_overrides: AionrsCompatOverrides,
+    compat_overrides: DreamEngineCompatOverrides,
     bedrock: Option<dream_engine_config::config::BedrockConfig>,
 ) -> Result<dream_engine_config::config::Config, AgentError> {
     let mut config = dream_engine_config::config::Config::resolve(cli_args)

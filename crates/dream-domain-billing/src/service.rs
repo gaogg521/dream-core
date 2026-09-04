@@ -12,7 +12,7 @@ use dream_core_common::license::{
     Feature, Tier, estimate_cost_micros, estimate_media_cost_micros, tier_allows, tier_seat_limit,
 };
 use dream_core_common::{generate_prefixed_id, now_ms};
-use dream_core_db::{day_bucket_expr, DbBackend, DbPool, db_params};
+use dream_core_db::{day_bucket_expr, DbPool, db_params};
 
 use crate::error::BillingError;
 use crate::models::{
@@ -398,6 +398,28 @@ impl BillingService {
              ON DUPLICATE KEY UPDATE tier = new.tier, seat_limit = new.seat_limit, \
                  expires_at = NULL, updated_at = new.updated_at",
             &db_params![enterprise_id, tier.as_str(), seat_limit, now_ms()],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Idempotently seed the deployment's default company license as
+    /// `enterprise` tier with unlimited seats. Called once at startup from the
+    /// app-layer bootstrap, so an auto-provisioned install is not *more*
+    /// restricted than one grandfathered by `billing_001_init.sql` (which set
+    /// every pre-existing `one_enterprises` row to `enterprise`).
+    ///
+    /// `DO NOTHING` on conflict — a later [`Self::activate_license`] or a
+    /// deliberate [`Self::set_tier`] downgrade is never overwritten on
+    /// restart. (`set_tier` cannot be used here: it rejects the
+    /// free→enterprise raise as [`BillingError::UpgradeRequiresLicense`].)
+    pub async fn ensure_default_license(&self, enterprise_id: &str) -> Result<(), BillingError> {
+        self.upsert(
+            "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at) \
+             VALUES (?, ?, NULL, NULL, ?) ON CONFLICT(enterprise_id) DO NOTHING",
+            "INSERT IGNORE INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at) \
+             VALUES (?, ?, NULL, NULL, ?)",
+            &db_params![enterprise_id, Tier::Enterprise.as_str(), now_ms()],
         )
         .await?;
         Ok(())
@@ -1457,16 +1479,23 @@ impl BillingService {
         // Percentiles are computed in Rust, not SQL: SQLite has no percentile
         // function, and a GROUP_CONCAT hack would be both slower and far
         // harder to state a correctness claim about. One indexed scan pulls
-        // every measured duration with its day already bucketed in SQL (same
-        // strftime expression as `usage_summary`'s by_day), then Rust does
+        // every measured duration with its day already bucketed in SQL (via
+        // the same `day_bucket_expr` dialect helper as `usage_summary`'s
+        // by_day — SQLite `strftime` / MySQL `DATE_FORMAT`), then Rust does
         // the sorting once for the window total and once per day group.
         type DurationRow = (String, i64);
-        let duration_rows: Vec<DurationRow> = self.db.fetch_all_as::<DurationRow>(
-            "SELECT strftime('%Y-%m-%d', created_at / 1000, 'unixepoch') AS day, duration_ms \
-             FROM one_llm_calls \
-             WHERE enterprise_id = ? AND created_at >= ? AND duration_ms IS NOT NULL",
-        &db_params![enterprise_id, since_ms])
-        .await?;
+        let day_bucket = day_bucket_expr(self.db.backend(), "created_at");
+        let duration_rows: Vec<DurationRow> = self
+            .db
+            .fetch_all_as::<DurationRow>(
+                &format!(
+                    "SELECT {day_bucket} AS day, duration_ms \
+                     FROM one_llm_calls \
+                     WHERE enterprise_id = ? AND created_at >= ? AND duration_ms IS NOT NULL"
+                ),
+                &db_params![enterprise_id, since_ms],
+            )
+            .await?;
 
         let mut all_durations: Vec<i64> = duration_rows.iter().map(|(_, d)| *d).collect();
         all_durations.sort_unstable();
@@ -2244,6 +2273,82 @@ mod tests {
         assert!(report.top_users.is_empty());
         assert_eq!(report.llm_call_count, 0);
         assert_eq!(report.llm_error_count, 0);
+    }
+
+    /// Real MySQL: `enterprise_report`'s latency-percentile query bucketed its
+    /// `one_llm_calls` rows by day with a hardcoded SQLite `strftime(...,
+    /// 'unixepoch')` — which MySQL has no such function for, so the whole
+    /// `GET /api/one/billing/enterprise-report` page 500'd
+    /// (`FUNCTION ... strftime does not exist`) on any MySQL deployment, even
+    /// with zero rows (the query still executes). It now goes through the
+    /// `day_bucket_expr` dialect helper like `usage_summary`'s by_day.
+    /// Requires `DREAM_TEST_MYSQL_URL`; skipped when unset.
+    #[tokio::test]
+    async fn enterprise_report_latency_trend_buckets_by_day_on_mysql() {
+        let Some(mysql_db) = dream_core_db::testing::mysql_test_pool().await else {
+            eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
+            return;
+        };
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS one_enterprises (id VARCHAR(255) PRIMARY KEY, provider VARCHAR(64) NULL, external_id VARCHAR(255) NULL, display_name VARCHAR(255) NULL, created_at BIGINT NULL, updated_at BIGINT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_as_cs;",
+        )
+        .execute(mysql_db.pool.mysql())
+        .await
+        .unwrap();
+        crate::migrate::run_one_billing_migrations(&mysql_db.pool).await.unwrap();
+        let svc = BillingService::new(mysql_db.pool.clone(), Arc::new(ManualBillingProvider));
+
+        // Zero data: the report must build without erroring (this is the exact
+        // path that 500'd — the query runs regardless of row count).
+        let empty = svc.enterprise_report("ent_empty", 0).await.unwrap();
+        assert!(empty.latency_trend.is_empty());
+        assert_eq!(empty.llm_call_count, 0);
+        assert_eq!(empty.latency_p50, None);
+
+        // Two fixed UTC days: 2033-05-18 (12 measured calls, 2 errored) and
+        // 2033-05-19 (1 measured call). Timestamps are pinned so the bucket
+        // strings are exact — proving MySQL's DATE_FORMAT path buckets right.
+        const DAY_A_MS: i64 = 2_000_000_000_000; // 2033-05-18T03:33:20Z
+        const DAY_MS: i64 = 24 * 3600 * 1000;
+        for i in 0..12_i64 {
+            let error = if i < 2 { Some("boom") } else { None };
+            sqlx::query(
+                "INSERT INTO one_llm_calls (id, enterprise_id, user_id, duration_ms, error, created_at) \
+                 VALUES (?, 'ent1', 'u1', ?, ?, ?)",
+            )
+            .bind(format!("a{i}"))
+            .bind(100 + 100 * i)
+            .bind(error)
+            .bind(DAY_A_MS)
+            .execute(mysql_db.pool.mysql())
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO one_llm_calls (id, enterprise_id, user_id, duration_ms, error, created_at) \
+             VALUES ('b0', 'ent1', 'u1', 5000, NULL, ?)",
+        )
+        .bind(DAY_A_MS + DAY_MS)
+        .execute(mysql_db.pool.mysql())
+        .await
+        .unwrap();
+
+        let report = svc.enterprise_report("ent1", 0).await.unwrap();
+        assert_eq!(report.llm_call_count, 13);
+        assert_eq!(report.llm_error_count, 2);
+        // 13 measured durations ≥ MIN_LATENCY_SAMPLES → window percentiles publish.
+        assert!(report.latency_p50.is_some());
+        assert!(report.latency_p95.is_some());
+
+        assert_eq!(report.latency_trend.len(), 2, "two distinct UTC days");
+        let day_a = report.latency_trend.iter().find(|p| p.day == "2033-05-18").unwrap();
+        assert_eq!(day_a.samples, 12);
+        let day_b = report.latency_trend.iter().find(|p| p.day == "2033-05-19").unwrap();
+        assert_eq!(day_b.samples, 1);
+        assert_eq!(day_b.p50, 5000, "single-sample day reports its one measurement");
+        assert_eq!(day_b.p95, 5000);
+
+        mysql_db.cleanup().await.unwrap();
     }
 
     #[tokio::test]
@@ -3517,5 +3622,54 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn ensure_default_license_sets_enterprise_tier_with_unlimited_seats() {
+        let (svc, _sqlite) = service().await;
+        svc.ensure_default_license("ent-boot").await.unwrap();
+        let license = svc.license_of("ent-boot").await.unwrap();
+        assert_eq!(license.tier, Tier::Enterprise);
+        assert_eq!(license.seat_limit, None);
+        assert_eq!(license.expires_at, None);
+    }
+
+    #[tokio::test]
+    async fn ensure_default_license_never_clobbers_an_existing_row() {
+        let (svc, _sqlite) = service().await;
+        // An admin deliberately downgraded to free with a seat cap.
+        svc.set_tier("ent-boot", Tier::Free, Some(3)).await.unwrap();
+        // A later restart re-runs the bootstrap — it must be a no-op.
+        svc.ensure_default_license("ent-boot").await.unwrap();
+        svc.ensure_default_license("ent-boot").await.unwrap();
+        let license = svc.license_of("ent-boot").await.unwrap();
+        assert_eq!(license.tier, Tier::Free);
+        assert_eq!(license.seat_limit, Some(3));
+    }
+
+    /// Real MySQL: exercises `ensure_default_license`'s `INSERT IGNORE` branch.
+    /// Requires `DREAM_TEST_MYSQL_URL`; skipped when unset.
+    #[tokio::test]
+    async fn ensure_default_license_round_trip_on_mysql() {
+        let Some(mysql_db) = dream_core_db::testing::mysql_test_pool().await else {
+            eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
+            return;
+        };
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS one_enterprises (id VARCHAR(255) PRIMARY KEY, provider VARCHAR(64) NULL, external_id VARCHAR(255) NULL, display_name VARCHAR(255) NULL, created_at BIGINT NULL, updated_at BIGINT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_as_cs;",
+        )
+        .execute(mysql_db.pool.mysql())
+        .await
+        .unwrap();
+        crate::migrate::run_one_billing_migrations(&mysql_db.pool).await.unwrap();
+        let svc = BillingService::new(mysql_db.pool.clone(), Arc::new(ManualBillingProvider));
+
+        svc.ensure_default_license("ent-boot").await.unwrap();
+        svc.ensure_default_license("ent-boot").await.unwrap(); // idempotent
+        let license = svc.license_of("ent-boot").await.unwrap();
+        assert_eq!(license.tier, Tier::Enterprise);
+        assert_eq!(license.seat_limit, None);
+
+        mysql_db.cleanup().await.unwrap();
     }
 }

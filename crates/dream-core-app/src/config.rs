@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 pub enum IdentityMode {
     Local,
     WebUi,
-    AionPro,
+    DreamPro,
 }
 
 impl IdentityMode {
@@ -16,7 +16,7 @@ impl IdentityMode {
         match self {
             Self::Local => "local",
             Self::WebUi => "webui",
-            Self::AionPro => "aionpro",
+            Self::DreamPro => "aionpro",
         }
     }
 

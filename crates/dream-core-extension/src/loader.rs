@@ -25,7 +25,7 @@ pub struct ScanPath {
 /// 2. `~/.dream/extensions/` — legacy user data directory
 /// 3. Platform AppData directory
 ///
-/// In E2E test mode (`AIONUI_E2E_TEST=1`), only the environment variable
+/// In E2E test mode (`DREAM_E2E_TEST=1`), only the environment variable
 /// paths are returned to ensure test isolation.
 pub fn resolve_scan_paths() -> Vec<ScanPath> {
     let env_path = std::env::var("ONE_EXTENSIONS_PATH").ok();
@@ -41,7 +41,7 @@ pub fn resolve_scan_paths() -> Vec<ScanPath> {
 /// 2. `<data_dir>/extensions`
 /// 3. Legacy appData sibling directory derived from `<data_dir>`
 ///
-/// In E2E test mode (`AIONUI_E2E_TEST=1`), only the environment variable
+/// In E2E test mode (`DREAM_E2E_TEST=1`), only the environment variable
 /// paths are returned to ensure test isolation.
 pub fn resolve_scan_paths_for_data_dir(data_dir: &Path) -> Vec<ScanPath> {
     let env_path = std::env::var("ONE_EXTENSIONS_PATH").ok();
@@ -324,7 +324,7 @@ fn is_api_version_compatible(ext: &LoadedExtension) -> bool {
 // ---------------------------------------------------------------------------
 
 fn is_e2e_test_mode() -> bool {
-    std::env::var("AIONUI_E2E_TEST").map(|v| v == "1").unwrap_or(false)
+    std::env::var("DREAM_E2E_TEST").map(|v| v == "1").unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------

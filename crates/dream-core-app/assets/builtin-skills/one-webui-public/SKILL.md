@@ -1,7 +1,7 @@
 ---
 name: one-webui-public
 description: >-
-  Expose the user's local 1One Work WebUI to the public internet with a near-zero-effort flow. Detects whether the WebUI is running, guides the user to switch it on if needed (the only manual step), self-installs cloudflared cross-platform, opens a Cloudflare quick tunnel, verifies the public URL actually works, then explains the limitations honestly (temporary/random URL, must stay running, password is the only protection, traffic transits Cloudflare). Use whenever the user wants to reach their 1One Work from outside the LAN, over the internet, or share a public link. Distinct from one-webui-setup (which covers manual LAN / Tailscale / server config through the settings UI): this skill produces a one-click public link via an automatic tunnel.
+  Expose the user's local One Work WebUI to the public internet with a near-zero-effort flow. Detects whether the WebUI is running, guides the user to switch it on if needed (the only manual step), self-installs cloudflared cross-platform, opens a Cloudflare quick tunnel, verifies the public URL actually works, then explains the limitations honestly (temporary/random URL, must stay running, password is the only protection, traffic transits Cloudflare). Use whenever the user wants to reach their One Work from outside the LAN, over the internet, or share a public link. Distinct from one-webui-setup (which covers manual LAN / Tailscale / server config through the settings UI): this skill produces a one-click public link via an automatic tunnel.
 ---
 
 > **⚠️ Platform note — read before running any command.** The shell snippets in this skill are written for **macOS / Linux** (bash/zsh). Always check which OS you are on first. On **Windows** do **not** run them verbatim — the underlying tool/CLI commands are usually cross-platform, but the surrounding shell syntax is not. Translate it to PowerShell before running:
@@ -20,13 +20,13 @@ description: >-
 >
 > If a command has no obvious Windows equivalent, prefer the built-in file/HTTP tools over raw shell.
 
-# 1One Work WebUI Public Access Guide
+# One Work WebUI Public Access Guide
 
-You help a user turn their local 1One Work WebUI (LAN-only at best) into a public internet URL, with the user doing almost nothing. You have a shell (Bash) and run on the same machine as 1One Work, so you do the work yourself. The user only does what you architecturally cannot: flip the WebUI toggle in the desktop UI.
+You help a user turn their local One Work WebUI (LAN-only at best) into a public internet URL, with the user doing almost nothing. You have a shell (Bash) and run on the same machine as One Work, so you do the work yourself. The user only does what you architecturally cannot: flip the WebUI toggle in the desktop UI.
 
 ## Core facts (verified, do not re-derive)
 
-- 1One Work WebUI is a local HTTP server on port 25808 (the aioncore default; override with the `--port` CLI flag — so don't hardcode it, confirm with the curl probe below). It has built-in user+password / JWT auth, which is the *only* thing protecting it once it's on the public internet — so the password is load-bearing, not a formality (see Step 6 risks).
+- One Work WebUI is a local HTTP server on port 25808 (the dreamcore default; override with the `--port` CLI flag — so don't hardcode it, confirm with the curl probe below). It has built-in user+password / JWT auth, which is the *only* thing protecting it once it's on the public internet — so the password is load-bearing, not a formality (see Step 6 risks).
 - There is NO HTTP/CLI way to start the desktop WebUI. Starting it is Electron-IPC only, so you cannot turn it on; you must guide the user to the toggle. You CAN detect its state, install the tunnel, run the tunnel, and verify, all yourself.
 - The tunnel tool is cloudflared (Cloudflare quick tunnel, no account needed). It must be forced to --protocol http2 (see Gotcha).
 - Password changes DO have HTTP routes you can call for the user (see "Optional: change credentials").
@@ -62,7 +62,7 @@ If missing, install it without depending on the user's package manager: download
 Example for macOS/Linux (put it in a stable spot so a restart can reuse it):
 
 ```bash
-mkdir -p ~/.aionui/tools && cd ~/.aionui/tools
+mkdir -p ~/.dream/tools && cd ~/.dream/tools
 OS=$(uname -s); ARCH=$(uname -m)
 case "$OS" in Darwin) goos=darwin;; Linux) goos=linux;; esac
 case "$ARCH" in arm64|aarch64) goarch=arm64;; x86_64|amd64) goarch=amd64;; esac
@@ -81,7 +81,7 @@ Run cloudflared as a long-lived background process pointing at the local WebUI:
 cloudflared tunnel --protocol http2 --url http://127.0.0.1:25808
 ```
 
-(Use the path to the binary you installed, e.g. `~/.aionui/tools/cloudflared`.)
+(Use the path to the binary you installed, e.g. `~/.dream/tools/cloudflared`.)
 
 Watch its output for two things:
 1. The public URL line: `https://<random-words>.trycloudflare.com`
@@ -97,16 +97,16 @@ Before handing the URL to the user, prove it from the public side:
 curl -s -o /dev/null -w "%{http_code}" --max-time 20 "<public-url>/"
 ```
 
-Retry 2-3 times with a few seconds between; a freshly created tunnel can return 530/000 for the first few seconds before the edge is ready. Consider it good only when you get 200. For extra confidence, confirm it is really 1One Work:
+Retry 2-3 times with a few seconds between; a freshly created tunnel can return 530/000 for the first few seconds before the edge is ready. Consider it good only when you get 200. For extra confidence, confirm it is really One Work:
 
 ```bash
-curl -s --max-time 20 "<public-url>/" | grep -i "<title>1One Work</title>"
+curl -s --max-time 20 "<public-url>/" | grep -i "<title>One Work</title>"
 ```
 
 ### Step 6 - Before handing off: check the password is strong
 
 The moment this URL is public, the WebUI password is the only thing standing
-between the open internet and the user's 1One Work. **Before** you give them the
+between the open internet and the user's One Work. **Before** you give them the
 link, proactively ask whether their WebUI password is set and strong — if it's
 still the default, blank, or something weak, offer to change it right now via the
 API (see "Optional - change credentials" below). Don't hand over a public URL
@@ -154,9 +154,9 @@ curl -s -X POST http://127.0.0.1:25808/api/webui/change-username -H "Content-Typ
 
 (Confirm exact field names from the response if it errors; reset-password / generate-qr-token endpoints also exist.)
 
-> These `/api/webui/*` credential endpoints only work when aioncore runs in
+> These `/api/webui/*` credential endpoints only work when dreamcore runs in
 > **local mode** (the normal desktop/Electron case, which is exactly the scenario
-> this skill targets). If aioncore is deployed as a standalone server, they
+> this skill targets). If dreamcore is deployed as a standalone server, they
 > return **403 Forbidden** — change the password through that deployment's own
 > mechanism instead.
 

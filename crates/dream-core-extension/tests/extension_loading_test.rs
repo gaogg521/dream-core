@@ -149,7 +149,7 @@ fn el3_invalid_manifest_skipped_others_load() {
 // ---------------------------------------------------------------------------
 // EL-4: E2E test mode isolation
 //
-// Since AIONUI_E2E_TEST=1 changes the behaviour of resolve_scan_paths()
+// Since DREAM_E2E_TEST=1 changes the behaviour of resolve_scan_paths()
 // (a global function reading env vars), this test validates the semantics
 // rather than calling resolve_scan_paths() directly to avoid data races
 // with other tests.

@@ -783,12 +783,12 @@ mod tests {
         };
 
         let first = repo
-            .ensure_external_user(UserType::Aionpro, "external-123", projection)
+            .ensure_external_user(UserType::DreamPro, "external-123", projection)
             .await
             .unwrap();
         let second = repo
             .ensure_external_user(
-                UserType::Aionpro,
+                UserType::DreamPro,
                 "external-123",
                 ExternalUserProjection {
                     username: Some("Different".to_string()),
@@ -800,7 +800,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(first.id, second.id);
-        assert_eq!(first.user_type, UserType::Aionpro);
+        assert_eq!(first.user_type, UserType::DreamPro);
         assert_eq!(first.external_user_id.as_deref(), Some("external-123"));
         assert_eq!(first.status, UserStatus::Active);
         assert_eq!(first.session_generation, 0);
@@ -813,7 +813,7 @@ mod tests {
         let (repo, _db) = setup().await;
         let user = repo
             .ensure_external_user(
-                UserType::Aionpro,
+                UserType::DreamPro,
                 "external-disabled",
                 ExternalUserProjection::default(),
             )
@@ -873,7 +873,7 @@ mod tests {
         let (repo, db) = setup().await;
         seed_legacy_conversation(&db, "conv-legacy").await;
         let user = repo
-            .ensure_external_user(UserType::Aionpro, "ext-1", ExternalUserProjection::default())
+            .ensure_external_user(UserType::DreamPro, "ext-1", ExternalUserProjection::default())
             .await
             .unwrap();
 
@@ -891,11 +891,11 @@ mod tests {
         let (repo, db) = setup().await;
         seed_legacy_conversation(&db, "conv-legacy-2").await;
         let first = repo
-            .ensure_external_user(UserType::Aionpro, "ext-a", ExternalUserProjection::default())
+            .ensure_external_user(UserType::DreamPro, "ext-a", ExternalUserProjection::default())
             .await
             .unwrap();
         let second = repo
-            .ensure_external_user(UserType::Aionpro, "ext-b", ExternalUserProjection::default())
+            .ensure_external_user(UserType::DreamPro, "ext-b", ExternalUserProjection::default())
             .await
             .unwrap();
 
@@ -913,7 +913,7 @@ mod tests {
         assert_eq!(repo.adopt_system_default_data("system_default_user").await.unwrap(), 0);
 
         // Owner id that is not the external user.
-        repo.ensure_external_user(UserType::Aionpro, "ext-c", ExternalUserProjection::default())
+        repo.ensure_external_user(UserType::DreamPro, "ext-c", ExternalUserProjection::default())
             .await
             .unwrap();
         assert_eq!(repo.adopt_system_default_data("someone-else").await.unwrap(), 0);
@@ -962,7 +962,7 @@ mod tests {
         let (repo, db) = setup().await;
         let now = dream_core_common::now_ms();
         let user = repo
-            .ensure_external_user(UserType::Aionpro, "ext-d", ExternalUserProjection::default())
+            .ensure_external_user(UserType::DreamPro, "ext-d", ExternalUserProjection::default())
             .await
             .unwrap();
 

@@ -1053,7 +1053,7 @@ async fn parse_agent_type(
 /// correct semantic.
 ///
 fn resolve_model(job: &CronJob) -> Option<ProviderWithModel> {
-    if job.agent_type != "aionrs" {
+    if job.agent_type != "dream" {
         return None;
     }
     job.agent_config.as_ref()?.model.clone()
@@ -1373,7 +1373,7 @@ mod tests {
                 model_id: Some("claude-sonnet-4".into()),
                 model: None,
                 config_options: None,
-                workspace: Some(ensure_named_workspace_path("aionui-cron-sample-job-workspace")),
+                workspace: Some(ensure_named_workspace_path("dream-cron-sample-job-workspace")),
             }),
             conversation_id: "conv_1".into(),
             conversation_title: Some("Test Conv".into()),
@@ -1556,7 +1556,7 @@ mod tests {
         let repo = Arc::new(MissingWorkspaceConversationRepo::new(
             "conv_1",
             serde_json::json!({
-                "workspace": ensure_named_workspace_path("aionui-cron-cross-user-conversation-workspace")
+                "workspace": ensure_named_workspace_path("dream-cron-cross-user-conversation-workspace")
             }),
         ));
         let executor = make_executor_with_task_manager_and_repo(task_manager, repo);
@@ -1750,9 +1750,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_model_aionrs_with_full_config() {
+    fn resolve_model_dream_with_full_config() {
         let job = CronJob {
-            agent_type: "aionrs".into(),
+            agent_type: "dream".into(),
             agent_config: Some(CronAgentConfig {
                 name: "OpenAI".into(),
                 cli_path: None,
@@ -1777,9 +1777,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_model_aionrs_uses_model_payload() {
+    fn resolve_model_dream_uses_model_payload() {
         let job = CronJob {
-            agent_type: "aionrs".into(),
+            agent_type: "dream".into(),
             agent_config: Some(CronAgentConfig {
                 name: "OpenAI".into(),
                 cli_path: None,
@@ -1804,11 +1804,11 @@ mod tests {
     }
 
     #[test]
-    fn resolve_model_aionrs_without_config_returns_none() {
+    fn resolve_model_dream_without_config_returns_none() {
         // Defensive: `add_job` rejects this shape, but resolve_model must not
         // fabricate a provider_id from the agent_type like the old code did.
         let job = CronJob {
-            agent_type: "aionrs".into(),
+            agent_type: "dream".into(),
             agent_config: None,
             ..sample_job()
         };
@@ -1816,9 +1816,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_model_aionrs_without_model_returns_none() {
+    fn resolve_model_dream_without_model_returns_none() {
         let job = CronJob {
-            agent_type: "aionrs".into(),
+            agent_type: "dream".into(),
             agent_config: Some(CronAgentConfig {
                 name: "Bogus".into(),
                 cli_path: None,
@@ -2003,7 +2003,7 @@ mod tests {
 
         assert_eq!(
             extra["workspace"],
-            ensure_named_workspace_path("aionui-cron-sample-job-workspace")
+            ensure_named_workspace_path("dream-cron-sample-job-workspace")
         );
     }
 
@@ -2311,7 +2311,7 @@ mod tests {
             .expect("task manager should capture build options");
         assert_eq!(
             options.context.workspace.path,
-            ensure_named_workspace_path("aionui-cron-existing-conversation-workspace")
+            ensure_named_workspace_path("dream-cron-existing-conversation-workspace")
         );
         assert!(options.context.workspace.is_custom);
     }
@@ -2351,7 +2351,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&extra).expect("valid extra json");
         assert_eq!(
             value["workspace"],
-            ensure_named_workspace_path("aionui-cron-agent-workspace")
+            ensure_named_workspace_path("dream-cron-agent-workspace")
         );
     }
 
@@ -2362,7 +2362,7 @@ mod tests {
         let repo = Arc::new(MissingWorkspaceConversationRepo::new(
             "conv_1",
             serde_json::json!({
-                "workspace": ensure_named_workspace_path("aionui-cron-existing-conversation-workspace")
+                "workspace": ensure_named_workspace_path("dream-cron-existing-conversation-workspace")
             }),
         ));
         let executor = make_executor_with_task_manager_and_repo(task_manager, repo.clone());
@@ -2399,7 +2399,7 @@ mod tests {
         let repo = Arc::new(MissingWorkspaceConversationRepo::new(
             "conv_1",
             serde_json::json!({
-                "workspace": ensure_named_workspace_path("aionui-cron-existing-conversation-workspace")
+                "workspace": ensure_named_workspace_path("dream-cron-existing-conversation-workspace")
             }),
         ));
         let broadcaster = Arc::new(RecordingBroadcaster::new());
@@ -2444,7 +2444,7 @@ mod tests {
         let repo = Arc::new(MissingWorkspaceConversationRepo::new(
             "conv_1",
             serde_json::json!({
-                "workspace": ensure_named_workspace_path("aionui-cron-existing-conversation-workspace")
+                "workspace": ensure_named_workspace_path("dream-cron-existing-conversation-workspace")
             }),
         ));
         let executor = make_executor_with_task_manager_and_repo(task_manager, repo.clone());
@@ -2733,7 +2733,7 @@ mod tests {
             let (event_tx, _) = broadcast::channel(16);
             Self {
                 conversation_id: conversation_id.to_owned(),
-                workspace: ensure_named_workspace_path("aionui-cron-agent-workspace"),
+                workspace: ensure_named_workspace_path("dream-cron-agent-workspace"),
                 event_tx,
                 mode: RwLock::new(mode.to_owned()),
                 sent_messages: RwLock::new(Vec::new()),
@@ -3019,7 +3019,7 @@ mod tests {
                 name: "Cron Conversation".into(),
                 r#type: "acp".into(),
                 extra: serde_json::json!({
-                    "workspace": ensure_named_workspace_path("aionui-cron-existing-conversation-workspace")
+                    "workspace": ensure_named_workspace_path("dream-cron-existing-conversation-workspace")
                 })
                 .to_string(),
                 model: None,

@@ -24,9 +24,9 @@ use crate::email::{EmailSender, SendEmailResult, StubEmailSender};
 use crate::error::OrgError;
 use crate::integration::{IntegrationCredentials, IntegrationProvider, IntegrationTestResult, StubIntegrationProvider};
 use crate::models::{
-    AdminUserDto, AgentAuditEntry, AuditLogRow, DEFAULT_TENANT_ID, DepartmentDto, DirectoryMapReport,
-    EnterpriseTenantDto, HeartbeatOutcome, IntegrationDto, InviteDto, InviteRow, MyTenantDto, OrgContextDto,
-    ROLE_MEMBER, ROLE_ORG_ADMIN, ROLE_SYSTEM_ADMIN, ResetLocalResult, RuntimeNodeDto, RuntimeNodeRow,
+    AdminUserDto, AgentAuditEntry, AuditLogRow, DEFAULT_ENTERPRISE_TENANT_ID, DEFAULT_TENANT_ID, DepartmentDto,
+    DirectoryMapReport, EnterpriseTenantDto, HeartbeatOutcome, IntegrationDto, InviteDto, InviteRow, MyTenantDto,
+    OrgContextDto, ROLE_MEMBER, ROLE_ORG_ADMIN, ROLE_SYSTEM_ADMIN, ResetLocalResult, RuntimeNodeDto, RuntimeNodeRow,
     SYSTEM_DEFAULT_USER_ID, SmtpConfigDto, TenantRow, UserOrgRow, is_admin_role, is_enterprise_tenant_id,
     is_system_admin_role,
 };
@@ -545,6 +545,7 @@ impl OrgService {
             username.as_deref(),
             "org.join",
             Some(&invite.id),
+            None,
         )
         .await;
 
@@ -661,6 +662,7 @@ impl OrgService {
             Some(user_id),
             username.as_deref(),
             "org.auto_join_domain",
+            None,
             None,
         )
         .await;
@@ -1001,7 +1003,7 @@ impl OrgService {
 
         self.invalidate_user_tokens(user_id).await?;
         let username = self.lookup_username(user_id).await;
-        self.audit(&tenant_id, Some(user_id), username.as_deref(), "org.create", Some(name))
+        self.audit(&tenant_id, Some(user_id), username.as_deref(), "org.create", Some(name), None)
             .await;
 
         Ok((tenant_id, name.to_string()))
@@ -1050,9 +1052,86 @@ impl OrgService {
             None,
             "org.create_for_enterprise",
             Some(name),
+            None,
         )
         .await;
         Ok((tenant_id, name.to_string(), code))
+    }
+
+    /// Idempotently wire the deployment admin (`system_default_user`) into a
+    /// fixed-id enterprise project group, so a fresh enterprise deploy is
+    /// usable without a manual "设立企业" step. Called once at startup from the
+    /// app-layer bootstrap (`dream-core-app`), after migrations, before the
+    /// server accepts requests. Returns the tenant id.
+    ///
+    /// Every write is `ON CONFLICT ... DO NOTHING`:
+    /// - `one_tenants` row keyed by [`DEFAULT_ENTERPRISE_TENANT_ID`] — a fixed
+    ///   id (not a random one) is what makes this idempotent across restarts
+    ///   and the split main/admin binary double-run;
+    /// - `one_user_org` membership with role **`system_admin`**, NOT
+    ///   `org_admin`: a membership row wins over the `SYSTEM_DEFAULT_USER_ID`
+    ///   fallback in [`Self::effective_role`], and `org_admin` would silently
+    ///   break every `RequireSystemAdmin` route. `DO NOTHING` preserves a
+    ///   later deliberate role change;
+    /// - `one_active_tenant` pointer — `DO NOTHING` never clobbers a later
+    ///   manual tenant switch.
+    ///
+    /// No `invalidate_user_tokens`: this runs before any JWT is issued, and
+    /// every RBAC gate re-reads `one_user_org` per request (nothing reads
+    /// role/tenant from claims), so there is no stale-claim risk.
+    pub async fn bootstrap_enterprise_root_tenant(
+        &self,
+        enterprise_id: &str,
+        admin_user_id: &str,
+        tenant_name: &str,
+    ) -> Result<String, OrgError> {
+        let tenant_id = DEFAULT_ENTERPRISE_TENANT_ID;
+        let now = now_ms() as i64;
+        let mut tx = self.db.begin().await?;
+
+        let tenant_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO one_tenants (id, name, enterprise_id, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING"
+            }
+            DbBackend::MySql => {
+                "INSERT IGNORE INTO one_tenants (id, name, enterprise_id, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?)"
+            }
+        };
+        tx.execute(tenant_sql, &db_params![tenant_id, tenant_name, enterprise_id, now, now])
+            .await?;
+
+        let user_org_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id, tenant_id) DO NOTHING"
+            }
+            DbBackend::MySql => {
+                "INSERT IGNORE INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?)"
+            }
+        };
+        tx.execute(
+            user_org_sql,
+            &db_params![admin_user_id, tenant_id, ROLE_SYSTEM_ADMIN, now, now],
+        )
+        .await?;
+
+        let active_tenant_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) \
+                 ON CONFLICT(user_id) DO NOTHING"
+            }
+            DbBackend::MySql => {
+                "INSERT IGNORE INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?)"
+            }
+        };
+        tx.execute(active_tenant_sql, &db_params![admin_user_id, tenant_id, now])
+            .await?;
+
+        tx.commit().await?;
+        Ok(tenant_id.to_string())
     }
 
     /// Every project group on this server (id + name), for admin pickers such
@@ -1279,6 +1358,7 @@ impl OrgService {
             username.as_deref(),
             "org.reset_local",
             Some(&archive_path_str),
+            None,
         )
         .await;
 
@@ -1336,6 +1416,7 @@ impl OrgService {
             username.as_deref(),
             "org.exit",
             None,
+            None,
         )
         .await;
         let release_enterprise_id = self.enterprise_seat_to_release(user_id, &membership.tenant_id).await?;
@@ -1361,6 +1442,7 @@ impl OrgService {
             actor_username.as_deref(),
             "org.backup.export",
             Some(&format!("{} tables", bundle.tables.len())),
+            None,
         )
         .await;
         Ok(bundle)
@@ -1384,6 +1466,7 @@ impl OrgService {
                 "{} tables / {} rows",
                 report.tables_applied, report.rows_applied
             )),
+            None,
         )
         .await;
         Ok(report)
@@ -1458,6 +1541,7 @@ impl OrgService {
             actor_username.as_deref(),
             "org.member.remove",
             Some(target_user_id),
+            None,
         )
         .await;
         let release_enterprise_id = self.enterprise_seat_to_release(target_user_id, tenant_id).await?;
@@ -1616,6 +1700,11 @@ impl OrgService {
     /// this" without a raw user id — callers should always resolve it via
     /// `lookup_username`/an already-in-scope actor username rather than
     /// leaving it `None`.
+    ///
+    /// `latency_ms` is the wall-clock the handler measured (`Instant::now()`
+    /// at its top); pass `None` where a handler is not timed. This records a
+    /// SUCCESS — the call fires after the operation returned Ok. For the error
+    /// path use [`Self::audit_failure`].
     pub async fn audit(
         &self,
         tenant_id: &str,
@@ -1623,13 +1712,45 @@ impl OrgService {
         username: Option<&str>,
         action: &str,
         resource: Option<&str>,
+        latency_ms: Option<i64>,
     ) {
-        let result = self.db.execute(
-            "INSERT INTO one_audit_logs (id, tenant_id, user_id, username, action, resource, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        &db_params![short_id("audit"), tenant_id, user_id, username, action, resource, now_ms() as i64])
+        self.write_audit(tenant_id, user_id, username, action, resource, latency_ms, "success")
+            .await;
+    }
+
+    /// Record an audited operation that FAILED. Same shape as [`Self::audit`]
+    /// but stamps `result = 'failure'`; `resource` may be absent when the
+    /// failure happened before the target id was known.
+    pub async fn audit_failure(
+        &self,
+        tenant_id: &str,
+        user_id: Option<&str>,
+        username: Option<&str>,
+        action: &str,
+        resource: Option<&str>,
+        latency_ms: Option<i64>,
+    ) {
+        self.write_audit(tenant_id, user_id, username, action, resource, latency_ms, "failure")
+            .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn write_audit(
+        &self,
+        tenant_id: &str,
+        user_id: Option<&str>,
+        username: Option<&str>,
+        action: &str,
+        resource: Option<&str>,
+        latency_ms: Option<i64>,
+        result: &str,
+    ) {
+        let write = self.db.execute(
+            "INSERT INTO one_audit_logs (id, tenant_id, user_id, username, action, resource, latency_ms, result, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &db_params![short_id("audit"), tenant_id, user_id, username, action, resource, latency_ms, result, now_ms() as i64])
         .await;
-        if let Err(e) = result {
+        if let Err(e) = write {
             tracing::warn!(error = %e, action, "one-org audit write failed");
         }
     }
@@ -1669,7 +1790,7 @@ impl OrgService {
     pub async fn list_audit_logs(&self, tenant_id: &str, limit: i64) -> Result<Vec<AuditLogRow>, OrgError> {
         let limit = limit.clamp(1, 500);
         let rows = self.db.fetch_all_as::<AuditLogRow>(
-            "SELECT id, tenant_id, user_id, username, action, resource, ip_address, user_agent, created_at \
+            "SELECT id, tenant_id, user_id, username, action, resource, ip_address, user_agent, created_at, latency_ms, result \
              FROM one_audit_logs WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?",
         &db_params![tenant_id, limit])
         .await?;
@@ -2235,6 +2356,7 @@ impl OrgService {
             actor_username.as_deref(),
             "set_role",
             Some(&format!("user={target_user_id} role={role}")),
+            None,
         )
         .await;
         Ok(())
@@ -3900,6 +4022,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn audit_records_latency_and_result() {
+        // Migration 014 added `latency_ms` (nullable) and `result` (default
+        // 'success'). `audit()` stamps success; `audit_failure()` stamps
+        // failure; both carry the caller's measured wall-clock.
+        let (db, service, _user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+
+        service
+            .audit(&tenant_id, Some("u1"), Some("admin"), "test.ok", Some("r1"), Some(7))
+            .await;
+        service
+            .audit_failure(&tenant_id, Some("u1"), Some("admin"), "test.boom", None, Some(42))
+            .await;
+
+        let logs = service.list_audit_logs(&tenant_id, 10).await.unwrap();
+        let ok = logs.iter().find(|l| l.action == "test.ok").unwrap();
+        assert_eq!(ok.result, "success");
+        assert_eq!(ok.latency_ms, Some(7));
+        let boom = logs.iter().find(|l| l.action == "test.boom").unwrap();
+        assert_eq!(boom.result, "failure");
+        assert_eq!(boom.latency_ms, Some(42));
+        // The tenant-create audit predates any explicit result → column default.
+        let created = logs.iter().find(|l| l.action == "org.create").unwrap();
+        assert_eq!(created.result, "success");
+        assert_eq!(created.latency_ms, None);
+
+        db.close().await;
+    }
+
+    #[tokio::test]
     async fn set_user_role_audit_attributes_to_actor_not_target() {
         // The audit row for a role change used to be attributed to the
         // TARGET user (whose role changed), not the ADMIN who changed it —
@@ -4392,5 +4544,160 @@ mod tests {
             "BAD_REQUEST"
         );
         db.close().await;
+    }
+
+    #[tokio::test]
+    async fn bootstrap_enterprise_root_tenant_creates_tenant_membership_and_active_pointer() {
+        let (db, service, _user_repo) = setup().await;
+        let tenant_id = service
+            .bootstrap_enterprise_root_tenant("ent-1", SYSTEM_DEFAULT_USER_ID, "Acme")
+            .await
+            .unwrap();
+        assert_eq!(tenant_id, DEFAULT_ENTERPRISE_TENANT_ID);
+
+        // Resolves as a real enterprise tenant for the admin.
+        assert_eq!(service.tenant_of(SYSTEM_DEFAULT_USER_ID).await.unwrap(), tenant_id);
+        let active = service.active_tenant_id(SYSTEM_DEFAULT_USER_ID).await.unwrap();
+        assert!(is_enterprise_tenant_id(&active));
+        assert!(service.context(SYSTEM_DEFAULT_USER_ID).await.unwrap().is_enterprise);
+
+        // Role must be system_admin — an `org_admin` membership row would win
+        // over the SYSTEM_DEFAULT_USER_ID fallback and break RequireSystemAdmin.
+        assert_eq!(
+            service.effective_role(SYSTEM_DEFAULT_USER_ID).await.unwrap(),
+            ROLE_SYSTEM_ADMIN
+        );
+
+        let tenant: TenantRow = service
+            .db
+            .fetch_one_as("SELECT * FROM one_tenants WHERE id = ?", &db_params![&tenant_id])
+            .await
+            .unwrap();
+        assert_eq!(tenant.enterprise_id.as_deref(), Some("ent-1"));
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn bootstrap_enterprise_root_tenant_is_idempotent() {
+        let (db, service, _user_repo) = setup().await;
+        for _ in 0..3 {
+            service
+                .bootstrap_enterprise_root_tenant("ent-1", SYSTEM_DEFAULT_USER_ID, "Acme")
+                .await
+                .unwrap();
+        }
+        let tenants: i64 = service
+            .db
+            .fetch_one_scalar("SELECT COUNT(*) FROM one_tenants", &[])
+            .await
+            .unwrap();
+        let members: i64 = service
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_user_org WHERE user_id = ?",
+                &db_params![SYSTEM_DEFAULT_USER_ID],
+            )
+            .await
+            .unwrap();
+        assert_eq!((tenants, members), (1, 1));
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn bootstrap_enterprise_root_tenant_preserves_manual_overrides() {
+        let (db, service, _user_repo) = setup().await;
+        // A prior boot provisioned the tenant; an operator then demoted the
+        // admin's role in it and switched their active tenant elsewhere.
+        service
+            .bootstrap_enterprise_root_tenant("ent-1", SYSTEM_DEFAULT_USER_ID, "Acme")
+            .await
+            .unwrap();
+        service
+            .db
+            .execute(
+                "UPDATE one_user_org SET role = ? WHERE user_id = ? AND tenant_id = ?",
+                &db_params![ROLE_ORG_ADMIN, SYSTEM_DEFAULT_USER_ID, DEFAULT_ENTERPRISE_TENANT_ID],
+            )
+            .await
+            .unwrap();
+        service
+            .db
+            .execute(
+                "UPDATE one_active_tenant SET tenant_id = ? WHERE user_id = ?",
+                &db_params!["some-other-tenant", SYSTEM_DEFAULT_USER_ID],
+            )
+            .await
+            .unwrap();
+
+        // Next boot: DO NOTHING must leave both overrides intact.
+        service
+            .bootstrap_enterprise_root_tenant("ent-1", SYSTEM_DEFAULT_USER_ID, "Acme")
+            .await
+            .unwrap();
+
+        let role: String = service
+            .db
+            .fetch_one_scalar(
+                "SELECT role FROM one_user_org WHERE user_id = ? AND tenant_id = ?",
+                &db_params![SYSTEM_DEFAULT_USER_ID, DEFAULT_ENTERPRISE_TENANT_ID],
+            )
+            .await
+            .unwrap();
+        assert_eq!(role, ROLE_ORG_ADMIN);
+        let active: String = service
+            .db
+            .fetch_one_scalar(
+                "SELECT tenant_id FROM one_active_tenant WHERE user_id = ?",
+                &db_params![SYSTEM_DEFAULT_USER_ID],
+            )
+            .await
+            .unwrap();
+        assert_eq!(active, "some-other-tenant");
+        db.close().await;
+    }
+
+    /// Real MySQL: exercises `bootstrap_enterprise_root_tenant`'s three
+    /// `INSERT IGNORE` branches (one_tenants / one_user_org / one_active_tenant)
+    /// and idempotency on a second call. Requires `DREAM_TEST_MYSQL_URL`.
+    #[tokio::test]
+    async fn bootstrap_enterprise_root_tenant_round_trip_on_mysql() {
+        let Some(mysql_db) = dream_core_db::testing::mysql_test_pool().await else {
+            eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
+            return;
+        };
+        crate::migrate::run_one_migrations(&mysql_db.pool).await.unwrap();
+        let sqlite_db = dream_core_db::init_database_memory().await.unwrap();
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(SqliteUserRepository::new(sqlite_db.pool().clone()));
+        let data_dir = std::env::temp_dir().join(format!("one-org-test-mysql-{}", uuid::Uuid::now_v7()));
+        let service = Arc::new(OrgService::new(
+            mysql_db.pool.clone(),
+            user_repo.clone(),
+            std::sync::Arc::new(dream_core_db::SqliteConversationRepository::new(sqlite_db.pool().clone())),
+            data_dir,
+            [7u8; 32],
+        ));
+
+        service
+            .bootstrap_enterprise_root_tenant("ent-1", SYSTEM_DEFAULT_USER_ID, "Acme")
+            .await
+            .unwrap();
+        service
+            .bootstrap_enterprise_root_tenant("ent-1", SYSTEM_DEFAULT_USER_ID, "Acme")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            service.active_tenant_id(SYSTEM_DEFAULT_USER_ID).await.unwrap(),
+            DEFAULT_ENTERPRISE_TENANT_ID
+        );
+        assert_eq!(
+            service.effective_role(SYSTEM_DEFAULT_USER_ID).await.unwrap(),
+            ROLE_SYSTEM_ADMIN
+        );
+        let tenants: i64 = service.db.fetch_one_scalar("SELECT COUNT(*) FROM one_tenants", &[]).await.unwrap();
+        assert_eq!(tenants, 1);
+
+        sqlite_db.close().await;
+        mysql_db.cleanup().await.unwrap();
     }
 }

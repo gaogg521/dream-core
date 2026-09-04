@@ -461,9 +461,10 @@ impl DevopsService {
     async fn sync_market_item(
         &self,
         // Registry rows carry no tenant column (tenancy is scope-based, see
-        // 013_content_origin.sql); the parameter exists only for signature
-        // symmetry with the caller and stays unused.
-        _tenant_id: &str,
+        // 013_content_origin.sql), but `one_content_categories` IS
+        // tenant-scoped, so a manifest `category` is resolved to a category
+        // row under this tenant — see `ensure_market_category`.
+        tenant_id: &str,
         source_id: &str,
         manifest_url: &str,
         item: &ManifestItem,
@@ -485,6 +486,16 @@ impl DevopsService {
                 return Ok(());
             }
         }
+
+        // A manifest `category` is a display name; resolve it to a row in
+        // `one_content_categories` (get-or-create under this tenant) so the
+        // registry's `category_id` is a real reference the console's category
+        // filter groups by. Absent category or missing table → None, exactly
+        // as the raw-string write did before.
+        let category_id = match item.category.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+            Some(name) => self.ensure_market_category(tenant_id, &item.kind, name).await?,
+            None => None,
+        };
 
         let (payload_hash, import) = match item.kind.as_str() {
             "skill" => {
@@ -509,7 +520,7 @@ impl DevopsService {
                         name: parsed.name,
                         description: parsed.description,
                         content,
-                        category_id: item.category.clone(),
+                        category_id: category_id.clone(),
                     },
                 )
             }
@@ -528,7 +539,7 @@ impl DevopsService {
                         name: item.name.clone(),
                         mcp_type: mcp.r#type.clone(),
                         endpoint: mcp.endpoint.clone(),
-                        category_id: item.category.clone(),
+                        category_id: category_id.clone(),
                     },
                 )
             }
@@ -587,12 +598,73 @@ impl DevopsService {
             tracing::warn!(error = %e, source_id, "failed to record the market sync result");
         }
     }
+
+    /// Get-or-create a flat (`parent_id IS NULL`) category row for a manifest
+    /// `category` name and return its id.
+    ///
+    /// `one_content_categories` is a `dream-domain-employee` table (migration
+    /// 007) — devops already depends on employee, and this file already writes
+    /// raw SQL against several cross-domain tables, so a direct query is
+    /// consistent. Tolerant of an absent table (`Ok(None)`): the app runner
+    /// applies every domain's migrations, but a devops-only test pool may not
+    /// have it, and losing the category is never worth failing an import.
+    ///
+    /// Two known boundaries, deliberate for v1:
+    /// - categories are tenant-scoped while the registry rows they tag are
+    ///   org-scoped (no tenant column) — a single-tenant enterprise deploy
+    ///   (the norm) is unaffected; under multi-tenancy tenant B sees the skill
+    ///   row but not tenant A's category name in its filter.
+    /// - no `(tenant_id, resource_type, name)` unique index (007 has none), so
+    ///   two syncs racing for the same new category under one tenant can
+    ///   double-insert. Sync is a manual admin action and the 分类与标签 page
+    ///   can merge; not worth a cross-dialect unique index on a TEXT column.
+    async fn ensure_market_category(
+        &self,
+        tenant_id: &str,
+        resource_type: &str,
+        name: &str,
+    ) -> Result<Option<String>, String> {
+        let existing: Result<Option<String>, _> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT id FROM one_content_categories \
+                 WHERE tenant_id = ? AND resource_type = ? AND name = ? AND parent_id IS NULL",
+                &db_params![tenant_id, resource_type, name],
+            )
+            .await;
+        match existing {
+            Ok(Some(id)) => return Ok(Some(id)),
+            Ok(None) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") || msg.contains("1146") || msg.contains("doesn't exist") {
+                    return Ok(None);
+                }
+                return Err(format!("category lookup failed: {msg}"));
+            }
+        }
+        let id = new_id("cat");
+        let now = now_ms();
+        self.db
+            .execute(
+                "INSERT INTO one_content_categories \
+                 (id, tenant_id, parent_id, resource_type, name, sort_order, created_at, updated_at) \
+                 VALUES (?, ?, NULL, ?, ?, 0, ?, ?)",
+                &db_params![&id, tenant_id, resource_type, name, now, now],
+            )
+            .await
+            .map_err(|e| format!("category insert failed: {e}"))?;
+        Ok(Some(id))
+    }
 }
 
 /// The registry write for one manifest item, split by kind. Both variants
 /// write origin='market' and published=1 on INSERT — a market import is
 /// published by definition (the admin synced it to distribute); UPDATE
 /// paths keep whatever publish state the tenant set afterwards.
+///
+/// `category_id` is a `one_content_categories` row id already resolved from
+/// the manifest's `category` name by `ensure_market_category` (or `None`).
 enum MarketImport {
     Skill {
         name: String,
@@ -719,6 +791,11 @@ mod tests {
             .await
             .unwrap();
         crate::migrate::run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone())).await.unwrap();
+        // `one_content_categories` is an employee-domain table; the sync now
+        // resolves manifest categories against it (see `ensure_market_category`).
+        dream_domain_employee::migrate::run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(pool.clone()))
+            .await
+            .unwrap();
         let service = DevopsService::new(dream_core_db::DbPool::Sqlite(pool.clone()));
         (pool, service)
     }
@@ -804,6 +881,103 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn manifest_category_is_resolved_to_a_content_category_row() {
+        let (pool, service) = setup().await;
+        let id = make_source(&service).await;
+        let manifest: &str = r#"{"version":1,"items":[
+            {"kind":"skill","name":"review-skill","path":"skills/review/SKILL.md","category":"测试与安全"},
+            {"kind":"mcp","name":"jira","category":"开发工具","mcp":{"type":"sse","endpoint":"https://jira.example.com/mcp"}}
+        ]}"#;
+        let fetcher = FakeFetcher::new(&[(source_url(), manifest.as_bytes()), (skill_url(), SKILL_MD.as_bytes())]);
+
+        let report = service.sync_market_source("t1", &id, &fetcher).await.unwrap();
+        assert_eq!(report.imported, 2);
+        assert_eq!(report.errors.len(), 0);
+
+        let pool = dream_core_db::DbPool::Sqlite(pool.clone());
+        let cat_count: i64 = pool
+            .fetch_one_scalar("SELECT COUNT(*) FROM one_content_categories WHERE tenant_id = 't1'", &[])
+            .await
+            .unwrap();
+        assert_eq!(cat_count, 2);
+        let skill_cat: (String, String) = pool
+            .fetch_one_as(
+                "SELECT c.name, c.resource_type FROM one_skill_registry s \
+                 JOIN one_content_categories c ON c.id = s.category_id WHERE s.name = 'review-skill'",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(skill_cat, ("测试与安全".to_owned(), "skill".to_owned()));
+        let mcp_cat: (String, String) = pool
+            .fetch_one_as(
+                "SELECT c.name, c.resource_type FROM one_mcp_registry m \
+                 JOIN one_content_categories c ON c.id = m.category_id WHERE m.name = 'jira'",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp_cat, ("开发工具".to_owned(), "mcp".to_owned()));
+
+        // Re-sync with the SAME categories: no new category rows (get-or-create).
+        service.sync_market_source("t1", &id, &fetcher).await.unwrap();
+        let cat_count_after: i64 = pool
+            .fetch_one_scalar("SELECT COUNT(*) FROM one_content_categories WHERE tenant_id = 't1'", &[])
+            .await
+            .unwrap();
+        assert_eq!(cat_count_after, 2, "get-or-create must not duplicate existing categories");
+    }
+
+    /// Real MySQL: `ensure_market_category`'s get-or-create runs the same
+    /// SELECT / INSERT against MySQL, and the registry `category_id` must
+    /// round-trip as a real reference. Requires `DREAM_TEST_MYSQL_URL`.
+    #[tokio::test]
+    async fn manifest_category_resolution_works_on_mysql() {
+        let Some(mysql_db) = dream_core_db::testing::mysql_test_pool().await else {
+            eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
+            return;
+        };
+        crate::migrate::run_one_devops_migrations(&mysql_db.pool).await.unwrap();
+        dream_domain_employee::migrate::run_one_employee_migrations(&mysql_db.pool).await.unwrap();
+        let service = DevopsService::new(mysql_db.pool.clone());
+        let id = service
+            .create_market_source("t1", "acme", source_url(), "admin1")
+            .await
+            .unwrap()
+            .id;
+        let manifest: &str = r#"{"version":1,"items":[
+            {"kind":"skill","name":"review-skill","path":"skills/review/SKILL.md","category":"测试与安全"},
+            {"kind":"mcp","name":"jira","category":"测试与安全","mcp":{"type":"sse","endpoint":"https://jira.example.com/mcp"}}
+        ]}"#;
+        let fetcher = FakeFetcher::new(&[(source_url(), manifest.as_bytes()), (skill_url(), SKILL_MD.as_bytes())]);
+
+        let report = service.sync_market_source("t1", &id, &fetcher).await.unwrap();
+        assert_eq!(report.imported, 2);
+        assert_eq!(report.errors.len(), 0);
+
+        // Same name, different resource_type → two distinct category rows.
+        let cat_count: i64 = mysql_db
+            .pool
+            .fetch_one_scalar("SELECT COUNT(*) FROM one_content_categories WHERE tenant_id = 't1'", &[])
+            .await
+            .unwrap();
+        assert_eq!(cat_count, 2);
+        let joined: i64 = mysql_db
+            .pool
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_skill_registry s \
+                 JOIN one_content_categories c ON c.id = s.category_id \
+                 WHERE s.name = 'review-skill' AND c.name = '测试与安全'",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(joined, 1);
+
+        mysql_db.cleanup().await.unwrap();
     }
 
     #[tokio::test]

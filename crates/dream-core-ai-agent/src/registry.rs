@@ -862,36 +862,36 @@ fn decode_row(
     // the runtime spawn (factory) and the probe (availability) observe the
     // same merged command/env without either needing extra plumbing.
     let command_override = meta_command_override(&command_override_raw);
-    let is_internal_aion_cli = is_internal_aion_cli(&meta);
-    if is_internal_aion_cli && command_override.is_some() {
+    let is_internal_dream_cli = is_internal_dream_cli(&meta);
+    if is_internal_dream_cli && command_override.is_some() {
         warn!(
             id = %meta.id,
             name = %meta.name,
-            "Ignoring command override for internal Aion CLI agent"
+            "Ignoring command override for internal Dream CLI agent"
         );
     }
     let env_override = parse_env_override(&env_override_raw);
-    if is_internal_aion_cli && env_override.as_ref().is_some_and(|entries| !entries.is_empty()) {
+    if is_internal_dream_cli && env_override.as_ref().is_some_and(|entries| !entries.is_empty()) {
         warn!(
             id = %meta.id,
             name = %meta.name,
-            "Ignoring environment overrides for internal Aion CLI agent"
+            "Ignoring environment overrides for internal Dream CLI agent"
         );
     }
 
-    meta.has_command_override = command_override.is_some() && !is_internal_aion_cli;
+    meta.has_command_override = command_override.is_some() && !is_internal_dream_cli;
     meta.env_override_key_count = env_override
         .as_ref()
-        .filter(|_| !is_internal_aion_cli)
+        .filter(|_| !is_internal_dream_cli)
         .map(|v| v.iter().filter(|e| !is_blocked_override_env_key(&e.name)).count())
         .unwrap_or(0);
 
-    if is_internal_aion_cli {
+    if is_internal_dream_cli {
         meta.command = None;
     } else if let Some(path) = command_override {
         meta.command = Some(path);
     }
-    if !is_internal_aion_cli && let Some(extra) = env_override {
+    if !is_internal_dream_cli && let Some(extra) = env_override {
         for entry in extra {
             if is_blocked_override_env_key(&entry.name) {
                 tracing::warn!(key = %entry.name, "env override: blocked key skipped");
@@ -908,7 +908,7 @@ fn decode_row(
     Some((meta, reason))
 }
 
-fn is_internal_aion_cli(meta: &AgentMetadata) -> bool {
+fn is_internal_dream_cli(meta: &AgentMetadata) -> bool {
     meta.agent_type == AgentType::DreamEngine && meta.agent_source == AgentSource::Internal
 }
 
@@ -1100,7 +1100,7 @@ fn probe_with_reason(meta: &AgentMetadata) -> (Option<PathBuf>, Option<Unavailab
 
 /// Emit a single per-row line summarizing the probe outcome. Available
 /// rows go to `debug!` (one per startup × N agents is noisy at info);
-/// unavailable rows go to `info!` so the default aioncore.log surfaces
+/// unavailable rows go to `info!` so the default dreamcore.log surfaces
 /// the reason without needing `--log-level debug` after a user
 /// reports "no agent works".
 fn log_probe_result(meta: &AgentMetadata, reason: &Option<UnavailableReason>) {

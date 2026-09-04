@@ -21,7 +21,7 @@ permissions:
   contents: write
 
 env:
-  BINARY_NAME: aioncore
+  BINARY_NAME: dreamcore
   CARGO_TERM_COLOR: always
   CARGO_HTTP_TIMEOUT: "600"
   CARGO_NET_RETRY: "10"
@@ -66,22 +66,22 @@ jobs:
           # deliberately drop it.
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            binary_name: aioncore
+            binary_name: dreamcore
           # Linux aarch64: keep `cross` (its image happens to not trip the
           # aws-lc-sys check and also yields an older GLIBC baseline).
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            binary_name: aioncore
+            binary_name: dreamcore
             use_cross: true
           - os: macos-latest
             target: x86_64-apple-darwin
-            binary_name: aioncore
+            binary_name: dreamcore
           - os: macos-latest
             target: aarch64-apple-darwin
-            binary_name: aioncore
+            binary_name: dreamcore
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary_name: aioncore.exe
+            binary_name: dreamcore.exe
             rustflags: "-C target-feature=+crt-static"
           # aarch64-pc-windows-msvc dropped in this fork: the ring 0.16
           # transitive dep fails to cross-compile for arm64 windows
@@ -135,17 +135,6 @@ jobs:
             cargo build --release --target ${{ matrix.target }} -p dream-core-app
           fi
 
-      - name: Normalize binary name
-        # The crate builds `dreamcore` (dream-core-app's [[bin]]); the release
-        # assets and dream-ui's prepare-aioncore.js downloader are keyed on the
-        # historical `aioncore` name. Rename in place so the matrix
-        # `binary_name` and every downstream step stay `aioncore`.
-        shell: bash
-        run: |
-          BIN_DIR="target/${{ matrix.target }}/release"
-          [ -f "$BIN_DIR/dreamcore" ] && mv "$BIN_DIR/dreamcore" "$BIN_DIR/aioncore" || true
-          [ -f "$BIN_DIR/dreamcore.exe" ] && mv "$BIN_DIR/dreamcore.exe" "$BIN_DIR/aioncore.exe" || true
-
       - name: Verify Linux ARM64 GLIBC baseline
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         shell: bash
@@ -163,7 +152,7 @@ jobs:
           VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
           mkdir -p dist
-          ARCHIVE="aioncore-v${VERSION}-${{ matrix.target }}.tar.gz"
+          ARCHIVE="dreamcore-v${VERSION}-${{ matrix.target }}.tar.gz"
           tar -C target/${{ matrix.target }}/release -czf "dist/${ARCHIVE}" ${{ matrix.binary_name }}
           echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
 
@@ -174,7 +163,7 @@ jobs:
           VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $archive = "aioncore-v${env:VERSION}-${{ matrix.target }}.zip"
+          $archive = "dreamcore-v${env:VERSION}-${{ matrix.target }}.zip"
           Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" -DestinationPath "dist/${archive}" -Force
           "ARCHIVE=${archive}" | Out-File -FilePath $env:GITHUB_ENV -Append
 
@@ -202,7 +191,7 @@ jobs:
         shell: bash
         run: |
           cd artifacts
-          sha256sum aioncore-* > aioncore-checksums.txt
+          sha256sum dreamcore-* > dreamcore-checksums.txt
 
       - name: Upload release assets
         shell: bash

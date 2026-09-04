@@ -162,7 +162,7 @@ impl AuthProvisionService {
 
 fn map_external_user_type(user_type: ExternalUserType) -> Result<UserType, ProvisionError> {
     match user_type {
-        ExternalUserType::Aionpro => Ok(UserType::Aionpro),
+        ExternalUserType::DreamPro => Ok(UserType::DreamPro),
     }
 }
 

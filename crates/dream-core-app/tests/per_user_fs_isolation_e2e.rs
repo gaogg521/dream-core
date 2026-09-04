@@ -24,7 +24,7 @@ fn write_skill(dir: &Path, name: &str, body: &str) {
 async fn aionpro_services(data_dir: &Path) -> dream_core_app::AppServices {
     let db = dream_core_db::init_database_memory().await.unwrap();
     let config = dream_core_app::AppConfig {
-        identity_mode: dream_core_app::IdentityMode::AionPro,
+        identity_mode: dream_core_app::IdentityMode::DreamPro,
         bootstrap_secret: Some("bootstrap-secret".to_string()),
         data_dir: data_dir.to_path_buf(),
         work_dir: data_dir.to_path_buf(),
@@ -132,7 +132,7 @@ async fn provisioning_first_aionpro_user_adopts_default_user_files_on_disk() {
                 .method("PUT")
                 .uri("/api/auth/internal/external-users/pro-1")
                 .header("content-type", "application/json")
-                .header("x-aioncore-bootstrap-secret", "bootstrap-secret")
+                .header("x-dreamcore-bootstrap-secret", "bootstrap-secret")
                 .body(axum::body::Body::from(r#"{"user_type":"aionpro","username":"Pro"}"#))
                 .unwrap(),
         )

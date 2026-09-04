@@ -20,13 +20,13 @@ use dream_core_team::TeamIdleCleanupCoordinator;
 
 use crate::bootstrap::{BootstrapError, BootstrapErrorCode, ParentExitSignal, ServerEnvironment, ShutdownWatchdog};
 
-const LISTENING_EVENT_PREFIX: &str = "AIONCORE_LISTENING";
+const LISTENING_EVENT_PREFIX: &str = "DREAMCORE_LISTENING";
 // Bare, payload-less readiness marker emitted once `axum::serve` actually begins
-// serving. The port is already known from the earlier AIONCORE_LISTENING line,
+// serving. The port is already known from the earlier DREAMCORE_LISTENING line,
 // so this marker only signals the "now serving" edge. Dream UI treats it as the
 // authoritative ready signal, eliminating the "listening early, serving late"
 // false gap.
-const READY_EVENT_MARKER: &str = "AIONCORE_READY";
+const READY_EVENT_MARKER: &str = "DREAMCORE_READY";
 const DYNAMIC_BACKEND_BIND_MAX_ATTEMPTS: usize = 50;
 const WORKER_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -360,7 +360,7 @@ pub(crate) async fn run_server(
     // authoritative readiness marker now (never at bind time) so Dream UI can treat
     // it as "ready" without racing the /health poll against the startup clock.
     emit_ready_event();
-    info!("startup: server ready, emitted AIONCORE_READY");
+    info!("startup: server ready, emitted DREAMCORE_READY");
 
     // Last-resort bound on the whole shutdown tail (AIONUI-16): armed when the
     // shutdown signal fires, disarmed once the tail below completes. See
@@ -666,7 +666,7 @@ mod tests {
         let line = format_listening_event(addr);
 
         let payload = line
-            .strip_prefix("AIONCORE_LISTENING ")
+            .strip_prefix("DREAMCORE_LISTENING ")
             .expect("line should start with the listening event prefix");
         let parsed: serde_json::Value = serde_json::from_str(payload).expect("payload should be valid JSON");
         assert_eq!(parsed["host"], "127.0.0.1");
@@ -679,7 +679,7 @@ mod tests {
 
         // Bare marker: exactly the constant, no payload and no whitespace.
         assert_eq!(line, READY_EVENT_MARKER);
-        assert_eq!(line, "AIONCORE_READY");
+        assert_eq!(line, "DREAMCORE_READY");
         assert!(!line.contains(' '));
         // Distinct from the listening event prefix, which carries a JSON payload.
         assert_ne!(line, LISTENING_EVENT_PREFIX);

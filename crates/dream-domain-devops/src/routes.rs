@@ -463,7 +463,7 @@ async fn dispatch_core(state: &OneDevopsRouterState, user_id: &str, id: &str) ->
         .await?;
     state
         .service
-        .audit(&tenant, user_id, "devops.requirement.dispatch", Some(id))
+        .audit(&tenant, user_id, "devops.requirement.dispatch", Some(id), None)
         .await;
 
     // Status was already advanced to `developing` by the atomic claim above
@@ -628,7 +628,7 @@ async fn breakdown_requirement(
 
     state
         .service
-        .audit(&tenant, &user.id, "devops.requirement.breakdown", Some(&id))
+        .audit(&tenant, &user.id, "devops.requirement.breakdown", Some(&id), None)
         .await;
     Ok(Json(ApiResponse::ok(BreakdownResult {
         conversation_id: run.conversation_id,
@@ -660,10 +660,12 @@ fn build_task_context(req: &crate::models::RequirementRow) -> String {
 /// Reads (list/search) and collaboration surfaces (requirements / comments /
 /// dispatch / milestones / test plans / pipelines) stay member-open.
 /// Best-effort audit for a policy-changing action (D6). Resolves the caller's
-/// tenant and records the action; never fails the request.
+/// tenant and records the action; never fails the request. These call sites
+/// fire only after the operation returned Ok, so they are all successes; the
+/// registry one-liners are near-instant and pass no `latency_ms`.
 async fn audit(state: &OneDevopsRouterState, user_id: &str, action: &str, resource: Option<&str>) {
     let tenant = state.tenant_of(user_id).await;
-    state.service.audit(&tenant, user_id, action, resource).await;
+    state.service.audit(&tenant, user_id, action, resource, None).await;
 }
 
 async fn require_registry_admin(state: &OneDevopsRouterState, user_id: &str) -> Result<(), DevopsError> {
@@ -1082,6 +1084,10 @@ struct UpsertModelChannelBody {
     models: String,
     #[serde(default)]
     model_settings: Option<String>,
+    /// JSON object mapping model name -> wire protocol. Only meaningful when
+    /// `platform = 'new-api'`.
+    #[serde(default)]
+    model_protocols: Option<String>,
     #[serde(default = "default_true")]
     enabled: bool,
     #[serde(default = "default_scope_org")]
@@ -1116,6 +1122,7 @@ async fn upsert_model_channel(
             body.api_key.as_deref(),
             &body.models,
             body.model_settings.as_deref(),
+            body.model_protocols.as_deref(),
             body.enabled,
             &body.scope,
             body.team_id.as_deref(),
@@ -2020,6 +2027,7 @@ async fn create_market_source(
         .service
         .create_market_source(&state.tenant_of(&user.id).await, &body.name, &body.url, &user.id)
         .await?;
+    audit(&state, &user.id, "devops.market.source.create", Some(&dto.id)).await;
     Ok(Json(ApiResponse::ok(dto)))
 }
 
@@ -2077,10 +2085,36 @@ async fn sync_market_source(
 ) -> Result<Json<ApiResponse<MarketSyncReportDto>>, DevopsError> {
     require_registry_admin(&state, &user.id).await?;
     let fetcher = crate::market_sync::ReqwestFetcher::new();
-    let report = state
+    let tenant = state.tenant_of(&user.id).await;
+    // Market sync is a real content-distribution action and can run for
+    // minutes over a large manifest — worth an audit row with its wall-clock,
+    // and a `failure` row when the manifest fetch / parse fails outright.
+    let started = std::time::Instant::now();
+    let report = match state.service.sync_market_source(&tenant, &id, &fetcher).await {
+        Ok(r) => r,
+        Err(e) => {
+            state
+                .service
+                .audit_failure(
+                    &tenant,
+                    &user.id,
+                    "devops.market.sync",
+                    Some(&id),
+                    Some(started.elapsed().as_millis() as i64),
+                )
+                .await;
+            return Err(e);
+        }
+    };
+    state
         .service
-        .sync_market_source(&state.tenant_of(&user.id).await, &id, &fetcher)
-        .await?;
-    audit(&state, &user.id, "devops.market.sync", Some(&id)).await;
+        .audit(
+            &tenant,
+            &user.id,
+            "devops.market.sync",
+            Some(&id),
+            Some(started.elapsed().as_millis() as i64),
+        )
+        .await;
     Ok(Json(ApiResponse::ok(report)))
 }

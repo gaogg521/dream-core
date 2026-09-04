@@ -484,6 +484,44 @@ impl EnterpriseService {
             .ok_or(EnterpriseError::CompanyNotFound)
     }
 
+    /// Idempotently ensure this deployment has a company and that
+    /// `admin_user_id` is its company admin. Called once at startup from the
+    /// app-layer bootstrap, before the "设立企业" UI is ever reachable, so a
+    /// fresh enterprise install lands the admin in a working company.
+    ///
+    /// - An existing company (SSO-bootstrapped, or a previous bootstrap run)
+    ///   is adopted: the admin is (re)asserted as company admin, nothing else
+    ///   changes.
+    /// - Otherwise a new row is inserted with `origin = 'bootstrap'` — NOT
+    ///   `'manual'` — so [`Self::manual_company_id`] still returns `None` and a
+    ///   later [`Self::setup_company`] call adopts + renames it exactly as it
+    ///   would an SSO-bootstrapped company (no code change needed there).
+    ///
+    /// Returns the company id.
+    pub async fn ensure_deployment_company(
+        &self,
+        admin_user_id: &str,
+        default_name: &str,
+    ) -> Result<String, EnterpriseError> {
+        let now = now_ms() as i64;
+        let enterprise_id = if let Some(id) = self.deployment_company_id().await? {
+            id
+        } else {
+            let id = uuid::Uuid::now_v7().simple().to_string();
+            self.db
+                .execute(
+                    "INSERT INTO one_enterprises (id, provider, external_id, display_name, origin, created_at, updated_at) \
+                     VALUES (?, 'bootstrap', ?, ?, 'bootstrap', ?, ?)",
+                    &db_params![&id, &id, default_name.trim(), now, now],
+                )
+                .await?;
+            id
+        };
+        self.upsert_member_role(admin_user_id, &enterprise_id, ROLE_COMPANY_ADMIN, now)
+            .await?;
+        Ok(enterprise_id)
+    }
+
     /// Renames the company. `enterprise_id` comes from `RequireCompanyAdmin`
     /// (already role-checked), so this only validates the new name — same
     /// non-empty/trim rule `setup_company` uses at creation time.
@@ -763,6 +801,12 @@ impl EnterpriseService {
     ///
     /// Every member's session is revoked, mirroring `remove_member` — a
     /// disbanded company must not leave anyone still logged into it.
+    ///
+    /// On an auto-provisioned deployment (see the app-layer bootstrap in
+    /// `dream-core-app`), the default company + root project group are
+    /// recreated on the next process restart from the fixed
+    /// `DEFAULT_ENTERPRISE_TENANT_ID` — so here disband is effectively a
+    /// reset, not a permanent teardown.
     pub async fn disband_company(
         &self,
         actor_user_id: &str,
@@ -1277,6 +1321,70 @@ mod tests {
         svc.setup_company("system_default_user", "Acme").await.unwrap();
         let err = svc.setup_company("system_default_user", "Beta").await.unwrap_err();
         assert_eq!(err.code(), "COMPANY_ALREADY_EXISTS");
+    }
+
+    #[tokio::test]
+    async fn ensure_deployment_company_creates_bootstrap_company_and_admin() {
+        let (svc, sqlite) = service_with_governance().await;
+        let ent = svc.ensure_deployment_company("system_default_user", "BootCo").await.unwrap();
+
+        let origin: String = sqlx::query_scalar("SELECT origin FROM one_enterprises WHERE id = ?")
+            .bind(&ent)
+            .fetch_one(&sqlite)
+            .await
+            .unwrap();
+        assert_eq!(origin, "bootstrap");
+        assert!(svc.is_company_admin("system_default_user").await.unwrap());
+        assert_eq!(svc.deployment_company_id().await.unwrap().as_deref(), Some(ent.as_str()));
+        // origin != 'manual' → "设立企业" is still available.
+        assert!(svc.manual_company_id().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn ensure_deployment_company_adopts_existing_sso_company() {
+        let (svc, sqlite) = service_with_governance().await;
+        sqlx::query(
+            "INSERT INTO one_enterprises (id, provider, external_id, display_name, origin, created_at, updated_at) \
+             VALUES ('sso-1', 'feishu', 'ext-1', NULL, 'sso', 1, 1)",
+        )
+        .execute(&sqlite)
+        .await
+        .unwrap();
+
+        let ent = svc.ensure_deployment_company("system_default_user", "BootCo").await.unwrap();
+        assert_eq!(ent, "sso-1");
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprises").fetch_one(&sqlite).await.unwrap();
+        assert_eq!(count, 1);
+        assert!(svc.is_company_admin("system_default_user").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn ensure_deployment_company_is_idempotent() {
+        let (svc, sqlite) = service_with_governance().await;
+        let first = svc.ensure_deployment_company("system_default_user", "BootCo").await.unwrap();
+        let second = svc.ensure_deployment_company("system_default_user", "BootCo").await.unwrap();
+        assert_eq!(first, second);
+        let companies: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprises").fetch_one(&sqlite).await.unwrap();
+        let members: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprise_members").fetch_one(&sqlite).await.unwrap();
+        assert_eq!((companies, members), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn setup_company_adopts_a_bootstrap_company() {
+        let (svc, sqlite) = service_with_governance().await;
+        svc.ensure_deployment_company("system_default_user", "BootCo").await.unwrap();
+
+        // "设立企业" still works: it renames + claims the pre-provisioned company.
+        let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
+        assert_eq!(overview.name.as_deref(), Some("Acme"));
+        assert_eq!(overview.origin, "manual");
+        assert_eq!(overview.member_count, 1);
+        assert_eq!(overview.viewer_role.as_deref(), Some("admin"));
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprises").fetch_one(&sqlite).await.unwrap();
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]

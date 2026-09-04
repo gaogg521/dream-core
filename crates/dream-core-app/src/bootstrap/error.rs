@@ -13,7 +13,7 @@ pub(crate) enum BootstrapErrorCode {
     ServerFailed,
     ShutdownFailed,
     /// Emitted when this process yields the data-dir instance guard to a peer
-    /// aioncore that already owns the data directory (Sentry 135525166). Benign
+    /// dreamcore that already owns the data directory (Sentry 135525166). Benign
     /// and transient — Dream UI treats it as recoverable and retries.
     PeerAlreadyRunning,
 }
@@ -165,7 +165,7 @@ mod tests {
         let err = BootstrapError::new(
             BootstrapErrorCode::PeerAlreadyRunning,
             "instance_guard.acquire",
-            "another aioncore already owns this data directory",
+            "another dreamcore already owns this data directory",
         );
 
         assert_eq!(err.exit_code(), ExitCode::from(3));

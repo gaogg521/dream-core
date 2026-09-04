@@ -1,8 +1,8 @@
 //! Data-dir process-level instance guard (Sentry 135525166 Option A).
 //!
 //! A long-lived, non-blocking exclusive `flock` on a lock file next to the
-//! database file. The winning aioncore holds it for its whole lifetime so a
-//! second aioncore yields structurally before touching the database or binding
+//! database file. The winning dreamcore holds it for its whole lifetime so a
+//! second dreamcore yields structurally before touching the database or binding
 //! a port, instead of racing the assistant bootstrap over the same data dir.
 //!
 //! This is distinct from the migration lock (`*.migrate.lock`, acquired and
@@ -24,7 +24,7 @@ pub fn instance_lock_path(db_path: &Path) -> PathBuf {
     let mut p = db_path.to_path_buf();
     let new_name = match p.file_name().and_then(|s| s.to_str()) {
         Some(name) => format!("{name}.instance.lock"),
-        None => "aionui.instance.lock".to_string(),
+        None => "dream.instance.lock".to_string(),
     };
     p.set_file_name(new_name);
     p

@@ -2,7 +2,7 @@
 //!
 //! The media MCP writes generated images and videos into a directory it is
 //! given. It cannot work that directory out for itself: its child process
-//! inherits aioncore's cwd rather than the session's (stdio MCP servers are
+//! inherits dreamcore's cwd rather than the session's (stdio MCP servers are
 //! spawned without `current_dir`), and the tool call carries no conversation
 //! identity, so there is nothing in the request to resolve either. Left alone
 //! it falls back to the application data folder.

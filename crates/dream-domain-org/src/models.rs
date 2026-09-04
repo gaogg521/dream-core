@@ -6,6 +6,16 @@ use serde::Serialize;
 /// implicitly in this tenant.
 pub const DEFAULT_TENANT_ID: &str = "default";
 
+/// Deterministic id of the project group auto-provisioned for the deployment
+/// admin on first boot of an enterprise build (see the app-layer bootstrap in
+/// `dream-core-app`). Non-empty and `!= DEFAULT_TENANT_ID`, so
+/// [`is_enterprise_tenant_id`] treats it as a real enterprise tenant and every
+/// `RequireOrgAdmin` / platform / workflow / memory gate passes for the admin
+/// without a manual "设立企业" step. A fixed id (rather than a random one) is
+/// what makes the bootstrap idempotent across restarts and the split
+/// main/admin binary double-run.
+pub const DEFAULT_ENTERPRISE_TENANT_ID: &str = "enterprise";
+
 /// Upstream's built-in operator user (`ensure_system_user` in dream-db).
 /// Mirrors the 1ONE desktop-operator semantics: this user is the instance
 /// administrator until explicit roles are assigned.
@@ -316,6 +326,12 @@ pub struct AuditLogRow {
     pub ip_address: Option<String>,
     pub user_agent: Option<String>,
     pub created_at: i64,
+    /// Wall-clock ms the audited handler took. `None` for rows written before
+    /// migration 014 and for the few call sites that don't time themselves.
+    pub latency_ms: Option<i64>,
+    /// `'success'` | `'failure'` (migration 014). Rows predating it default to
+    /// `'success'` — every `audit()` call fires only after an Ok result.
+    pub result: String,
 }
 
 /// One agent tool-call, for the agent-run audit (P1-1 "可审计的本地优先").

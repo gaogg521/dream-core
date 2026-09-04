@@ -184,7 +184,7 @@ pub(super) fn build_identify(token: &str) -> String {
         "d": {
             "token": token,
             "intents": DISCORD_INTENTS,
-            "properties": { "os": "linux", "browser": "aionui", "device": "aionui" }
+            "properties": { "os": "linux", "browser": "dream", "device": "dream" }
         }
     })
     .to_string()

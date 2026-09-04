@@ -59,7 +59,7 @@ async fn test_app_with_options_and_hook(
         identity_mode: if local {
             AuthIdentityMode::Local
         } else if aionpro_mode {
-            AuthIdentityMode::AionPro
+            AuthIdentityMode::DreamPro
         } else {
             AuthIdentityMode::UserSession
         },
@@ -120,7 +120,7 @@ fn json_post_with_bootstrap_secret(uri: &str, body: &str, secret: &str) -> Reque
         .method("POST")
         .uri(uri)
         .header("content-type", "application/json")
-        .header("x-aioncore-bootstrap-secret", secret)
+        .header("x-dreamcore-bootstrap-secret", secret)
         .body(Body::from(body.to_owned()))
         .unwrap()
 }
@@ -130,7 +130,7 @@ fn json_put_with_bootstrap_secret(uri: &str, body: &str, secret: &str) -> Reques
         .method("PUT")
         .uri(uri)
         .header("content-type", "application/json")
-        .header("x-aioncore-bootstrap-secret", secret)
+        .header("x-dreamcore-bootstrap-secret", secret)
         .body(Body::from(body.to_owned()))
         .unwrap()
 }

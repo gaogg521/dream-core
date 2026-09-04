@@ -1,0 +1,12 @@
+-- one-devops 016: per-model protocol overrides on a company model channel.
+--
+-- Mirrors `providers.model_protocols` in the personal edition: a JSON object
+-- mapping model name -> wire protocol ('openai' | 'anthropic' | 'gemini'),
+-- meaningful only when `platform = 'new-api'` (a multi-model gateway that
+-- routes by the shape of the incoming request). Carried through to the
+-- materialized member provider row so the member's client speaks the right
+-- protocol per model.
+--
+-- NULL = no overrides (the client falls back to name-based detection), which
+-- is exactly the state every existing row deserializes to.
+ALTER TABLE one_provider_registry ADD COLUMN model_protocols TEXT;

@@ -6,14 +6,17 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "lowercase")]
 pub enum UserType {
     Local,
-    Aionpro,
+    /// DB value is frozen at `aionpro` (existing rows); never renumber.
+    #[sqlx(rename = "aionpro")]
+    #[serde(rename = "aionpro")]
+    DreamPro,
 }
 
 impl UserType {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Local => "local",
-            Self::Aionpro => "aionpro",
+            Self::DreamPro => "aionpro",
         }
     }
 }

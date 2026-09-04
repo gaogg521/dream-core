@@ -1,4 +1,4 @@
-use dream_core_common::constants::ONE_FILES_MARKER;
+use dream_core_common::constants::FILES_MARKER;
 use dream_engine_types::message::ContentBlock;
 
 use super::build_content_blocks;
@@ -6,7 +6,7 @@ use super::build_content_blocks;
 #[test]
 fn keeps_image_as_path_for_on_demand_viewing() {
     let image_path = "/tmp/image.png".to_owned();
-    let content = format!("look at this\n\n{ONE_FILES_MARKER}\n{image_path}");
+    let content = format!("look at this\n\n{FILES_MARKER}\n{image_path}");
 
     let blocks = build_content_blocks(&content, std::slice::from_ref(&image_path));
 
@@ -20,7 +20,7 @@ fn keeps_image_as_path_for_on_demand_viewing() {
 
 #[test]
 fn preserves_literal_marker_when_suffix_does_not_match_files() {
-    let literal = format!("discuss {ONE_FILES_MARKER}\nnot-the-attached-path");
+    let literal = format!("discuss {FILES_MARKER}\nnot-the-attached-path");
 
     let blocks = build_content_blocks(&literal, &["/tmp/image.png".to_owned()]);
 
