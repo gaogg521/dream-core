@@ -277,7 +277,7 @@ impl EmployeePermission {
 /// case `EmployeeService::user_org_role` already handles for `one_user_org`.
 /// A missing table here just means "no ancestry/membership to speak of",
 /// same as an empty result, not an error.
-fn is_missing_table_error(e: &sqlx::Error) -> bool {
+pub(crate) fn is_missing_table_error(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if dream_core_db::message_indicates_missing_table(db.message()))
 }
 
@@ -338,6 +338,13 @@ async fn scene_ids_for_member(pool: &DbPool, tenant_id: &str, user_id: &str) -> 
 /// wildcard), for one `subject_type`. `None` when `subject_ids` is empty or
 /// no row matches — never an error, same "absence is just absence" contract
 /// `fold_grants_for_subjects` uses for the four-type matrix.
+///
+/// Reads the unified matrix (migration 012 in dream-domain-platform folded
+/// `one_employee_grants` into `one_resource_grants` as
+/// `resource_type = 'employee'`). The read is whitelist-shaped by design —
+/// the employee mode has no dial, so every row here grants regardless of any
+/// `one_resource_grant_modes` content. A missing table (personal builds never
+/// run the platform migrations) is just "no grants".
 async fn max_employee_permission_for_subjects(
     pool: &DbPool,
     tenant_id: &str,
@@ -350,15 +357,20 @@ async fn max_employee_permission_for_subjects(
     }
     let placeholders = vec!["?"; subject_ids.len()].join(", ");
     let sql = format!(
-        "SELECT permission FROM one_employee_grants \
-         WHERE tenant_id = ? AND subject_type = ? AND employee_id IN (?, '{EMPLOYEE_GRANT_ALL}') \
-         AND subject_id IN ({placeholders})"
+        "SELECT permission FROM one_resource_grants \
+         WHERE tenant_id = ? AND resource_type = 'employee' AND subject_type = ? \
+         AND resource_id IN (?, '{EMPLOYEE_GRANT_ALL}') \
+         AND subject_id IN ({placeholders}) AND permission IN ('use', 'manage')"
     );
     let mut params = db_params![tenant_id, subject_type, employee_id];
     for subject_id in subject_ids {
         params.push(subject_id.as_str().into());
     }
-    let rows = pool.fetch_all_scalar::<String>(&sql, &params).await?;
+    let rows = match pool.fetch_all_scalar::<String>(&sql, &params).await {
+        Ok(rows) => rows,
+        Err(e) if is_missing_table_error(&e) => return Ok(None),
+        Err(e) => return Err(e),
+    };
     Ok(rows.iter().filter_map(|p| EmployeePermission::parse(p)).max())
 }
 
@@ -422,12 +434,15 @@ pub(crate) async fn grant_employee_access(
             "unknown permission '{permission}' (allowed: use/manage)"
         )));
     }
-        let statement = match pool.backend() {
+    // The unified matrix (migration 012): employee grants live in
+    // one_resource_grants as resource_type='employee'. The conflict target is
+    // that table's own UNIQUE key, and `resource_id = employee_id`.
+    let statement = match pool.backend() {
         DbBackend::MySql => {
-            "INSERT INTO one_employee_grants          (id, tenant_id, subject_type, subject_id, employee_id, permission, granted_by, created_at)          VALUES (?, ?, ?, ?, ?, ?, ?, ?) AS new          ON DUPLICATE KEY UPDATE permission = new.permission, granted_by = new.granted_by,                         created_at = new.created_at"
+            "INSERT INTO one_resource_grants          (id, tenant_id, subject_type, subject_id, resource_type, resource_id, permission, granted_by, created_at)          VALUES (?, ?, ?, ?, 'employee', ?, ?, ?, ?)          ON DUPLICATE KEY UPDATE permission = new.permission, granted_by = new.granted_by,                         created_at = new.created_at"
         }
         _ => {
-            "INSERT INTO one_employee_grants          (id, tenant_id, subject_type, subject_id, employee_id, permission, granted_by, created_at)          VALUES (?, ?, ?, ?, ?, ?, ?, ?)          ON CONFLICT(tenant_id, subject_type, subject_id, employee_id)          DO UPDATE SET permission = excluded.permission, granted_by = excluded.granted_by,                         created_at = excluded.created_at"
+            "INSERT INTO one_resource_grants          (id, tenant_id, subject_type, subject_id, resource_type, resource_id, permission, granted_by, created_at)          VALUES (?, ?, ?, ?, 'employee', ?, ?, ?, ?)          ON CONFLICT(tenant_id, subject_type, subject_id, resource_type, resource_id)          DO UPDATE SET permission = excluded.permission, granted_by = excluded.granted_by,                         created_at = excluded.created_at"
         }
     };
     pool.execute(
@@ -1114,26 +1129,39 @@ impl EmployeeService {
         employee_id: &str,
     ) -> Result<(), EmployeeError> {
         self.db.execute(
-            "DELETE FROM one_employee_grants \
-             WHERE tenant_id = ? AND subject_type = ? AND subject_id = ? AND employee_id = ?",
+            "DELETE FROM one_resource_grants \
+             WHERE tenant_id = ? AND subject_type = ? AND subject_id = ? \
+               AND resource_type = 'employee' AND resource_id = ?",
         &db_params![tenant_id, subject_type, subject_id, employee_id])
         .await?;
         Ok(())
     }
 
     /// Current grants for one subject — what the authorization editor shows
-    /// when it's open on that member/department/scene.
+    /// when it's open on that member/department/scene. Reads the unified
+    /// matrix with `resource_id` aliased back to `employee_id`, keeping the
+    /// row shape every consumer already knows; a missing table (personal
+    /// builds) is just "no grants".
     pub async fn list_employee_grants(
         &self,
         tenant_id: &str,
         subject_type: &str,
         subject_id: &str,
     ) -> Result<Vec<EmployeeGrantRow>, EmployeeError> {
-        let rows = self.db.fetch_all_as::<EmployeeGrantRow>(
-            "SELECT * FROM one_employee_grants \
-             WHERE tenant_id = ? AND subject_type = ? AND subject_id = ? ORDER BY created_at DESC",
-        &db_params![tenant_id, subject_type, subject_id])
-        .await?;
+        let rows = match self
+            .db
+            .fetch_all_as::<EmployeeGrantRow>(
+                "SELECT id, tenant_id, subject_type, subject_id, resource_id AS employee_id, permission, granted_by, created_at \
+                 FROM one_resource_grants \
+                 WHERE tenant_id = ? AND subject_type = ? AND subject_id = ? AND resource_type = 'employee' \
+                 ORDER BY created_at DESC",
+            &db_params![tenant_id, subject_type, subject_id])
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) if is_missing_table_error(&e) => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
         Ok(rows)
     }
 
@@ -2157,10 +2185,12 @@ mod tests {
         employee_id: &str,
         permission: &str,
     ) {
+        // Mirrors the unified matrix the production write path uses
+        // (migration 012 in dream-domain-platform folded the old table in).
         pool.execute(
-            "INSERT INTO one_employee_grants \
-             (id, tenant_id, subject_type, subject_id, employee_id, permission, granted_by, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, 'admin1', 0)",
+            "INSERT INTO one_resource_grants \
+             (id, tenant_id, subject_type, subject_id, resource_type, resource_id, permission, granted_by, created_at) \
+             VALUES (?, ?, ?, ?, 'employee', ?, ?, 'admin1', 0)",
         &db_params![uuid::Uuid::now_v7().simple().to_string(), tenant_id, subject_type, subject_id, employee_id, permission])
         .await
         .unwrap();
@@ -2178,6 +2208,7 @@ mod tests {
     async fn sharing_requires_an_explicit_grant_now() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        seed_unified_resource_grants(db.pool()).await;
         let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
         // A: a1 private/t1, a2 shared/t1. B: b1 shared/t1. C: c1 shared/t2.
         insert_agent(&pool, "a1", "A", "t1", "private").await;
@@ -2219,6 +2250,7 @@ mod tests {
     async fn wildcard_grant_covers_every_shared_employee() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        seed_unified_resource_grants(db.pool()).await;
         let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
         insert_agent(&pool, "a1", "A", "t1", "shared").await;
         insert_agent(&pool, "a2", "A", "t1", "shared").await;
@@ -2238,6 +2270,7 @@ mod tests {
     async fn permission_resolves_via_department_ancestry() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        seed_unified_resource_grants(db.pool()).await;
         let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
         insert_agent(&pool, "a1", "A", "t1", "shared").await;
 
@@ -2270,6 +2303,7 @@ mod tests {
     async fn permission_resolves_via_scene_membership() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        seed_unified_resource_grants(db.pool()).await;
         let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
         insert_agent(&pool, "a1", "A", "t1", "shared").await;
 
@@ -2295,6 +2329,7 @@ mod tests {
 
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        seed_unified_resource_grants(db.pool()).await;
         let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
         insert_agent(&pool, "a1", "A", "t1", "shared").await;
         insert_employee_grant(&pool, "t1", "member", "B", "a1", "manage").await;
@@ -2311,13 +2346,16 @@ mod tests {
     async fn grant_employee_access_upserts_and_validates_input() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        seed_unified_resource_grants(db.pool()).await;
         let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
+        seed_unified_resource_grants(db.pool()).await;
 
         grant_employee_access(&pool, "t1", "member", "B", "a1", EMPLOYEE_PERMISSION_USE, "admin1")
             .await
             .unwrap();
         let rows: Vec<EmployeeGrantRow> = pool.fetch_all_as::<EmployeeGrantRow>(
-            "SELECT * FROM one_employee_grants WHERE tenant_id = 't1' AND subject_id = 'B' AND employee_id = 'a1'",
+            "SELECT id, tenant_id, subject_type, subject_id, resource_id AS employee_id, permission, granted_by, created_at \
+             FROM one_resource_grants WHERE tenant_id = 't1' AND subject_id = 'B' AND resource_type = 'employee' AND resource_id = 'a1'",
         &[])
         .await
         .unwrap();
@@ -2330,7 +2368,8 @@ mod tests {
             .await
             .unwrap();
         let rows: Vec<EmployeeGrantRow> = pool.fetch_all_as::<EmployeeGrantRow>(
-            "SELECT * FROM one_employee_grants WHERE tenant_id = 't1' AND subject_id = 'B' AND employee_id = 'a1'",
+            "SELECT id, tenant_id, subject_type, subject_id, resource_id AS employee_id, permission, granted_by, created_at \
+             FROM one_resource_grants WHERE tenant_id = 't1' AND subject_id = 'B' AND resource_type = 'employee' AND resource_id = 'a1'",
         &[])
         .await
         .unwrap();
@@ -2345,6 +2384,45 @@ mod tests {
             grant_employee_access(&pool, "t1", "member", "B", "a1", "bogus", "admin1").await,
             Err(EmployeeError::BadRequest(_))
         ));
+    }
+
+    /// Personal builds never run the platform migrations, so the unified
+    /// table does not exist there — the member read paths must treat that as
+    /// "no grants", not as an error.
+    #[tokio::test]
+    async fn a_missing_unified_table_reads_as_no_grants() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        // Deliberately NO unified table here — that is the personal-build
+        // shape this test pins.
+        let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
+
+        let permission = max_employee_permission_for_subjects(&pool, "t1", "member", &["B".to_owned()], "a1")
+            .await
+            .unwrap();
+        assert_eq!(permission, None);
+    }
+
+    /// Creates the unified matrix in a test schema that only ran the
+    /// employee migrations — the minimal shape the grant paths touch (the
+    /// real DDL is dream-domain-platform 003 + 012).
+    async fn seed_unified_resource_grants(pool: &sqlx::SqlitePool) {
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS one_resource_grants (\
+                 id TEXT PRIMARY KEY NOT NULL,\
+                 tenant_id TEXT NOT NULL,\
+                 subject_type TEXT NOT NULL,\
+                 subject_id TEXT NOT NULL,\
+                 resource_type TEXT NOT NULL,\
+                 resource_id TEXT NOT NULL,\
+                 permission TEXT NOT NULL DEFAULT 'use',\
+                 granted_by TEXT NOT NULL,\
+                 created_at INTEGER NOT NULL,\
+                 UNIQUE(tenant_id, subject_type, subject_id, resource_type, resource_id));",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
     }
 
     #[test]
@@ -2401,6 +2479,7 @@ mod tests {
     async fn unpublished_shared_employee_is_invisible_even_with_a_grant() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        seed_unified_resource_grants(db.pool()).await;
         let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
         insert_agent_with_published(&pool, "a1", "A", "t1", "shared", 0).await;
         insert_employee_grant(&pool, "t1", "member", "B", "a1", "manage").await;
@@ -2422,6 +2501,7 @@ mod tests {
     async fn category_tree_crud_and_delete_rejects_with_children() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        seed_unified_resource_grants(db.pool()).await;
         let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
 
         let root = create_category(&pool, "t1", "skill", None, "  运维  ", 0).await.unwrap();
@@ -2465,6 +2545,7 @@ mod tests {
     async fn tag_create_is_idempotent_by_name_and_delete_cascades_links() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        seed_unified_resource_grants(db.pool()).await;
         let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
 
         let tag1 = create_tag(&pool, "t1", "skill", "生产力").await.unwrap();
@@ -2486,6 +2567,7 @@ mod tests {
     async fn set_resource_tags_fully_replaces_the_previous_set() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        seed_unified_resource_grants(db.pool()).await;
         let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
         let a = create_tag(&pool, "t1", "skill", "a").await.unwrap();
         let b = create_tag(&pool, "t1", "skill", "b").await.unwrap();
@@ -2507,6 +2589,7 @@ mod tests {
     async fn list_tags_for_resources_batches_without_n_plus_one() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        seed_unified_resource_grants(db.pool()).await;
         let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
         let tag = create_tag(&pool, "t1", "skill", "热门").await.unwrap();
         set_resource_tags(&pool, "skill", "sk_1", std::slice::from_ref(&tag.id))
@@ -2532,6 +2615,7 @@ mod tests {
     async fn set_published_batch_is_scoped_to_tenant() {
         let db = dream_core_db::init_database_memory().await.unwrap();
         run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        seed_unified_resource_grants(db.pool()).await;
         let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
         insert_agent(&pool, "a1", "A", "t1", "shared").await;
         insert_agent(&pool, "a2", "A", "t2", "shared").await;
