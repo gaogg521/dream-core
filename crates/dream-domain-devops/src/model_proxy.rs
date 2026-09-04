@@ -40,12 +40,18 @@
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, State};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use futures_util::TryStreamExt;
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::warn;
+
+use aws_credential_types::Credentials;
+use aws_sigv4::http_request::{
+    self as sigv4_http, PayloadChecksumKind, SignableBody, SignableRequest, SignatureLocation, SigningSettings,
+};
+use aws_sigv4::sign::v4::SigningParams;
 
 use crate::state::OneDevopsRouterState;
 
@@ -163,6 +169,7 @@ async fn handle_proxy(
     Path(params): Path<ProxyPath>,
     method: Method,
     headers: HeaderMap,
+    uri: Uri,
     body: Body,
 ) -> Response {
     let Some(token) = channel_token(&headers) else {
@@ -196,7 +203,13 @@ async fn handle_proxy(
         }
     };
 
-    let url = format!("{}/{}", channel.upstream_base_url, params.path.trim_start_matches('/'));
+    // Bedrock channels re-sign server-side, which requires the whole body —
+    // branch off before the streaming pass-through.
+    if channel.platform == "bedrock" {
+        return handle_bedrock_proxy(channel, method, headers, uri, body).await;
+    }
+
+    let url = build_upstream_url(&channel.upstream_base_url, &params.path, uri.query());
 
     let client = reqwest::Client::new();
     let mut request = client.request(method, &url);
@@ -254,6 +267,232 @@ async fn handle_proxy(
     builder
         .body(Body::from_stream(stream))
         .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
+}
+
+// ---------- Bedrock channels: server-side SigV4 re-signing ----------
+
+/// The AWS credential document stored (encrypted) in
+/// `one_provider_registry.api_key_encrypted` for `platform = 'bedrock'`.
+/// The column already is "the real credential" for every platform; for
+/// Bedrock that credential is more than one key, so it is a JSON document.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BedrockChannelCredential {
+    access_key_id: String,
+    secret_access_key: String,
+    #[serde(default)]
+    session_token: Option<String>,
+    /// Falls back to the region parsed from the channel's upstream host
+    /// (`bedrock-runtime.{region}.amazonaws.com`).
+    #[serde(default)]
+    region: Option<String>,
+}
+
+#[derive(Debug)]
+struct BedrockTarget {
+    url: String,
+    region: String,
+    credentials: Credentials,
+}
+
+/// Parse the channel's credential document and resolve the signed request's
+/// target URL (path-preserving, query preserved).
+fn parse_bedrock_target(
+    channel: &crate::provider_channel::ResolvedChannel,
+    path: &str,
+    query: Option<&str>,
+) -> Result<BedrockTarget, String> {
+    let credential: BedrockChannelCredential = serde_json::from_str(&channel.api_key)
+        .map_err(|_| {
+            "this Bedrock channel's credential is not a valid {accessKeyId, secretAccessKey, region} document; \
+             re-save it in the admin console"
+                .to_string()
+        })?;
+    let region = match credential.region.as_deref() {
+        Some(region) if !region.trim().is_empty() => region.trim().to_owned(),
+        _ => region_from_bedrock_host(&channel.upstream_base_url).ok_or_else(|| {
+            "this Bedrock channel's credential has no region and its upstream URL does not name one".to_string()
+        })?,
+    };
+    let credentials = Credentials::new(
+        credential.access_key_id,
+        credential.secret_access_key,
+        credential.session_token,
+        None,
+        "one-model-proxy",
+    );
+    Ok(BedrockTarget {
+        url: build_upstream_url(&channel.upstream_base_url, path, query),
+        region,
+        credentials,
+    })
+}
+
+/// `https://bedrock-runtime.us-east-1.amazonaws.com` → `us-east-1`. Works for
+/// the `….amazonaws.com.cn` partitions too, since the region is always the
+/// label right after `bedrock-runtime`. A host that is not a Bedrock regional
+/// endpoint names no region — the credential document must.
+fn region_from_bedrock_host(base_url: &str) -> Option<String> {
+    let host = base_url
+        .strip_prefix("https://")
+        .or_else(|| base_url.strip_prefix("http://"))
+        .unwrap_or(base_url);
+    let host = host.split('/').next().unwrap_or(host);
+    let mut labels = host.split('.');
+    let first = labels.next()?;
+    if !first.starts_with("bedrock-runtime") {
+        return None;
+    }
+    labels.next().map(|region| region.to_owned())
+}
+
+/// `{base}/{path}[?{query}]` — the path-preserving shape every platform
+/// forwards by. The query used to be dropped here (axum's `Path` extractor
+/// never sees it), which only mattered once a protocol actually used one.
+fn build_upstream_url(base_url: &str, path: &str, query: Option<&str>) -> String {
+    let mut url = format!("{}/{}", base_url.trim_end_matches('/'), path.trim_start_matches('/'));
+    if let Some(query) = query {
+        if !query.is_empty() {
+            url.push('?');
+            url.push_str(query);
+        }
+    }
+    url
+}
+
+/// SigV4 over exactly the request the proxy will send: method, full URL
+/// (signed URLs include host and query), the non-hop-by-hop headers, and the
+/// whole payload — which is why Bedrock bodies are buffered while every other
+/// platform streams. `now` is a parameter so tests can pin the clock.
+fn sign_bedrock_request(
+    method: &str,
+    url: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+    region: &str,
+    credentials: &Credentials,
+    now: std::time::SystemTime,
+) -> Result<HeaderMap, String> {
+    let mut signing_settings = SigningSettings::default();
+    signing_settings.payload_checksum_kind = PayloadChecksumKind::XAmzSha256;
+    signing_settings.signature_location = SignatureLocation::Headers;
+
+    let identity = credentials.clone().into();
+    let signing_params = SigningParams::builder()
+        .identity(&identity)
+        .region(region)
+        .name("bedrock")
+        .time(now)
+        .settings(signing_settings)
+        .build()
+        .map_err(|e| format!("SigV4 params error: {e}"))?;
+
+    let header_pairs: Vec<(&str, &str)> = headers
+        .iter()
+        .filter_map(|(name, value)| value.to_str().ok().map(|v| (name.as_str(), v)))
+        .collect();
+
+    let signable_request =
+        SignableRequest::new(method, url, header_pairs.into_iter(), SignableBody::Bytes(body))
+            .map_err(|e| format!("SigV4 signable request error: {e}"))?;
+
+    let (signing_instructions, _signature) = sigv4_http::sign(signable_request, &signing_params.into())
+        .map_err(|e| format!("SigV4 signing error: {e}"))?
+        .into_parts();
+
+    let mut signed_headers = headers.clone();
+    for (name, value) in signing_instructions.headers() {
+        let name = HeaderName::from_bytes(name.as_bytes()).map_err(|e| format!("SigV4 header name error: {e}"))?;
+        let value = HeaderValue::from_str(value).map_err(|e| format!("SigV4 header value error: {e}"))?;
+        signed_headers.insert(name, value);
+    }
+    Ok(signed_headers)
+}
+
+async fn handle_bedrock_proxy(
+    channel: crate::provider_channel::ResolvedChannel,
+    method: Method,
+    headers: HeaderMap,
+    uri: Uri,
+    body: Body,
+) -> Response {
+    // SigV4 covers the payload hash, so the whole body must be in hand before
+    // any header goes out. Bedrock invokes are JSON documents — tens of KB,
+    // not the tens of MB the media pass-through streams — and the 64 MB
+    // RequestBodyLimitLayer still bounds a hostile request.
+    let body_bytes = match axum::body::to_bytes(body, PROXY_BODY_LIMIT).await {
+        Ok(bytes) => bytes.to_vec(),
+        Err(err) => {
+            warn!(channel_id = %channel.id, error = %err, "model_proxy: bedrock body read failed");
+            return bad_gateway("failed to read the request body");
+        }
+    };
+
+    let target = match parse_bedrock_target(&channel, uri.path(), uri.query()) {
+        Ok(target) => target,
+        Err(message) => {
+            warn!(channel_id = %channel.id, error = %message, "model_proxy: bedrock channel misconfigured");
+            return bad_gateway(&message);
+        }
+    };
+
+    // The caller's own credential headers are hop-by-hop and already dropped;
+    // whatever survives is signed and sent verbatim.
+    let signed_headers = match sign_bedrock_request(
+        method.as_str(),
+        &target.url,
+        &headers,
+        &body_bytes,
+        &target.region,
+        &target.credentials,
+        std::time::SystemTime::now(),
+    ) {
+        Ok(headers) => headers,
+        Err(message) => {
+            warn!(channel_id = %channel.id, error = %message, "model_proxy: bedrock re-sign failed");
+            return bad_gateway(&message);
+        }
+    };
+
+    let client = reqwest::Client::new();
+    let upstream = match client
+        .request(method, &target.url)
+        .headers(signed_headers)
+        .body(body_bytes)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(err) => {
+            warn!(channel_id = %channel.id, error = %err, "model_proxy: bedrock upstream request failed");
+            return bad_gateway(&format!("upstream request failed: {err}"));
+        }
+    };
+
+    let status = StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let mut builder = Response::builder().status(status);
+    for (name, value) in upstream.headers().iter() {
+        if is_hop_by_hop(name.as_str()) {
+            continue;
+        }
+        if let (Ok(name), Ok(value)) = (HeaderName::from_bytes(name.as_ref()), HeaderValue::from_bytes(value.as_bytes())) {
+            builder = builder.header(name, value);
+        }
+    }
+    let stream = upstream.bytes_stream().map_err(std::io::Error::other);
+    builder
+        .body(Body::from_stream(stream))
+        .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
+}
+
+fn bad_gateway(message: &str) -> Response {
+    (
+        StatusCode::BAD_GATEWAY,
+        axum::Json(serde_json::json!({
+            "error": { "message": message, "type": "server_error" }
+        })),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -335,6 +574,130 @@ mod tests {
         let (name, value) = credential_header("anthropic", "real-vendor-secret");
         assert_eq!(name, "x-api-key");
         assert_eq!(value, "real-vendor-secret");
+    }
+
+    // ---------- Bedrock channels: SigV4 re-signing ----------
+
+    fn bedrock_channel(upstream_base_url: &str, api_key: &str) -> crate::provider_channel::ResolvedChannel {
+        crate::provider_channel::ResolvedChannel {
+            id: "ch-1".into(),
+            platform: "bedrock".into(),
+            upstream_base_url: upstream_base_url.into(),
+            api_key: api_key.into(),
+            user_id: "admin1".into(),
+        }
+    }
+
+    const BEDROCK_CREDENTIAL_JSON: &str = r#"{"accessKeyId":"AKID","secretAccessKey":"shhh","sessionToken":"tok","region":"us-east-1"}"#;
+
+    #[test]
+    fn bedrock_credential_document_parses_with_region() {
+        let target = parse_bedrock_target(
+            &bedrock_channel("https://bedrock-runtime.us-west-2.amazonaws.com", BEDROCK_CREDENTIAL_JSON),
+            "/model/x/invoke-with-response-stream",
+            None,
+        )
+        .expect("valid credential document should parse");
+        assert_eq!(target.region, "us-east-1");
+        assert_eq!(
+            target.url,
+            "https://bedrock-runtime.us-west-2.amazonaws.com/model/x/invoke-with-response-stream"
+        );
+    }
+
+    #[test]
+    fn bedrock_region_falls_back_to_the_upstream_host() {
+        let without_region = r#"{"accessKeyId":"AKID","secretAccessKey":"shhh"}"#;
+        let target = parse_bedrock_target(
+            &bedrock_channel("https://bedrock-runtime.eu-central-1.amazonaws.com", without_region),
+            "/model/x/invoke-with-response-stream",
+            None,
+        )
+        .expect("host-named region should fill the gap");
+        assert_eq!(target.region, "eu-central-1");
+
+        // China partitions keep the region in the label after bedrock-runtime.
+        let target = parse_bedrock_target(
+            &bedrock_channel("https://bedrock-runtime.cn-north-1.amazonaws.com.cn", without_region),
+            "/model/x/invoke-with-response-stream",
+            None,
+        )
+        .expect("china partition should parse");
+        assert_eq!(target.region, "cn-north-1");
+    }
+
+    #[test]
+    fn bedrock_channel_without_any_region_is_a_configuration_error() {
+        let without_region = r#"{"accessKeyId":"AKID","secretAccessKey":"shhh"}"#;
+        let error = parse_bedrock_target(
+            &bedrock_channel("https://gateway.internal", without_region),
+            "/model/x/invoke-with-response-stream",
+            None,
+        )
+        .unwrap_err();
+        assert!(error.contains("region"));
+    }
+
+    #[test]
+    fn bedrock_channel_with_a_non_json_credential_is_rejected() {
+        let error = parse_bedrock_target(
+            &bedrock_channel("https://bedrock-runtime.us-east-1.amazonaws.com", "sk-plain-key"),
+            "/model/x/invoke-with-response-stream",
+            None,
+        )
+        .unwrap_err();
+        assert!(error.contains("re-save"));
+    }
+
+    #[test]
+    fn upstream_url_preserves_the_query_string() {
+        assert_eq!(
+            build_upstream_url("https://api.test/v1", "/chat/completions", Some("a=1&b=2")),
+            "https://api.test/v1/chat/completions?a=1&b=2"
+        );
+        assert_eq!(build_upstream_url("https://api.test/v1/", "/x", None), "https://api.test/v1/x");
+        assert_eq!(build_upstream_url("https://api.test", "/x", Some("")), "https://api.test/x");
+    }
+
+    #[test]
+    fn bedrock_signing_produces_sigv4_headers_over_the_full_url() {
+        let target = parse_bedrock_target(
+            &bedrock_channel("https://bedrock-runtime.us-east-1.amazonaws.com", BEDROCK_CREDENTIAL_JSON),
+            "/model/claude/invoke-with-response-stream",
+            None,
+        )
+        .unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        // Pinned clock: 2026-09-04T00:00:00Z.
+        let now = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_785_840_000);
+
+        let signed = sign_bedrock_request(
+            "POST",
+            &target.url,
+            &headers,
+            br#"{"x":1}"#,
+            &target.region,
+            &target.credentials,
+            now,
+        )
+        .expect("signing should succeed");
+
+        let authorization = signed
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .expect("signed request carries an authorization header");
+        assert!(authorization.starts_with("AWS4-HMAC-SHA256"), "got: {authorization}");
+        assert!(authorization.contains("Credential=AKID/"), "got: {authorization}");
+        assert!(authorization.contains("/bedrock/aws4_request"), "got: {authorization}");
+        let amz_date = signed.get("x-amz-date").and_then(|v| v.to_str().ok()).expect("x-amz-date");
+        assert!(amz_date.starts_with("2026"), "x-amz-date should reflect the pinned clock, got: {amz_date}");
+        let payload_hash = signed
+            .get("x-amz-content-sha256")
+            .and_then(|v| v.to_str().ok())
+            .expect("payload checksum header");
+        assert_ne!(payload_hash, "UNSIGNED-PAYLOAD");
     }
 
     #[test]

@@ -207,6 +207,9 @@ sha2 = "0.10"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-bedrock = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client"] }
 aws-sdk-bedrockruntime = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client"] }
+# SigV4 re-signing for the model proxy's Bedrock channels
+aws-sigv4 = "1"
+aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
 
 # TLS
 rustls = "0.23"

@@ -2470,6 +2470,8 @@ name = "dream-domain-devops"
 version = "0.1.71-one.1"
 dependencies = [
  "async-trait",
+ "aws-credential-types",
+ "aws-sigv4",
  "axum",
  "base64",
  "dream-core-api-types",
