@@ -196,6 +196,20 @@ pub struct AdminUserDto {
     pub created_at: i64,
 }
 
+/// Where an SSO login placed a user, from `OrgService::auto_join_after_sso`.
+///
+/// `enterprise_id` is carried out so the caller can drive `CompanySeatSync`,
+/// exactly as the invite-code route does with `join_with_invite`'s third
+/// return value — the seat hook lives at the routing layer, not in the service.
+#[derive(Debug, Clone)]
+pub struct SsoAutoJoinOutcome {
+    pub tenant_id: String,
+    /// `None` when no mapped directory department matched and the user landed
+    /// in the root project group unfiled.
+    pub department_id: Option<String>,
+    pub enterprise_id: Option<String>,
+}
+
 /// What one directory-mapping run did (T6 stage 3), for the admin console.
 /// Names rather than ids/counts throughout — an admin reading this wants to
 /// know WHICH departments, not just how many.

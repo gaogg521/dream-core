@@ -71,13 +71,22 @@ impl dream_domain_employee::TenantResolver for OrgTenantResolver {
 /// `dream_domain_sso::OrgAutoJoin` trait (P2-4 onboarding: domain-based project-group
 /// auto-join). Errors are logged and swallowed — never blocks a valid login.
 #[cfg(feature = "enterprise")]
-struct OrgAutoJoinAdapter(std::sync::Arc<dream_domain_org::OrgService>);
+struct OrgAutoJoinAdapter {
+    org: std::sync::Arc<dream_domain_org::OrgService>,
+    /// Reads the company directory mirror, to find which department the person
+    /// who just logged in sits in. Same adapter the department-subtree mapper
+    /// uses — one-org must not depend on one-enterprise directly.
+    directory: std::sync::Arc<dyn dream_domain_org::DirectoryTreeSource>,
+    /// Issues the company seat for the group they just landed in, mirroring
+    /// what the invite-code route does after `join_with_invite`.
+    seats: std::sync::Arc<dream_domain_enterprise::EnterpriseService>,
+}
 
 #[async_trait::async_trait]
 #[cfg(feature = "enterprise")]
 impl dream_domain_sso::OrgAutoJoin for OrgAutoJoinAdapter {
     async fn auto_join_by_email(&self, user_id: &str, email: &str) {
-        match self.0.auto_join_by_email(user_id, email).await {
+        match self.org.auto_join_by_email(user_id, email).await {
             Ok(Some(tenant_id)) => {
                 tracing::info!(
                     user_id,
@@ -88,6 +97,48 @@ impl dream_domain_sso::OrgAutoJoin for OrgAutoJoinAdapter {
             Ok(None) => {}
             Err(error) => {
                 tracing::warn!(%error, user_id, "onboarding domain auto-join failed; login continues");
+            }
+        }
+    }
+
+    async fn auto_join_after_sso(&self, user_id: &str, personal_external_id: &str, org_unit_path: Option<&str>) {
+        // The directory lookup is what makes this "join the group my own
+        // Feishu department was mapped into" rather than "join something".
+        // Both halves degrade to None independently: no directory, no company,
+        // or a person the mirror has never seen all fall through to the root
+        // group, which is still strictly better than staying ungoverned.
+        let department_external_id = self.directory.person_department(personal_external_id).await;
+        let departments = match department_external_id.as_deref() {
+            // Only pay for the department tree when there is a node to walk up
+            // from. The fallback path needs none of it.
+            Some(_) => self.directory.directory_departments().await,
+            None => Vec::new(),
+        };
+        match self
+            .org
+            .auto_join_after_sso(user_id, department_external_id.as_deref(), org_unit_path, &departments)
+            .await
+        {
+            Ok(Some(outcome)) => {
+                tracing::info!(
+                    user_id,
+                    tenant_id = %outcome.tenant_id,
+                    matched_department = outcome.department_id.is_some(),
+                    "SSO login: placed into a project group"
+                );
+                // A project-group join under a company must issue a seat, or
+                // the company's member list and seat count never reflect
+                // anyone who arrived by SSO. Same best-effort contract as the
+                // invite route's `ensure_company_member` call.
+                if let Some(enterprise_id) = outcome.enterprise_id.as_deref()
+                    && let Err(error) = self.seats.ensure_member(user_id, enterprise_id, None).await
+                {
+                    tracing::warn!(%error, user_id, "SSO company seat sync failed; login continues");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%error, user_id, "SSO project-group placement failed; login continues");
             }
         }
     }
@@ -238,6 +289,15 @@ impl dream_domain_org::DirectoryTreeSource for DirectoryTreeSourceAdapter {
                 name: d.name,
             })
             .collect()
+    }
+
+    async fn person_department(&self, external_id: &str) -> Option<String> {
+        let enterprise_id = self.0.deployment_company_id().await.ok().flatten()?;
+        self.0
+            .directory_person_department(&enterprise_id, external_id)
+            .await
+            .ok()
+            .flatten()
     }
 }
 
@@ -1130,10 +1190,8 @@ impl dream_core_conversation::TurnMemoryExtractor for OneMemoryTurnExtractor {
                     return;
                 };
                 let Some(assistant_message) = page.items.iter().rev().find_map(|row| {
-                    (row.r#type == "text"
-                        && row.position.as_deref() == Some("left")
-                        && !row.content.trim().is_empty())
-                    .then_some(row.content.trim().to_owned())
+                    (row.r#type == "text" && row.position.as_deref() == Some("left") && !row.content.trim().is_empty())
+                        .then_some(row.content.trim().to_owned())
                 }) else {
                     return;
                 };
@@ -1181,9 +1239,7 @@ impl dream_core_conversation::TurnMemoryExtractor for OneMemoryTurnExtractor {
                         {
                             Ok(facts) => {
                                 for fact in facts {
-                                    if fact.importance
-                                        < dream_core_ai_agent::EXTRACTION_MIN_IMPORTANCE
-                                    {
+                                    if fact.importance < dream_core_ai_agent::EXTRACTION_MIN_IMPORTANCE {
                                         continue;
                                     }
                                     if let Err(e) = memory
@@ -2183,9 +2239,7 @@ pub(crate) fn build_governance_plane(
     let password_gate = PasswordChangeGateState {
         user_repo: services.user_repo.clone(),
     };
-    let one_workflow_service = std::sync::Arc::new(dream_domain_workflow::WorkflowService::new(
-        services.db.clone(),
-    ));
+    let one_workflow_service = std::sync::Arc::new(dream_domain_workflow::WorkflowService::new(services.db.clone()));
     let one_workflow_state = dream_domain_workflow::OneWorkflowRouterState::new(one_workflow_service.clone());
 
     // one-org enterprise routes (/api/one/*) — RBAC extractors depend on the
@@ -2195,8 +2249,8 @@ pub(crate) fn build_governance_plane(
             services.db.clone(),
             services.user_repo.clone(),
             std::sync::Arc::new(dream_core_db::SqliteConversationRepository::new(
-                services.database.pool().clone()),
-            ),
+                services.database.pool().clone(),
+            )),
             services.data_dir.clone(),
             crate::config::derive_encryption_key(&services.data_secret_raw),
         )
@@ -2324,10 +2378,15 @@ pub(crate) fn build_governance_plane(
         .with_company_admin_check(std::sync::Arc::new(CompanyAdminCheckAdapter(
             one_enterprise_service.clone(),
         )))
-        // P2-4 onboarding: auto-join a project group by email-domain policy. No-op
-        // for logins whose IdP profile isn't email-shaped, or when no tenant has
-        // `allowed_email_domains` set (the default).
-        .with_org_auto_join(std::sync::Arc::new(OrgAutoJoinAdapter(one_org_service.clone())))
+        // Onboarding after any SSO login. Two hooks: P2-4's email-domain
+        // auto-join (no-op unless the IdP profile is email-shaped AND a tenant
+        // sets `allowed_email_domains`), and the directory-driven placement
+        // that covers every provider — see `OrgAutoJoinAdapter`.
+        .with_org_auto_join(std::sync::Arc::new(OrgAutoJoinAdapter {
+            org: one_org_service.clone(),
+            directory: std::sync::Arc::new(DirectoryTreeSourceAdapter(one_enterprise_service.clone())),
+            seats: one_enterprise_service.clone(),
+        }))
         // T6 directory sync: where a completed Feishu directory pull is stored.
         // Wiring it does not start anything — a pull only happens when an admin
         // asks or the scheduler fires, and both find nothing to do unless this
@@ -2367,9 +2426,7 @@ pub(crate) fn build_governance_plane(
     // (P2-2): three collection tiers, refinement jobs, and read/write
     // grants. Same governance-plane assembly so a later admin-svc split can
     // lift it out whole.
-    let one_memory_service = std::sync::Arc::new(dream_domain_memory::MemoryService::new(
-        services.db.clone(),
-    ));
+    let one_memory_service = std::sync::Arc::new(dream_domain_memory::MemoryService::new(services.db.clone()));
     let one_memory_state = dream_domain_memory::OneMemoryRouterState::new(one_memory_service);
     let one_memory_authenticated = dream_domain_memory::one_memory_routes(one_memory_state)
         .route_layer(from_fn_with_state(license_gate.clone(), license_module_gate_middleware))
@@ -2870,18 +2927,14 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         // than thread `one_memory_service` out of `build_governance_plane` —
         // `MemoryService::new` is just an `Arc` clone.
         {
-            let memory = std::sync::Arc::new(dream_domain_memory::MemoryService::new(
-                services.db.clone(),
-            ));
+            let memory = std::sync::Arc::new(dream_domain_memory::MemoryService::new(services.db.clone()));
             // Local devops handle: the extractor resolves the tenant's
             // extraction channel (credential decryption) through it. Cheap
             // construction — pool clone + key — same posture as the plan's
             // "re-wrap rather than thread the handle" note.
             let devops = std::sync::Arc::new(
                 dream_domain_devops::DevopsService::new(services.db.clone())
-                    .with_encryption_key(crate::config::derive_encryption_key(
-                        &services.data_secret_raw,
-                    )),
+                    .with_encryption_key(crate::config::derive_encryption_key(&services.data_secret_raw)),
             );
             states
                 .conversation
@@ -3070,7 +3123,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         // providers at save time instead of failing the run.
         .with_provider_repo(std::sync::Arc::new(dream_core_db::SqliteProviderRepository::new(
             services.database.pool().clone(),
-        )))
+        ))),
     );
     one_employee_service.spawn_scheduler();
     let one_employee_state = dream_domain_employee::OneEmployeeRouterState::new(one_employee_service.clone());

@@ -376,13 +376,21 @@ async fn callback(
         hook.auto_join_by_email(&user_id, &display_name).await;
     }
 
+    // Project-group placement for every provider (the email hook above only
+    // ever covers OIDC). Runs AFTER `sync_member` on purpose: that call is what
+    // creates (or resolves) the company row this user belongs to, and the
+    // placement below reads the directory mirror attached to it. Idempotent, so
+    // a user the email hook just joined is left alone here.
+    if let Some(hook) = state.org_auto_join.as_ref() {
+        hook.auto_join_after_sso(&user_id, &personal_external_id, org_unit_path.as_deref())
+            .await;
+    }
+
     // 登录二次认证闸：需要 MFA 时不签发会话，改把用户导向 Web 登录页的
     // 第二步（挑战 token 只存哈希，≤5 分钟一次性）。桌面深链流程在挑战期间
     // 暂不支持（v1 限制，见交付说明）——浏览器里完成两步后仍可直接使用控制台。
     if let Some(mfa) = state.mfa.as_ref() {
-        if let dream_core_auth::mfa::MfaDecision::Challenge(purpose) =
-            mfa.decide_for_user(&user_id, &username).await?
-        {
+        if let dream_core_auth::mfa::MfaDecision::Challenge(purpose) = mfa.decide_for_user(&user_id, &username).await? {
             let (mfa_token, _expires_at, _purpose) = mfa
                 .create_challenge_for_user(
                     &user_id,
@@ -552,7 +560,39 @@ async fn ldap_login(
         // LDAP/local password login carries no SSO company identifier.
         org_external_id: None,
     };
+    // Captured before `profile` is consumed, for the two onboarding hooks
+    // below — the same pair the OAuth path runs in `complete_login`.
+    let personal_external_id = profile.external_id.clone();
+    let org_unit_path = profile.org_unit_path.clone();
+    let display_name = profile.preferred_username.clone();
     let (user_id, username, _created) = state.service.resolve_or_provision_user(provider, profile).await?;
+
+    // This handler used to stop at "authenticate and issue a session", while
+    // the OAuth path ran both onboarding hooks. That asymmetry was invisible
+    // in tests (the LDAP unit tests never reach this far) and meant an LDAP
+    // user got a session on an enterprise server with no company seat and no
+    // project group — governed by nothing. Both hooks are best-effort and
+    // never fail the login, exactly as on the OAuth path.
+    //
+    // `sync_member` with an empty company external_id resolves the
+    // DEPLOYMENT's company (LDAP carries no IdP company identifier), which is
+    // the right answer for a single-company server.
+    if let Some(sync) = state.enterprise_sync.as_ref() {
+        sync.sync_member(
+            &user_id,
+            provider.as_str(),
+            "",
+            &personal_external_id,
+            Some(display_name.as_str()),
+            org_unit_path.as_deref(),
+            None,
+        )
+        .await;
+    }
+    if let Some(hook) = state.org_auto_join.as_ref() {
+        hook.auto_join_after_sso(&user_id, &personal_external_id, org_unit_path.as_deref())
+            .await;
+    }
 
     let redirect_target = body
         .redirect
@@ -563,9 +603,7 @@ async fn ldap_login(
 
     // 登录二次认证闸：需要 MFA 时返回挑战（JSON），前端进入第二步。
     if let Some(mfa) = state.mfa.as_ref() {
-        if let dream_core_auth::mfa::MfaDecision::Challenge(purpose) =
-            mfa.decide_for_user(&user_id, &username).await?
-        {
+        if let dream_core_auth::mfa::MfaDecision::Challenge(purpose) = mfa.decide_for_user(&user_id, &username).await? {
             let (mfa_token, expires_at, purpose) = mfa
                 .create_challenge_for_user(
                     &user_id,
@@ -613,12 +651,14 @@ fn mfa_unavailable<T>(body: T) -> (axum::http::StatusCode, Json<T>) {
     (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(body))
 }
 
-async fn mfa_policy_get(
-    State(state): State<OneSsoRouterState>,
-    _admin: RequireSsoAdmin,
-) -> Result<Response, SsoError> {
+async fn mfa_policy_get(State(state): State<OneSsoRouterState>, _admin: RequireSsoAdmin) -> Result<Response, SsoError> {
     let Some(mfa) = state.mfa.as_ref() else {
-        return Ok(mfa_unavailable(ApiResponse::<serde_json::Value> { success: false, data: None, message: Some("MFA service not wired".into()) }).into_response());
+        return Ok(mfa_unavailable(ApiResponse::<serde_json::Value> {
+            success: false,
+            data: None,
+            message: Some("MFA service not wired".into()),
+        })
+        .into_response());
     };
     let mode = mfa.admin_policy_get().await.map_err(sso_err)?;
     Ok(Json(ApiResponse::ok(serde_json::json!({ "mode": mode.as_str() }))).into_response())
@@ -630,7 +670,12 @@ async fn mfa_policy_put(
     Json(body): Json<UpdateMfaPolicyBody>,
 ) -> Result<Response, SsoError> {
     let Some(mfa) = state.mfa.as_ref() else {
-        return Ok(mfa_unavailable(ApiResponse::<serde_json::Value> { success: false, data: None, message: Some("MFA service not wired".into()) }).into_response());
+        return Ok(mfa_unavailable(ApiResponse::<serde_json::Value> {
+            success: false,
+            data: None,
+            message: Some("MFA service not wired".into()),
+        })
+        .into_response());
     };
     let mode = dream_core_db::MfaMode::parse(&body.mode);
     mfa.admin_policy_set(mode, &admin.user_id).await.map_err(sso_err)?;
@@ -642,7 +687,12 @@ async fn mfa_users_overview(
     _admin: RequireSsoAdmin,
 ) -> Result<Response, SsoError> {
     let Some(mfa) = state.mfa.as_ref() else {
-        return Ok(mfa_unavailable(ApiResponse::<serde_json::Value> { success: false, data: None, message: Some("MFA service not wired".into()) }).into_response());
+        return Ok(mfa_unavailable(ApiResponse::<serde_json::Value> {
+            success: false,
+            data: None,
+            message: Some("MFA service not wired".into()),
+        })
+        .into_response());
     };
     let rows = mfa.admin_users_overview().await.map_err(sso_err)?;
     Ok(Json(ApiResponse::ok(rows)).into_response())
@@ -655,9 +705,16 @@ async fn mfa_user_reset(
     Json(body): Json<ResetMfaBody>,
 ) -> Result<Response, SsoError> {
     let Some(mfa) = state.mfa.as_ref() else {
-        return Ok(mfa_unavailable(ApiResponse::<serde_json::Value> { success: false, data: None, message: Some("MFA service not wired".into()) }).into_response());
+        return Ok(mfa_unavailable(ApiResponse::<serde_json::Value> {
+            success: false,
+            data: None,
+            message: Some("MFA service not wired".into()),
+        })
+        .into_response());
     };
-    mfa.admin_reset(&user_id, &admin.user_id, &body.reason).await.map_err(sso_err)?;
+    mfa.admin_reset(&user_id, &admin.user_id, &body.reason)
+        .await
+        .map_err(sso_err)?;
     Ok(Json(ApiResponse::ok(())).into_response())
 }
 
@@ -668,9 +725,16 @@ async fn mfa_user_flags(
     Json(body): Json<UpdateMfaFlagsBody>,
 ) -> Result<Response, SsoError> {
     let Some(mfa) = state.mfa.as_ref() else {
-        return Ok(mfa_unavailable(ApiResponse::<serde_json::Value> { success: false, data: None, message: Some("MFA service not wired".into()) }).into_response());
+        return Ok(mfa_unavailable(ApiResponse::<serde_json::Value> {
+            success: false,
+            data: None,
+            message: Some("MFA service not wired".into()),
+        })
+        .into_response());
     };
-    mfa.admin_set_flags(&user_id, body.exempt, body.force, &admin.user_id).await.map_err(sso_err)?;
+    mfa.admin_set_flags(&user_id, body.exempt, body.force, &admin.user_id)
+        .await
+        .map_err(sso_err)?;
     Ok(Json(ApiResponse::ok(())).into_response())
 }
 
@@ -680,7 +744,12 @@ async fn mfa_audit_list(
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Response, SsoError> {
     let Some(mfa) = state.mfa.as_ref() else {
-        return Ok(mfa_unavailable(ApiResponse::<serde_json::Value> { success: false, data: None, message: Some("MFA service not wired".into()) }).into_response());
+        return Ok(mfa_unavailable(ApiResponse::<serde_json::Value> {
+            success: false,
+            data: None,
+            message: Some("MFA service not wired".into()),
+        })
+        .into_response());
     };
     let limit: i64 = query.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100);
     let rows = mfa.admin_audit_list(limit).await.map_err(sso_err)?;
