@@ -6,7 +6,7 @@ use dream_core_ai_agent::AcpSkillManager;
 use dream_core_ai_agent::factory::{AgentFactoryDeps, build_agent_factory};
 use dream_core_ai_agent::registry::AgentRegistry;
 use dream_core_ai_agent::session_context::{
-    AgentSessionContext, AgentSessionKind, AionrsSessionBuildContext, ConversationContext, WorkspaceContext,
+    AgentSessionContext, AgentSessionKind, DreamEngineSessionBuildContext, ConversationContext, WorkspaceContext,
 };
 use dream_core_ai_agent::types::BuildTaskOptions;
 use dream_core_api_types::DreamEngineBuildExtra;
@@ -87,10 +87,10 @@ fn make_factory(
         encryption_key: test_encryption_key(),
         agent_registry,
         acp_agent_service,
-        data_dir: PathBuf::from("/tmp/aionrs-test"),
+        data_dir: PathBuf::from("/tmp/dream-engine-test"),
         dump_prompts: false,
         broadcaster: Arc::new(BroadcastEventBus::new(16)),
-        backend_binary_path: Arc::new(PathBuf::from("/tmp/aionrs-test/aioncore")),
+        backend_binary_path: Arc::new(PathBuf::from("/tmp/dream-engine-test/aioncore")),
         mcp_server_repo: None,
         codex_bridge_config_repo: None,
         local_base_url: "http://127.0.0.1:0".into(),
@@ -127,7 +127,7 @@ fn make_aionrs_options(
         skills: vec![],
         runtime_env: vec![],
         team: None,
-        kind: AgentSessionKind::DreamEngine(Box::new(AionrsSessionBuildContext {
+        kind: AgentSessionKind::DreamEngine(Box::new(DreamEngineSessionBuildContext {
             config,
             team: None,
             belongs_to_team: false,

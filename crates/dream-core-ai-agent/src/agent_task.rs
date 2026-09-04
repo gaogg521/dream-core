@@ -18,7 +18,7 @@ use tokio::sync::broadcast;
 
 use crate::error::AgentError;
 use crate::manager::acp::{AcpAgentManager, RequiredFullAutoApplication};
-use crate::manager::dream_engine::AionrsAgentManager;
+use crate::manager::dream_engine::DreamEngineAgentManager;
 use crate::protocol::events::AgentStreamEvent;
 use crate::protocol::send_error::AgentSendError;
 use crate::types::{PromptMediaCaps, SendMessageData};
@@ -192,7 +192,7 @@ pub trait IMockAgent: IAgentTask {
 #[derive(Clone)]
 pub enum AgentInstance {
     Acp(Arc<AcpAgentManager>),
-    DreamEngine(Arc<AionrsAgentManager>),
+    DreamEngine(Arc<DreamEngineAgentManager>),
     /// clean-slate direct-CLI session model (claude / codex / antigravity).
     /// Wraps an `dream_core_session::SessionBackend` via [`SessionAgentTask`],
     /// which is backend-agnostic. Every other backend keeps the `Acp` path.
@@ -645,23 +645,24 @@ mod dream_engine_config_option_tests {
     use dream_core_api_types::ConfigOptionConfirmation;
 
     use super::*;
-    use crate::types::AionrsResolvedConfig;
+    use crate::types::DreamEngineResolvedConfig;
 
-    fn make_test_config() -> AionrsResolvedConfig {
-        AionrsResolvedConfig {
+    fn make_test_config() -> DreamEngineResolvedConfig {
+        DreamEngineResolvedConfig {
             provider: "anthropic".into(),
             api_key: "sk-test-key".into(),
             model: "claude-sonnet-4-20250514".into(),
             base_url: None,
             system_prompt: None,
             max_tokens: None,
+            context_window: None,
             max_turns: None,
             max_tool_call_malformed_turns: None,
             max_tool_call_failure_turns: None,
             compat_overrides: Default::default(),
             vision_model: None,
             vision_unavailable_reason: None,
-            session_directory: std::env::temp_dir().join("aionrs-agent-task-test-sessions"),
+            session_directory: std::env::temp_dir().join("dream-engine-agent-task-test-sessions"),
             session_mode: None,
             skills: Vec::new(),
             extra_mcp_servers: std::collections::HashMap::new(),
@@ -672,7 +673,7 @@ mod dream_engine_config_option_tests {
     }
 
     async fn aionrs_instance() -> AgentInstance {
-        let manager = AionrsAgentManager::new("conv-aionrs-config".into(), "/project".into(), make_test_config(), None)
+        let manager = DreamEngineAgentManager::new("conv-dream-config".into(), "/project".into(), make_test_config(), None)
             .await
             .expect("aionrs manager should start in tests");
         AgentInstance::DreamEngine(Arc::new(manager))

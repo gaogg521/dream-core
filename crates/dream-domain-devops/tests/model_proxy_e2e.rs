@@ -111,6 +111,7 @@ async fn fixture_with_platform(platform: &str) -> Fixture {
             Some(COMPANY_SECRET),
             r#"["gpt-image-2"]"#,
             None,
+            None,
             true,
             "org",
             None,

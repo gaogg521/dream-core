@@ -4,8 +4,8 @@ use super::*;
 
 #[test]
 fn aionrs_structured_malformed_tool_call_error_is_provider_error() {
-    let error = AionrsAgentError::ToolCallMalformed { count: 3, limit: 3 };
-    let send_error = aionrs_engine_error_to_send_error(&error);
+    let error = DreamEngineAgentError::ToolCallMalformed { count: 3, limit: 3 };
+    let send_error = engine_error_to_send_error(&error);
 
     assert_eq!(send_error.code(), Some(AgentErrorCode::UserLlmProviderInvalidRequest));
     assert_eq!(send_error.ownership(), Some(AgentErrorOwnership::UserLlmProvider));
@@ -14,11 +14,11 @@ fn aionrs_structured_malformed_tool_call_error_is_provider_error() {
 
 #[test]
 fn aionrs_provider_rate_limited_appends_response_body_to_detail() {
-    let error = AionrsAgentError::Provider(ProviderError::RateLimited {
+    let error = DreamEngineAgentError::Provider(ProviderError::RateLimited {
         retry_after_ms: 5000,
         body: Some(r#"{"error":{"code":"insufficient_quota","message":"You exceeded your current quota"}}"#.to_owned()),
     });
-    let send_error = aionrs_engine_error_to_send_error(&error);
+    let send_error = engine_error_to_send_error(&error);
 
     assert_eq!(send_error.code(), Some(AgentErrorCode::UserLlmProviderRateLimited));
     let detail = send_error
@@ -38,11 +38,11 @@ fn aionrs_provider_rate_limited_appends_response_body_to_detail() {
 
 #[test]
 fn aionrs_provider_rate_limited_without_body_falls_back_to_bare_detail() {
-    let error = AionrsAgentError::Provider(ProviderError::RateLimited {
+    let error = DreamEngineAgentError::Provider(ProviderError::RateLimited {
         retry_after_ms: 5000,
         body: None,
     });
-    let send_error = aionrs_engine_error_to_send_error(&error);
+    let send_error = engine_error_to_send_error(&error);
 
     let detail = send_error
         .stream_error()
@@ -61,11 +61,11 @@ fn aionrs_provider_rate_limited_without_body_falls_back_to_bare_detail() {
 
 #[test]
 fn aionrs_provider_rate_limited_ignores_whitespace_only_body() {
-    let error = AionrsAgentError::Provider(ProviderError::RateLimited {
+    let error = DreamEngineAgentError::Provider(ProviderError::RateLimited {
         retry_after_ms: 5000,
         body: Some("   \n\t  ".to_owned()),
     });
-    let send_error = aionrs_engine_error_to_send_error(&error);
+    let send_error = engine_error_to_send_error(&error);
 
     let detail = send_error
         .stream_error()
@@ -80,10 +80,10 @@ fn aionrs_provider_rate_limited_ignores_whitespace_only_body() {
 
 #[test]
 fn aionrs_provider_connection_error_is_user_llm_provider_error() {
-    let error = AionrsAgentError::Provider(ProviderError::Connection(
+    let error = DreamEngineAgentError::Provider(ProviderError::Connection(
         "Signable request error: failed to create canonical request".to_owned(),
     ));
-    let send_error = aionrs_engine_error_to_send_error(&error);
+    let send_error = engine_error_to_send_error(&error);
 
     assert_eq!(send_error.code(), Some(AgentErrorCode::UserLlmProviderNetworkError));
     assert_eq!(send_error.ownership(), Some(AgentErrorOwnership::UserLlmProvider));
@@ -92,8 +92,8 @@ fn aionrs_provider_connection_error_is_user_llm_provider_error() {
 
 #[test]
 fn provider_error_summary_classifies_network_without_body() {
-    let error = AionrsAgentError::Provider(ProviderError::Connection("connect failed".into()));
-    let summary = aionrs_runtime_error_summary(&error);
+    let error = DreamEngineAgentError::Provider(ProviderError::Connection("connect failed".into()));
+    let summary = engine_runtime_error_summary(&error);
 
     assert_eq!(summary.kind, "provider");
     assert_eq!(summary.provider_error_class, Some("network"));
@@ -102,8 +102,8 @@ fn provider_error_summary_classifies_network_without_body() {
 
 #[test]
 fn tool_call_failure_summary_classifies_loop() {
-    let error = AionrsAgentError::ToolCallFailures { count: 3, limit: 3 };
-    let summary = aionrs_runtime_error_summary(&error);
+    let error = DreamEngineAgentError::ToolCallFailures { count: 3, limit: 3 };
+    let summary = engine_runtime_error_summary(&error);
 
     assert_eq!(summary.kind, "tool_call_failures");
     assert_eq!(summary.failure_count, Some(3));
@@ -112,8 +112,8 @@ fn tool_call_failure_summary_classifies_loop() {
 
 #[test]
 fn aionrs_api_connection_error_is_user_llm_provider_network_error() {
-    let error = AionrsAgentError::Provider(ProviderError::Connection("error decoding response body".to_owned()));
-    let send_error = aionrs_engine_error_to_send_error(&error);
+    let error = DreamEngineAgentError::Provider(ProviderError::Connection("error decoding response body".to_owned()));
+    let send_error = engine_error_to_send_error(&error);
 
     assert_eq!(send_error.code(), Some(AgentErrorCode::UserLlmProviderNetworkError));
     assert_eq!(send_error.ownership(), Some(AgentErrorOwnership::UserLlmProvider));
@@ -122,11 +122,11 @@ fn aionrs_api_connection_error_is_user_llm_provider_network_error() {
 
 #[test]
 fn aionrs_provider_status_error_uses_status_instead_of_message_text() {
-    let error = AionrsAgentError::Provider(ProviderError::Api {
+    let error = DreamEngineAgentError::Provider(ProviderError::Api {
         status: 401,
         message: "credentials failed".to_owned(),
     });
-    let send_error = aionrs_engine_error_to_send_error(&error);
+    let send_error = engine_error_to_send_error(&error);
 
     assert_eq!(send_error.code(), Some(AgentErrorCode::UserLlmProviderAuthFailed));
     assert_eq!(send_error.ownership(), Some(AgentErrorOwnership::UserLlmProvider));
@@ -135,11 +135,11 @@ fn aionrs_provider_status_error_uses_status_instead_of_message_text() {
 
 #[test]
 fn aionrs_context_too_long_is_provider_context_error() {
-    let error = AionrsAgentError::ContextTooLong {
+    let error = DreamEngineAgentError::ContextTooLong {
         input_tokens: 120_000,
         limit: 100_000,
     };
-    let send_error = aionrs_engine_error_to_send_error(&error);
+    let send_error = engine_error_to_send_error(&error);
 
     assert_eq!(send_error.code(), Some(AgentErrorCode::UserLlmProviderContextTooLarge));
     assert_eq!(send_error.ownership(), Some(AgentErrorOwnership::UserLlmProvider));
@@ -148,8 +148,8 @@ fn aionrs_context_too_long_is_provider_context_error() {
 
 #[test]
 fn aionrs_repeated_malformed_tool_call_is_user_llm_provider_error() {
-    let error = AionrsAgentError::ToolCallMalformed { count: 3, limit: 3 };
-    let send_error = aionrs_engine_error_to_send_error(&error);
+    let error = DreamEngineAgentError::ToolCallMalformed { count: 3, limit: 3 };
+    let send_error = engine_error_to_send_error(&error);
 
     assert_eq!(send_error.code(), Some(AgentErrorCode::UserLlmProviderInvalidRequest));
     assert_eq!(send_error.ownership(), Some(AgentErrorOwnership::UserLlmProvider));
@@ -160,8 +160,8 @@ fn aionrs_repeated_malformed_tool_call_is_user_llm_provider_error() {
 fn aionrs_tool_call_failures_are_agent_tool_call_loop_error() {
     // Fork: consecutive tool-failure breaker is a known local agent condition,
     // not UnknownUpstream (see tool_call_failure_send_error).
-    let error = AionrsAgentError::ToolCallFailures { count: 3, limit: 3 };
-    let send_error = aionrs_engine_error_to_send_error(&error);
+    let error = DreamEngineAgentError::ToolCallFailures { count: 3, limit: 3 };
+    let send_error = engine_error_to_send_error(&error);
 
     assert_eq!(send_error.code(), Some(AgentErrorCode::UserAgentToolCallLoop));
     assert_eq!(send_error.ownership(), Some(AgentErrorOwnership::UserAgent));
@@ -177,12 +177,12 @@ fn aionrs_tool_call_failures_are_agent_tool_call_loop_error() {
 /// running app kept showing the wrong code because errors arrive here instead.
 #[test]
 fn spent_allowance_is_not_reported_as_permission_denied() {
-    let error = AionrsAgentError::Provider(ProviderError::Api {
+    let error = DreamEngineAgentError::Provider(ProviderError::Api {
         status: 403,
         message: r#"{"error":{"message":"Key limit exceeded (monthly limit). Manage it using https://openrouter.ai/workspaces/default/keys/abc123","code":403}}"#
             .to_owned(),
     });
-    let send_error = aionrs_engine_error_to_send_error(&error);
+    let send_error = engine_error_to_send_error(&error);
 
     assert_eq!(send_error.code(), Some(AgentErrorCode::UserLlmProviderQuotaExhausted));
 }
@@ -208,12 +208,12 @@ fn broker_structured_402_is_reported_as_spent_quota() {
 /// and shipped in feedback attachments.
 #[test]
 fn spent_allowance_does_not_leak_the_upstream_text() {
-    let error = AionrsAgentError::Provider(ProviderError::Api {
+    let error = DreamEngineAgentError::Provider(ProviderError::Api {
         status: 403,
         message: r#"{"error":{"message":"Key limit exceeded (monthly limit). Manage it using https://openrouter.ai/workspaces/default/keys/abc123","code":403}}"#
             .to_owned(),
     });
-    let send_error = aionrs_engine_error_to_send_error(&error);
+    let send_error = engine_error_to_send_error(&error);
 
     assert_eq!(
         send_error.stream_error().detail,
@@ -229,11 +229,11 @@ fn spent_allowance_does_not_leak_the_upstream_text() {
 /// provider's own words, which is usually the most useful line on screen.
 #[test]
 fn a_real_permission_denial_still_carries_its_upstream_text() {
-    let error = AionrsAgentError::Provider(ProviderError::Api {
+    let error = DreamEngineAgentError::Provider(ProviderError::Api {
         status: 403,
         message: r#"{"error":{"message":"You do not have access to this model"}}"#.to_owned(),
     });
-    let send_error = aionrs_engine_error_to_send_error(&error);
+    let send_error = engine_error_to_send_error(&error);
 
     assert_eq!(send_error.code(), Some(AgentErrorCode::UserLlmProviderPermissionDenied));
     assert!(

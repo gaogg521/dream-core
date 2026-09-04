@@ -55,7 +55,7 @@ pub fn init_environment(cli: &Cli, merged_path: &str) -> Result<ServerEnvironmen
     if cli.local {
         identity_mode = IdentityMode::Local;
     }
-    let bootstrap_secret = std::env::var("AIONCORE_BOOTSTRAP_SECRET")
+    let bootstrap_secret = std::env::var("DREAMCORE_BOOTSTRAP_SECRET")
         .ok()
         .filter(|secret| !secret.is_empty());
     validate_identity_environment(identity_mode, bootstrap_secret.as_deref())?;
@@ -93,11 +93,11 @@ fn validate_identity_environment(
     identity_mode: IdentityMode,
     bootstrap_secret: Option<&str>,
 ) -> Result<(), BootstrapError> {
-    if identity_mode == IdentityMode::AionPro && bootstrap_secret.is_none() {
+    if identity_mode == IdentityMode::DreamPro && bootstrap_secret.is_none() {
         return Err(BootstrapError::new(
             BootstrapErrorCode::ConfigInvalid,
             "config.identity_mode",
-            "AionPro identity mode requires AIONCORE_BOOTSTRAP_SECRET",
+            "DreamPro identity mode requires DREAMCORE_BOOTSTRAP_SECRET",
         ));
     }
 
@@ -247,8 +247,8 @@ mod tests {
 
     #[test]
     fn aionpro_identity_requires_bootstrap_secret() {
-        let err = validate_identity_environment(IdentityMode::AionPro, None)
-            .expect_err("AionPro startup must require bootstrap secret");
+        let err = validate_identity_environment(IdentityMode::DreamPro, None)
+            .expect_err("DreamPro startup must require bootstrap secret");
 
         assert_eq!(err.code(), BootstrapErrorCode::ConfigInvalid);
         assert_eq!(err.stage(), "config.identity_mode");
@@ -256,8 +256,8 @@ mod tests {
 
     #[test]
     fn aionpro_identity_accepts_bootstrap_secret() {
-        validate_identity_environment(IdentityMode::AionPro, Some("secret"))
-            .expect("AionPro startup should accept configured bootstrap secret");
+        validate_identity_environment(IdentityMode::DreamPro, Some("secret"))
+            .expect("DreamPro startup should accept configured bootstrap secret");
     }
 
     #[test]

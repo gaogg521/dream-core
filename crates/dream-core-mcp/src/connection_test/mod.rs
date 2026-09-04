@@ -496,7 +496,7 @@ fn mcp_transport_type(transport: &McpServerTransport) -> &'static str {
 
 fn log_mcp_transport_start(mcp_server_id: &str, transport_type: &str) {
     info!(
-        target: "aionui_feedback_diagnostics",
+        target: "dream_feedback_diagnostics",
         diagnostic_event = "feedback.runtime.mcp_transport_start",
         mcp_server_id = %mcp_server_id,
         transport_type = %transport_type,
@@ -509,7 +509,7 @@ fn log_mcp_transport_result(mcp_server_id: &str, transport_type: &str, result: &
     let tool_count = result.tools.as_ref().map_or(0, Vec::len);
     let error_class = result.code.map(classify_mcp_error_code).unwrap_or("none");
     warn!(
-        target: "aionui_feedback_diagnostics",
+        target: "dream_feedback_diagnostics",
         diagnostic_event = "feedback.runtime.mcp_transport_result",
         mcp_server_id = %mcp_server_id,
         transport_type = %transport_type,
@@ -652,7 +652,7 @@ mod tests {
             log_mcp_transport_result("server-1", "stdio", &result);
         });
 
-        assert!(captured.contains("aionui_feedback_diagnostics"), "{captured}");
+        assert!(captured.contains("dream_feedback_diagnostics"), "{captured}");
         assert!(captured.contains("feedback.runtime.mcp_transport_start"), "{captured}");
         assert!(captured.contains("feedback.runtime.mcp_transport_result"), "{captured}");
         assert!(captured.contains("mcp_server_id=server-1"), "{captured}");

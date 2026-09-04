@@ -1842,7 +1842,7 @@ mod tests {
                 "port": 4242,
                 "token": "token",
                 "slot_id": "lead-1",
-                "binary_path": "/tmp/aioncore"
+                "binary_path": "/tmp/dreamcore"
             }
         });
 

@@ -17,6 +17,14 @@
 > 跨仓完整叙述（含前端 bug 与 CodeMirror 排查）见 dream-ui 同名文档。本 CLAUDE.md 只保留
 > 长期有效的规则，过程性细节请去读那份文档。
 
+> **2026-09-01**：aion 家族残留全量清理 + `onework.exe` 定名 + moltbook 移除。
+> 运行时契约（READY/LISTENING 标记、`x-dream-*` 头、`[[DREAM_FILES]]`、日志文件名、
+> `DREAMCORE_BOOTSTRAP_SECRET`）全部按「新值写入 + 旧值兼容读」处理；`AionPro` 枚举变体
+> 改 DreamPro 但 wire 值 `aionpro` 用 serde/sqlx/clap alias 钉死；自动更新默认仓库从上游
+> 改为本仓库；`resolve_model` 的旧值比较、Dockerfile/compose 旧环境变量名三个真实 bug
+> 顺手修复。保留清单与踩坑详见
+> [session-2026-09-01-aion-residue-cleanup-and-onework-rename.zh-CN.md](./docs/guides/session-2026-09-01-aion-residue-cleanup-and-onework-rename.zh-CN.md)。
+
 > **2026-08-27**：`dream`（1ONE CLI）类型会话的上下文/token 指示器**从来没显示过**——唯一携带 token 计数的发射点只被独立 `dream-engine-cli` 调用，而进程内这条路把 `engine.run_with_blocks()` 的
 > 返回值直接丢掉了。已修：在 `Finish` **之前**发一帧 `AcpContextUsage`。
 > ❗ 引擎的 `input_tokens` **含**缓存读写，而渲染层同名字段指的是缓存**没**覆盖的新输入（缓存命中率拿它当分母），直接透传会双算。详见

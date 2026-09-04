@@ -47,7 +47,7 @@ use crate::models::ProviderChannelDto;
 use crate::service::DevopsService;
 
 const COLS: &str = "id, name, platform, upstream_base_url, \
-                    (api_key_encrypted != '') AS has_key, models, model_settings, enabled, \
+                    (api_key_encrypted != '') AS has_key, models, model_settings, model_protocols, enabled, \
                     scope, team_id, visibility, created_by, created_at, updated_at";
 
 /// Prefix on issued tokens. Purely so a leaked string is recognisable in a log
@@ -201,6 +201,7 @@ impl DevopsService {
         api_key: Option<&str>,
         models: &str,
         model_settings: Option<&str>,
+        model_protocols: Option<&str>,
         enabled: bool,
         scope: &str,
         team_id: Option<&str>,
@@ -269,17 +270,17 @@ impl DevopsService {
                     Some(secret) => {
                         self.db.execute(
                             "UPDATE one_provider_registry SET name = ?, platform = ?, upstream_base_url = ?, \
-                             api_key_encrypted = ?, models = ?, model_settings = ?, enabled = ?, scope = ?, \
+                             api_key_encrypted = ?, models = ?, model_settings = ?, model_protocols = ?, enabled = ?, scope = ?, \
                              team_id = ?, visibility = ?, updated_at = ? WHERE id = ?",
-                        &db_params![name, platform, upstream_base_url, secret, models, model_settings, enabled, scope, team_id, visibility, now, existing])
+                        &db_params![name, platform, upstream_base_url, secret, models, model_settings, model_protocols, enabled, scope, team_id, visibility, now, existing])
                         .await?
                     }
                     None => {
                         self.db.execute(
                             "UPDATE one_provider_registry SET name = ?, platform = ?, upstream_base_url = ?, \
-                             models = ?, model_settings = ?, enabled = ?, scope = ?, team_id = ?, \
+                             models = ?, model_settings = ?, model_protocols = ?, enabled = ?, scope = ?, team_id = ?, \
                              visibility = ?, updated_at = ? WHERE id = ?",
-                        &db_params![name, platform, upstream_base_url, models, model_settings, enabled, scope, team_id, visibility, now, existing])
+                        &db_params![name, platform, upstream_base_url, models, model_settings, model_protocols, enabled, scope, team_id, visibility, now, existing])
                         .await?
                     }
                 };
@@ -292,10 +293,10 @@ impl DevopsService {
                 let id = format!("ochan_{}", uuid::Uuid::now_v7().simple());
                 self.db.execute(
                     "INSERT INTO one_provider_registry \
-                        (id, name, platform, upstream_base_url, api_key_encrypted, models, model_settings, \
+                        (id, name, platform, upstream_base_url, api_key_encrypted, models, model_settings, model_protocols, \
                          enabled, scope, team_id, visibility, created_by, created_at, updated_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                &db_params![&id, name, platform, upstream_base_url, encrypted.unwrap_or_default(), models, model_settings, enabled, scope, team_id, visibility, created_by, now, now])
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                &db_params![&id, name, platform, upstream_base_url, encrypted.unwrap_or_default(), models, model_settings, model_protocols, enabled, scope, team_id, visibility, created_by, now, now])
                 .await?;
                 id
             }
@@ -476,6 +477,7 @@ mod tests {
             Some(SECRET),
             r#"["gpt-image-2"]"#,
             None,
+            None,
             true,
             "org",
             None,
@@ -515,6 +517,7 @@ mod tests {
             None, // no key supplied
             r#"["gpt-image-2"]"#,
             None,
+            None,
             true,
             "org",
             None,
@@ -531,6 +534,64 @@ mod tests {
             .unwrap()
             .expect("channel should still authenticate");
         assert_eq!(resolved.api_key, SECRET, "the stored credential must survive an edit");
+    }
+
+    /// `model_protocols` round-trips through create and update, and a listing
+    /// carries it back for the client sync to materialise.
+    #[tokio::test]
+    async fn model_protocols_round_trip_through_upsert_and_listing() {
+        let svc = service().await;
+        let created = svc
+            .upsert_provider_channel(
+                None,
+                "corp-newapi",
+                "new-api",
+                "https://gateway.corp.example",
+                Some(SECRET),
+                r#"["claude-sonnet-4","gpt-4o"]"#,
+                None,
+                Some(r#"{"claude-sonnet-4":"anthropic"}"#),
+                true,
+                "org",
+                None,
+                "all",
+                "admin1",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            created.model_protocols.as_deref(),
+            Some(r#"{"claude-sonnet-4":"anthropic"}"#)
+        );
+
+        let updated = svc
+            .upsert_provider_channel(
+                Some(&created.id),
+                "corp-newapi",
+                "new-api",
+                "https://gateway.corp.example",
+                None,
+                r#"["claude-sonnet-4","gpt-4o"]"#,
+                None,
+                Some(r#"{"claude-sonnet-4":"anthropic","gpt-4o":"openai"}"#),
+                true,
+                "org",
+                None,
+                "all",
+                "admin1",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            updated.model_protocols.as_deref(),
+            Some(r#"{"claude-sonnet-4":"anthropic","gpt-4o":"openai"}"#)
+        );
+
+        let listed = svc.list_provider_channels("admin1").await.unwrap();
+        assert_eq!(
+            listed[0].model_protocols.as_deref(),
+            Some(r#"{"claude-sonnet-4":"anthropic","gpt-4o":"openai"}"#)
+        );
     }
 
     #[tokio::test]
@@ -584,6 +645,7 @@ mod tests {
             "https://gateway.corp.example",
             None,
             r#"["gpt-image-2"]"#,
+            None,
             None,
             false, // disabled
             "org",
@@ -651,6 +713,7 @@ mod tests {
                 Some(SECRET),
                 "[]",
                 None,
+                None,
                 true,
                 "org",
                 None,
@@ -677,7 +740,7 @@ mod tests {
         for bad in ["", "  ", "gateway.corp.example", "ftp://gateway"] {
             assert!(
                 svc.upsert_provider_channel(
-                    None, "corp", "openai", bad, None, "[]", None, true, "org", None, "all", "admin1",
+                    None, "corp", "openai", bad, None, "[]", None, None, true, "org", None, "all", "admin1",
                 )
                 .await
                 .is_err(),
@@ -731,6 +794,7 @@ mod tests {
             "https://gateway.corp.example",
             Some(SECRET),
             "[]",
+            None,
             None,
             true,
             "team",

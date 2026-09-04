@@ -41,7 +41,7 @@ pub struct WorkspaceContext {
 #[derive(Debug, Clone)]
 pub enum AgentSessionKind {
     Acp(Box<AcpSessionBuildContext>),
-    DreamEngine(Box<AionrsSessionBuildContext>),
+    DreamEngine(Box<DreamEngineSessionBuildContext>),
     Antigravity(Box<AntigravitySessionBuildContext>),
 }
 
@@ -70,7 +70,7 @@ pub struct AntigravitySessionBuildContext {
 }
 
 #[derive(Debug, Clone)]
-pub struct AionrsSessionBuildContext {
+pub struct DreamEngineSessionBuildContext {
     pub config: DreamEngineBuildExtra,
     pub team: Option<TeamSessionBinding>,
     pub belongs_to_team: bool,

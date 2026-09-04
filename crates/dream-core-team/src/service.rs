@@ -2506,7 +2506,7 @@ impl TeamSessionService {
     }
 
     /// Resolve a send's attachments to absolute paths and re-inline them into
-    /// the content (`[[AION_FILES]]` form) at the team send boundary. Atomic;
+    /// the content (`[[DREAM_FILES]]` form) at the team send boundary. Atomic;
     /// empty/absent `files` is a no-op needing no project service.
     async fn resolve_message_attachments(
         &self,
@@ -3284,7 +3284,7 @@ mod tests {
         }
 
         fn workspace(&self) -> &str {
-            "/tmp/aioncore-team-mode-test"
+            "/tmp/dreamcore-team-mode-test"
         }
 
         fn status(&self) -> Option<ConversationStatus> {

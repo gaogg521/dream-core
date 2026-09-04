@@ -1,7 +1,7 @@
 //! Rewrite flattened image attachment paths for text-only bridge targets.
 //!
 //! ACP has no attachment field in its prompt request. The project layer
-//! therefore appends resolved paths under `ONE_FILES_MARKER`, and the
+//! therefore appends resolved paths under `FILES_MARKER`, and the
 //! external Claude/Codex CLI receives those paths as ordinary text. A bridged
 //! custom model that cannot accept images must never be left to infer their
 //! contents from a filename: this hook turns each *verified* image path into
@@ -10,7 +10,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use dream_core_common::constants::ONE_FILES_MARKER;
+use dream_core_common::constants::{FILES_MARKER, LEGACY_FILES_MARKER};
 use dream_engine_config::config::VisionModelConfig;
 use dream_engine_types::message::{TokenUsage, extension_to_image_media_type};
 
@@ -171,8 +171,12 @@ async fn rewrite_image_attachment_paths(
         };
     }
 
-    let marker = format!("{ONE_FILES_MARKER}\n");
-    let Some((prefix, attachment_lines)) = prompt.split_once(&marker) else {
+    let marker = format!("{FILES_MARKER}\n");
+    let legacy_marker = format!("{LEGACY_FILES_MARKER}\n");
+    let split = prompt
+        .split_once(&marker)
+        .or_else(|| prompt.split_once(&legacy_marker));
+    let Some((prefix, attachment_lines)) = split else {
         return RewriteOutcome {
             prompt,
             warnings: vec!["Attachment metadata was present but its flattened prompt block was missing; image paths were left unchanged.".to_owned()],
@@ -218,7 +222,7 @@ async fn rewrite_image_attachment_paths(
             }
             AcpVisionPolicy::Delegate(vision) => match describer.describe(vision, image_path).await {
                 Ok((description, usage)) => {
-                    lines[index] = format!("<aionui-image-description>\n{description}\n</aionui-image-description>");
+                    lines[index] = format!("<dream-image-description>\n{description}\n</dream-image-description>");
                     delegate_usage.push(DelegateUsageEventData {
                         model: vision.model.clone(),
                         input_tokens: usage.input_tokens as i64,
@@ -245,7 +249,7 @@ async fn rewrite_image_attachment_paths(
 
 fn local_ocr_instruction(skill: &LocalOcrSkill, image_path: &str) -> String {
     format!(
-        "<aionui-local-ocr-skill name=\"{}\" directory=\"{}\">\n{}\n</aionui-local-ocr-skill>\n\n[Required before answering: use the local OCR skill above on this exact attachment path. Do not upload it or install anything. OCR returns text only; if it is unavailable or fails, say so and do not infer the image's contents.]\n<image-path>{image_path}</image-path>",
+        "<dream-local-ocr-skill name=\"{}\" directory=\"{}\">\n{}\n</dream-local-ocr-skill>\n\n[Required before answering: use the local OCR skill above on this exact attachment path. Do not upload it or install anything. OCR returns text only; if it is unavailable or fails, say so and do not infer the image's contents.]\n<image-path>{image_path}</image-path>",
         skill.name, skill.script_dir, skill.instructions
     )
 }
@@ -308,7 +312,7 @@ mod tests {
     }
 
     fn attachment_prompt(lines: &[&str]) -> String {
-        format!("Explain the attachments.\n\n{ONE_FILES_MARKER}\n{}", lines.join("\n"))
+        format!("Explain the attachments.\n\n{FILES_MARKER}\n{}", lines.join("\n"))
     }
 
     #[tokio::test]
@@ -371,7 +375,7 @@ mod tests {
 
         let outcome = rewrite_image_attachment_paths(prompt, &files, &vision_policy(), None, &describer).await;
 
-        assert!(outcome.prompt.contains("<aionui-image-description>"));
+        assert!(outcome.prompt.contains("<dream-image-description>"));
         assert!(outcome.prompt.contains("A blue chart labelled Revenue"));
         assert!(outcome.prompt.ends_with(r"C:\\temp\\notes.pdf"));
         assert_eq!(
@@ -420,7 +424,7 @@ mod tests {
         let outcome =
             rewrite_image_attachment_paths(prompt, &files, &vision_policy(), Some(&local_ocr), &describer).await;
 
-        assert!(outcome.prompt.contains("aionui-local-ocr-skill"));
+        assert!(outcome.prompt.contains("dream-local-ocr-skill"));
         assert!(outcome.prompt.contains("ocr.ps1") || outcome.prompt.contains("local script"));
         assert!(
             outcome

@@ -1386,7 +1386,7 @@ async fn handle_open_response(
     // We parse BOTH (top-level first, then configOptions fallback) so model/mode are
     // never dropped → config-options non-empty → the picker has real values and a
     // set_model does not -32602 on a stale hardcoded id (opencode prod bug). See
-    // protocols/design/aioncore-opencode-acp-configoptions-model-mode-prompt.md.
+    // protocols/design/dreamcore-opencode-acp-configoptions-model-mode-prompt.md.
     let mut disc = discovered.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(models) = result.get("models") {
         let avail = parse_models(models);

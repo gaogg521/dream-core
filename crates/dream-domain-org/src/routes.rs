@@ -252,6 +252,7 @@ async fn enterprise_tenant_create_invite(
     Path((enterprise_id, tenant_id)): Path<(String, String)>,
     Json(body): Json<CreateInviteBody>,
 ) -> Result<Json<ApiResponse<CreatedInviteDto>>, OrgError> {
+    let __audit_t0 = std::time::Instant::now();
     ensure_company_owns_tenant(&state, &actor, &enterprise_id, &tenant_id).await?;
     let (invite, display_code) = state
         .service
@@ -265,6 +266,7 @@ async fn enterprise_tenant_create_invite(
             Some(&actor.username),
             "org.invite.create",
             Some(&invite.id),
+            Some(__audit_t0.elapsed().as_millis() as i64),
         )
         .await;
     Ok(Json(ApiResponse::ok(CreatedInviteDto { invite, display_code })))
@@ -275,6 +277,7 @@ async fn enterprise_tenant_revoke_invite(
     actor: OrgActor,
     Path((enterprise_id, tenant_id, invite_id)): Path<(String, String, String)>,
 ) -> Result<Json<ApiResponse<()>>, OrgError> {
+    let __audit_t0 = std::time::Instant::now();
     ensure_company_owns_tenant(&state, &actor, &enterprise_id, &tenant_id).await?;
     state.service.revoke_invite(&tenant_id, &invite_id).await?;
     state
@@ -285,6 +288,7 @@ async fn enterprise_tenant_revoke_invite(
             Some(&actor.username),
             "org.invite.revoke",
             Some(&invite_id),
+            Some(__audit_t0.elapsed().as_millis() as i64),
         )
         .await;
     Ok(Json(ApiResponse::ok(())))
@@ -512,10 +516,28 @@ async fn admin_create_invite(
     RequireOrgAdmin(actor): RequireOrgAdmin,
     Json(body): Json<CreateInviteBody>,
 ) -> Result<Json<ApiResponse<CreatedInviteDto>>, OrgError> {
-    let (invite, display_code) = state
+    let __audit_t0 = std::time::Instant::now();
+    let (invite, display_code) = match state
         .service
         .create_invite(&actor.tenant_id, &actor.user_id, body.max_uses, body.expires_in_days)
-        .await?;
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            state
+                .service
+                .audit_failure(
+                    &actor.tenant_id,
+                    Some(&actor.user_id),
+                    Some(&actor.username),
+                    "org.invite.create",
+                    None,
+                    Some(__audit_t0.elapsed().as_millis() as i64),
+                )
+                .await;
+            return Err(e);
+        }
+    };
     state
         .service
         .audit(
@@ -524,6 +546,7 @@ async fn admin_create_invite(
             Some(&actor.username),
             "org.invite.create",
             Some(&invite.id),
+            Some(__audit_t0.elapsed().as_millis() as i64),
         )
         .await;
     Ok(Json(ApiResponse::ok(CreatedInviteDto { invite, display_code })))
@@ -546,6 +569,7 @@ async fn admin_create_invites_bulk(
     RequireOrgAdmin(actor): RequireOrgAdmin,
     Json(body): Json<BulkInviteBody>,
 ) -> Result<Json<ApiResponse<Vec<CreatedInviteDto>>>, OrgError> {
+    let __audit_t0 = std::time::Instant::now();
     let created = state
         .service
         .create_invites_bulk(
@@ -564,6 +588,7 @@ async fn admin_create_invites_bulk(
             Some(&actor.username),
             "org.invite.bulk_create",
             None,
+            Some(__audit_t0.elapsed().as_millis() as i64),
         )
         .await;
     let out = created
@@ -616,10 +641,25 @@ async fn admin_set_allowed_domains(
     RequireOrgAdmin(actor): RequireOrgAdmin,
     Json(body): Json<SetAllowedDomainsBody>,
 ) -> Result<Json<ApiResponse<Vec<String>>>, OrgError> {
-    state
+    let __audit_t0 = std::time::Instant::now();
+    if let Err(e) = state
         .service
         .set_tenant_allowed_domains(&actor.tenant_id, &body.domains)
-        .await?;
+        .await
+    {
+        state
+            .service
+            .audit_failure(
+                &actor.tenant_id,
+                Some(&actor.user_id),
+                Some(&actor.username),
+                "org.onboarding.set_domains",
+                None,
+                Some(__audit_t0.elapsed().as_millis() as i64),
+            )
+            .await;
+        return Err(e);
+    }
     state
         .service
         .audit(
@@ -628,6 +668,7 @@ async fn admin_set_allowed_domains(
             Some(&actor.username),
             "org.onboarding.set_domains",
             None,
+            Some(__audit_t0.elapsed().as_millis() as i64),
         )
         .await;
     let domains = state.service.tenant_allowed_domains(&actor.tenant_id).await?;
@@ -665,6 +706,7 @@ async fn admin_set_smtp_config(
     RequireOrgAdmin(actor): RequireOrgAdmin,
     Json(body): Json<SetSmtpConfigBody>,
 ) -> Result<Json<ApiResponse<SmtpConfigDto>>, OrgError> {
+    let __audit_t0 = std::time::Instant::now();
     let dto = state
         .service
         .set_smtp_config(
@@ -684,6 +726,7 @@ async fn admin_set_smtp_config(
             Some(&actor.username),
             "org.onboarding.set_smtp",
             None,
+            Some(__audit_t0.elapsed().as_millis() as i64),
         )
         .await;
     Ok(Json(ApiResponse::ok(dto)))
@@ -725,7 +768,8 @@ async fn admin_set_integration(
     Path(provider): Path<String>,
     Json(body): Json<SetIntegrationBody>,
 ) -> Result<Json<ApiResponse<IntegrationDto>>, OrgError> {
-    let dto = state
+    let __audit_t0 = std::time::Instant::now();
+    let dto = match state
         .service
         .set_integration(
             &actor.tenant_id,
@@ -735,7 +779,24 @@ async fn admin_set_integration(
             body.secret.as_deref(),
             body.enabled,
         )
-        .await?;
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            state
+                .service
+                .audit_failure(
+                    &actor.tenant_id,
+                    Some(&actor.user_id),
+                    Some(&actor.username),
+                    "org.integration.set",
+                    Some(&provider),
+                    Some(__audit_t0.elapsed().as_millis() as i64),
+                )
+                .await;
+            return Err(e);
+        }
+    };
     state
         .service
         .audit(
@@ -744,6 +805,7 @@ async fn admin_set_integration(
             Some(&actor.username),
             "org.integration.set",
             Some(&provider),
+            Some(__audit_t0.elapsed().as_millis() as i64),
         )
         .await;
     Ok(Json(ApiResponse::ok(dto)))
@@ -764,6 +826,7 @@ async fn admin_revoke_invite(
     RequireOrgAdmin(actor): RequireOrgAdmin,
     Path(invite_id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, OrgError> {
+    let __audit_t0 = std::time::Instant::now();
     state.service.revoke_invite(&actor.tenant_id, &invite_id).await?;
     state
         .service
@@ -773,6 +836,7 @@ async fn admin_revoke_invite(
             Some(&actor.username),
             "org.invite.revoke",
             Some(&invite_id),
+            Some(__audit_t0.elapsed().as_millis() as i64),
         )
         .await;
     Ok(Json(ApiResponse::ok(())))
@@ -802,6 +866,7 @@ async fn admin_set_exit_password(
     RequireOrgAdmin(actor): RequireOrgAdmin,
     Json(body): Json<SetExitPasswordBody>,
 ) -> Result<Json<ApiResponse<()>>, OrgError> {
+    let __audit_t0 = std::time::Instant::now();
     state
         .service
         .set_exit_password(&actor.tenant_id, &body.password)
@@ -814,6 +879,7 @@ async fn admin_set_exit_password(
             Some(&actor.username),
             "org.exit_password.set",
             None,
+            Some(__audit_t0.elapsed().as_millis() as i64),
         )
         .await;
     Ok(Json(ApiResponse::ok(())))
@@ -823,6 +889,7 @@ async fn admin_clear_exit_password(
     State(state): State<OneOrgRouterState>,
     RequireOrgAdmin(actor): RequireOrgAdmin,
 ) -> Result<Json<ApiResponse<()>>, OrgError> {
+    let __audit_t0 = std::time::Instant::now();
     state.service.clear_exit_password(&actor.tenant_id).await?;
     state
         .service
@@ -832,6 +899,7 @@ async fn admin_clear_exit_password(
             Some(&actor.username),
             "org.exit_password.clear",
             None,
+            Some(__audit_t0.elapsed().as_millis() as i64),
         )
         .await;
     Ok(Json(ApiResponse::ok(())))
@@ -894,10 +962,28 @@ async fn admin_set_user_role(
             "only system_admin can promote to system_admin".into(),
         ));
     }
-    state
+    // `set_user_role` audits the SUCCESS itself (attributed to the actor, not
+    // the target). Record the FAILURE here — a rejected privilege change is
+    // exactly the event a security review looks for.
+    let __audit_t0 = std::time::Instant::now();
+    if let Err(e) = state
         .service
         .set_user_role(&actor.tenant_id, &actor.user_id, &user_id, role)
-        .await?;
+        .await
+    {
+        state
+            .service
+            .audit_failure(
+                &actor.tenant_id,
+                Some(&actor.user_id),
+                Some(&actor.username),
+                "set_role",
+                Some(&format!("user={user_id} role={role}")),
+                Some(__audit_t0.elapsed().as_millis() as i64),
+            )
+            .await;
+        return Err(e);
+    }
     Ok(Json(ApiResponse::ok(())))
 }
 
@@ -966,6 +1052,7 @@ async fn admin_create_department(
     RequireOrgAdmin(actor): RequireOrgAdmin,
     Json(body): Json<CreateDepartmentBody>,
 ) -> Result<Json<ApiResponse<DepartmentDto>>, OrgError> {
+    let __audit_t0 = std::time::Instant::now();
     let dept = state
         .service
         .create_department(&actor.tenant_id, &body.name, body.parent_id.as_deref())
@@ -978,6 +1065,7 @@ async fn admin_create_department(
             Some(&actor.username),
             "org.department.create",
             Some(&dept.id),
+            Some(__audit_t0.elapsed().as_millis() as i64),
         )
         .await;
     Ok(Json(ApiResponse::ok(dept)))
@@ -1007,6 +1095,7 @@ async fn admin_delete_department(
     RequireOrgAdmin(actor): RequireOrgAdmin,
     Path(department_id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, OrgError> {
+    let __audit_t0 = std::time::Instant::now();
     state
         .service
         .delete_department(&actor.tenant_id, &department_id)
@@ -1019,6 +1108,7 @@ async fn admin_delete_department(
             Some(&actor.username),
             "org.department.delete",
             Some(&department_id),
+            Some(__audit_t0.elapsed().as_millis() as i64),
         )
         .await;
     Ok(Json(ApiResponse::ok(())))
@@ -1037,6 +1127,7 @@ async fn admin_set_department_parent(
     Path(department_id): Path<String>,
     Json(body): Json<SetDepartmentParentBody>,
 ) -> Result<Json<ApiResponse<DepartmentDto>>, OrgError> {
+    let __audit_t0 = std::time::Instant::now();
     let dept = state
         .service
         .set_department_parent(&actor.tenant_id, &department_id, body.parent_id.as_deref())
@@ -1049,6 +1140,7 @@ async fn admin_set_department_parent(
             Some(&actor.username),
             "org.department.move",
             Some(&department_id),
+            Some(__audit_t0.elapsed().as_millis() as i64),
         )
         .await;
     Ok(Json(ApiResponse::ok(dept)))
@@ -1085,6 +1177,7 @@ async fn admin_map_directory_department(
     RequireOrgAdmin(actor): RequireOrgAdmin,
     Json(body): Json<MapDirectoryDepartmentBody>,
 ) -> Result<Json<ApiResponse<DirectoryMapReport>>, OrgError> {
+    let __audit_t0 = std::time::Instant::now();
     let all = match &state.directory_source {
         Some(source) => source.directory_departments().await,
         None => Vec::new(),
@@ -1101,6 +1194,7 @@ async fn admin_map_directory_department(
             Some(&actor.username),
             "org.department.mapFromDirectory",
             Some(&body.root_external_id),
+            Some(__audit_t0.elapsed().as_millis() as i64),
         )
         .await;
     Ok(Json(ApiResponse::ok(report)))

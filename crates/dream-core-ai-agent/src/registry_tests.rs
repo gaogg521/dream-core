@@ -62,11 +62,11 @@ async fn probe_resolved_command_keeps_bridge_but_version_probe_targets_primary_c
     assert_eq!(meta.resolved_command, Some(PathBuf::from("npx")));
 
     let mut missing_primary = meta;
-    missing_primary.agent_source_info.binary_name = Some("aionui-definitely-missing-product-cli".into());
+    missing_primary.agent_source_info.binary_name = Some("dream-definitely-missing-product-cli".into());
     let reason = probe_resolved_command(&missing_primary).expect_err("npx must not replace the product CLI check");
     assert!(matches!(
         reason,
-        UnavailableReason::PrimaryMissing { binary } if binary == "aionui-definitely-missing-product-cli"
+        UnavailableReason::PrimaryMissing { binary } if binary == "dream-definitely-missing-product-cli"
     ));
 }
 

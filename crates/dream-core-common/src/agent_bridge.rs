@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn ensure_claude_bridge_home_creates_directory() {
-        let tmp = std::env::temp_dir().join(format!("aionui-bridge-home-test-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("dream-bridge-home-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
 
         let (path, created) = ensure_claude_bridge_home(&tmp);
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn ensure_codex_mcp_isolated_home_creates_directory() {
-        let tmp = std::env::temp_dir().join(format!("aionui-codex-mcp-home-test-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("dream-codex-mcp-home-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
 
         let (path, created) = ensure_codex_mcp_isolated_home(&tmp);

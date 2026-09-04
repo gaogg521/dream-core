@@ -721,7 +721,7 @@ fn truncate_summary(reply: &str) -> String {
 /// Whether a stored `agent_type` label denotes the dream backend — the only
 /// one that takes a top-level conversation model. Compares against the enum's
 /// own serde name rather than a literal so a rename can't silently drift.
-fn is_aionrs(agent_type: &str) -> bool {
+fn is_dream_engine(agent_type: &str) -> bool {
     agent_type.trim() == AgentType::DreamEngine.serde_name()
 }
 
@@ -753,7 +753,7 @@ fn serialize_model(model: Option<&ProviderWithModel>) -> Result<Option<String>, 
 /// derive the same `(provider_id, model)` — see the divergence warning in
 /// `dream_core_conversation::task_options`.
 fn resolve_model(agent: &PersonalAgentRow) -> Option<ProviderWithModel> {
-    if !is_aionrs(&agent.agent_type) {
+    if !is_dream_engine(&agent.agent_type) {
         return None;
     }
     agent
@@ -778,7 +778,7 @@ fn build_assistant_request(agent: &PersonalAgentRow) -> Option<AssistantConversa
     let agent_id = normalize_optional(agent.agent_id_override.as_deref());
     // ACP backends carry the model through the assistant overrides; dream uses
     // the top-level `model` instead (see `resolve_model`).
-    let model = if is_aionrs(&agent.agent_type) {
+    let model = if is_dream_engine(&agent.agent_type) {
         None
     } else {
         normalize_optional(agent.model_id.as_deref())
@@ -873,15 +873,15 @@ impl EmployeeService {
         require_model: bool,
     ) -> Result<(), EmployeeError> {
         let Some(model) = model else {
-            if require_model && is_aionrs(agent_type) {
+            if require_model && is_dream_engine(agent_type) {
                 return Err(EmployeeError::BadRequest(
-                    "an aionrs employee requires a model; pick one from an enabled provider".into(),
+                    "a DreamEngine employee requires a model; pick one from an enabled provider".into(),
                 ));
             }
             return Ok(());
         };
 
-        if !is_aionrs(agent_type) {
+        if !is_dream_engine(agent_type) {
             return Err(EmployeeError::BadRequest(format!(
                 "a model may only be bound to an aionrs employee; '{agent_type}' resolves its model through its own backend"
             )));

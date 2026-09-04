@@ -581,3 +581,6 @@ graphify-out/
 
 .tmp/
 .playwright-mcp/
+
+# scratch target dir used when target/ is locked by a running backend
+target-test/

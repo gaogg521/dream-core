@@ -48,7 +48,7 @@ async fn handle_hook(
         // should learn nothing about the session.
         tracing::warn!("antigravity hook: rejected a callback with an invalid token");
         return Json(AntigravityHookOutput::deny(
-            "aionui rejected an unauthenticated hook callback",
+            "One Work rejected an unauthenticated hook callback",
         ));
     }
 
@@ -67,7 +67,7 @@ async fn handle_hook(
             "antigravity hook: no live session to ask; denying"
         );
         return Json(AntigravityHookOutput::deny(
-            "aionui has no live session for this conversation",
+            "One Work has no live session for this conversation",
         ));
     };
 
@@ -90,9 +90,9 @@ async fn handle_hook(
 
     Json(match decision {
         dream_core_session::PermissionDecision::Approved | dream_core_session::PermissionDecision::AllowAlways => {
-            AntigravityHookOutput::allow("approved in AionUi")
+            AntigravityHookOutput::allow("approved in One Work")
         }
-        dream_core_session::PermissionDecision::Denied => AntigravityHookOutput::deny("rejected in AionUi"),
+        dream_core_session::PermissionDecision::Denied => AntigravityHookOutput::deny("rejected in One Work"),
     })
 }
 

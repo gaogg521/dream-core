@@ -21,6 +21,7 @@ pub(crate) async fn fetch_for_platform(
         "bedrock" => fetch_bedrock(config).await,
         "vertex-ai" => Ok(vertex_ai_models()),
         "new-api" => fetch_new_api(client, &config.base_url, &config.api_key).await,
+        "ollama" => fetch_ollama(client, &config.base_url).await,
         "minimax" => Ok(minimax_models()),
         "dashscope-coding" => fetch_dashscope_coding(client, &config.base_url, &config.api_key).await,
         _ => fetch_openai_compatible(client, &config.base_url, &config.api_key).await,
@@ -273,6 +274,41 @@ fn ensure_v1_path(base_url: &str) -> String {
     } else {
         format!("{trimmed}/v1")
     }
+}
+
+// ---------------------------------------------------------------------------
+// Ollama (native /api/tags, no credentials)
+// ---------------------------------------------------------------------------
+
+/// Response shape for Ollama `/api/tags`.
+#[derive(Deserialize)]
+struct OllamaTagsResponse {
+    #[serde(default)]
+    models: Vec<OllamaTagModel>,
+}
+
+#[derive(Deserialize)]
+struct OllamaTagModel {
+    name: String,
+}
+
+async fn fetch_ollama(client: &reqwest::Client, base_url: &str) -> Result<Vec<ModelInfo>, SystemError> {
+    let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
+    let resp = client
+        .get(&url)
+        .timeout(REQUEST_TIMEOUT)
+        .send()
+        .await
+        .map_err(|e| remote_error(&e))?;
+
+    check_response_status(&resp)?;
+
+    let body: OllamaTagsResponse = resp
+        .json()
+        .await
+        .map_err(|e| SystemError::BadGateway(format!("Failed to parse Ollama tags response: {e}")))?;
+
+    Ok(body.models.into_iter().map(|m| ModelInfo::Id(m.name)).collect())
 }
 
 // ---------------------------------------------------------------------------

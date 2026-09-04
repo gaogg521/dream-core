@@ -109,7 +109,9 @@ pub struct EnsureExternalUserRequest {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ExternalUserType {
-    Aionpro,
+    /// Serialized value is frozen at `aionpro` (persisted in external IdP rows).
+    #[serde(rename = "aionpro")]
+    DreamPro,
 }
 
 /// Response for successful internal external-user provisioning.
@@ -273,7 +275,7 @@ mod tests {
     #[test]
     fn test_internal_external_user_contract_serialization() {
         let req = EnsureExternalUserRequest {
-            user_type: ExternalUserType::Aionpro,
+            user_type: ExternalUserType::DreamPro,
             username: Some("Pro User".into()),
             email: Some("pro@example.com".into()),
             avatar_path: None,
@@ -286,7 +288,7 @@ mod tests {
 
         let resp = EnsureExternalUserResponse {
             user_id: "user_123".into(),
-            user_type: ExternalUserType::Aionpro,
+            user_type: ExternalUserType::DreamPro,
             external_user_id: "external_123".into(),
             session_generation: 2,
         };
@@ -303,7 +305,7 @@ mod tests {
     #[test]
     fn test_internal_external_session_revoke_contract_serialization() {
         let req = RevokeExternalSessionRequest {
-            user_type: ExternalUserType::Aionpro,
+            user_type: ExternalUserType::DreamPro,
             external_user_id: "external_123".into(),
         };
         let json = serde_json::to_value(&req).unwrap();

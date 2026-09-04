@@ -12,7 +12,7 @@ use super::*;
 use crate::agent_task::IAgentTask;
 use crate::protocol::events::FinishEventData;
 
-async fn assert_no_stop_signal(agent: &AionrsAgentManager) {
+async fn assert_no_stop_signal(agent: &DreamEngineAgentManager) {
     let notified = agent.cancel_notify.notified();
     tokio::pin!(notified);
 
@@ -22,21 +22,22 @@ async fn assert_no_stop_signal(agent: &AionrsAgentManager) {
     );
 }
 
-fn make_test_config() -> AionrsResolvedConfig {
-    AionrsResolvedConfig {
+fn make_test_config() -> DreamEngineResolvedConfig {
+    DreamEngineResolvedConfig {
         provider: "anthropic".into(),
         api_key: "sk-test-key".into(),
         model: "claude-sonnet-4-20250514".into(),
         base_url: None,
         system_prompt: None,
         max_tokens: None,
+        context_window: None,
         max_turns: None,
         max_tool_call_malformed_turns: None,
         max_tool_call_failure_turns: None,
         compat_overrides: Default::default(),
         vision_model: None,
         vision_unavailable_reason: None,
-        session_directory: env::temp_dir().join("aionrs-test-sessions"),
+        session_directory: env::temp_dir().join("dream-engine-test-sessions"),
         session_mode: None,
         skills: Vec::new(),
         extra_mcp_servers: HashMap::new(),
@@ -66,7 +67,7 @@ fn make_cli_args(project_dir: PathBuf, provider: &str, model: &str) -> CliArgs {
 }
 
 #[test]
-fn resolve_aionui_config_discards_standalone_max_token_settings() {
+fn resolve_engine_config_discards_standalone_max_token_settings() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
         project.path().join(".dream.toml"),
@@ -89,7 +90,7 @@ max_tokens = 3456
     assert_eq!(standalone.max_tokens, Some(1234));
     assert_eq!(standalone.compat.default_max_tokens_for_model("gpt-test"), Some(3456));
 
-    let embedded = resolve_aionui_config(&cli_args).unwrap();
+    let embedded = resolve_engine_config(&cli_args).unwrap();
     assert_eq!(embedded.max_tokens, None);
     // File-based overrides (2345 / pattern "gpt-test" -> 3456) are discarded,
     // but `default_max_tokens_for_model` still falls back to
@@ -101,7 +102,7 @@ max_tokens = 3456
 }
 
 #[test]
-fn resolve_aionui_config_keeps_builtin_provider_max_token_policy() {
+fn resolve_engine_config_keeps_builtin_provider_max_token_policy() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
         project.path().join(".dream.toml"),
@@ -117,7 +118,7 @@ max_tokens = 42
     .unwrap();
     let cli_args = make_cli_args(project.path().to_path_buf(), "anthropic", "claude-sonnet-4-6");
 
-    let embedded = resolve_aionui_config(&cli_args).unwrap();
+    let embedded = resolve_engine_config(&cli_args).unwrap();
     assert_eq!(embedded.max_tokens, None);
     assert_eq!(
         embedded.compat.default_max_tokens_for_model("claude-sonnet-4-6"),
@@ -126,7 +127,7 @@ max_tokens = 42
 }
 
 #[test]
-fn aionrs_final_input_dump_value_contains_raw_split_input_and_context() {
+fn dream_engine_final_input_dump_value_contains_raw_split_input_and_context() {
     let mut mcp_env = HashMap::new();
     mcp_env.insert("TOKEN".to_owned(), "raw-token-value".to_owned());
 
@@ -145,7 +146,7 @@ fn aionrs_final_input_dump_value_contains_raw_split_input_and_context() {
         },
     );
 
-    let context = AionrsFinalInputDumpContext {
+    let context = DreamEngineFinalInputDumpContext {
         dump_dir: PathBuf::from("/tmp/prompt-dumps"),
         provider: "openai".to_owned(),
         model: "gpt-test".to_owned(),
@@ -158,19 +159,19 @@ fn aionrs_final_input_dump_value_contains_raw_split_input_and_context() {
     };
     let data = SendMessageData {
         content: "team wake raw content".to_owned(),
-        msg_id: "msg-aionrs-final".to_owned(),
-        turn_id: Some("turn-aionrs-final".to_owned()),
+        msg_id: "msg-dream-final".to_owned(),
+        turn_id: Some("turn-dream-final".to_owned()),
         files: Vec::new(),
         inject_skills: Vec::new(),
     };
 
-    let value = build_aionrs_final_input_dump_value("conv-aionrs", "/workspace", &context, &data);
+    let value = build_engine_final_input_dump_value("conv-dream", "/workspace", &context, &data);
 
-    assert_eq!(value["kind"], "aionrs-final-input");
-    assert_eq!(value["backend"], "aionrs");
-    assert_eq!(value["conversation_id"], "conv-aionrs");
-    assert_eq!(value["msg_id"], "msg-aionrs-final");
-    assert_eq!(value["turn_id"], "turn-aionrs-final");
+    assert_eq!(value["kind"], "dream-final-input");
+    assert_eq!(value["backend"], "dream");
+    assert_eq!(value["conversation_id"], "conv-dream");
+    assert_eq!(value["msg_id"], "msg-dream-final");
+    assert_eq!(value["turn_id"], "turn-dream-final");
     assert_eq!(value["input"]["system_prompt"], "assistant rule raw");
     assert_eq!(value["input"]["user_content"], "team wake raw content");
     assert_eq!(value["resolved_context"]["provider"], "openai");
@@ -186,7 +187,7 @@ fn aionrs_final_input_dump_value_contains_raw_split_input_and_context() {
 
 #[tokio::test]
 async fn aionrs_agent_returns_correct_type() {
-    let agent = AionrsAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
         .await
         .unwrap();
     assert_eq!(agent.agent_type(), AgentType::DreamEngine);
@@ -196,7 +197,7 @@ async fn aionrs_agent_returns_correct_type() {
 
 #[tokio::test]
 async fn aionrs_agent_initial_status_is_pending() {
-    let agent = AionrsAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
         .await
         .unwrap();
     assert_eq!(agent.status(), Some(ConversationStatus::Pending));
@@ -204,7 +205,7 @@ async fn aionrs_agent_initial_status_is_pending() {
 
 #[tokio::test]
 async fn aionrs_agent_subscribe_returns_receiver() {
-    let agent = AionrsAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
         .await
         .unwrap();
     let _rx = agent.subscribe();
@@ -212,7 +213,7 @@ async fn aionrs_agent_subscribe_returns_receiver() {
 
 #[tokio::test]
 async fn aionrs_agent_kill_succeeds() {
-    let agent = AionrsAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
         .await
         .unwrap();
     assert!(agent.kill(None).is_ok());
@@ -222,7 +223,7 @@ async fn aionrs_agent_kill_succeeds() {
 
 #[tokio::test]
 async fn aionrs_agent_kill_with_reason_succeeds() {
-    let agent = AionrsAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
         .await
         .unwrap();
     assert!(agent.kill(Some(AgentKillReason::IdleTimeout)).is_ok());
@@ -230,7 +231,7 @@ async fn aionrs_agent_kill_with_reason_succeeds() {
 
 #[tokio::test]
 async fn aionrs_agent_kill_running_turn_sends_stop_signal() {
-    let agent = AionrsAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
         .await
         .unwrap();
     agent.runtime.reset_for_new_turn(ConversationStatus::Running);
@@ -250,7 +251,7 @@ async fn aionrs_agent_kill_running_turn_sends_stop_signal() {
 
 #[tokio::test]
 async fn aionrs_agent_kill_and_wait_waits_for_running_turn_terminal() {
-    let agent = AionrsAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
         .await
         .unwrap();
     agent.runtime.reset_for_new_turn(ConversationStatus::Running);
@@ -272,7 +273,7 @@ async fn aionrs_agent_kill_and_wait_waits_for_running_turn_terminal() {
 
 #[tokio::test]
 async fn aionrs_agent_kill_idle_turn_does_not_leave_stale_stop_signal() {
-    let agent = AionrsAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
         .await
         .unwrap();
 
@@ -285,7 +286,7 @@ async fn aionrs_agent_kill_idle_turn_does_not_leave_stale_stop_signal() {
 
 #[tokio::test]
 async fn aionrs_agent_confirmations_initially_empty() {
-    let agent = AionrsAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
         .await
         .unwrap();
     assert!(agent.get_confirmations().is_empty());
@@ -293,7 +294,7 @@ async fn aionrs_agent_confirmations_initially_empty() {
 
 #[tokio::test]
 async fn aionrs_agent_get_slash_commands_does_not_wait_for_engine_lock() {
-    let agent = AionrsAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
         .await
         .unwrap();
 
@@ -308,7 +309,7 @@ async fn aionrs_agent_get_slash_commands_does_not_wait_for_engine_lock() {
 
 #[tokio::test]
 async fn aionrs_agent_check_approval_returns_false_by_default() {
-    let agent = AionrsAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
         .await
         .unwrap();
     assert!(!agent.check_approval("any_action", None));
@@ -316,7 +317,7 @@ async fn aionrs_agent_check_approval_returns_false_by_default() {
 
 #[tokio::test]
 async fn stop_only_signals_in_flight_run() {
-    let agent = AionrsAgentManager::new("conv-stop".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-stop".into(), "/project".into(), make_test_config(), None)
         .await
         .unwrap();
     let mut rx = agent.subscribe();
@@ -330,7 +331,7 @@ async fn stop_only_signals_in_flight_run() {
 
 #[tokio::test]
 async fn runtime_can_emit_error_and_finish() {
-    let agent = AionrsAgentManager::new("conv-err".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-err".into(), "/project".into(), make_test_config(), None)
         .await
         .unwrap();
     let mut rx = agent.subscribe();

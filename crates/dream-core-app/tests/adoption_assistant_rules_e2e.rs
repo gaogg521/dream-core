@@ -65,7 +65,7 @@ fn assistant_service(db: &Database, data_dir: &Path) -> AssistantService {
 async fn run_real_adoption(db: &Database, paths: &SkillPaths) -> String {
     let user_repo = SqliteUserRepository::new(db.pool().clone());
     let adopter = user_repo
-        .ensure_external_user(UserType::Aionpro, "ext-user-1", ExternalUserProjection::default())
+        .ensure_external_user(UserType::DreamPro, "ext-user-1", ExternalUserProjection::default())
         .await
         .expect("provision external user");
 
@@ -175,7 +175,7 @@ async fn already_adopted_user_heals_on_next_login_rerun() {
     // set, DB rows moved) while the legacy-root rule file was NOT moved.
     let user_repo = SqliteUserRepository::new(db.pool().clone());
     let adopter = user_repo
-        .ensure_external_user(UserType::Aionpro, "ext-user-1", ExternalUserProjection::default())
+        .ensure_external_user(UserType::DreamPro, "ext-user-1", ExternalUserProjection::default())
         .await
         .expect("provision external user");
     user_repo

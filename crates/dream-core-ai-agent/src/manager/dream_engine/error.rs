@@ -1,12 +1,12 @@
 use dream_core_api_types::{
     AgentErrorCode, AgentErrorOwnership, AgentErrorResolution, AgentErrorResolutionKind, AgentErrorResolutionTarget,
 };
-use dream_engine_agent::error::AgentError as AionrsAgentError;
+use dream_engine_agent::error::AgentError as DreamEngineAgentError;
 use dream_engine_providers::ProviderError;
 
 use crate::protocol::send_error::{AgentSendError, looks_like_spent_allowance};
 
-pub(super) fn aionrs_engine_error_to_send_error(error: &AionrsAgentError) -> AgentSendError {
+pub(super) fn engine_error_to_send_error(error: &DreamEngineAgentError) -> AgentSendError {
     // "DreamEngine" is the internal engine crate name, not a brand the user has
     // ever seen — this `detail` string is shown verbatim in the error card's
     // technical-details panel, so it must use the product's own public name
@@ -14,8 +14,8 @@ pub(super) fn aionrs_engine_error_to_send_error(error: &AionrsAgentError) -> Age
     // selector call it elsewhere in the desktop UI).
     let detail = format!("1ONE CLI agent error: {error}");
     match error {
-        AionrsAgentError::Provider(provider_error) => aionrs_provider_error_to_send_error(provider_error, detail),
-        AionrsAgentError::ToolCallMalformed { .. } => provider_send_error(
+        DreamEngineAgentError::Provider(provider_error) => aionrs_provider_error_to_send_error(provider_error, detail),
+        DreamEngineAgentError::ToolCallMalformed { .. } => provider_send_error(
             "The model provider repeatedly returned malformed tool calls",
             AgentErrorCode::UserLlmProviderInvalidRequest,
             detail,
@@ -23,8 +23,8 @@ pub(super) fn aionrs_engine_error_to_send_error(error: &AionrsAgentError) -> Age
             AgentErrorResolutionKind::ChangeModel,
             Some(AgentErrorResolutionTarget::ProviderSettings),
         ),
-        AionrsAgentError::ToolCallFailures { .. } => tool_call_failure_send_error(detail),
-        AionrsAgentError::ContextTooLong { .. } => provider_send_error(
+        DreamEngineAgentError::ToolCallFailures { .. } => tool_call_failure_send_error(detail),
+        DreamEngineAgentError::ContextTooLong { .. } => provider_send_error(
             "The request is too large for the configured model context window",
             AgentErrorCode::UserLlmProviderContextTooLarge,
             detail,
@@ -32,13 +32,13 @@ pub(super) fn aionrs_engine_error_to_send_error(error: &AionrsAgentError) -> Age
             AgentErrorResolutionKind::ReduceContext,
             None,
         ),
-        AionrsAgentError::ApiError(_) => unknown_upstream_send_error(detail),
-        AionrsAgentError::UserAborted => unknown_upstream_send_error(detail),
+        DreamEngineAgentError::ApiError(_) => unknown_upstream_send_error(detail),
+        DreamEngineAgentError::UserAborted => unknown_upstream_send_error(detail),
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct AionrsRuntimeErrorSummary {
+pub(super) struct DreamEngineRuntimeErrorSummary {
     pub(super) kind: &'static str,
     pub(super) provider_error_class: Option<&'static str>,
     pub(super) http_status: Option<u16>,
@@ -46,7 +46,7 @@ pub(super) struct AionrsRuntimeErrorSummary {
     pub(super) failure_limit: Option<usize>,
 }
 
-impl AionrsRuntimeErrorSummary {
+impl DreamEngineRuntimeErrorSummary {
     fn new(kind: &'static str, provider_error_class: Option<&'static str>) -> Self {
         Self {
             kind,
@@ -58,44 +58,44 @@ impl AionrsRuntimeErrorSummary {
     }
 }
 
-pub(super) fn aionrs_runtime_error_summary(error: &AionrsAgentError) -> AionrsRuntimeErrorSummary {
+pub(super) fn engine_runtime_error_summary(error: &DreamEngineAgentError) -> DreamEngineRuntimeErrorSummary {
     match error {
-        AionrsAgentError::Provider(ProviderError::Api { status, .. }) => AionrsRuntimeErrorSummary {
+        DreamEngineAgentError::Provider(ProviderError::Api { status, .. }) => DreamEngineRuntimeErrorSummary {
             http_status: Some(*status),
-            ..AionrsRuntimeErrorSummary::new("provider", Some("http_status"))
+            ..DreamEngineRuntimeErrorSummary::new("provider", Some("http_status"))
         },
-        AionrsAgentError::Provider(ProviderError::Connection(_) | ProviderError::Http(_)) => {
-            AionrsRuntimeErrorSummary::new("provider", Some("network"))
+        DreamEngineAgentError::Provider(ProviderError::Connection(_) | ProviderError::Http(_)) => {
+            DreamEngineRuntimeErrorSummary::new("provider", Some("network"))
         }
-        AionrsAgentError::Provider(ProviderError::RateLimited { .. }) => AionrsRuntimeErrorSummary {
+        DreamEngineAgentError::Provider(ProviderError::RateLimited { .. }) => DreamEngineRuntimeErrorSummary {
             http_status: Some(429),
-            ..AionrsRuntimeErrorSummary::new("provider", Some("rate_limited"))
+            ..DreamEngineRuntimeErrorSummary::new("provider", Some("rate_limited"))
         },
-        AionrsAgentError::Provider(ProviderError::PromptTooLong(_)) => {
-            AionrsRuntimeErrorSummary::new("provider", Some("context_too_large"))
+        DreamEngineAgentError::Provider(ProviderError::PromptTooLong(_)) => {
+            DreamEngineRuntimeErrorSummary::new("provider", Some("context_too_large"))
         }
-        AionrsAgentError::Provider(ProviderError::Parse(_)) => {
-            AionrsRuntimeErrorSummary::new("provider", Some("parse"))
+        DreamEngineAgentError::Provider(ProviderError::Parse(_)) => {
+            DreamEngineRuntimeErrorSummary::new("provider", Some("parse"))
         }
-        AionrsAgentError::ToolCallFailures { count, limit } => AionrsRuntimeErrorSummary {
+        DreamEngineAgentError::ToolCallFailures { count, limit } => DreamEngineRuntimeErrorSummary {
             kind: "tool_call_failures",
             provider_error_class: None,
             http_status: None,
             failure_count: Some(*count),
             failure_limit: Some(*limit),
         },
-        AionrsAgentError::ToolCallMalformed { count, limit } => AionrsRuntimeErrorSummary {
+        DreamEngineAgentError::ToolCallMalformed { count, limit } => DreamEngineRuntimeErrorSummary {
             kind: "tool_call_malformed",
             provider_error_class: None,
             http_status: None,
             failure_count: Some(*count),
             failure_limit: Some(*limit),
         },
-        AionrsAgentError::ContextTooLong { .. } => {
-            AionrsRuntimeErrorSummary::new("context_too_large", Some("context_too_large"))
+        DreamEngineAgentError::ContextTooLong { .. } => {
+            DreamEngineRuntimeErrorSummary::new("context_too_large", Some("context_too_large"))
         }
-        AionrsAgentError::ApiError(_) => AionrsRuntimeErrorSummary::new("api_error", None),
-        AionrsAgentError::UserAborted => AionrsRuntimeErrorSummary::new("user_aborted", None),
+        DreamEngineAgentError::ApiError(_) => DreamEngineRuntimeErrorSummary::new("api_error", None),
+        DreamEngineAgentError::UserAborted => DreamEngineRuntimeErrorSummary::new("user_aborted", None),
     }
 }
 

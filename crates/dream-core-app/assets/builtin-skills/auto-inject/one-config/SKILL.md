@@ -1,14 +1,14 @@
 ---
 name: one-config
 description: >-
-  Configure 1One Work itself through the bundled aioncore config CLI: create and edit assistants, update assistant rules, inspect and import skills, manage MCP servers, configure model providers, update settings, manage agents, configure scheduled tasks, and manage app configuration from an agent conversation. Use when the user wants you to set up or modify a 1One Work assistant, attach skills, change an assistant's system prompt, add MCP or model provider configuration, schedule recurring work, or otherwise configure their 1One Work installation, including when the user needs to know whether assistant changes affect the current conversation or only new conversations.
+  Configure One Work itself through the bundled dreamcore config CLI: create and edit assistants, update assistant rules, inspect and import skills, manage MCP servers, configure model providers, update settings, manage agents, configure scheduled tasks, and manage app configuration from an agent conversation. Use when the user wants you to set up or modify a One Work assistant, attach skills, change an assistant's system prompt, add MCP or model provider configuration, schedule recurring work, or otherwise configure their One Work installation, including when the user needs to know whether assistant changes affect the current conversation or only new conversations.
 ---
 
-# 1One Work Config
+# One Work Config
 
-Configure 1One Work with the bundled agent-facing CLI. Do not discover ports, do
+Configure One Work with the bundled agent-facing CLI. Do not discover ports, do
 not call raw backend paths, and do not depend on tools outside the bundled
-`aioncore` binary.
+`dreamcore` binary.
 
 ## Rules
 
@@ -44,7 +44,7 @@ Failures print one stable error line to stderr. Treat stderr as authoritative.
 
 ## Capability Discovery
 
-Ask aioncore what this version supports:
+Ask dreamcore what this version supports:
 
 ```bash
 "$ONE_HELPER_BIN" config capabilities
@@ -69,7 +69,7 @@ rules or defaults.
 
 ## Assistant Change Timing
 
-1One Work persists assistant configuration immediately, but running conversations
+One Work persists assistant configuration immediately, but running conversations
 may keep the assistant snapshot created when the conversation started. Use this
 timing model when reporting successful assistant changes:
 

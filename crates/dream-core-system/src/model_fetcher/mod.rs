@@ -98,7 +98,8 @@ impl ModelFetchService {
             .ok_or_else(|| SystemError::NotFound(format!("Provider {provider_id} not found")))?;
 
         let api_key = decrypt_string(&row.api_key_encrypted, &self.encryption_key)?;
-        if api_key.trim().is_empty() {
+        // A local Ollama daemon has no credentials at all.
+        if api_key.trim().is_empty() && row.platform != "ollama" {
             return Err(SystemError::BadRequest("API key is empty".into()));
         }
 
@@ -122,18 +123,21 @@ fn validate_anonymous_request(req: &FetchModelsAnonymousRequest) -> Result<(), S
     if req.base_url.trim().is_empty() {
         return Err(SystemError::BadRequest("baseUrl is required".into()));
     }
-    // Bedrock uses bedrock_config for credentials; empty api_key is allowed there.
-    if req.platform != "bedrock" && req.api_key.trim().is_empty() {
+    // Bedrock uses bedrock_config for credentials; a local Ollama daemon has
+    // no credentials at all. Empty api_key is allowed for both.
+    if req.platform != "bedrock" && req.platform != "ollama" && req.api_key.trim().is_empty() {
         return Err(SystemError::BadRequest("apiKey is required".into()));
     }
     Ok(())
 }
 
-/// Platforms that support URL auto-fix (OpenAI-compatible).
+/// Platforms that support URL auto-fix (OpenAI-compatible). Ollama's native
+/// `/api/tags` has no `/v1` variant to probe for, so auto-fix would only
+/// mislead.
 fn supports_url_fix(platform: &str) -> bool {
     !matches!(
         platform,
-        "anthropic" | "claude" | "gemini" | "bedrock" | "vertex-ai" | "minimax" | "dashscope-coding"
+        "anthropic" | "claude" | "gemini" | "bedrock" | "vertex-ai" | "minimax" | "dashscope-coding" | "ollama"
     )
 }
 
@@ -206,6 +210,7 @@ mod tests {
         assert!(!supports_url_fix("vertex-ai"));
         assert!(!supports_url_fix("minimax"));
         assert!(!supports_url_fix("dashscope-coding"));
+        assert!(!supports_url_fix("ollama"));
     }
 
     #[tokio::test]

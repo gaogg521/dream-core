@@ -2,7 +2,7 @@
 //!
 //! The single shared point where a message's [`ChatFileRef`] list becomes
 //! concrete paths, called at the send boundary by conversation + team. It
-//! reproduces the legacy `[[AION_FILES]]` inlined-attachment content form so
+//! reproduces the legacy `[[DREAM_FILES]]` inlined-attachment content form so
 //! every downstream consumer — dream `build_content_blocks`, the ACP prompt
 //! (content-only), message persistence, and the user-message file chips in the
 //! UI — is unchanged: only the *origin* of the paths moves from the client to
@@ -11,14 +11,14 @@
 use std::path::{Path, PathBuf};
 
 use dream_core_api_types::ChatFileRef;
-use dream_core_common::constants::ONE_FILES_MARKER;
+use dream_core_common::constants::FILES_MARKER;
 
 use crate::canonical;
 use crate::service::ProjectService;
 use crate::types::{FileOp, ProjectError, ReferenceInput};
 
 /// A chat message whose attachments have been resolved to absolute paths and
-/// re-inlined into [`content`](Self::content) via the `[[AION_FILES]]` marker.
+/// re-inlined into [`content`](Self::content) via the `[[DREAM_FILES]]` marker.
 #[derive(Debug)]
 pub struct ResolvedChatMessage {
     /// User text with the attachment block appended (marker + one absolute path
@@ -57,7 +57,7 @@ impl ProjectService {
         let content = if paths.is_empty() {
             content.to_owned()
         } else {
-            format!("{content}\n\n{ONE_FILES_MARKER}\n{}", paths.join("\n"))
+            format!("{content}\n\n{FILES_MARKER}\n{}", paths.join("\n"))
         };
         Ok(ResolvedChatMessage { content, files: paths })
     }

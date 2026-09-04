@@ -9,8 +9,8 @@
 //! `dream_core_app::create_admin_router`.
 //!
 //! Deliberately does not replicate `dreamcore`'s desktop-oriented bootstrap
-//! (single-instance flock, parent-process watchdog, `AIONCORE_LISTENING` /
-//! `AIONCORE_READY` stdout markers, builtin-skill materialization): none of
+//! (single-instance flock, parent-process watchdog, `DREAMCORE_LISTENING` /
+//! `DREAMCORE_READY` stdout markers, builtin-skill materialization): none of
 //! that applies to a server-only governance process with no desktop parent.
 
 use std::path::PathBuf;
