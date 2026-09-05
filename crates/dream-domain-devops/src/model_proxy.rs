@@ -77,11 +77,18 @@ const HOP_BY_HOP: &[&str] = &[
     "transfer-encoding",
     "upgrade",
     "content-length",
-    // Not hop-by-hop in the RFC sense, but it belongs to this deployment and
-    // no model vendor has any business receiving it: the member's browser
-    // sends `dream-session=…` on every proxied call, and forwarding it hands
-    // a live session credential to a third party. Measured leaking to AWS on
-    // the Bedrock path, where it was also folded into the SigV4 signature.
+    // Not hop-by-hop in the RFC sense, and — to be precise about what is and
+    // is not known — not a leak observed in production either. The caller
+    // today is an agent CLI using reqwest with no cookie jar (see "Not
+    // session-authenticated" above; the proxy base_url reaches it through
+    // ANTHROPIC_BASE_URL), so no real request carries one.
+    //
+    // It is here because the proxy shares an origin with the session cookie in
+    // WebUI mode, so any same-origin `fetch` of a provider base_url — a media
+    // adapter moved into the renderer, say — would attach `dream-session`
+    // automatically, and the forwarding code would then hand it to the vendor.
+    // On the Bedrock path it would additionally be folded into the SigV4
+    // signature. Dropping it costs nothing and removes the whole class.
     "cookie",
 ];
 
@@ -777,10 +784,12 @@ mod tests {
     }
 
     /// The previous signing test passed a clean `content-type`-only map, which
-    /// is not what a proxied request looks like. A real one carries this
-    /// proxy's `host`, the member's session cookie and their channel token —
-    /// and SigV4 signs whatever it is given, so all three ended up inside the
-    /// signature while reqwest sent something different.
+    /// is not what an inbound proxy request looks like: it carries this proxy's
+    /// `host` and the caller's channel token, and SigV4 signs whatever it is
+    /// handed — so `host` ended up in the signature as the proxy's while the
+    /// client sent the upstream's. `cookie` is asserted here as a guard rather
+    /// than a reproduction: no caller sends one today (see HOP_BY_HOP), and
+    /// this keeps it that way if one ever does.
     #[test]
     fn bedrock_signing_covers_only_what_is_actually_sent() {
         let target = parse_bedrock_target(
