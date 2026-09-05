@@ -77,6 +77,12 @@ const HOP_BY_HOP: &[&str] = &[
     "transfer-encoding",
     "upgrade",
     "content-length",
+    // Not hop-by-hop in the RFC sense, but it belongs to this deployment and
+    // no model vendor has any business receiving it: the member's browser
+    // sends `dream-session=…` on every proxied call, and forwarding it hands
+    // a live session credential to a third party. Measured leaking to AWS on
+    // the Bedrock path, where it was also folded into the SigV4 signature.
+    "cookie",
 ];
 
 fn is_hop_by_hop(name: &str) -> bool {
@@ -302,12 +308,11 @@ fn parse_bedrock_target(
     path: &str,
     query: Option<&str>,
 ) -> Result<BedrockTarget, String> {
-    let credential: BedrockChannelCredential = serde_json::from_str(&channel.api_key)
-        .map_err(|_| {
-            "this Bedrock channel's credential is not a valid {accessKeyId, secretAccessKey, region} document; \
+    let credential: BedrockChannelCredential = serde_json::from_str(&channel.api_key).map_err(|_| {
+        "this Bedrock channel's credential is not a valid {accessKeyId, secretAccessKey, region} document; \
              re-save it in the admin console"
-                .to_string()
-        })?;
+            .to_string()
+    })?;
     let region = match credential.region.as_deref() {
         Some(region) if !region.trim().is_empty() => region.trim().to_owned(),
         _ => region_from_bedrock_host(&channel.upstream_base_url).ok_or_else(|| {
@@ -332,6 +337,26 @@ fn parse_bedrock_target(
 /// the `….amazonaws.com.cn` partitions too, since the region is always the
 /// label right after `bedrock-runtime`. A host that is not a Bedrock regional
 /// endpoint names no region — the credential document must.
+/// The `host[:port]` a request to `url` will actually carry, for the SigV4
+/// `host` header. The default port is omitted because that is what an HTTP
+/// client puts on the wire, and SigV4 verifies the header byte-for-byte.
+fn host_of(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let authority = authority.rsplit('@').next()?;
+    if authority.is_empty() {
+        return None;
+    }
+    let is_https = url.starts_with("https://");
+    let trimmed = authority
+        .strip_suffix(if is_https { ":443" } else { ":80" })
+        .unwrap_or(authority);
+    Some(trimmed.to_owned())
+}
+
 fn region_from_bedrock_host(base_url: &str) -> Option<String> {
     let host = base_url
         .strip_prefix("https://")
@@ -387,20 +412,49 @@ fn sign_bedrock_request(
         .build()
         .map_err(|e| format!("SigV4 params error: {e}"))?;
 
-    let header_pairs: Vec<(&str, &str)> = headers
+    // Sign exactly the headers that will actually be sent, and no others.
+    //
+    // Passing the inbound `HeaderMap` through was wrong in three ways, all of
+    // which SigV4 turns into a hard failure or a leak rather than a warning:
+    //
+    //  * `host` — SigV4 always signs it, and the inbound value is THIS proxy's
+    //    host. reqwest then rewrites Host from the upstream URL, so what AWS
+    //    verifies never matches what was signed: a guaranteed 403
+    //    SignatureDoesNotMatch on every Bedrock call, with correct credentials.
+    //  * `cookie` — signed AND forwarded, handing the member's `dream-session`
+    //    to AWS. Now dropped for every platform (see HOP_BY_HOP).
+    //  * `content-length` — signed from the inbound request while reqwest sets
+    //    its own from the body we hand it.
+    //
+    // `authorization` is excluded by aws-sigv4 itself and then overwritten with
+    // the signature, so the member's channel token never reached AWS — that one
+    // was already safe.
+    let mut signable_headers = HeaderMap::new();
+    for (name, value) in headers.iter() {
+        if !is_hop_by_hop(name.as_str()) {
+            signable_headers.insert(name.clone(), value.clone());
+        }
+    }
+    if let Some(host) = host_of(url) {
+        let host = HeaderValue::from_str(&host).map_err(|e| format!("SigV4 host header error: {e}"))?;
+        signable_headers.insert(axum::http::header::HOST, host);
+    }
+    let header_pairs: Vec<(&str, &str)> = signable_headers
         .iter()
         .filter_map(|(name, value)| value.to_str().ok().map(|v| (name.as_str(), v)))
         .collect();
 
-    let signable_request =
-        SignableRequest::new(method, url, header_pairs.into_iter(), SignableBody::Bytes(body))
-            .map_err(|e| format!("SigV4 signable request error: {e}"))?;
+    let signable_request = SignableRequest::new(method, url, header_pairs.into_iter(), SignableBody::Bytes(body))
+        .map_err(|e| format!("SigV4 signable request error: {e}"))?;
 
     let (signing_instructions, _signature) = sigv4_http::sign(signable_request, &signing_params.into())
         .map_err(|e| format!("SigV4 signing error: {e}"))?
         .into_parts();
 
-    let mut signed_headers = headers.clone();
+    // Start from the filtered set, not the inbound one: what goes on the wire
+    // must be exactly what was signed, or the canonical request AWS rebuilds
+    // will not match.
+    let mut signed_headers = signable_headers;
     for (name, value) in signing_instructions.headers() {
         let name = HeaderName::from_bytes(name.as_bytes()).map_err(|e| format!("SigV4 header name error: {e}"))?;
         let value = HeaderValue::from_str(value).map_err(|e| format!("SigV4 header value error: {e}"))?;
@@ -475,7 +529,10 @@ async fn handle_bedrock_proxy(
         if is_hop_by_hop(name.as_str()) {
             continue;
         }
-        if let (Ok(name), Ok(value)) = (HeaderName::from_bytes(name.as_ref()), HeaderValue::from_bytes(value.as_bytes())) {
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(name.as_ref()),
+            HeaderValue::from_bytes(value.as_bytes()),
+        ) {
             builder = builder.header(name, value);
         }
     }
@@ -588,12 +645,16 @@ mod tests {
         }
     }
 
-    const BEDROCK_CREDENTIAL_JSON: &str = r#"{"accessKeyId":"AKID","secretAccessKey":"shhh","sessionToken":"tok","region":"us-east-1"}"#;
+    const BEDROCK_CREDENTIAL_JSON: &str =
+        r#"{"accessKeyId":"AKID","secretAccessKey":"shhh","sessionToken":"tok","region":"us-east-1"}"#;
 
     #[test]
     fn bedrock_credential_document_parses_with_region() {
         let target = parse_bedrock_target(
-            &bedrock_channel("https://bedrock-runtime.us-west-2.amazonaws.com", BEDROCK_CREDENTIAL_JSON),
+            &bedrock_channel(
+                "https://bedrock-runtime.us-west-2.amazonaws.com",
+                BEDROCK_CREDENTIAL_JSON,
+            ),
             "/model/x/invoke-with-response-stream",
             None,
         )
@@ -655,14 +716,23 @@ mod tests {
             build_upstream_url("https://api.test/v1", "/chat/completions", Some("a=1&b=2")),
             "https://api.test/v1/chat/completions?a=1&b=2"
         );
-        assert_eq!(build_upstream_url("https://api.test/v1/", "/x", None), "https://api.test/v1/x");
-        assert_eq!(build_upstream_url("https://api.test", "/x", Some("")), "https://api.test/x");
+        assert_eq!(
+            build_upstream_url("https://api.test/v1/", "/x", None),
+            "https://api.test/v1/x"
+        );
+        assert_eq!(
+            build_upstream_url("https://api.test", "/x", Some("")),
+            "https://api.test/x"
+        );
     }
 
     #[test]
     fn bedrock_signing_produces_sigv4_headers_over_the_full_url() {
         let target = parse_bedrock_target(
-            &bedrock_channel("https://bedrock-runtime.us-east-1.amazonaws.com", BEDROCK_CREDENTIAL_JSON),
+            &bedrock_channel(
+                "https://bedrock-runtime.us-east-1.amazonaws.com",
+                BEDROCK_CREDENTIAL_JSON,
+            ),
             "/model/claude/invoke-with-response-stream",
             None,
         )
@@ -691,13 +761,109 @@ mod tests {
         assert!(authorization.starts_with("AWS4-HMAC-SHA256"), "got: {authorization}");
         assert!(authorization.contains("Credential=AKID/"), "got: {authorization}");
         assert!(authorization.contains("/bedrock/aws4_request"), "got: {authorization}");
-        let amz_date = signed.get("x-amz-date").and_then(|v| v.to_str().ok()).expect("x-amz-date");
-        assert!(amz_date.starts_with("2026"), "x-amz-date should reflect the pinned clock, got: {amz_date}");
+        let amz_date = signed
+            .get("x-amz-date")
+            .and_then(|v| v.to_str().ok())
+            .expect("x-amz-date");
+        assert!(
+            amz_date.starts_with("2026"),
+            "x-amz-date should reflect the pinned clock, got: {amz_date}"
+        );
         let payload_hash = signed
             .get("x-amz-content-sha256")
             .and_then(|v| v.to_str().ok())
             .expect("payload checksum header");
         assert_ne!(payload_hash, "UNSIGNED-PAYLOAD");
+    }
+
+    /// The previous signing test passed a clean `content-type`-only map, which
+    /// is not what a proxied request looks like. A real one carries this
+    /// proxy's `host`, the member's session cookie and their channel token —
+    /// and SigV4 signs whatever it is given, so all three ended up inside the
+    /// signature while reqwest sent something different.
+    #[test]
+    fn bedrock_signing_covers_only_what_is_actually_sent() {
+        let target = parse_bedrock_target(
+            &bedrock_channel(
+                "https://bedrock-runtime.us-east-1.amazonaws.com",
+                BEDROCK_CREDENTIAL_JSON,
+            ),
+            "/model/claude/invoke",
+            None,
+        )
+        .unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        headers.insert("host", HeaderValue::from_static("172.29.128.120:25810"));
+        headers.insert("authorization", HeaderValue::from_static("Bearer member-channel-token"));
+        headers.insert("content-length", HeaderValue::from_static("7"));
+        headers.insert("cookie", HeaderValue::from_static("dream-session=secret"));
+        let now = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_785_840_000);
+
+        let signed = sign_bedrock_request(
+            "POST",
+            &target.url,
+            &headers,
+            br#"{"x":1}"#,
+            &target.region,
+            &target.credentials,
+            now,
+        )
+        .expect("signing should succeed");
+
+        // `host` must be the upstream's. Signing this proxy's host is a
+        // guaranteed 403 from AWS, because the client rewrites Host from the
+        // URL before the request leaves.
+        assert_eq!(
+            signed.get("host").and_then(|v| v.to_str().ok()),
+            Some("bedrock-runtime.us-east-1.amazonaws.com")
+        );
+
+        // The member's session cookie is this deployment's, not AWS's.
+        assert!(
+            signed.get("cookie").is_none(),
+            "the member session cookie must not reach the vendor"
+        );
+
+        let authorization = signed
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .expect("authorization");
+        assert!(authorization.starts_with("AWS4-HMAC-SHA256"), "got: {authorization}");
+        let signed_list = authorization
+            .split("SignedHeaders=")
+            .nth(1)
+            .and_then(|s| s.split(',').next())
+            .expect("SignedHeaders");
+        assert!(
+            signed_list.contains("host"),
+            "SigV4 always signs host; got: {signed_list}"
+        );
+        for leaked in ["cookie", "content-length"] {
+            assert!(
+                !signed_list.split(';').any(|h| h == leaked),
+                "'{leaked}' must not be signed — it is not what goes on the wire; got: {signed_list}"
+            );
+        }
+    }
+
+    #[test]
+    fn host_of_drops_the_default_port_and_any_userinfo() {
+        assert_eq!(
+            host_of("https://bedrock-runtime.us-east-1.amazonaws.com/x").as_deref(),
+            Some("bedrock-runtime.us-east-1.amazonaws.com")
+        );
+        // Default ports are not written on the wire, and SigV4 compares bytes.
+        assert_eq!(host_of("https://example.com:443/x").as_deref(), Some("example.com"));
+        assert_eq!(host_of("http://example.com:80/x").as_deref(), Some("example.com"));
+        // A non-default port IS part of the Host header.
+        assert_eq!(
+            host_of("https://example.com:8443/x").as_deref(),
+            Some("example.com:8443")
+        );
+        assert_eq!(host_of("https://user:pw@example.com/x").as_deref(), Some("example.com"));
+        assert_eq!(host_of("https://example.com?a=1").as_deref(), Some("example.com"));
     }
 
     #[test]

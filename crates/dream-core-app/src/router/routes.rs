@@ -506,6 +506,7 @@ impl dream_core_auth::IpAllowlistGate for PlatformIpAllowlistGate {
             // plane as silent would expire the shared grace window.
             Ok(None) => {
                 self.grace.answered();
+                warn_ungoverned_caller(user_id, "ip_allowlist");
                 return Ok(true);
             }
             Ok(Some(actor)) => {
@@ -891,6 +892,7 @@ impl SecurityPolicySendRateGate {
             // be treated as a dead policy plane.
             Ok(None) => {
                 self.grace.answered();
+                warn_ungoverned_caller(user_id, "send_rate_limit");
                 return Ok(());
             }
             Ok(Some(actor)) => {
@@ -1373,6 +1375,47 @@ impl dream_core_conversation::MemoryContextProvider for OneMemoryContextProvider
 /// that triggered it (the caller can just retry), not on every other
 /// request in the process, so there is no broad blast radius to protect
 /// against with a grace window.
+/// Surface a caller that no tenant governs, once per user per process.
+///
+/// Every enterprise gate resolves the caller through
+/// `PlatformService::resolve_actor` and treats `None` as "nothing governs this
+/// caller — allow". That is correct for a deployment running the enterprise
+/// binary with no company set up, and it is indistinguishable from the case
+/// that actually matters: a real member whose project-group placement never
+/// happened, for whom the destructive-command block, the external-network
+/// denial, the terminal-approval requirement and the IP allowlist all silently
+/// do not apply.
+///
+/// SSO login used to produce exactly those people on every deployment (fixed:
+/// `OrgService::auto_join_after_sso`), and the placement hook is still
+/// best-effort by design — it must never fail a login — so the population can
+/// reappear from a swallowed error. Making it visible is the difference
+/// between finding that in the logs and finding it in an incident.
+///
+/// Deliberately a log line and not a denial: turning this into a refusal would
+/// break the legitimate no-company deployment, and that is a product call, not
+/// one to smuggle in through a diagnostic. Deduplicated per user because these
+/// gates run on every request.
+#[cfg(feature = "enterprise")]
+fn warn_ungoverned_caller(user_id: &str, gate: &str) {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    let seen = SEEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    let first_time = match seen.lock() {
+        Ok(mut set) => set.insert(user_id.to_owned()),
+        // A poisoned mutex must not cost the log line entirely.
+        Err(_) => true,
+    };
+    if first_time {
+        tracing::warn!(
+            user_id,
+            gate,
+            "caller belongs to no project group; every tenant-scoped policy is inapplicable to them. \
+             Expected on a deployment with no company set up; otherwise this member was never placed \
+             (see OrgService::auto_join_after_sso) and is ungoverned."
+        );
+    }
+}
+
 #[cfg(feature = "enterprise")]
 pub(crate) struct PlatformToolCallSecurityGate {
     pub(crate) platform: std::sync::Arc<dream_domain_platform::PlatformService>,
@@ -1399,7 +1442,10 @@ impl dream_core_ai_agent::ToolCallSecurityGate for PlatformToolCallSecurityGate 
     ) -> Result<Option<String>, String> {
         let actor = match self.platform.resolve_actor(user_id).await {
             // No enterprise membership: nothing governs this caller.
-            Ok(None) => return Ok(None),
+            Ok(None) => {
+                warn_ungoverned_caller(user_id, "tool_call_security");
+                return Ok(None);
+            }
             Ok(Some(actor)) => actor,
             Err(e) => return Err(e.to_string()),
         };
