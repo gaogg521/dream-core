@@ -14,8 +14,7 @@ use sha2::{Digest, Sha256};
 
 use crate::error::MemoryError;
 use crate::models::{
-    GrantCoverageDto, MemoryCollectionDto, MemoryConfigDto, MemoryGrantDto, MemoryItemDto,
-    MemoryRefineJobDto,
+    GrantCoverageDto, MemoryCollectionDto, MemoryConfigDto, MemoryGrantDto, MemoryItemDto, MemoryRefineJobDto,
 };
 
 /// The three OpenOcta-aligned memory tiers (§产品口径): global company
@@ -40,12 +39,27 @@ pub struct MemoryActor {
 
 pub struct MemoryService {
     db: DbPool,
-    /// Short-TTL cache for the member recall preference, keyed
-    /// `{tenant_id}|{user_id}` → `(recall_enabled, cached_at_ms)`. Recall runs
-    /// every turn, so the preference must not cost a query each time; 60s
-    /// bounds how long a just-made opt-out can stay invisible to new turns.
-    /// Only successes are cached — a failed read must not pin a stale answer.
-    recall_pref_cache: std::sync::Mutex<HashMap<String, (bool, i64)>>,
+}
+
+/// Short-TTL cache for the member recall preference, keyed
+/// `{tenant_id}|{user_id}` → `(recall_enabled, cached_at_ms)`. Recall runs
+/// every turn, so the preference must not cost a query each time; 60s bounds
+/// how long a just-made opt-out can stay invisible to new turns. Only
+/// successes are cached — a failed read must not pin a stale answer.
+///
+/// **Process-global, not a field.** `MemoryService::new` is called in three
+/// places (each plane builds its own, per this codebase's pattern), so a
+/// per-instance cache meant `set_member_prefs` invalidated only the instance
+/// that served the PUT, while recall injection reads through a different one.
+/// The opt-out would then be ignored for up to the full TTL — precisely the
+/// "reaches new turns immediately" guarantee the invalidation exists to make,
+/// and on a privacy control where the whole read path is deliberately
+/// fail-closed. A shared map is what makes that invalidation mean anything.
+static RECALL_PREF_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, (bool, i64)>>> =
+    std::sync::OnceLock::new();
+
+fn recall_pref_cache() -> &'static std::sync::Mutex<HashMap<String, (bool, i64)>> {
+    RECALL_PREF_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
 fn is_admin_role(role: &str) -> bool {
@@ -259,10 +273,7 @@ impl MemoryService {
     }
 
     pub fn new(db: DbPool) -> Self {
-        Self {
-            db,
-            recall_pref_cache: std::sync::Mutex::new(HashMap::new()),
-        }
+        Self { db }
     }
 
     /// Resolve the caller's active-tenant membership (same cross-crate query
@@ -305,36 +316,49 @@ impl MemoryService {
     /// The caller's department within the tenant, if any — the department
     /// tier's readability hinge.
     async fn member_department(&self, tenant_id: &str, user_id: &str) -> Result<Option<String>, MemoryError> {
-        let row: Option<(Option<String>,)> =
-            self.db.fetch_optional_as::<(Option<String>,)>("SELECT department_id FROM one_user_org WHERE tenant_id = ? AND user_id = ?", &db_params![tenant_id, user_id])
-                .await?;
+        let row: Option<(Option<String>,)> = self
+            .db
+            .fetch_optional_as::<(Option<String>,)>(
+                "SELECT department_id FROM one_user_org WHERE tenant_id = ? AND user_id = ?",
+                &db_params![tenant_id, user_id],
+            )
+            .await?;
         Ok(row.and_then(|(department_id,)| department_id))
     }
 
     async fn load_collections(&self, tenant_id: &str) -> Result<Vec<CollectionRow>, MemoryError> {
-        let rows: Vec<CollectionRow> = self.db.fetch_all_as::<CollectionRow>(
-            "SELECT id, tenant_id, scope, department_id, owner_user_id, name, description, created_at, updated_at \
+        let rows: Vec<CollectionRow> = self
+            .db
+            .fetch_all_as::<CollectionRow>(
+                "SELECT id, tenant_id, scope, department_id, owner_user_id, name, description, created_at, updated_at \
              FROM one_memory_collections WHERE tenant_id = ? ORDER BY created_at ASC, id ASC",
-        &db_params![tenant_id])
-        .await?;
+                &db_params![tenant_id],
+            )
+            .await?;
         Ok(rows)
     }
 
     async fn load_collection(&self, tenant_id: &str, id: &str) -> Result<Option<CollectionRow>, MemoryError> {
-        let row: Option<CollectionRow> = self.db.fetch_optional_as::<CollectionRow>(
-            "SELECT id, tenant_id, scope, department_id, owner_user_id, name, description, created_at, updated_at \
+        let row: Option<CollectionRow> = self
+            .db
+            .fetch_optional_as::<CollectionRow>(
+                "SELECT id, tenant_id, scope, department_id, owner_user_id, name, description, created_at, updated_at \
              FROM one_memory_collections WHERE tenant_id = ? AND id = ?",
-        &db_params![tenant_id, id])
-        .await?;
+                &db_params![tenant_id, id],
+            )
+            .await?;
         Ok(row)
     }
 
     /// All grants in the tenant, evaluated in bulk by search and coverage.
     async fn load_grants(&self, tenant_id: &str) -> Result<Vec<GrantRow>, MemoryError> {
-        let rows: Vec<(String, String, String, String)> = self.db.fetch_all_as::<(String, String, String, String)>(
-            "SELECT collection_id, subject_type, subject_id, access FROM one_memory_grants WHERE tenant_id = ?",
-        &db_params![tenant_id])
-        .await?;
+        let rows: Vec<(String, String, String, String)> = self
+            .db
+            .fetch_all_as::<(String, String, String, String)>(
+                "SELECT collection_id, subject_type, subject_id, access FROM one_memory_grants WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?;
         Ok(rows
             .into_iter()
             .map(|(collection_id, subject_type, subject_id, access)| GrantRow {
@@ -348,11 +372,14 @@ impl MemoryService {
 
     /// Grants on one collection — the per-collection read/write check.
     async fn load_collection_grants(&self, tenant_id: &str, collection_id: &str) -> Result<Vec<GrantRow>, MemoryError> {
-        let rows: Vec<(String, String, String, String)> = self.db.fetch_all_as::<(String, String, String, String)>(
-            "SELECT collection_id, subject_type, subject_id, access FROM one_memory_grants \
+        let rows: Vec<(String, String, String, String)> = self
+            .db
+            .fetch_all_as::<(String, String, String, String)>(
+                "SELECT collection_id, subject_type, subject_id, access FROM one_memory_grants \
              WHERE tenant_id = ? AND collection_id = ?",
-        &db_params![tenant_id, collection_id])
-        .await?;
+                &db_params![tenant_id, collection_id],
+            )
+            .await?;
         Ok(rows
             .into_iter()
             .map(|(collection_id, subject_type, subject_id, access)| GrantRow {
@@ -474,12 +501,24 @@ impl MemoryService {
         };
         let id = generate_prefixed_id("memc");
         let now = now_ms();
-        self.db.execute(
-            "INSERT INTO one_memory_collections \
+        self.db
+            .execute(
+                "INSERT INTO one_memory_collections \
                  (id, tenant_id, scope, department_id, owner_user_id, name, description, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        &db_params![&id, tenant_id, scope, &department_id, &owner_user_id, name, description.trim(), now, now])
-        .await?;
+                &db_params![
+                    &id,
+                    tenant_id,
+                    scope,
+                    &department_id,
+                    &owner_user_id,
+                    name,
+                    description.trim(),
+                    now,
+                    now
+                ],
+            )
+            .await?;
         self.load_collection(tenant_id, &id)
             .await?
             .map(collection_row_to_dto)
@@ -652,7 +691,9 @@ impl MemoryService {
     ) -> Result<Option<MemoryItemDto>, MemoryError> {
         let sql =
             format!("SELECT {ITEM_COLUMNS} FROM one_memory_items WHERE tenant_id = ? AND collection_id = ? AND id = ?");
-        let row: Option<ItemRow> = self.db.fetch_optional_as::<ItemRow>(&sql, &db_params![tenant_id, collection_id, id])
+        let row: Option<ItemRow> = self
+            .db
+            .fetch_optional_as::<ItemRow>(&sql, &db_params![tenant_id, collection_id, id])
             .await?;
         Ok(row.map(item_row_to_dto))
     }
@@ -673,7 +714,9 @@ impl MemoryService {
             "SELECT {ITEM_COLUMNS} FROM one_memory_items \
              WHERE tenant_id = ? AND collection_id = ? ORDER BY created_at DESC, id DESC LIMIT ?"
         );
-        let rows: Vec<ItemRow> = self.db.fetch_all_as::<ItemRow>(&sql, &db_params![tenant_id, collection_id, limit])
+        let rows: Vec<ItemRow> = self
+            .db
+            .fetch_all_as::<ItemRow>(&sql, &db_params![tenant_id, collection_id, limit])
             .await?;
         Ok(rows.into_iter().map(item_row_to_dto).collect())
     }
@@ -719,10 +762,7 @@ impl MemoryService {
         let mut params = db_params![tenant_id, query];
         params.extend(collection_ids.iter().map(|id| id.as_str().into()));
         params.push(limit.into());
-        let rows = self
-            .db
-            .fetch_all_as::<ItemRow>(&sql, &params)
-            .await?;
+        let rows = self.db.fetch_all_as::<ItemRow>(&sql, &params).await?;
         Ok(rows.into_iter().map(item_row_to_dto).collect())
     }
 
@@ -745,7 +785,8 @@ impl MemoryService {
             .ok_or_else(|| MemoryError::NotFound("memory collection not found".into()))?;
         let collection = collection_row_to_model(&row);
         let admin = is_admin_role(caller_role);
-        let owner_of_personal = collection.scope == "personal" && collection.owner_user_id.as_deref() == Some(caller_id);
+        let owner_of_personal =
+            collection.scope == "personal" && collection.owner_user_id.as_deref() == Some(caller_id);
 
         let item = self
             .get_item(tenant_id, collection_id, item_id)
@@ -795,7 +836,7 @@ impl MemoryService {
             &db_params![tenant_id, caller_id, recall_enabled, now],
         )
         .await?;
-        if let Ok(mut cache) = self.recall_pref_cache.lock() {
+        if let Ok(mut cache) = recall_pref_cache().lock() {
             cache.remove(&format!("{tenant_id}|{caller_id}"));
         }
         Ok(crate::models::MemberMemoryPrefsDto { recall_enabled })
@@ -812,7 +853,7 @@ impl MemoryService {
     pub async fn recall_enabled(&self, tenant_id: &str, user_id: &str) -> bool {
         let key = format!("{tenant_id}|{user_id}");
         let now = now_ms();
-        if let Ok(cache) = self.recall_pref_cache.lock() {
+        if let Ok(cache) = recall_pref_cache().lock() {
             if let Some((enabled, cached_at)) = cache.get(&key) {
                 if now.saturating_sub(*cached_at) < 60_000 {
                     return *enabled;
@@ -821,7 +862,7 @@ impl MemoryService {
         }
         match self.load_recall_enabled(tenant_id, user_id).await {
             Ok(enabled) => {
-                if let Ok(mut cache) = self.recall_pref_cache.lock() {
+                if let Ok(mut cache) = recall_pref_cache().lock() {
                     cache.insert(key, (enabled, now));
                 }
                 enabled
@@ -922,12 +963,15 @@ impl MemoryService {
         caller_role: &str,
         default_name: &str,
     ) -> Result<String, MemoryError> {
-        let existing: Option<String> = self.db.fetch_optional_scalar(
-            "SELECT id FROM one_memory_collections \
+        let existing: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT id FROM one_memory_collections \
              WHERE tenant_id = ? AND scope = 'personal' AND owner_user_id = ? \
              ORDER BY created_at ASC LIMIT 1",
-        &db_params![tenant_id, caller_id])
-        .await?;
+                &db_params![tenant_id, caller_id],
+            )
+            .await?;
         if let Some(id) = existing {
             return Ok(id);
         }
@@ -1092,26 +1136,44 @@ impl MemoryService {
         &db_params![tenant_id, collection_id, subject_type, subject_id])
         .await?;
         if let Some((id,)) = existing {
-            self.db.execute("UPDATE one_memory_grants SET access = ?, granted_by = ? WHERE id = ?", &db_params![access, granted_by, &id])
+            self.db
+                .execute(
+                    "UPDATE one_memory_grants SET access = ?, granted_by = ? WHERE id = ?",
+                    &db_params![access, granted_by, &id],
+                )
                 .await?;
             return self.get_grant(tenant_id, &id).await;
         }
         let id = generate_prefixed_id("memg");
-        self.db.execute(
-            "INSERT INTO one_memory_grants \
+        self.db
+            .execute(
+                "INSERT INTO one_memory_grants \
                  (id, tenant_id, collection_id, subject_type, subject_id, access, granted_by, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        &db_params![&id, tenant_id, collection_id, subject_type, subject_id, access, granted_by, now_ms()])
-        .await?;
+                &db_params![
+                    &id,
+                    tenant_id,
+                    collection_id,
+                    subject_type,
+                    subject_id,
+                    access,
+                    granted_by,
+                    now_ms()
+                ],
+            )
+            .await?;
         self.get_grant(tenant_id, &id).await
     }
 
     async fn get_grant(&self, tenant_id: &str, id: &str) -> Result<MemoryGrantDto, MemoryError> {
-        let row: Option<(String, String, String, String, String, String, i64)> = self.db.fetch_optional_as::<(String, String, String, String, String, String, i64)>(
-            "SELECT id, collection_id, subject_type, subject_id, access, granted_by, created_at \
+        let row: Option<(String, String, String, String, String, String, i64)> = self
+            .db
+            .fetch_optional_as::<(String, String, String, String, String, String, i64)>(
+                "SELECT id, collection_id, subject_type, subject_id, access, granted_by, created_at \
              FROM one_memory_grants WHERE tenant_id = ? AND id = ?",
-        &db_params![tenant_id, id])
-        .await?;
+                &db_params![tenant_id, id],
+            )
+            .await?;
         let Some((id, collection_id, subject_type, subject_id, access, granted_by, created_at)) = row else {
             return Err(MemoryError::Internal(
                 "memory grant vanished immediately after write".into(),
@@ -1131,7 +1193,10 @@ impl MemoryService {
     pub async fn revoke_memory(&self, tenant_id: &str, grant_id: &str) -> Result<(), MemoryError> {
         let rows = self
             .db
-            .execute("DELETE FROM one_memory_grants WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, grant_id])
+            .execute(
+                "DELETE FROM one_memory_grants WHERE tenant_id = ? AND id = ?",
+                &db_params![tenant_id, grant_id],
+            )
             .await?;
         if rows == 0 {
             return Err(MemoryError::NotFound("memory grant not found".into()));
@@ -1143,11 +1208,14 @@ impl MemoryService {
         self.load_collection(tenant_id, collection_id)
             .await?
             .ok_or_else(|| MemoryError::NotFound("memory collection not found".into()))?;
-        let rows: Vec<(String, String, String, String, String, String, i64)> = self.db.fetch_all_as::<(String, String, String, String, String, String, i64)>(
-            "SELECT id, collection_id, subject_type, subject_id, access, granted_by, created_at \
+        let rows: Vec<(String, String, String, String, String, String, i64)> = self
+            .db
+            .fetch_all_as::<(String, String, String, String, String, String, i64)>(
+                "SELECT id, collection_id, subject_type, subject_id, access, granted_by, created_at \
              FROM one_memory_grants WHERE tenant_id = ? AND collection_id = ? ORDER BY created_at ASC, id ASC",
-        &db_params![tenant_id, collection_id])
-        .await?;
+                &db_params![tenant_id, collection_id],
+            )
+            .await?;
         Ok(rows
             .into_iter()
             .map(
@@ -1168,9 +1236,13 @@ impl MemoryService {
     /// one active memory. The governance signal for "is memory actually
     /// reaching people, or is it written and never seen".
     pub async fn grant_coverage(&self, tenant_id: &str) -> Result<GrantCoverageDto, MemoryError> {
-        let members: Vec<(String, String, Option<String>)> =
-            self.db.fetch_all_as::<(String, String, Option<String>)>("SELECT user_id, role, department_id FROM one_user_org WHERE tenant_id = ?", &db_params![tenant_id])
-                .await?;
+        let members: Vec<(String, String, Option<String>)> = self
+            .db
+            .fetch_all_as::<(String, String, Option<String>)>(
+                "SELECT user_id, role, department_id FROM one_user_org WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?;
         let member_count = members.len() as i64;
         if member_count == 0 {
             return Ok(GrantCoverageDto {
@@ -1218,7 +1290,9 @@ mod tests {
 
     async fn setup() -> (dream_core_db::Database, MemoryService) {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_memory_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        crate::migrate::run_one_memory_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
         let service = MemoryService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()));
         (db, service)
     }
@@ -1925,8 +1999,17 @@ mod tests {
         let items = service.list_items("t1", "m1", "member", "pc1", 10).await.unwrap();
         assert_eq!(items.len(), 1);
 
-        service.delete_item("t1", "m1", "member", "pc1", &items[0].id).await.unwrap();
-        assert!(service.list_items("t1", "m1", "member", "pc1", 10).await.unwrap().is_empty());
+        service
+            .delete_item("t1", "m1", "member", "pc1", &items[0].id)
+            .await
+            .unwrap();
+        assert!(
+            service
+                .list_items("t1", "m1", "member", "pc1", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -1939,7 +2022,10 @@ mod tests {
             .add_item("t1", "admin1", "org_admin", "gc1", "company fact", 0.5, None, &[])
             .await
             .unwrap();
-        let items = service.list_items("t1", "admin1", "org_admin", "gc1", 10).await.unwrap();
+        let items = service
+            .list_items("t1", "admin1", "org_admin", "gc1", 10)
+            .await
+            .unwrap();
 
         let error = service
             .delete_item("t1", "m1", "member", "gc1", &items[0].id)
@@ -1947,7 +2033,14 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code(), "FORBIDDEN");
         // The refused deletion must not have removed anything.
-        assert_eq!(service.list_items("t1", "admin1", "org_admin", "gc1", 10).await.unwrap().len(), 1);
+        assert_eq!(
+            service
+                .list_items("t1", "admin1", "org_admin", "gc1", 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -1964,8 +2057,17 @@ mod tests {
             .unwrap();
         assert_eq!(item.author_user_id.as_deref(), Some("m1"));
 
-        service.delete_item("t1", "m1", "member", "gc1", &item.id).await.unwrap();
-        assert!(service.list_items("t1", "m1", "member", "gc1", 10).await.unwrap().is_empty());
+        service
+            .delete_item("t1", "m1", "member", "gc1", &item.id)
+            .await
+            .unwrap();
+        assert!(
+            service
+                .list_items("t1", "m1", "member", "gc1", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -1980,11 +2082,24 @@ mod tests {
             .unwrap();
         let items = service.list_items("t1", "m1", "member", "pc1", 10).await.unwrap();
 
-        service.delete_item("t1", "admin1", "org_admin", "pc1", &items[0].id).await.unwrap();
-        assert!(service.list_items("t1", "m1", "member", "pc1", 10).await.unwrap().is_empty());
+        service
+            .delete_item("t1", "admin1", "org_admin", "pc1", &items[0].id)
+            .await
+            .unwrap();
+        assert!(
+            service
+                .list_items("t1", "m1", "member", "pc1", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
         assert_eq!(
-            service.delete_item("t1", "admin1", "org_admin", "pc1", "memi_missing").await.unwrap_err().code(),
+            service
+                .delete_item("t1", "admin1", "org_admin", "pc1", "memi_missing")
+                .await
+                .unwrap_err()
+                .code(),
             "NOT_FOUND"
         );
         assert_eq!(
@@ -2001,6 +2116,14 @@ mod tests {
     async fn recall_preference_defaults_on_and_opt_out_applies_immediately() {
         let (db, service) = setup().await;
         seed_membership(db.pool(), "m1", "t1", "member").await;
+        // The preference cache is process-global (so an opt-out written
+        // through one plane's service is seen by the plane that injects
+        // recall — see RECALL_PREF_CACHE). That makes it shared across tests
+        // in this binary too, so start from a known state rather than
+        // whatever an earlier test left under these keys.
+        if let Ok(mut cache) = recall_pref_cache().lock() {
+            cache.clear();
+        }
 
         // Absent row = recall enabled.
         assert!(service.member_prefs("t1", "m1").await.unwrap().recall_enabled);
