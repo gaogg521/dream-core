@@ -2133,6 +2133,63 @@ mod tests {
         .unwrap();
     }
 
+    /// F1 repro (2026-09-05, ent-audit3 live divergence): a plain member must
+    /// not see admin-visibility skills, and must never see unpublished drafts —
+    /// measured live: both leaked to a `role='member'` viewer through
+    /// `/api/one/devops/skills` while the member predicate, replayed by hand on
+    /// the same database, correctly excluded them.
+    #[tokio::test]
+    async fn member_does_not_see_admin_visibility_or_unpublished_skills() {
+        let svc = service().await;
+        seed_org(&svc).await;
+
+        let admin_only = svc
+            .upsert_skill(
+                None,
+                "admin-only-probe",
+                "d",
+                "c",
+                true,
+                false,
+                "org",
+                None,
+                "admin",
+                None,
+                "admin1",
+            )
+            .await
+            .unwrap();
+        let draft = svc
+            .upsert_skill(
+                None,
+                "draft-probe",
+                "d",
+                "c",
+                true,
+                false,
+                "org",
+                None,
+                "all",
+                None,
+                "admin1",
+            )
+            .await
+            .unwrap();
+        svc.set_skills_published(&[draft.id.clone()], false).await.unwrap();
+
+        let member_view = svc.list_skills("member1").await.unwrap();
+        let names: Vec<&str> = member_view.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            !names.contains(&"admin-only-probe"),
+            "admin-visibility skill leaked to a member"
+        );
+        assert!(!names.contains(&"draft-probe"), "unpublished draft leaked to a member");
+
+        // The admin-only skill is still published — the admin can see both
+        // probes; only the member is filtered.
+        assert_eq!(svc.list_skills("admin1").await.unwrap().len(), 2);
+    }
+
     /// P1-1 round 1: category_id round-trips through create/update, and
     /// `set_skills_published`/`set_mcp_published` gate a non-privileged
     /// member's listing without touching what a privileged admin sees.
