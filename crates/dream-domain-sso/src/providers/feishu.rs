@@ -340,7 +340,12 @@ impl FeishuProvider {
             .filter(|s| !s.is_empty())
             .or_else(|| info.en_name.as_deref().map(str::trim).filter(|s| !s.is_empty()))
             .map(str::to_owned)
-            .unwrap_or_else(|| format!("feishu_{}", &external_id[..external_id.len().min(16)]));
+            .unwrap_or_else(|| {
+                format!(
+                    "feishu_{}",
+                    crate::providers::synthetic_username_suffix(external_id, 16)
+                )
+            });
         ProviderUserInfo {
             external_id: external_id.to_owned(),
             preferred_username: preferred,

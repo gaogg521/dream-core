@@ -79,9 +79,20 @@ impl OAuthStateStore {
         state
     }
 
+    /// Take a state nonce, once. `None` for an unknown, already-used, or
+    /// expired one.
+    ///
+    /// The expiry check is here and not only in `issue`'s sweep: that sweep
+    /// runs when a NEW login starts, so on a deployment where nobody has
+    /// logged in since, an entry outlives `STATE_TTL` indefinitely and this
+    /// used to accept it. Defence in depth rather than a hole on its own — a
+    /// state is only useful together with a live IdP `code`, which expires on
+    /// its own schedule — but a declared TTL that the consuming path does not
+    /// enforce is not a TTL.
     pub async fn consume(&self, state: &str) -> Option<OAuthStateEntry> {
         let mut map = self.inner.lock().await;
-        map.remove(state)
+        let entry = map.remove(state)?;
+        (entry.issued_at.elapsed() < STATE_TTL).then_some(entry)
     }
 }
 
@@ -117,7 +128,8 @@ impl SsoService {
         jwt_service: Arc<JwtService>,
         cookie_config: Arc<CookieConfig>,
     ) -> Self {
-        Self { db,
+        Self {
+            db,
             user_repo,
             jwt_service,
             cookie_config,
@@ -142,11 +154,15 @@ impl SsoService {
     /// matches `one_active_tenant`, else their most-recently-joined membership
     /// (mirrors `OrgService::active_tenant_id`).
     pub async fn effective_role(&self, user_id: &str) -> Result<String, SsoError> {
-        let role: Option<String> = self.db.fetch_optional_scalar(
-            "SELECT uo.role FROM one_user_org uo WHERE uo.user_id = ? \
+        let role: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT uo.role FROM one_user_org uo WHERE uo.user_id = ? \
              ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC, \
-                      uo.created_at DESC, uo.tenant_id ASC LIMIT 1",  &db_params![user_id])
-        .await?;
+                      uo.created_at DESC, uo.tenant_id ASC LIMIT 1",
+                &db_params![user_id],
+            )
+            .await?;
         if let Some(role) = role {
             return Ok(role);
         }
@@ -159,17 +175,25 @@ impl SsoService {
     /// Load a provider config row. Returns `ProviderNotConfigured` when no
     /// row exists.
     pub async fn get_provider_row(&self, provider: SsoProviderKind) -> Result<Option<SsoProviderRow>, SsoError> {
-        let row = self.db.fetch_optional_as::<SsoProviderRow>(
-            "SELECT provider, enabled, config, updated_at, updated_by FROM one_sso_providers WHERE provider = ?",  &db_params![provider.as_str()])
-        .await?;
+        let row = self
+            .db
+            .fetch_optional_as::<SsoProviderRow>(
+                "SELECT provider, enabled, config, updated_at, updated_by FROM one_sso_providers WHERE provider = ?",
+                &db_params![provider.as_str()],
+            )
+            .await?;
         Ok(row)
     }
 
     /// Public status list for the login page (secrets stripped).
     pub async fn list_provider_status(&self) -> Result<Vec<(String, bool, bool)>, SsoError> {
-        let rows = self.db.fetch_all_as::<SsoProviderRow>(
-            "SELECT provider, enabled, config, updated_at, updated_by FROM one_sso_providers",  &[])
-        .await?;
+        let rows = self
+            .db
+            .fetch_all_as::<SsoProviderRow>(
+                "SELECT provider, enabled, config, updated_at, updated_by FROM one_sso_providers",
+                &[],
+            )
+            .await?;
         Ok(rows
             .into_iter()
             .map(|row| {
@@ -185,9 +209,13 @@ impl SsoService {
     /// admins had to remember and retype App ID / Redirect URI on every
     /// edit). Secret fields are still stripped here.
     pub async fn list_provider_configs(&self) -> Result<Vec<SsoProviderConfigDto>, SsoError> {
-        let rows = self.db.fetch_all_as::<SsoProviderRow>(
-            "SELECT provider, enabled, config, updated_at, updated_by FROM one_sso_providers",  &[])
-        .await?;
+        let rows = self
+            .db
+            .fetch_all_as::<SsoProviderRow>(
+                "SELECT provider, enabled, config, updated_at, updated_by FROM one_sso_providers",
+                &[],
+            )
+            .await?;
         Ok(rows
             .into_iter()
             .map(|row| {
@@ -210,17 +238,25 @@ impl SsoService {
     /// `dream-common` matrix. No enterprise / billing not installed → allowed
     /// (personal-edition red line). Tolerant of absent tables.
     async fn enterprise_feature_allowed(&self, user_id: &str, feature: Feature) -> Result<bool, SsoError> {
-        let enterprise_id: Option<String> =
-            self.db.fetch_optional_scalar("SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?", &db_params![user_id])
-                .await
-                .unwrap_or(None);
+        let enterprise_id: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?",
+                &db_params![user_id],
+            )
+            .await
+            .unwrap_or(None);
         let Some(enterprise_id) = enterprise_id else {
             return Ok(true);
         };
-        let tier: Option<String> =
-            self.db.fetch_optional_scalar("SELECT tier FROM one_enterprise_license WHERE enterprise_id = ?", &db_params![&enterprise_id])
-                .await
-                .unwrap_or(None);
+        let tier: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT tier FROM one_enterprise_license WHERE enterprise_id = ?",
+                &db_params![&enterprise_id],
+            )
+            .await
+            .unwrap_or(None);
         let tier = tier.map(|t| Tier::parse(&t)).unwrap_or(Tier::Free);
         Ok(tier_allows(tier, feature))
     }
@@ -261,10 +297,13 @@ impl SsoService {
             None => {
                 let config_str = config.map(|v| v.to_string()).unwrap_or_else(|| "{}".into());
                 let enabled_val = enabled.unwrap_or(false);
-                self.db.execute(
-                    "INSERT INTO one_sso_providers (provider, enabled, config, updated_at, updated_by) \
-                     VALUES (?, ?, ?, ?, ?)",  &db_params![provider.as_str(), enabled_val, &config_str, now, updated_by])
-                .await?;
+                self.db
+                    .execute(
+                        "INSERT INTO one_sso_providers (provider, enabled, config, updated_at, updated_by) \
+                     VALUES (?, ?, ?, ?, ?)",
+                        &db_params![provider.as_str(), enabled_val, &config_str, now, updated_by],
+                    )
+                    .await?;
             }
         }
         Ok(())
@@ -347,10 +386,14 @@ impl SsoService {
         provider: SsoProviderKind,
         external_id: &str,
     ) -> Result<Option<SsoIdentityRow>, SsoError> {
-        let row = self.db.fetch_optional_as::<SsoIdentityRow>(
-            "SELECT id, provider, external_id, user_id, tenant_id, last_seen_at, created_at \
-             FROM one_sso_identities WHERE provider = ? AND external_id = ?",  &db_params![provider.as_str(), external_id])
-        .await?;
+        let row = self
+            .db
+            .fetch_optional_as::<SsoIdentityRow>(
+                "SELECT id, provider, external_id, user_id, tenant_id, last_seen_at, created_at \
+             FROM one_sso_identities WHERE provider = ? AND external_id = ?",
+                &db_params![provider.as_str(), external_id],
+            )
+            .await?;
         Ok(row)
     }
 
@@ -363,21 +406,47 @@ impl SsoService {
     ) -> Result<(), SsoError> {
         let id = uuid::Uuid::now_v7().simple().to_string();
         let now = now_ms();
-        self.db.execute(
-            "INSERT INTO one_sso_identities \
+        self.db
+            .execute(
+                "INSERT INTO one_sso_identities \
              (id, provider, external_id, user_id, tenant_id, display_name, org_unit_path, job_title, \
               org_external_id, created_at, last_seen_at) \
-             VALUES (?, ?, ?, ?, 'default', ?, ?, ?, ?, ?, ?)",  &db_params![&id, provider.as_str(), external_id, user_id, &profile.preferred_username, profile.org_unit_path.as_deref(), profile.job_title.as_deref(), profile.org_external_id.as_deref(), now, now])
-        .await?;
+             VALUES (?, ?, ?, ?, 'default', ?, ?, ?, ?, ?, ?)",
+                &db_params![
+                    &id,
+                    provider.as_str(),
+                    external_id,
+                    user_id,
+                    &profile.preferred_username,
+                    profile.org_unit_path.as_deref(),
+                    profile.job_title.as_deref(),
+                    profile.org_external_id.as_deref(),
+                    now,
+                    now
+                ],
+            )
+            .await?;
         Ok(())
     }
 
     async fn touch_identity(&self, provider: SsoProviderKind, external_id: &str, profile: &ProviderUserInfo) {
-        let _ = self.db.execute(
-            "UPDATE one_sso_identities SET last_seen_at = ?, display_name = ?, org_unit_path = ?, job_title = ?, \
+        let _ = self
+            .db
+            .execute(
+                "UPDATE one_sso_identities SET last_seen_at = ?, display_name = ?, org_unit_path = ?, job_title = ?, \
              org_external_id = ? \
-             WHERE provider = ? AND external_id = ?",  &db_params![now_ms(), &profile.preferred_username, profile.org_unit_path.as_deref(), profile.job_title.as_deref(), profile.org_external_id.as_deref(), provider.as_str(), external_id])
-        .await;
+             WHERE provider = ? AND external_id = ?",
+                &db_params![
+                    now_ms(),
+                    &profile.preferred_username,
+                    profile.org_unit_path.as_deref(),
+                    profile.job_title.as_deref(),
+                    profile.org_external_id.as_deref(),
+                    provider.as_str(),
+                    external_id
+                ],
+            )
+            .await;
     }
 }
 
@@ -799,7 +868,9 @@ mod tests {
         // one-sso's own tables (one_sso_providers/one_sso_identities) — real
         // migrations, so display_name/org_unit_path etc. stay in sync with
         // production schema instead of a hand-rolled CREATE TABLE drifting.
-        crate::migrate::run_one_sso_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        crate::migrate::run_one_sso_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
         let user_repo: Arc<dyn IUserRepository> = Arc::new(dream_core_db::SqliteUserRepository::new(db.pool().clone()));
         let sqlite = db.pool().clone();
         let svc = SsoService::new(
