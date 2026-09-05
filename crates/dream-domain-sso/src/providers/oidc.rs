@@ -229,7 +229,7 @@ impl OidcProvider {
             .or_else(|| claims.get("email").and_then(claim_as_string))
             .map(|s| s.trim().to_owned())
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| format!("oidc_{}", &external_id[..external_id.len().min(16)]));
+            .unwrap_or_else(|| format!("oidc_{}", crate::providers::synthetic_username_suffix(external_id, 16)));
 
         // Company/tenant id from the optional configured claim only — OIDC has
         // no standard company claim, so this stays None unless the admin maps

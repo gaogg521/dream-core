@@ -127,11 +127,27 @@ impl DingtalkProvider {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
-            .unwrap_or_else(|| format!("dingtalk_{}", &external_id[..external_id.len().min(16)]));
+            .unwrap_or_else(|| {
+                format!(
+                    "dingtalk_{}",
+                    crate::providers::synthetic_username_suffix(external_id, 16)
+                )
+            });
         ProviderUserInfo {
             external_id: external_id.to_owned(),
             preferred_username: preferred,
-            org_unit_path: info.mobile.clone(),
+            // NOT `info.mobile`. This field is the person's DEPARTMENT PATH:
+            // it is copied onto `one_user_org.org_unit_path` at login and
+            // rendered as 部门路径 in the members roster, which every member of
+            // the project group can read via `/api/one/org/members`. Putting
+            // the mobile number there published everyone's phone number to
+            // their colleagues, under a column claiming to be their
+            // department.
+            //
+            // The endpoint this profile comes from (contact "me") returns no
+            // department at all, so `None` is the honest answer — same as
+            // WeCom and OIDC.
+            org_unit_path: None,
             job_title: None,
             // DingTalk corp_id is available but not threaded through yet — the
             // auto-join enterprise path currently targets Feishu only.

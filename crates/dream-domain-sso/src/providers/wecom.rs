@@ -108,7 +108,7 @@ impl WecomProvider {
     pub fn to_provider_user_info(user_id: &str) -> ProviderUserInfo {
         ProviderUserInfo {
             external_id: user_id.to_owned(),
-            preferred_username: format!("wecom_{}", &user_id[..user_id.len().min(16)]),
+            preferred_username: format!("wecom_{}", crate::providers::synthetic_username_suffix(user_id, 16)),
             org_unit_path: None,
             job_title: None,
             org_external_id: None,
