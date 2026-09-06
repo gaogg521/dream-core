@@ -131,7 +131,14 @@ pub(crate) mod tests {
     pub(crate) async fn one_enterprise_tables(pool: &SqlitePool) {
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS one_enterprises (id TEXT PRIMARY KEY, provider TEXT, external_id TEXT, display_name TEXT, created_at INTEGER, updated_at INTEGER);
-             CREATE TABLE IF NOT EXISTS one_enterprise_members (user_id TEXT PRIMARY KEY, enterprise_id TEXT NOT NULL, display_name TEXT, department TEXT, job_title TEXT, role TEXT NOT NULL DEFAULT 'member', seat_status TEXT NOT NULL DEFAULT 'active', joined_at INTEGER, updated_at INTEGER);",
+             CREATE TABLE IF NOT EXISTS one_enterprise_members (user_id TEXT PRIMARY KEY, enterprise_id TEXT NOT NULL, display_name TEXT, department TEXT, job_title TEXT, role TEXT NOT NULL DEFAULT 'member', seat_status TEXT NOT NULL DEFAULT 'active', joined_at INTEGER, updated_at INTEGER);
+             -- one-org's two tables, because the audit scope resolves a
+             -- project-group admin through them and every audited query
+             -- carries the group restriction as a subquery. Runtime always
+             -- has them: one-org migrates before one-billing, inside the
+             -- same `enterprise` feature gate.
+             CREATE TABLE IF NOT EXISTS one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', department_id TEXT, PRIMARY KEY (user_id, tenant_id));
+             CREATE TABLE IF NOT EXISTS one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL);",
         )
         .execute(pool)
         .await

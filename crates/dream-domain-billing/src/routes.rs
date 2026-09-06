@@ -249,18 +249,18 @@ async fn billing_enterprise_report(
     Extension(user): Extension<CurrentUser>,
     Query(q): Query<UsageQuery>,
 ) -> Result<Json<ApiResponse<EnterpriseReportDto>>, BillingError> {
-    if !state.service.is_billing_admin(&user.id).await? {
-        return Err(BillingError::Forbidden("enterprise report is admin-only".into()));
-    }
-    let eid = state
+    // One resolution answers both questions: may this caller audit at
+    // all, and how much of the company. A project-group admin is scoped
+    // to their own group; a company admin is not.
+    let scope = state
         .service
-        .resolve_enterprise_id(&user.id)
+        .resolve_audit_scope(&user.id)
         .await?
-        .ok_or(BillingError::EnterpriseNotFound)?;
+        .ok_or_else(|| BillingError::Forbidden("enterprise report is admin-only".into()))?;
     const THIRTY_DAYS_MS: i64 = 30 * 24 * 3600 * 1000;
     let since = q.since.unwrap_or_else(|| now_ms() - THIRTY_DAYS_MS);
     Ok(Json(ApiResponse::ok(
-        state.service.enterprise_report(&eid, since).await?,
+        state.service.enterprise_report(&scope, since).await?,
     )))
 }
 
@@ -290,20 +290,20 @@ async fn billing_usage_events(
     Extension(user): Extension<CurrentUser>,
     Query(q): Query<UsageEventsQuery>,
 ) -> Result<Json<ApiResponse<UsageEventPageDto>>, BillingError> {
-    if !state.service.is_billing_admin(&user.id).await? {
-        return Err(BillingError::Forbidden("usage events are admin-only".into()));
-    }
-    let eid = state
+    // One resolution answers both questions: may this caller audit at
+    // all, and how much of the company. A project-group admin is scoped
+    // to their own group; a company admin is not.
+    let scope = state
         .service
-        .resolve_enterprise_id(&user.id)
+        .resolve_audit_scope(&user.id)
         .await?
-        .ok_or(BillingError::EnterpriseNotFound)?;
+        .ok_or_else(|| BillingError::Forbidden("usage events are admin-only".into()))?;
     const THIRTY_DAYS_MS: i64 = 30 * 24 * 3600 * 1000;
     let since = q.since.unwrap_or_else(|| now_ms() - THIRTY_DAYS_MS);
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .list_usage_events(&eid, since, q.user_id.as_deref(), q.model.as_deref(), q.limit, q.offset)
+            .list_usage_events(&scope, since, q.user_id.as_deref(), q.model.as_deref(), q.limit, q.offset)
             .await?,
     )))
 }
@@ -333,20 +333,20 @@ async fn billing_llm_calls(
     Extension(user): Extension<CurrentUser>,
     Query(q): Query<LlmCallsQuery>,
 ) -> Result<Json<ApiResponse<LlmCallPageDto>>, BillingError> {
-    if !state.service.is_billing_admin(&user.id).await? {
-        return Err(BillingError::Forbidden("llm call traces are admin-only".into()));
-    }
-    let eid = state
+    // One resolution answers both questions: may this caller audit at
+    // all, and how much of the company. A project-group admin is scoped
+    // to their own group; a company admin is not.
+    let scope = state
         .service
-        .resolve_enterprise_id(&user.id)
+        .resolve_audit_scope(&user.id)
         .await?
-        .ok_or(BillingError::EnterpriseNotFound)?;
+        .ok_or_else(|| BillingError::Forbidden("llm call traces are admin-only".into()))?;
     const THIRTY_DAYS_MS: i64 = 30 * 24 * 3600 * 1000;
     let since = q.since.unwrap_or_else(|| now_ms() - THIRTY_DAYS_MS);
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .list_llm_calls(&eid, since, q.user_id.as_deref(), q.model.as_deref(), q.limit, q.offset)
+            .list_llm_calls(&scope, since, q.user_id.as_deref(), q.model.as_deref(), q.limit, q.offset)
             .await?,
     )))
 }
@@ -403,18 +403,18 @@ async fn billing_sessions(
     Extension(user): Extension<CurrentUser>,
     Query(q): Query<SessionsQuery>,
 ) -> Result<Json<ApiResponse<AgentSessionPageDto>>, BillingError> {
-    if !state.service.is_billing_admin(&user.id).await? {
-        return Err(BillingError::Forbidden("agent sessions are admin-only".into()));
-    }
-    let eid = state
+    // One resolution answers both questions: may this caller audit at
+    // all, and how much of the company. A project-group admin is scoped
+    // to their own group; a company admin is not.
+    let scope = state
         .service
-        .resolve_enterprise_id(&user.id)
+        .resolve_audit_scope(&user.id)
         .await?
-        .ok_or(BillingError::EnterpriseNotFound)?;
+        .ok_or_else(|| BillingError::Forbidden("agent sessions are admin-only".into()))?;
     const THIRTY_DAYS_MS: i64 = 30 * 24 * 3600 * 1000;
     let since = q.since.unwrap_or_else(|| now_ms() - THIRTY_DAYS_MS);
     Ok(Json(ApiResponse::ok(
-        state.service.list_sessions(&eid, since, q.limit, q.offset).await?,
+        state.service.list_sessions(&scope, since, q.limit, q.offset).await?,
     )))
 }
 
