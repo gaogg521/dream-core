@@ -95,6 +95,7 @@ pub const MFA_MAX_ATTEMPTS: i64 = 5;
 /// Storage contract for MFA policy / challenges / audit. Implemented over the
 /// primary SQLite pool (`users` lives there; see `repository/user.rs`).
 #[async_trait::async_trait]
+#[allow(clippy::too_many_arguments)]
 pub trait MfaStore: Send + Sync {
     async fn policy_mode(&self) -> Result<MfaMode, DbError>;
     async fn policy_set(&self, mode: MfaMode, updated_by: &str) -> Result<(), DbError>;

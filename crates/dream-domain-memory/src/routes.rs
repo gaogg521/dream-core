@@ -388,13 +388,6 @@ struct PutMemoryConfigBody {
     extraction_model: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GetMemoryConfigQuery {
-    #[serde(default)]
-    tenant_id: Option<String>,
-}
-
 /// Admin read of per-tenant extraction settings. `None` fields = extraction
 /// disabled for the tenant (the common default).
 async fn admin_get_memory_config(

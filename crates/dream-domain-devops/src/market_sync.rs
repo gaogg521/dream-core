@@ -105,11 +105,10 @@ impl MarketFetcher for ReqwestFetcher {
         if !response.status().is_success() {
             return Err(format!("HTTP {}", response.status()));
         }
-        if let Some(len) = response.content_length() {
-            if len as usize > max_bytes {
+        if let Some(len) = response.content_length()
+            && len as usize > max_bytes {
                 return Err(format!("payload too large ({len} bytes, cap {max_bytes})"));
             }
-        }
         let bytes = response.bytes().await.map_err(|e| format!("body read failed: {e}"))?;
         if bytes.len() > max_bytes {
             return Err(format!("payload too large ({} bytes, cap {max_bytes})", bytes.len()));
@@ -480,12 +479,11 @@ impl DevopsService {
         // A publisher-pinned hash matching the recorded one skips the item
         // entirely — no fetch, no write. Everything below is for new or
         // changed items.
-        if let (Some((_, existing_hash)), Some(declared)) = (&mapping, &item.sha256) {
-            if declared.eq_ignore_ascii_case(existing_hash) {
+        if let (Some((_, existing_hash)), Some(declared)) = (&mapping, &item.sha256)
+            && declared.eq_ignore_ascii_case(existing_hash) {
                 report.skipped += 1;
                 return Ok(());
             }
-        }
 
         // A manifest `category` is a display name; resolve it to a row in
         // `one_content_categories` (get-or-create under this tenant) so the
@@ -546,13 +544,12 @@ impl DevopsService {
             other => return Err(format!("unknown kind '{other}'")),
         };
 
-        if let Some(declared) = &item.sha256 {
-            if !payload_hash.eq_ignore_ascii_case(declared) {
+        if let Some(declared) = &item.sha256
+            && !payload_hash.eq_ignore_ascii_case(declared) {
                 return Err(format!(
                     "fetched payload hash {payload_hash} does not match the manifest pin {declared}"
                 ));
             }
-        }
 
         if let Some((registry_id, existing_hash)) = mapping {
             if existing_hash == payload_hash {

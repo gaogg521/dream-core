@@ -52,6 +52,9 @@ pub struct DingtalkUserInfo {
 struct DingtalkLegacyTokenResponse {
     errcode: Option<i64>,
     errmsg: Option<String>,
+    /// Parsed but unused: kept so this struct documents the legacy endpoint's
+    /// full response shape next to the fields we do read.
+    #[allow(dead_code)]
     access_token: Option<String>,
 }
 

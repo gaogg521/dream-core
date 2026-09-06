@@ -59,12 +59,6 @@ impl EnterpriseService {
         self
     }
 
-    /// Pool access for sibling modules in this crate (`directory`), so their
-    /// `impl EnterpriseService` blocks do not need the field to be public.
-    pub(crate) fn pool_ref(&self) -> &DbPool {
-        &self.db
-    }
-
     /// Runs `sqlite_sql` or `mysql_sql` by backend — the two dialects
     /// diverge on upsert syntax only; params are shared.
     async fn upsert(&self, sqlite_sql: &str, mysql_sql: &str, params: &[DbValue]) -> Result<u64, EnterpriseError> {

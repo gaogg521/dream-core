@@ -416,8 +416,8 @@ async fn callback(
     // 登录二次认证闸：需要 MFA 时不签发会话，改把用户导向 Web 登录页的
     // 第二步（挑战 token 只存哈希，≤5 分钟一次性）。桌面深链流程在挑战期间
     // 暂不支持（v1 限制，见交付说明）——浏览器里完成两步后仍可直接使用控制台。
-    if let Some(mfa) = state.mfa.as_ref() {
-        if let dream_core_auth::mfa::MfaDecision::Challenge(purpose) = mfa.decide_for_user(&user_id, &username).await? {
+    if let Some(mfa) = state.mfa.as_ref()
+        && let dream_core_auth::mfa::MfaDecision::Challenge(purpose) = mfa.decide_for_user(&user_id, &username).await? {
             let (mfa_token, _expires_at, _purpose) = mfa
                 .create_challenge_for_user(
                     &user_id,
@@ -426,7 +426,7 @@ async fn callback(
                     None,
                     entry.redirect_target.as_deref(),
                     entry.desktop,
-                    Some(entry.deep_link_scheme.clone()),
+                    Some(entry.deep_link_scheme),
                 )
                 .await?;
             let login_path = format!(
@@ -436,7 +436,6 @@ async fn callback(
             );
             return Ok(Redirect::to(&login_path).into_response());
         }
-    }
 
     let session = state
         .service
@@ -639,8 +638,8 @@ async fn ldap_login(
         .map(str::to_owned);
 
     // 登录二次认证闸：需要 MFA 时返回挑战（JSON），前端进入第二步。
-    if let Some(mfa) = state.mfa.as_ref() {
-        if let dream_core_auth::mfa::MfaDecision::Challenge(purpose) = mfa.decide_for_user(&user_id, &username).await? {
+    if let Some(mfa) = state.mfa.as_ref()
+        && let dream_core_auth::mfa::MfaDecision::Challenge(purpose) = mfa.decide_for_user(&user_id, &username).await? {
             let (mfa_token, expires_at, purpose) = mfa
                 .create_challenge_for_user(
                     &user_id,
@@ -660,7 +659,6 @@ async fn ldap_login(
             })))
             .into_response());
         }
-    }
 
     let session = state
         .service
@@ -677,8 +675,6 @@ async fn ldap_login(
         .into_response())
 }
 
-/// Admin-only: status + non-secret config values, so the settings form can
-/// pre-fill fields the admin already saved instead of always starting blank.
 // ---------------------------------------------------------------------------
 // 登录二次认证（MFA）· 管理端点（RequireSsoAdmin 已由路由分层守卫）
 // ---------------------------------------------------------------------------

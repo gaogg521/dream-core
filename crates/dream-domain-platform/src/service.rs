@@ -112,6 +112,19 @@ fn is_admin_role(role: &str) -> bool {
     matches!(role, "org_admin" | "system_admin" | "admin")
 }
 
+/// `one_scenes` columns as selected by the member-side listing:
+/// id, name, description, job_functions, built_in, created_at, updated_at.
+/// (`SceneRow` further down is the wider admin shape, which also carries
+/// `tenant_id`.)
+type MySceneRow = (String, String, Option<String>, String, bool, i64, i64);
+
+/// A notification row as read for a recipient: id, kind, category, title,
+/// body, created_by, created_at, read_at.
+type NotificationRow = (String, String, String, String, String, String, i64, Option<i64>);
+
+/// A vault file row: id, file_name, sha256, size_bytes, created_at.
+type VaultFileRow = (String, Option<String>, Option<i64>, i64, i64);
+
 impl PlatformService {
     /// Test-only: the concrete SQLite pool behind the enum (platform's own
     /// tests seed with raw sqlx against SQLite).
@@ -1339,9 +1352,9 @@ impl PlatformService {
     /// `RequirePlatformAdmin`; membership is the access control here — a
     /// member never sees a scene they are not on the roster of.
     pub async fn list_my_scenes(&self, tenant_id: &str, user_id: &str) -> Result<Vec<MySceneDto>, PlatformError> {
-        let rows: Vec<(String, String, Option<String>, String, bool, i64, i64)> = self
+        let rows: Vec<MySceneRow> = self
             .db
-            .fetch_all_as::<(String, String, Option<String>, String, bool, i64, i64)>(
+            .fetch_all_as::<MySceneRow>(
                 "SELECT s.id, s.name, s.description, s.job_functions, s.built_in, s.created_at, s.updated_at \
                  FROM one_scene_members m \
                  JOIN one_scenes s ON s.tenant_id = m.tenant_id AND s.id = m.scene_id \
@@ -2123,6 +2136,7 @@ impl PlatformService {
     /// of the tenant (now and in the future — see the migration's comment for
     /// why there are no recipient rows); a `targeted` one only the listed
     /// users, every one of which must already be a member of this tenant.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_notification(
         &self,
         tenant_id: &str,
@@ -2314,7 +2328,7 @@ impl PlatformService {
         user_id: &str,
         limit: i64,
     ) -> Result<MyNotificationsDto, PlatformError> {
-        let rows: Vec<(String, String, String, String, String, String, i64, Option<i64>)> = self.db.fetch_all_as::<(String, String, String, String, String, String, i64, Option<i64>)>(
+        let rows: Vec<NotificationRow> = self.db.fetch_all_as::<NotificationRow>(
             "SELECT n.id, n.kind, n.category, n.title, n.body, n.created_by, n.created_at, rd.read_at \
              FROM one_notifications n \
              LEFT JOIN one_notification_reads rd ON rd.notification_id = n.id AND rd.user_id = ? \
@@ -2460,11 +2474,10 @@ impl PlatformService {
                 &db_params![tenant_id, user_id],
             )
             .await?;
-        if let Some(quota) = quota_bytes {
-            if usage_bytes + bytes.len() as i64 > quota {
+        if let Some(quota) = quota_bytes
+            && usage_bytes + bytes.len() as i64 > quota {
                 return Err(PlatformError::BadRequest("file vault quota exceeded".into()));
             }
-        }
         let file_name = sanitize_vault_file_name(file_name);
         if file_name.is_empty() {
             return Err(PlatformError::BadRequest("file name must not be empty".into()));
@@ -2597,7 +2610,7 @@ impl PlatformService {
     /// member's frozen vault with files still shows up — that is exactly the
     /// row an admin needs to see when offboarding).
     pub async fn admin_list_vaults(&self, tenant_id: &str) -> Result<Vec<FileVaultDto>, PlatformError> {
-        let rows: Vec<(String, Option<String>, Option<i64>, i64, i64)> = self.db.fetch_all_as::<(String, Option<String>, Option<i64>, i64, i64)>(
+        let rows: Vec<VaultFileRow> = self.db.fetch_all_as::<VaultFileRow>(
             "SELECT u.user_id, s.status, s.quota_bytes, COALESCE(o.usage_bytes, 0), COALESCE(o.object_count, 0) \
              FROM (SELECT user_id FROM one_user_org WHERE tenant_id = ? \
                    UNION SELECT DISTINCT user_id FROM one_file_vault_objects WHERE tenant_id = ?) u \
@@ -2654,11 +2667,10 @@ impl PlatformService {
         user_id: &str,
         quota_bytes: Option<i64>,
     ) -> Result<(), PlatformError> {
-        if let Some(q) = quota_bytes {
-            if q < 0 {
+        if let Some(q) = quota_bytes
+            && q < 0 {
                 return Err(PlatformError::BadRequest("quota must not be negative".into()));
             }
-        }
         let (status, _) = self.vault_settings(tenant_id, user_id).await?;
         self.upsert(
             "INSERT INTO one_file_vault_settings (tenant_id, user_id, status, quota_bytes, updated_at) \
