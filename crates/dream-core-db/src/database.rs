@@ -282,7 +282,19 @@ async fn try_init_file_staged(path: &Path) -> Result<Database, DatabaseInitError
         .await
         .map_err(|e| DatabaseInitError::new("database.open", DbError::Query(e)))?;
 
-    run_migrations_staged(&pool).await?;
+    // A failure here must not leave this pool's SQLite handles open. The
+    // caller's very next move on a corruption-like error is to RENAME this
+    // file for the backup, and on Windows renaming a file any handle still
+    // holds fails with ERROR_SHARING_VIOLATION (os error 32) — the whole
+    // rebuild dies with "另一个程序正在使用此文件" naming no other program,
+    // because the holder is this process. Dropping a sqlx pool only *asks*
+    // its per-connection worker threads to close, so the close is awaited.
+    // POSIX renames an open file happily, which is why this only ever showed
+    // up on Windows.
+    if let Err(e) = run_migrations_staged(&pool).await {
+        pool.close().await;
+        return Err(e);
+    }
 
     // Discard the bootstrap pool and reconnect on a FRESH pool before any
     // business query runs. Migrations DROP+rebuild tables (e.g. 030 rebuilt
@@ -302,9 +314,12 @@ async fn try_init_file_staged(path: &Path) -> Result<Database, DatabaseInitError
         .await
         .map_err(|e| DatabaseInitError::new("database.reopen", DbError::Query(e)))?;
 
-    ensure_system_user(&pool)
-        .await
-        .map_err(|e| DatabaseInitError::new("database.seed", e))?;
+    // Same reason as the migration failure above: seeding is still inside the
+    // window where the caller may have to move this file aside.
+    if let Err(e) = ensure_system_user(&pool).await {
+        pool.close().await;
+        return Err(DatabaseInitError::new("database.seed", e));
+    }
 
     info!("Database initialized at {}", path.display());
     Ok(Database { pool })
@@ -779,11 +794,66 @@ async fn ensure_system_user(pool: &SqlitePool) -> Result<(), DbError> {
     Ok(())
 }
 
-async fn recover_and_retry(path: &Path, original_error: DbError) -> Result<Database, DatabaseInitError> {
-    let backup_path = format!("{}.backup.{}", path.display(), dream_core_common::now_ms());
-    warn!("Backing up corrupted database to: {backup_path}");
+/// `<db><suffix>` for SQLite's `-wal` / `-shm` sidecars.
+///
+/// `None` for a path with no file name, so a malformed path can never resolve
+/// back to the database itself (this helper's callers delete what it returns).
+fn sqlite_sidecar_path(db_path: &Path, suffix: &str) -> Option<PathBuf> {
+    let name = db_path.file_name()?.to_str()?;
+    Some(db_path.with_file_name(format!("{name}{suffix}")))
+}
 
-    std::fs::rename(path, &backup_path).map_err(|e| {
+/// Move `<db>-wal` / `<db>-shm` to sit beside the database they belong to,
+/// after that database has been renamed to `backup_path`.
+///
+/// Leaving them behind is wrong twice over:
+///   * the backup is not restorable without them — a WAL carries every
+///     committed transaction that was not checkpointed yet, which in practice
+///     is the user's most recent data (megabytes, on a live install);
+///   * SQLite is about to CREATE a fresh database at the old path, and a WAL
+///     belonging to a *different* database sitting next to it is a corruption
+///     hazard in its own right.
+///
+/// If a sidecar cannot be moved it is deleted: a stale WAL adopted by the
+/// rebuilt database is worse than losing a sidecar of an already-corrupt one.
+fn relocate_sqlite_sidecars(db_path: &Path, backup_path: &Path) {
+    for suffix in ["-wal", "-shm"] {
+        let (Some(from), Some(to)) = (sqlite_sidecar_path(db_path, suffix), sqlite_sidecar_path(backup_path, suffix))
+        else {
+            continue;
+        };
+        if !from.exists() {
+            continue;
+        }
+        match retry_startup_file_op("database.backup.sidecar", &from, || std::fs::rename(&from, &to)) {
+            Ok(()) => info!(
+                from = %from.display(),
+                to = %to.display(),
+                "Moved SQLite sidecar alongside the corrupted-database backup"
+            ),
+            Err(e) => {
+                warn!(
+                    path = %from.display(),
+                    error = %e,
+                    "Could not move SQLite sidecar aside; deleting it so the rebuilt database cannot adopt it"
+                );
+                let _ = retry_startup_file_op("database.backup.sidecar.remove", &from, || std::fs::remove_file(&from));
+            }
+        }
+    }
+}
+
+async fn recover_and_retry(path: &Path, original_error: DbError) -> Result<Database, DatabaseInitError> {
+    let backup_path = PathBuf::from(format!("{}.backup.{}", path.display(), dream_core_common::now_ms()));
+    warn!("Backing up corrupted database to: {}", backup_path.display());
+
+    // Retry the rename with the same backoff every other startup file
+    // operation uses. os error 32 (ERROR_SHARING_VIOLATION) is already in
+    // `is_retryable_startup_file_error` for exactly this shape of problem: a
+    // pool that just reported the corruption hands its SQLite handles to
+    // background worker threads to close, so the file can still be held for a
+    // moment after the error surfaced.
+    retry_startup_file_op("database.backup.rename", path, || std::fs::rename(path, &backup_path)).map_err(|e| {
         DatabaseInitError::new(
             "database.recovery",
             DbError::Init(format!(
@@ -792,13 +862,14 @@ async fn recover_and_retry(path: &Path, original_error: DbError) -> Result<Datab
             )),
         )
     })?;
+    relocate_sqlite_sidecars(path, &backup_path);
 
     match try_init_file_staged(path).await {
         Ok(db) => {
             warn!(
                 code = "BOOTSTRAP_RECOVERED_DATABASE_CORRUPTION",
                 stage = "database.recovery",
-                backup_path = %backup_path,
+                backup_path = %backup_path.display(),
                 "Database recovered after corruption-like startup failure"
             );
             Ok(db)
@@ -1022,5 +1093,97 @@ mod tests {
     fn startup_file_retry_rejects_non_transient_errors() {
         let err = std::io::Error::new(std::io::ErrorKind::NotFound, "missing file");
         assert!(!is_retryable_startup_file_error(&err));
+    }
+
+    // --- Corrupted-database recovery, exercised against a real file ---
+    //
+    // The tests above only classify errors; nothing covered what recovery
+    // actually DOES to the files. That gap shipped a rebuild that could never
+    // succeed on Windows: the pool that discovered the corruption still held
+    // the database open, and renaming an open file there fails with
+    // ERROR_SHARING_VIOLATION. On Linux (where CI runs) the same rename
+    // succeeds, so no test could have caught it without touching the disk.
+
+    /// Build a real database, close it, then damage it the way a crash does:
+    /// intact page 1 header, garbage further in — so opening succeeds and the
+    /// corruption only surfaces once a query runs.
+    async fn corrupt_database_after_open(path: &Path) {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let db = init_database_staged(path).await.expect("build a healthy database first");
+        db.close().await;
+
+        let mut file = OpenOptions::new().write(true).open(path).expect("open db for damage");
+        file.seek(SeekFrom::Start(4096)).expect("seek past the header page");
+        file.write_all(&[0xA5u8; 96 * 1024]).expect("overwrite pages");
+        file.flush().expect("flush damage");
+    }
+
+    #[tokio::test]
+    async fn recovery_rebuilds_after_corruption_surfaces_on_an_open_pool() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("one-backend.db");
+        corrupt_database_after_open(&path).await;
+
+        let db = init_database_staged_with_options(
+            &path,
+            DatabaseInitOptions { recover_corrupted_database: true, ..Default::default() },
+        )
+        .await
+        .expect("recovery must rebuild the database, not fail on a file this process itself holds");
+        db.close().await;
+
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().any(|name| name.starts_with("one-backend.db.backup.")),
+            "the corrupt database must be kept as a backup, got {names:?}"
+        );
+    }
+
+    /// Sidecar relocation is unit-tested rather than driven end-to-end: the
+    /// only way a `-wal` survives to recovery time is an unclean exit (the
+    /// live incident left a 4.1 MB one behind a killed process), and a clean
+    /// `close()` checkpoints and deletes it. A hand-written stand-in does not
+    /// work either — SQLite validates the WAL header when it opens the
+    /// database and discards an invalid one before recovery is reached.
+    #[test]
+    fn sidecars_travel_with_the_database_they_belong_to() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("one-backend.db");
+        let backup_path = dir.path().join("one-backend.db.backup.1788000000000");
+
+        std::fs::write(&backup_path, b"the corrupt database, already moved").expect("backup");
+        let wal = sqlite_sidecar_path(&db_path, "-wal").expect("wal path");
+        let shm = sqlite_sidecar_path(&db_path, "-shm").expect("shm path");
+        std::fs::write(&wal, b"COMMITTED-BUT-UNCHECKPOINTED").expect("wal");
+        std::fs::write(&shm, b"shm").expect("shm");
+
+        relocate_sqlite_sidecars(&db_path, &backup_path);
+
+        // The backup is only restorable with its WAL: that file holds every
+        // transaction committed since the last checkpoint.
+        assert_eq!(
+            std::fs::read(dir.path().join("one-backend.db.backup.1788000000000-wal")).expect("moved wal"),
+            b"COMMITTED-BUT-UNCHECKPOINTED"
+        );
+        assert!(dir.path().join("one-backend.db.backup.1788000000000-shm").exists());
+        // And nothing is left at the live path for the rebuilt database to adopt.
+        assert!(!wal.exists(), "a WAL from another database must not sit beside the new one");
+        assert!(!shm.exists());
+    }
+
+    #[test]
+    fn sidecar_path_never_resolves_back_to_the_database() {
+        // The callers delete what this returns, so a path with no file name
+        // must yield nothing rather than the directory itself.
+        assert_eq!(sqlite_sidecar_path(Path::new(".."), "-wal"), None);
+        assert_eq!(
+            sqlite_sidecar_path(Path::new("/data/one-backend.db"), "-wal"),
+            Some(PathBuf::from("/data/one-backend.db-wal"))
+        );
     }
 }
