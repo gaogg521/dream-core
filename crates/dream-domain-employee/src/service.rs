@@ -375,7 +375,7 @@ async fn max_employee_permission_for_subjects(
          AND resource_id IN (?, '{EMPLOYEE_GRANT_ALL}') \
          AND subject_id IN ({placeholders}) AND permission IN ('use', 'manage')"
     );
-    let mut params = db_params![tenant_id, subject_type, employee_id];
+    let mut params = Vec::from(db_params![tenant_id, subject_type, employee_id]);
     for subject_id in subject_ids {
         params.push(subject_id.as_str().into());
     }
@@ -744,7 +744,7 @@ async fn list_tags_for_resources(
          JOIN one_content_tag_links l ON l.tag_id = t.id \
          WHERE l.resource_type = ? AND l.resource_id IN ({placeholders})"
     );
-    let mut params = db_params![resource_type];
+    let mut params = Vec::from(db_params![resource_type]);
     for resource_id in resource_ids {
         params.push(resource_id.as_str().into());
     }

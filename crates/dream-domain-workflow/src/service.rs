@@ -251,7 +251,7 @@ impl WorkflowService {
              FROM one_workflow_tasks WHERE tenant_id = ? AND {status_filter} \
              ORDER BY created_at DESC LIMIT ?"
         );
-        let mut params = db_params![tenant_id];
+        let mut params = Vec::from(db_params![tenant_id]);
         if view == "mine" {
             params.push(requester_id.unwrap_or_default().into());
         }

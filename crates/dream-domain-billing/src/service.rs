@@ -819,7 +819,7 @@ impl BillingService {
         }
         sql.push_str(" ORDER BY created_at DESC LIMIT ?");
 
-        let mut params = db_params![enterprise_id];
+        let mut params = Vec::from(db_params![enterprise_id]);
         if let Some(kind) = filters.kind {
             params.push(kind.into());
         }
@@ -1211,7 +1211,7 @@ impl BillingService {
         }
 
         let count_sql = format!("SELECT COUNT(*) FROM one_usage_events {where_sql}");
-        let mut params = db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms];
+        let mut params = Vec::from(db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms]);
         if let Some(u) = user_id {
             params.push(u.into());
         }
@@ -1341,7 +1341,7 @@ impl BillingService {
         }
 
         let count_sql = format!("SELECT COUNT(*) FROM one_llm_calls {where_sql}");
-                let mut params = db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms];
+                let mut params = Vec::from(db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms]);
         if let Some(u) = user_id {
             params.push(u.into());
         }

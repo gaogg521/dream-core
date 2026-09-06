@@ -1636,7 +1636,7 @@ impl DevopsService {
             None => BASE.to_string(),
             Some(predicate) => format!("{BASE} WHERE {predicate}"),
         };
-        let mut params = db_params![];
+        let mut params: Vec<dream_core_db::DbValue> = Vec::new();
         for bind in &acl_binds {
             params.push(bind.as_str().into());
         }

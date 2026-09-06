@@ -699,7 +699,7 @@ impl PlatformService {
         sql.push_str(" ORDER BY created_at DESC");
 
         type Row = (String, String, String, String, String, String, String, i64);
-        let mut params = db_params![tenant_id];
+        let mut params = Vec::from(db_params![tenant_id]);
         if let Some(v) = subject_type {
             params.push(v.into());
         }
@@ -783,7 +783,7 @@ impl PlatformService {
             "SELECT resource_id FROM one_resource_grants \
              WHERE tenant_id = ? AND subject_type = ? AND resource_type = ? AND subject_id IN ({placeholders})"
         );
-        let mut params = db_params![tenant_id, subject_type, resource_type];
+        let mut params = Vec::from(db_params![tenant_id, subject_type, resource_type]);
         for subject_id in subject_ids {
             params.push(subject_id.as_str().into());
         }
