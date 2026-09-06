@@ -42,6 +42,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "billing_008_usage_channel",
         include_str!("../migrations/billing_008_usage_channel.sql"),
     ),
+    (
+        "billing_009_conversation_audit_requests",
+        include_str!("../migrations/billing_009_conversation_audit_requests.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -77,6 +81,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
         "billing_008_usage_channel",
         include_str!("../migrations_mysql/billing_008_usage_channel.sql"),
     ),
+    (
+        "billing_009_conversation_audit_requests",
+        include_str!("../migrations_mysql/billing_009_conversation_audit_requests.sql"),
+    ),
 ];
 
 /// Run all pending one-billing migrations on the pool's backend. Idempotent;
@@ -98,6 +106,10 @@ pub async fn run_one_billing_migrations(pool: &DbPool) -> Result<(), BillingErro
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    // Only the test fixtures build pools directly; clippy does not compile
+    // `#[cfg(test)]`, so a top-level import here reads as unused and gets
+    // removed by `--fix`.
+    use sqlx::SqlitePool;
 
     #[tokio::test]
     async fn migrations_are_idempotent() {

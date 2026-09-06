@@ -12,7 +12,7 @@ use dream_core_common::license::{
     Feature, Tier, estimate_cost_micros, estimate_media_cost_micros, tier_allows, tier_seat_limit,
 };
 use dream_core_common::{generate_prefixed_id, now_ms};
-use dream_core_db::{day_bucket_expr, DbPool, db_params};
+use dream_core_db::{DbPool, day_bucket_expr, db_params};
 
 use crate::error::BillingError;
 use crate::models::{
@@ -102,6 +102,11 @@ pub const MIN_LATENCY_SAMPLES: i64 = 10;
 pub struct BillingService {
     db: DbPool,
     provider: Arc<dyn BillingProvider>,
+    /// Conversation repository handle for the P2-3 audit read path.
+    /// Conversations/messages live behind this repo — under a MySQL
+    /// enterprise deployment on a DIFFERENT backend than `db` — so
+    /// content reads go through it, never raw SQL on `self.db`.
+    conversation: Option<Arc<dyn dream_core_db::IConversationRepository>>,
 }
 
 /// A stored license row (absent → free defaults).
@@ -125,8 +130,7 @@ const BUDGET_WINDOW_MS: i64 = 30 * 24 * 3600 * 1000;
 /// bind (a `LIMIT ?`, an optional `user_id = ?`). Bound twice: the empty
 /// string disables the restriction, so one statement serves a company admin
 /// and a group admin with no dynamically built SQL.
-const AUDIT_TENANT_CLAUSE: &str =
-    " AND (? = '' OR user_id IN (SELECT user_id FROM one_user_org WHERE tenant_id = ?))";
+const AUDIT_TENANT_CLAUSE: &str = " AND (? = '' OR user_id IN (SELECT user_id FROM one_user_org WHERE tenant_id = ?))";
 
 /// The slice of a company an admin may audit. See
 /// [`BillingService::resolve_audit_scope`].
@@ -244,9 +248,19 @@ fn parse_allowed_models(json: Option<&str>) -> Vec<String> {
 
 impl BillingService {
     pub fn new(db: DbPool, provider: Arc<dyn BillingProvider>) -> Self {
-        Self { db, provider }
+        Self {
+            db,
+            provider,
+            conversation: None,
+        }
     }
 
+    /// Wire the conversation repository (P2-3). Called by the app router
+    /// with the same handle the conversation routes use.
+    pub fn with_conversation_repo(mut self, repo: Arc<dyn dream_core_db::IConversationRepository>) -> Self {
+        self.conversation = Some(repo);
+        self
+    }
 
     /// Runs `sqlite_sql` or `mysql_sql` by backend — the two dialects
     /// diverge on upsert syntax only; params are shared.
@@ -266,10 +280,14 @@ impl BillingService {
     /// The caller's SSO company, or `None` for personal / standalone users
     /// (who are outside the billing system entirely).
     pub async fn resolve_enterprise_id(&self, user_id: &str) -> Result<Option<String>, BillingError> {
-        let row: Option<String> =
-            self.db.fetch_optional_scalar("SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?", &db_params![user_id])
-                .await
-                .unwrap_or(None);
+        let row: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?",
+                &db_params![user_id],
+            )
+            .await
+            .unwrap_or(None);
         Ok(row)
     }
 
@@ -284,10 +302,14 @@ impl BillingService {
     /// company, and must be denied, not waved through. Reusing `None` for both
     /// would silently restore the exact bug this column exists to close.
     async fn has_active_seat(&self, user_id: &str) -> Result<bool, BillingError> {
-        let status: Option<String> =
-            self.db.fetch_optional_scalar("SELECT seat_status FROM one_enterprise_members WHERE user_id = ?", &db_params![user_id])
-                .await
-                .unwrap_or(None);
+        let status: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT seat_status FROM one_enterprise_members WHERE user_id = ?",
+                &db_params![user_id],
+            )
+            .await
+            .unwrap_or(None);
         // No row → not a company member at all, handled by `resolve_enterprise_id`
         // returning `None` upstream; this function is only consulted once a
         // caller already has `Some(enterprise_id)`.
@@ -305,21 +327,28 @@ impl BillingService {
         // the outer layer is truly "value absent" — collapsing both without
         // this would need the column decode to fail for a NULL department_id,
         // which is not an error, it is the overwhelmingly common case.
-        let row: Option<Option<String>> =
-            self.db.fetch_optional_scalar("SELECT department_id FROM one_user_org WHERE user_id = ?", &db_params![user_id])
-                .await
-                .unwrap_or(None);
+        let row: Option<Option<String>> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT department_id FROM one_user_org WHERE user_id = ?",
+                &db_params![user_id],
+            )
+            .await
+            .unwrap_or(None);
         Ok(row.flatten())
     }
 
     async fn license_of(&self, enterprise_id: &str) -> Result<License, BillingError> {
         // tier, seat_limit, expires_at, cost_cap_micros, allowed_models(json)
         type LicenseRow = (String, Option<i64>, Option<i64>, Option<i64>, Option<String>);
-        let row: Option<LicenseRow> = self.db.fetch_optional_as::<LicenseRow>(
-            "SELECT tier, seat_limit, expires_at, monthly_cost_cap_micros, allowed_models \
+        let row: Option<LicenseRow> = self
+            .db
+            .fetch_optional_as::<LicenseRow>(
+                "SELECT tier, seat_limit, expires_at, monthly_cost_cap_micros, allowed_models \
              FROM one_enterprise_license WHERE enterprise_id = ?",
-        &db_params![enterprise_id])
-        .await?;
+                &db_params![enterprise_id],
+            )
+            .await?;
         Ok(match row {
             Some((tier, seat_limit, expires_at, cost_cap_micros, allowed_models_json)) => {
                 // Expiry is enforced here, at the single read point every gate
@@ -360,21 +389,27 @@ impl BillingService {
 
     /// ACTIVE seats only — what `seat_limit` caps. See `PlanDto::seat_used`.
     async fn seat_used(&self, enterprise_id: &str) -> Result<i64, BillingError> {
-        let used: i64 = self.db.fetch_one_scalar(
-            "SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND seat_status = 'active'",
-        &db_params![enterprise_id])
-        .await
-        .unwrap_or(0);
+        let used: i64 = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND seat_status = 'active'",
+                &db_params![enterprise_id],
+            )
+            .await
+            .unwrap_or(0);
         Ok(used)
     }
 
     /// Members waiting on a seat. See `PlanDto::seat_pending`.
     async fn seat_pending(&self, enterprise_id: &str) -> Result<i64, BillingError> {
-        let pending: i64 = self.db.fetch_one_scalar(
-            "SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND seat_status = 'pending'",
-        &db_params![enterprise_id])
-        .await
-        .unwrap_or(0);
+        let pending: i64 = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND seat_status = 'pending'",
+                &db_params![enterprise_id],
+            )
+            .await
+            .unwrap_or(0);
         Ok(pending)
     }
 
@@ -478,8 +513,12 @@ impl BillingService {
 
         let mut tx = self.db.begin().await?;
         let activation_sql = match self.db.backend() {
-            dream_core_db::DbBackend::Sqlite => "INSERT INTO one_license_activation                  (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by,                   tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)              ON CONFLICT(license_id) DO UPDATE SET enterprise_id = excluded.enterprise_id,                  activated_at = excluded.activated_at, activated_by = excluded.activated_by,                  tenant_cap = excluded.tenant_cap, agent_node_cap = excluded.agent_node_cap,                  cpu_cores_cap = excluded.cpu_cores_cap, memory_mb_cap = excluded.memory_mb_cap,                  modules = excluded.modules, serial = excluded.serial, app_id = excluded.app_id,                  file_name = excluded.file_name",
-            dream_core_db::DbBackend::MySql => "INSERT INTO one_license_activation                  (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by,                   tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new              ON DUPLICATE KEY UPDATE enterprise_id = new.enterprise_id,                  activated_at = new.activated_at, activated_by = new.activated_by,                  tenant_cap = new.tenant_cap, agent_node_cap = new.agent_node_cap,                  cpu_cores_cap = new.cpu_cores_cap, memory_mb_cap = new.memory_mb_cap,                  modules = new.modules, serial = new.serial, app_id = new.app_id,                  file_name = new.file_name",
+            dream_core_db::DbBackend::Sqlite => {
+                "INSERT INTO one_license_activation                  (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by,                   tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)              ON CONFLICT(license_id) DO UPDATE SET enterprise_id = excluded.enterprise_id,                  activated_at = excluded.activated_at, activated_by = excluded.activated_by,                  tenant_cap = excluded.tenant_cap, agent_node_cap = excluded.agent_node_cap,                  cpu_cores_cap = excluded.cpu_cores_cap, memory_mb_cap = excluded.memory_mb_cap,                  modules = excluded.modules, serial = excluded.serial, app_id = excluded.app_id,                  file_name = excluded.file_name"
+            }
+            dream_core_db::DbBackend::MySql => {
+                "INSERT INTO one_license_activation                  (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by,                   tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new              ON DUPLICATE KEY UPDATE enterprise_id = new.enterprise_id,                  activated_at = new.activated_at, activated_by = new.activated_by,                  tenant_cap = new.tenant_cap, agent_node_cap = new.agent_node_cap,                  cpu_cores_cap = new.cpu_cores_cap, memory_mb_cap = new.memory_mb_cap,                  modules = new.modules, serial = new.serial, app_id = new.app_id,                  file_name = new.file_name"
+            }
         };
         tx.execute(
             activation_sql,
@@ -505,8 +544,12 @@ impl BillingService {
         )
         .await?;
         let license_sql = match self.db.backend() {
-            dream_core_db::DbBackend::Sqlite => "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at)              VALUES (?, ?, ?, ?, ?)              ON CONFLICT(enterprise_id) DO UPDATE SET tier = excluded.tier, seat_limit = excluded.seat_limit,                  expires_at = excluded.expires_at, updated_at = excluded.updated_at",
-            dream_core_db::DbBackend::MySql => "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at)              VALUES (?, ?, ?, ?, ?) AS new              ON DUPLICATE KEY UPDATE tier = new.tier, seat_limit = new.seat_limit,                  expires_at = new.expires_at, updated_at = new.updated_at",
+            dream_core_db::DbBackend::Sqlite => {
+                "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at)              VALUES (?, ?, ?, ?, ?)              ON CONFLICT(enterprise_id) DO UPDATE SET tier = excluded.tier, seat_limit = excluded.seat_limit,                  expires_at = excluded.expires_at, updated_at = excluded.updated_at"
+            }
+            dream_core_db::DbBackend::MySql => {
+                "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at)              VALUES (?, ?, ?, ?, ?) AS new              ON DUPLICATE KEY UPDATE tier = new.tier, seat_limit = new.seat_limit,                  expires_at = new.expires_at, updated_at = new.updated_at"
+            }
         };
         tx.execute(
             license_sql,
@@ -545,12 +588,15 @@ impl BillingService {
             Option<String>,
             Option<String>,
         );
-        let row: Option<Row> = self.db.fetch_optional_as::<Row>(
-            "SELECT license_id, customer, tier, seats, expires_at, activated_at, \
+        let row: Option<Row> = self
+            .db
+            .fetch_optional_as::<Row>(
+                "SELECT license_id, customer, tier, seats, expires_at, activated_at, \
                     tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name \
              FROM one_license_activation WHERE enterprise_id = ? ORDER BY activated_at DESC LIMIT 1",
-        &db_params![enterprise_id])
-        .await?;
+                &db_params![enterprise_id],
+            )
+            .await?;
         Ok(row.map(
             |(
                 license_id,
@@ -625,12 +671,15 @@ impl BillingService {
     /// window.
     async fn budget_used_micros(&self, enterprise_id: &str) -> Result<i64, BillingError> {
         let since = now_ms() - BUDGET_WINDOW_MS;
-        let used: i64 = self.db.fetch_one_scalar(
-            "SELECT CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED) FROM one_usage_events \
+        let used: i64 = self
+            .db
+            .fetch_one_scalar(
+                "SELECT CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED) FROM one_usage_events \
              WHERE enterprise_id = ? AND created_at >= ?",
-        &db_params![enterprise_id, since])
-        .await
-        .unwrap_or(0);
+                &db_params![enterprise_id, since],
+            )
+            .await
+            .unwrap_or(0);
         Ok(used)
     }
 
@@ -644,12 +693,15 @@ impl BillingService {
     /// admins). Backends that never write a row here (a brand-new
     /// conversation with no turns yet) return 0, not an error.
     pub async fn conversation_cost(&self, user_id: &str, conversation_id: &str) -> Result<i64, BillingError> {
-        let used: i64 = self.db.fetch_one_scalar(
-            "SELECT CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED) FROM one_usage_events \
+        let used: i64 = self
+            .db
+            .fetch_one_scalar(
+                "SELECT CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED) FROM one_usage_events \
              WHERE user_id = ? AND conversation_id = ?",
-        &db_params![user_id, conversation_id])
-        .await
-        .unwrap_or(0);
+                &db_params![user_id, conversation_id],
+            )
+            .await
+            .unwrap_or(0);
         Ok(used)
     }
 
@@ -680,10 +732,14 @@ impl BillingService {
     }
 
     async fn department_budget_cap(&self, department_id: &str) -> Result<Option<i64>, BillingError> {
-        let cap: Option<Option<i64>> =
-            self.db.fetch_optional_scalar("SELECT cost_cap_micros FROM one_department_budgets WHERE department_id = ?", &db_params![department_id])
-                .await
-                .unwrap_or(None);
+        let cap: Option<Option<i64>> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT cost_cap_micros FROM one_department_budgets WHERE department_id = ?",
+                &db_params![department_id],
+            )
+            .await
+            .unwrap_or(None);
         Ok(cap.flatten())
     }
 
@@ -693,12 +749,15 @@ impl BillingService {
     /// denormalized rather than resolved live from `one_user_org`.
     async fn department_budget_used_micros(&self, department_id: &str) -> Result<i64, BillingError> {
         let since = now_ms() - BUDGET_WINDOW_MS;
-        let used: i64 = self.db.fetch_one_scalar(
-            "SELECT CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED) FROM one_usage_events \
+        let used: i64 = self
+            .db
+            .fetch_one_scalar(
+                "SELECT CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED) FROM one_usage_events \
              WHERE department_id = ? AND created_at >= ?",
-        &db_params![department_id, since])
-        .await
-        .unwrap_or(0);
+                &db_params![department_id, since],
+            )
+            .await
+            .unwrap_or(0);
         Ok(used)
     }
 
@@ -706,11 +765,14 @@ impl BillingService {
     /// with current-window spend (T7 dashboard). Departments with no cap and
     /// no spend simply do not appear — nothing to show an admin about them.
     pub async fn list_department_budgets(&self, enterprise_id: &str) -> Result<Vec<DepartmentBudgetDto>, BillingError> {
-        let rows: Vec<(String, Option<i64>)> = self.db.fetch_all_as::<(String, Option<i64>)>(
-            "SELECT department_id, cost_cap_micros FROM one_department_budgets \
+        let rows: Vec<(String, Option<i64>)> = self
+            .db
+            .fetch_all_as::<(String, Option<i64>)>(
+                "SELECT department_id, cost_cap_micros FROM one_department_budgets \
              WHERE enterprise_id = ? ORDER BY updated_at DESC",
-        &db_params![enterprise_id])
-        .await?;
+                &db_params![enterprise_id],
+            )
+            .await?;
         let mut out = Vec::with_capacity(rows.len());
         for (department_id, cost_cap_micros) in rows {
             let cost_used_micros = self.department_budget_used_micros(&department_id).await?;
@@ -726,9 +788,13 @@ impl BillingService {
     /// T8: whether this company has opted into storing generation prompts.
     /// Absent row = default = never store them.
     pub async fn media_ledger_retain_prompts(&self, enterprise_id: &str) -> Result<bool, BillingError> {
-        let retain: Option<bool> =
-            self.db.fetch_optional_scalar("SELECT retain_prompts FROM one_media_ledger_settings WHERE enterprise_id = ?", &db_params![enterprise_id])
-                .await?;
+        let retain: Option<bool> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT retain_prompts FROM one_media_ledger_settings WHERE enterprise_id = ?",
+                &db_params![enterprise_id],
+            )
+            .await?;
         Ok(retain.unwrap_or(false))
     }
 
@@ -1084,7 +1150,11 @@ impl BillingService {
             )
             .await?;
         }
-        for table in ["one_media_assets", "one_media_ledger_settings", "one_license_activation"] {
+        for table in [
+            "one_media_assets",
+            "one_media_ledger_settings",
+            "one_license_activation",
+        ] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE enterprise_id = ?"),
                 &db_params![enterprise_id],
@@ -1172,7 +1242,9 @@ impl BillingService {
              FROM one_usage_events WHERE enterprise_id = ? AND created_at >= ? \
              GROUP BY k ORDER BY COUNT(*) DESC"
         );
-        let rows: Vec<(String, i64, i64, i64)> = self.db.fetch_all_as::<(String, i64, i64, i64)>(&sql, &db_params![enterprise_id, since_ms])
+        let rows: Vec<(String, i64, i64, i64)> = self
+            .db
+            .fetch_all_as::<(String, i64, i64, i64)>(&sql, &db_params![enterprise_id, since_ms])
             .await?;
         Ok(rows
             .into_iter()
@@ -1211,7 +1283,12 @@ impl BillingService {
         }
 
         let count_sql = format!("SELECT COUNT(*) FROM one_usage_events {where_sql}");
-        let mut params = Vec::from(db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms]);
+        let mut params = Vec::from(db_params![
+            scope.enterprise_id(),
+            scope.tenant_bind(),
+            scope.tenant_bind(),
+            since_ms
+        ]);
         if let Some(u) = user_id {
             params.push(u.into());
         }
@@ -1304,13 +1381,28 @@ impl BillingService {
         let Some(enterprise_id) = self.resolve_enterprise_id(&user_id).await? else {
             return Ok(());
         };
-        self.db.execute(
-            "INSERT INTO one_llm_calls \
+        self.db
+            .execute(
+                "INSERT INTO one_llm_calls \
                 (id, enterprise_id, user_id, conversation_id, model, provider, tool_name, \
                  input_tokens, output_tokens, duration_ms, error, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        &db_params![generate_prefixed_id("llmcall"), &enterprise_id, &user_id, conversation_id, model, provider, tool_name, input_tokens, output_tokens, duration_ms, error, now_ms()])
-        .await?;
+                &db_params![
+                    generate_prefixed_id("llmcall"),
+                    &enterprise_id,
+                    &user_id,
+                    conversation_id,
+                    model,
+                    provider,
+                    tool_name,
+                    input_tokens,
+                    output_tokens,
+                    duration_ms,
+                    error,
+                    now_ms()
+                ],
+            )
+            .await?;
         Ok(())
     }
 
@@ -1341,7 +1433,12 @@ impl BillingService {
         }
 
         let count_sql = format!("SELECT COUNT(*) FROM one_llm_calls {where_sql}");
-                let mut params = Vec::from(db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms]);
+        let mut params = Vec::from(db_params![
+            scope.enterprise_id(),
+            scope.tenant_bind(),
+            scope.tenant_bind(),
+            since_ms
+        ]);
         if let Some(u) = user_id {
             params.push(u.into());
         }
@@ -1414,7 +1511,12 @@ impl BillingService {
     /// pass `now_ms() - LLM_CALL_RETENTION_DAYS * 24 * 3600 * 1000` (the admin
     /// endpoint does this when `beforeMs` is omitted).
     pub async fn purge_llm_calls_older_than(&self, enterprise_id: &str, before_ms: i64) -> Result<u64, BillingError> {
-        let result = self.db.execute("DELETE FROM one_llm_calls WHERE enterprise_id = ? AND created_at < ?", &db_params![enterprise_id, before_ms])
+        let result = self
+            .db
+            .execute(
+                "DELETE FROM one_llm_calls WHERE enterprise_id = ? AND created_at < ?",
+                &db_params![enterprise_id, before_ms],
+            )
             .await?;
         Ok(result)
     }
@@ -1441,20 +1543,36 @@ impl BillingService {
         // deliberately independent of `since`, which scopes the spend/token
         // dimensions: an admin paging back to last quarter still wants
         // "who is active this week" to mean this week.
-        let wau: i64 = self.db.fetch_one_scalar(
-            &format!(
-                "SELECT COUNT(DISTINCT user_id) FROM one_usage_events \
+        let wau: i64 = self
+            .db
+            .fetch_one_scalar(
+                &format!(
+                    "SELECT COUNT(DISTINCT user_id) FROM one_usage_events \
                 WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND created_at >= ?"
-            ),
-        &db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), now - SEVEN_DAYS_MS])
-        .await?;
-        let mau: i64 = self.db.fetch_one_scalar(
-            &format!(
-                "SELECT COUNT(DISTINCT user_id) FROM one_usage_events \
+                ),
+                &db_params![
+                    scope.enterprise_id(),
+                    scope.tenant_bind(),
+                    scope.tenant_bind(),
+                    now - SEVEN_DAYS_MS
+                ],
+            )
+            .await?;
+        let mau: i64 = self
+            .db
+            .fetch_one_scalar(
+                &format!(
+                    "SELECT COUNT(DISTINCT user_id) FROM one_usage_events \
                 WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND created_at >= ?"
-            ),
-        &db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), now - BUDGET_WINDOW_MS])
-        .await?;
+                ),
+                &db_params![
+                    scope.enterprise_id(),
+                    scope.tenant_bind(),
+                    scope.tenant_bind(),
+                    now - BUDGET_WINDOW_MS
+                ],
+            )
+            .await?;
 
         // Per-capita tokens: window total / window active users. Division by
         // zero yields 0 — an average over zero active users is not 0, it is
@@ -1467,7 +1585,12 @@ impl BillingService {
                     "SELECT COUNT(DISTINCT user_id), CAST(COALESCE(SUM(total_tokens), 0) AS SIGNED) \
                     FROM one_usage_events WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND created_at >= ?"
                 ),
-                &db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms],
+                &db_params![
+                    scope.enterprise_id(),
+                    scope.tenant_bind(),
+                    scope.tenant_bind(),
+                    since_ms
+                ],
             )
             .await?;
         let avg_tokens_per_user = if active_users > 0 {
@@ -1507,7 +1630,12 @@ impl BillingService {
                     "SELECT COUNT(*), COUNT(error) FROM one_llm_calls \
                     WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND created_at >= ?"
                 ),
-                &db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms],
+                &db_params![
+                    scope.enterprise_id(),
+                    scope.tenant_bind(),
+                    scope.tenant_bind(),
+                    since_ms
+                ],
             )
             .await?;
         let tool_success_rate = if llm_call_count > 0 {
@@ -1533,7 +1661,12 @@ impl BillingService {
                      FROM one_llm_calls \
                      WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND created_at >= ? AND duration_ms IS NOT NULL"
                 ),
-                &db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms],
+                &db_params![
+                    scope.enterprise_id(),
+                    scope.tenant_bind(),
+                    scope.tenant_bind(),
+                    since_ms
+                ],
             )
             .await?;
 
@@ -1602,35 +1735,61 @@ impl BillingService {
         let limit = limit.clamp(1, 200);
         let offset = offset.max(0);
 
-        let total: i64 = self.db.fetch_one_scalar(
-            &format!(
-                "SELECT COUNT(DISTINCT conversation_id) FROM one_usage_events \
+        let total: i64 = self
+            .db
+            .fetch_one_scalar(
+                &format!(
+                    "SELECT COUNT(DISTINCT conversation_id) FROM one_usage_events \
                 WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND created_at >= ? AND conversation_id IS NOT NULL"
-            ),
-        &db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms])
-        .await?;
+                ),
+                &db_params![
+                    scope.enterprise_id(),
+                    scope.tenant_bind(),
+                    scope.tenant_bind(),
+                    since_ms
+                ],
+            )
+            .await?;
 
         type Row = (String, String, i64, i64, i64, i64, i64);
-        let rows: Vec<Row> = self.db.fetch_all_as::<Row>(
-            &format!(
-                "SELECT conversation_id, MIN(user_id), COUNT(*), CAST(COALESCE(SUM(total_tokens), 0) AS SIGNED), \
+        let rows: Vec<Row> = self
+            .db
+            .fetch_all_as::<Row>(
+                &format!(
+                    "SELECT conversation_id, MIN(user_id), COUNT(*), CAST(COALESCE(SUM(total_tokens), 0) AS SIGNED), \
                 CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED), MIN(created_at), MAX(created_at) \
                 FROM one_usage_events \
                 WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND created_at >= ? AND conversation_id IS NOT NULL \
                 GROUP BY conversation_id ORDER BY MAX(created_at) DESC LIMIT ? OFFSET ?"
-            ),
-        &db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms, limit, offset])
-        .await?;
+                ),
+                &db_params![
+                    scope.enterprise_id(),
+                    scope.tenant_bind(),
+                    scope.tenant_bind(),
+                    since_ms,
+                    limit,
+                    offset
+                ],
+            )
+            .await?;
 
         let mut sessions = Vec::with_capacity(rows.len());
         for (conversation_id, user_id, turn_count, total_tokens, cost, first_seen_at, last_seen_at) in rows {
-            let models: Vec<String> = self.db.fetch_all_scalar(
-                &format!(
-                    "SELECT DISTINCT model FROM one_usage_events \
+            let models: Vec<String> = self
+                .db
+                .fetch_all_scalar(
+                    &format!(
+                        "SELECT DISTINCT model FROM one_usage_events \
                     WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND conversation_id = ? AND model IS NOT NULL"
-                ),
-            &db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), &conversation_id])
-            .await?;
+                    ),
+                    &db_params![
+                        scope.enterprise_id(),
+                        scope.tenant_bind(),
+                        scope.tenant_bind(),
+                        &conversation_id
+                    ],
+                )
+                .await?;
             sessions.push(AgentSessionDto {
                 conversation_id,
                 user_id,
@@ -1691,7 +1850,10 @@ impl BillingService {
             .await
             .unwrap_or(None);
         if company_role.as_deref() == Some("admin") {
-            return Ok(Some(AuditScope { enterprise_id, tenant_id: None }));
+            return Ok(Some(AuditScope {
+                enterprise_id,
+                tenant_id: None,
+            }));
         }
         // Active-tenant-aware role read, same shape one-devops / one-sso use.
         let row: Option<(String, String)> = self
@@ -1703,18 +1865,23 @@ impl BillingService {
             .await
             .unwrap_or(None);
         match row {
-            Some((role, tenant_id)) if role == "system_admin" => {
-                Ok(Some(AuditScope { enterprise_id, tenant_id: Some(tenant_id) }))
-            }
+            Some((role, tenant_id)) if role == "system_admin" => Ok(Some(AuditScope {
+                enterprise_id,
+                tenant_id: Some(tenant_id),
+            })),
             _ => Ok(None),
         }
     }
 
     pub async fn is_billing_admin(&self, user_id: &str) -> Result<bool, BillingError> {
-        let company_role: Option<String> =
-            self.db.fetch_optional_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ?", &db_params![user_id])
-                .await
-                .unwrap_or(None);
+        let company_role: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT role FROM one_enterprise_members WHERE user_id = ?",
+                &db_params![user_id],
+            )
+            .await
+            .unwrap_or(None);
         if company_role.as_deref() == Some("admin") {
             return Ok(true);
         }
@@ -1748,6 +1915,385 @@ fn percentile_of_sorted(sorted: &[i64], p: f64) -> Option<i64> {
     }
 }
 
+// --- P2-3: admin conversation audit (on_demand content reads + trail) ---
+
+/// One message of an uploaded audit snapshot (member → server, fulfilling
+/// an admin request). Same wire shape as the share upload, so the client
+/// can build both payloads with one helper.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditMessageInput {
+    /// Original local message id, kept in `messages.msg_id`.
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(rename = "type")]
+    pub message_type: String,
+    /// JSON blob, stored verbatim.
+    pub content: String,
+    /// `"left" | "right" | "center" | "pop"`.
+    #[serde(default)]
+    pub position: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<i64>,
+}
+
+/// One pending upload request, as the member's client polls it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationAuditRequestDto {
+    pub id: String,
+    pub conversation_id: String,
+    pub requested_by: String,
+    pub requested_at: i64,
+}
+
+/// An admin's audited view of one member conversation. Every construction
+/// of this value writes a `billing.conversation.read` audit row first —
+/// the audit capability is itself audited (P2-3).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditedConversationDto {
+    pub conversation_id: String,
+    pub owner_user_id: String,
+    pub name: String,
+    pub model: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    /// Latest page, ascending; `has_more_before` reports truncation.
+    pub messages: Vec<AuditedMessageDto>,
+    pub has_more_before: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditedMessageDto {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub message_type: String,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    pub created_at: i64,
+}
+
+impl BillingService {
+    fn conversation_repo(&self) -> Result<Arc<dyn dream_core_db::IConversationRepository>, BillingError> {
+        self.conversation
+            .clone()
+            .ok_or_else(|| BillingError::Internal("conversation repository is not wired".into()))
+    }
+
+    /// The repository speaks `DbError` (its backend is not necessarily the
+    /// same database as `self.db`).
+    fn repo_err(e: dream_core_db::DbError) -> BillingError {
+        BillingError::Internal(format!("conversation repository: {e}"))
+    }
+
+    /// Is `user_id` inside the caller's audit scope? Enterprise admins
+    /// (scope = whole company) reach every `one_enterprise_members` row of
+    /// their enterprise; group admins reach their own tenant only. This is
+    /// P1-1's scope split applied to CONTENT, not just metadata.
+    async fn user_in_audit_scope(&self, scope: &AuditScope, user_id: &str) -> Result<bool, BillingError> {
+        let in_scope: bool = if scope.tenant_id.is_none() {
+            self.db
+                .fetch_one_scalar(
+                    "SELECT COUNT(*) > 0 FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?",
+                    &db_params![user_id, scope.enterprise_id()],
+                )
+                .await?
+        } else {
+            self.db
+                .fetch_one_scalar(
+                    "SELECT COUNT(*) > 0 FROM one_user_org WHERE user_id = ? AND tenant_id = ?",
+                    &db_params![user_id, scope.tenant_bind()],
+                )
+                .await?
+        };
+        Ok(in_scope)
+    }
+
+    /// Audit-trail write for the P2-3 endpoints, best-effort like
+    /// one-org's own `audit()`: the read the admin already made is not
+    /// undone by the trail write failing, but the failure is loud in logs.
+    /// Rows land in one-org's `one_audit_logs` — same-layer crates talk raw
+    /// SQL to each other's tables for lookups this simple (same precedent
+    /// as employee's `user_org_role`).
+    async fn write_audit(
+        &self,
+        scope: &AuditScope,
+        actor_user_id: &str,
+        action: &str,
+        resource: &str,
+        latency_ms: Option<i64>,
+    ) {
+        let write = self
+            .db
+            .execute(
+                "INSERT INTO one_audit_logs \
+                 (id, tenant_id, user_id, username, action, resource, latency_ms, result, created_at) \
+                 VALUES (?, ?, ?, NULL, ?, ?, ?, 'success', ?)",
+                &db_params![
+                    generate_prefixed_id("audit"),
+                    scope.tenant_bind(),
+                    actor_user_id,
+                    action,
+                    resource,
+                    latency_ms,
+                    now_ms(),
+                ],
+            )
+            .await;
+        if let Err(e) = write {
+            tracing::warn!(error = %e, action, "billing audit write failed");
+        }
+    }
+
+    /// Admin asks for the content of a member conversation (the on_demand
+    /// tier). The member's client picks the request up on its next poll
+    /// (≤5 min, needs to be online — the P0-1 decision's constraint, no
+    /// reverse channel needed). Idempotent per (target, conversation): a
+    /// repeat request never queues twice.
+    pub async fn request_conversation_upload(
+        &self,
+        actor_user_id: &str,
+        target_user_id: &str,
+        conversation_id: &str,
+    ) -> Result<(), BillingError> {
+        let scope = self
+            .resolve_audit_scope(actor_user_id)
+            .await?
+            .ok_or_else(|| BillingError::Forbidden("conversation audit is admin-only".into()))?;
+        if !self.user_in_audit_scope(&scope, target_user_id).await? {
+            return Err(BillingError::Forbidden(
+                "target member is outside your audit scope".into(),
+            ));
+        }
+        let pending: Option<(String,)> = self
+            .db
+            .fetch_optional_as(
+                "SELECT id FROM one_conversation_audit_requests \
+                 WHERE target_user_id = ? AND conversation_id = ? AND fulfilled_at IS NULL",
+                &db_params![target_user_id, conversation_id],
+            )
+            .await?;
+        if pending.is_some() {
+            return Ok(());
+        }
+        self.db
+            .execute(
+                "INSERT INTO one_conversation_audit_requests \
+                 (id, enterprise_id, tenant_id, target_user_id, conversation_id, requested_by, requested_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                &db_params![
+                    generate_prefixed_id("audreq"),
+                    scope.enterprise_id(),
+                    scope.tenant_bind(),
+                    target_user_id,
+                    conversation_id,
+                    actor_user_id,
+                    now_ms(),
+                ],
+            )
+            .await?;
+        self.write_audit(&scope, actor_user_id, "billing.audit.request", conversation_id, None)
+            .await;
+        Ok(())
+    }
+
+    /// The member's pending upload requests — what the client polls.
+    pub async fn list_my_conversation_audit_requests(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<ConversationAuditRequestDto>, BillingError> {
+        let rows = self
+            .db
+            .fetch_all_as::<(String, String, String, i64)>(
+                "SELECT id, conversation_id, requested_by, requested_at \
+                 FROM one_conversation_audit_requests \
+                 WHERE target_user_id = ? AND fulfilled_at IS NULL ORDER BY requested_at DESC LIMIT 50",
+                &db_params![user_id],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, conversation_id, requested_by, requested_at)| ConversationAuditRequestDto {
+                    id,
+                    conversation_id,
+                    requested_by,
+                    requested_at,
+                },
+            )
+            .collect())
+    }
+
+    /// Member fulfils an upload request: store the conversation snapshot
+    /// under the member's own server identity, reusing the ORIGINAL
+    /// conversation id (the snapshot lives in a different database than
+    /// the member's local one, so the id cannot collide — and the admin
+    /// then reads by the very id they requested). Already-exists is fine:
+    /// the snapshot or a server-native conversation is already there.
+    pub async fn fulfil_conversation_audit_request(
+        &self,
+        user_id: &str,
+        request_id: &str,
+        name: &str,
+        messages: &[AuditMessageInput],
+    ) -> Result<(), BillingError> {
+        let Some(enterprise_id) = self.resolve_enterprise_id(user_id).await? else {
+            return Err(BillingError::Forbidden(
+                "personal accounts cannot upload conversation snapshots".into(),
+            ));
+        };
+        let row: Option<(String, String)> = self
+            .db
+            .fetch_optional_as(
+                "SELECT tenant_id, conversation_id FROM one_conversation_audit_requests \
+                 WHERE id = ? AND target_user_id = ? AND fulfilled_at IS NULL",
+                &db_params![request_id, user_id],
+            )
+            .await?;
+        let Some((tenant_id, conversation_id)) = row else {
+            return Err(BillingError::BadRequest("no such pending request".into()));
+        };
+        let repo = self.conversation_repo()?;
+        let exists = repo
+            .get(user_id, &conversation_id)
+            .await
+            .map_err(Self::repo_err)?
+            .is_some();
+        if !exists {
+            let now = now_ms() as i64;
+            let extra = serde_json::json!({
+                "auditSnapshot": true,
+                "conversationId": conversation_id,
+            });
+            repo.create(&dream_core_db::models::ConversationRow {
+                id: conversation_id.clone(),
+                user_id: user_id.to_owned(),
+                name: name.to_owned(),
+                r#type: "dream".to_owned(),
+                extra: extra.to_string(),
+                model: None,
+                status: Some("finished".to_owned()),
+                source: Some("audit".to_owned()),
+                channel_chat_id: None,
+                pinned: false,
+                pinned_at: None,
+                created_at: now,
+                updated_at: now,
+                project_id: None,
+                folder_id: None,
+                name_source: None,
+            })
+            .await
+            .map_err(Self::repo_err)?;
+            for message in messages {
+                repo.insert_message(
+                    user_id,
+                    &dream_core_db::models::MessageRow {
+                        id: generate_prefixed_id("msg"),
+                        conversation_id: conversation_id.clone(),
+                        msg_id: message.id.clone(),
+                        r#type: message.message_type.clone(),
+                        content: message.content.clone(),
+                        position: message.position.clone(),
+                        status: Some("finish".to_owned()),
+                        hidden: false,
+                        created_at: message.created_at.unwrap_or(now),
+                        backend_turn_id: None,
+                    },
+                )
+                .await
+                .map_err(Self::repo_err)?;
+            }
+        }
+        self.db
+            .execute(
+                "UPDATE one_conversation_audit_requests SET fulfilled_at = ? WHERE id = ?",
+                &db_params![now_ms(), request_id],
+            )
+            .await?;
+        let _ = (enterprise_id, tenant_id); // scope record kept for trail reads
+        Ok(())
+    }
+
+    /// Admin reads one member conversation's content. Scope comes from
+    /// P1-1's `resolve_audit_scope` (never re-derived here); the owner must
+    /// be inside it; and EVERY call — success or not is irrelevant, the
+    /// read itself happened — writes a `billing.conversation.read` row.
+    pub async fn audit_read_conversation(
+        &self,
+        actor_user_id: &str,
+        conversation_id: &str,
+    ) -> Result<AuditedConversationDto, BillingError> {
+        let started = std::time::Instant::now();
+        let scope = self
+            .resolve_audit_scope(actor_user_id)
+            .await?
+            .ok_or_else(|| BillingError::Forbidden("conversation audit is admin-only".into()))?;
+        let repo = self.conversation_repo()?;
+        let owner_user_id = repo
+            .owner_user_id(conversation_id)
+            .await
+            .map_err(Self::repo_err)?
+            .ok_or_else(|| BillingError::BadRequest("conversation not found".into()))?;
+        if !self.user_in_audit_scope(&scope, &owner_user_id).await? {
+            // Out of scope reads as "not found" — an admin learns nothing
+            // about conversations beyond their reach, not even existence.
+            return Err(BillingError::BadRequest("conversation not found".into()));
+        }
+        let conversation = repo
+            .get(&owner_user_id, conversation_id)
+            .await
+            .map_err(Self::repo_err)?
+            .ok_or_else(|| BillingError::BadRequest("conversation not found".into()))?;
+        let page = repo
+            .list_messages_page(
+                &owner_user_id,
+                conversation_id,
+                &dream_core_db::MessagePageParams {
+                    limit: 500,
+                    direction: dream_core_db::MessagePageDirection::InitialLatest,
+                },
+            )
+            .await
+            .map_err(Self::repo_err)?;
+        let latency_ms = started.elapsed().as_millis() as i64;
+        self.write_audit(
+            &scope,
+            actor_user_id,
+            "billing.conversation.read",
+            conversation_id,
+            Some(latency_ms),
+        )
+        .await;
+        Ok(AuditedConversationDto {
+            conversation_id: conversation.id,
+            owner_user_id: conversation.user_id,
+            name: conversation.name,
+            model: conversation.model,
+            created_at: conversation.created_at,
+            updated_at: conversation.updated_at,
+            messages: page
+                .items
+                .into_iter()
+                .map(|message| AuditedMessageDto {
+                    id: message.id,
+                    message_type: message.r#type,
+                    content: message.content,
+                    position: message.position,
+                    status: message.status,
+                    created_at: message.created_at,
+                })
+                .collect(),
+            has_more_before: page.has_more_before,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1762,18 +2308,27 @@ mod tests {
         crate::migrate::run_one_billing_migrations(&dream_core_db::DbPool::Sqlite(pool.clone()))
             .await
             .unwrap();
-        let svc = BillingService::new(dream_core_db::DbPool::Sqlite(pool.clone()), Arc::new(ManualBillingProvider));
+        let svc = BillingService::new(
+            dream_core_db::DbPool::Sqlite(pool.clone()),
+            Arc::new(ManualBillingProvider),
+        );
         (svc, pool)
     }
 
     /// A company admin's scope: the whole company, no group restriction.
     fn company(enterprise_id: &str) -> AuditScope {
-        AuditScope { enterprise_id: enterprise_id.to_owned(), tenant_id: None }
+        AuditScope {
+            enterprise_id: enterprise_id.to_owned(),
+            tenant_id: None,
+        }
     }
 
     /// A project-group admin's scope: one group of that company.
     fn group(enterprise_id: &str, tenant_id: &str) -> AuditScope {
-        AuditScope { enterprise_id: enterprise_id.to_owned(), tenant_id: Some(tenant_id.to_owned()) }
+        AuditScope {
+            enterprise_id: enterprise_id.to_owned(),
+            tenant_id: Some(tenant_id.to_owned()),
+        }
     }
 
     /// Real MySQL: exercises `set_tier`'s and `set_department_budget`'s
@@ -1797,7 +2352,9 @@ mod tests {
         .execute(mysql_db.pool.mysql())
         .await
         .unwrap();
-        crate::migrate::run_one_billing_migrations(&mysql_db.pool).await.unwrap();
+        crate::migrate::run_one_billing_migrations(&mysql_db.pool)
+            .await
+            .unwrap();
         let svc = BillingService::new(mysql_db.pool.clone(), Arc::new(ManualBillingProvider));
 
         // Insert, then update-on-conflict (same enterprise_id).
@@ -1806,8 +2363,12 @@ mod tests {
         let license = svc.license_of("ent1").await.unwrap();
         assert_eq!(license.seat_limit, Some(10));
 
-        svc.set_department_budget("ent1", "dept1", Some(1_000_000)).await.unwrap();
-        svc.set_department_budget("ent1", "dept1", Some(2_000_000)).await.unwrap();
+        svc.set_department_budget("ent1", "dept1", Some(1_000_000))
+            .await
+            .unwrap();
+        svc.set_department_budget("ent1", "dept1", Some(2_000_000))
+            .await
+            .unwrap();
         let budgets = svc.list_department_budgets("ent1").await.unwrap();
         let dept1 = budgets.iter().find(|d| d.department_id == "dept1").unwrap();
         assert_eq!(dept1.cost_cap_micros, Some(2_000_000));
@@ -2137,7 +2698,10 @@ mod tests {
         assert_eq!(summary.by_model.len(), 2);
         // The raw row keeps the column verbatim — the frontend, not this
         // crate, strips the `prov_chan_` prefix and resolves display names.
-        let page = svc.list_usage_events(&company("ent1"), 0, None, None, 50, 0).await.unwrap();
+        let page = svc
+            .list_usage_events(&company("ent1"), 0, None, None, 50, 0)
+            .await
+            .unwrap();
         let event = page
             .events
             .iter()
@@ -2158,7 +2722,8 @@ mod tests {
     /// surface; its write path (`record_llm_call` / `record_turn`) is covered
     /// by its own tests, so these bypass enterprise resolution and place rows
     /// with exact timestamps — percentile and window math needs that control.
-    async fn add_usage_event_at(sqlite: &sqlx::SqlitePool, 
+    async fn add_usage_event_at(
+        sqlite: &sqlx::SqlitePool,
         svc: &BillingService,
         enterprise_id: &str,
         user_id: &str,
@@ -2179,7 +2744,8 @@ mod tests {
         .unwrap();
     }
 
-    async fn add_llm_call_at(sqlite: &sqlx::SqlitePool, 
+    async fn add_llm_call_at(
+        sqlite: &sqlx::SqlitePool,
         svc: &BillingService,
         enterprise_id: &str,
         duration_ms: Option<i64>,
@@ -2393,7 +2959,9 @@ mod tests {
         .execute(mysql_db.pool.mysql())
         .await
         .unwrap();
-        crate::migrate::run_one_billing_migrations(&mysql_db.pool).await.unwrap();
+        crate::migrate::run_one_billing_migrations(&mysql_db.pool)
+            .await
+            .unwrap();
         let svc = BillingService::new(mysql_db.pool.clone(), Arc::new(ManualBillingProvider));
 
         // Zero data: the report must build without erroring (this is the exact
@@ -2473,7 +3041,10 @@ mod tests {
             .await
             .unwrap();
 
-        let all = svc.list_usage_events(&company("ent1"), 0, None, None, 50, 0).await.unwrap();
+        let all = svc
+            .list_usage_events(&company("ent1"), 0, None, None, 50, 0)
+            .await
+            .unwrap();
         assert_eq!(all.total, 4);
         assert_eq!(all.events.len(), 4);
         // Newest first.
@@ -2486,8 +3057,14 @@ mod tests {
         assert_eq!(by_model.total, 1);
         assert_eq!(by_model.events[0].model.as_deref(), Some("gpt-4"));
 
-        let page1 = svc.list_usage_events(&company("ent1"), 0, None, None, 2, 0).await.unwrap();
-        let page2 = svc.list_usage_events(&company("ent1"), 0, None, None, 2, 2).await.unwrap();
+        let page1 = svc
+            .list_usage_events(&company("ent1"), 0, None, None, 2, 0)
+            .await
+            .unwrap();
+        let page2 = svc
+            .list_usage_events(&company("ent1"), 0, None, None, 2, 2)
+            .await
+            .unwrap();
         assert_eq!(
             page1.total, 4,
             "total reflects the whole filtered set, not just this page"
@@ -2519,7 +3096,10 @@ mod tests {
             .await
             .unwrap();
 
-        let ent1_events = svc.list_usage_events(&company("ent1"), 0, None, None, 50, 0).await.unwrap();
+        let ent1_events = svc
+            .list_usage_events(&company("ent1"), 0, None, None, 50, 0)
+            .await
+            .unwrap();
         assert_eq!(ent1_events.total, 1);
         assert_eq!(ent1_events.events[0].user_id, "alice");
     }
@@ -2888,23 +3468,40 @@ mod tests {
         .await
         .unwrap();
 
-        svc.record_turn("alice", Some("conv_a"), Some("m"), None, Some(10), Some(10)).await.unwrap();
-        svc.record_turn("bob", Some("conv_b"), Some("m"), None, Some(10), Some(10)).await.unwrap();
+        svc.record_turn("alice", Some("conv_a"), Some("m"), None, Some(10), Some(10))
+            .await
+            .unwrap();
+        svc.record_turn("bob", Some("conv_b"), Some("m"), None, Some(10), Some(10))
+            .await
+            .unwrap();
 
         // Company admin: both groups.
         let all = svc.list_sessions(&company("entX"), 0, 50, 0).await.unwrap();
         let seen: Vec<&str> = all.sessions.iter().map(|s| s.conversation_id.as_str()).collect();
-        assert!(seen.contains(&"conv_a") && seen.contains(&"conv_b"), "company admin sees the company: {seen:?}");
+        assert!(
+            seen.contains(&"conv_a") && seen.contains(&"conv_b"),
+            "company admin sees the company: {seen:?}"
+        );
 
         // Group admin of `ta`: their own group only.
         let mine = svc.list_sessions(&group("entX", "ta"), 0, 50, 0).await.unwrap();
         let seen: Vec<&str> = mine.sessions.iter().map(|s| s.conversation_id.as_str()).collect();
-        assert_eq!(seen, vec!["conv_a"], "a group admin must not see another group's sessions");
+        assert_eq!(
+            seen,
+            vec!["conv_a"],
+            "a group admin must not see another group's sessions"
+        );
         assert_eq!(mine.total, 1, "the total must be scoped too, not just the page");
 
         // Same boundary on the finer-grained surfaces.
-        let events = svc.list_usage_events(&group("entX", "ta"), 0, None, None, 50, 0).await.unwrap();
-        assert!(events.events.iter().all(|e| e.user_id == "alice"), "usage events leak across groups");
+        let events = svc
+            .list_usage_events(&group("entX", "ta"), 0, None, None, 50, 0)
+            .await
+            .unwrap();
+        assert!(
+            events.events.iter().all(|e| e.user_id == "alice"),
+            "usage events leak across groups"
+        );
         assert_eq!(events.total, 1);
 
         let report = svc.enterprise_report(&group("entX", "ta"), 0).await.unwrap();
@@ -2937,7 +3534,10 @@ mod tests {
         let lead = svc.resolve_audit_scope("lead").await.unwrap().expect("group admin");
         assert_eq!(lead.tenant_id.as_deref(), Some("tz"));
 
-        assert!(svc.resolve_audit_scope("plain").await.unwrap().is_none(), "a member may not audit");
+        assert!(
+            svc.resolve_audit_scope("plain").await.unwrap().is_none(),
+            "a member may not audit"
+        );
         assert!(
             svc.resolve_audit_scope("nobody").await.unwrap().is_none(),
             "a personal user has no company to audit"
@@ -3650,7 +4250,10 @@ mod tests {
         svc.record_llm_call(llm_call("alice", "claude-opus-4-8")).await.unwrap();
         svc.record_llm_call(llm_call("alice", "gpt-4")).await.unwrap();
 
-        let all = svc.list_llm_calls(&company("ent1"), 0, None, None, 50, 0).await.unwrap();
+        let all = svc
+            .list_llm_calls(&company("ent1"), 0, None, None, 50, 0)
+            .await
+            .unwrap();
         assert_eq!(all.total, 3);
         assert_eq!(all.calls.len(), 3);
         let first = &all.calls[0];
@@ -3662,11 +4265,17 @@ mod tests {
         assert_eq!(first.duration_ms, Some(120));
         assert!(first.error.is_none());
 
-        let by_model = svc.list_llm_calls(&company("ent1"), 0, None, Some("gpt-4"), 50, 0).await.unwrap();
+        let by_model = svc
+            .list_llm_calls(&company("ent1"), 0, None, Some("gpt-4"), 50, 0)
+            .await
+            .unwrap();
         assert_eq!(by_model.total, 1);
         assert_eq!(by_model.calls[0].model.as_deref(), Some("gpt-4"));
 
-        let by_user = svc.list_llm_calls(&company("ent1"), 0, Some("alice"), None, 50, 0).await.unwrap();
+        let by_user = svc
+            .list_llm_calls(&company("ent1"), 0, Some("alice"), None, 50, 0)
+            .await
+            .unwrap();
         assert_eq!(by_user.total, 3);
 
         // `since` excludes everything stamped before it: push one row into the
@@ -3678,7 +4287,14 @@ mod tests {
             .await
             .unwrap();
         let recent = svc
-            .list_llm_calls(&company("ent1"), dream_core_common::now_ms() - 60_000, None, None, 50, 0)
+            .list_llm_calls(
+                &company("ent1"),
+                dream_core_common::now_ms() - 60_000,
+                None,
+                None,
+                50,
+                0,
+            )
             .await
             .unwrap();
         assert_eq!(recent.total, 2, "the pre-since row must be excluded");
@@ -3773,7 +4389,10 @@ mod tests {
         .await
         .unwrap();
 
-        let page = svc.list_llm_calls(&company("ent1"), 0, None, None, 50, 0).await.unwrap();
+        let page = svc
+            .list_llm_calls(&company("ent1"), 0, None, None, 50, 0)
+            .await
+            .unwrap();
         assert_eq!(page.total, 2, "the failed call is listed beside the good one");
         let failed = &page.calls[0];
         assert_eq!(failed.error.as_deref(), Some("429 rate limited"));
@@ -3838,7 +4457,9 @@ mod tests {
         .execute(mysql_db.pool.mysql())
         .await
         .unwrap();
-        crate::migrate::run_one_billing_migrations(&mysql_db.pool).await.unwrap();
+        crate::migrate::run_one_billing_migrations(&mysql_db.pool)
+            .await
+            .unwrap();
         let svc = BillingService::new(mysql_db.pool.clone(), Arc::new(ManualBillingProvider));
 
         svc.ensure_default_license("ent-boot").await.unwrap();
@@ -3848,5 +4469,115 @@ mod tests {
         assert_eq!(license.seat_limit, None);
 
         mysql_db.cleanup().await.unwrap();
+    }
+
+    /// P2-3 fixture: billing tables + the enterprise membership rows the
+    /// audit scope reads, a conversation-repo-shaped main schema (billing
+    /// migrations never create conversations/messages — under MySQL the
+    /// repo lives on a different backend entirely), and the repo wired.
+    async fn audit_service() -> (BillingService, sqlx::SqlitePool) {
+        let (mut svc, pool) = service().await;
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY NOT NULL, user_id TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, extra TEXT NOT NULL DEFAULT '{}', model TEXT, status TEXT, source TEXT, channel_chat_id TEXT, pinned INTEGER NOT NULL DEFAULT 0, pinned_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, project_id TEXT, folder_id TEXT, name_source TEXT);
+             CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY NOT NULL, conversation_id TEXT NOT NULL, msg_id TEXT, type TEXT NOT NULL, content TEXT NOT NULL DEFAULT '{}', position TEXT, status TEXT, hidden INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, backend_turn_id TEXT);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (user, role) in [("admin-1", "admin"), ("member-1", "member")] {
+            sqlx::query(
+                "INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at) VALUES (?, 'ent-1', ?, 1)",
+            )
+            .bind(user)
+            .bind(role)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let repo = dream_core_db::SqliteConversationRepository::new(pool.clone());
+        svc = svc.with_conversation_repo(std::sync::Arc::new(repo));
+        (svc, pool)
+    }
+
+    fn audit_messages() -> Vec<AuditMessageInput> {
+        vec![
+            AuditMessageInput {
+                id: Some("local-1".into()),
+                message_type: "text".into(),
+                content: r#"{"text":"hello"}"#.into(),
+                position: Some("right".into()),
+                created_at: Some(100),
+            },
+            AuditMessageInput {
+                id: None,
+                message_type: "text".into(),
+                content: r#"{"text":"hi"}"#.into(),
+                position: Some("left".into()),
+                created_at: Some(101),
+            },
+        ]
+    }
+
+    /// The on_demand loop end-to-end: enterprise admin requests a member
+    /// conversation, the member's client fulfils it by uploading the
+    /// snapshot (which keeps the ORIGINAL conversation id), and the admin
+    /// then reads it back by that same id. Repeat requests stay deduped,
+    /// and a fulfilled request never reappears in the member's poll.
+    #[tokio::test]
+    async fn audit_request_roundtrip_from_request_to_read() {
+        let (svc, pool) = audit_service().await;
+
+        // A personal user is neither admin nor target: refused outright.
+        assert!(
+            svc.request_conversation_upload("nobody", "member-1", "conv-1")
+                .await
+                .is_err()
+        );
+
+        svc.request_conversation_upload("admin-1", "member-1", "conv-1")
+            .await
+            .unwrap();
+        svc.request_conversation_upload("admin-1", "member-1", "conv-1")
+            .await
+            .unwrap();
+        let pending = svc.list_my_conversation_audit_requests("member-1").await.unwrap();
+        assert_eq!(pending.len(), 1, "repeat request is deduped");
+        assert_eq!(pending[0].conversation_id, "conv-1");
+
+        svc.fulfil_conversation_audit_request("member-1", &pending[0].id, "Ops chat", &audit_messages())
+            .await
+            .unwrap();
+        assert!(
+            svc.list_my_conversation_audit_requests("member-1")
+                .await
+                .unwrap()
+                .is_empty(),
+            "fulfilled request leaves the poll"
+        );
+
+        // The snapshot exists under the member, with the original id, and
+        // the admin reads it back through the audited path.
+        let view = svc.audit_read_conversation("admin-1", "conv-1").await.unwrap();
+        assert_eq!(view.owner_user_id, "member-1");
+        assert_eq!(view.name, "Ops chat");
+        assert_eq!(view.messages.len(), 2);
+        assert_eq!(view.messages[0].message_type, "text");
+
+        // A member is not an admin: the read path refuses (scope is
+        // resolve_audit_scope's to decide, P1-1 style).
+        assert!(svc.audit_read_conversation("member-1", "conv-1").await.is_err());
+
+        // An out-of-scope target never gets a request row.
+        sqlx::query(
+            "INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at) VALUES ('outsider', 'ent-2', 'member', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(
+            svc.request_conversation_upload("admin-1", "outsider", "conv-2")
+                .await
+                .is_err(),
+        );
     }
 }

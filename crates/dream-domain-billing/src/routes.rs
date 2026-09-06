@@ -3,7 +3,7 @@
 //! authenticated member (they return `null` / a manual message for personal
 //! users); `usage` and `tier` require a billing admin.
 
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
 use serde::Deserialize;
@@ -12,6 +12,8 @@ use dream_core_api_types::ApiResponse;
 use dream_core_auth::CurrentUser;
 use dream_core_common::license::Tier;
 use dream_core_common::now_ms;
+
+use crate::service::{AuditMessageInput, AuditedConversationDto, ConversationAuditRequestDto};
 
 use crate::error::BillingError;
 use crate::models::{
@@ -42,6 +44,21 @@ pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
         .route("/api/one/billing/webhook", post(billing_webhook))
         .route("/api/one/billing/media-precheck", post(billing_media_precheck))
         .route("/api/one/billing/media-usage", post(billing_media_usage))
+        .route("/api/one/billing/client-usage", post(billing_client_usage))
+        // P2-3 admin audit: request member conversation content (on_demand),
+        // then read it — every read is audited (see the service impl).
+        .route(
+            "/api/one/billing/audit/conversation-requests",
+            post(billing_request_conversation_upload).get(billing_my_audit_requests),
+        )
+        .route(
+            "/api/one/billing/audit/conversation-requests/{request_id}/fulfil",
+            post(billing_fulfil_audit_request),
+        )
+        .route(
+            "/api/one/billing/audit/conversations/{conversation_id}/messages",
+            get(billing_audit_read_conversation),
+        )
         .route(
             "/api/one/billing/department-budgets",
             get(billing_list_department_budgets).put(billing_set_department_budget),
@@ -158,8 +175,63 @@ async fn billing_media_usage(
     Ok(Json(ApiResponse::ok(())))
 }
 
-/// The license currently backing the plan, or `null` if none was ever
-/// activated (or the caller is a personal user).
+/// Whether a client-reported usage row claims a company channel. A call that
+/// went through the model proxy is recorded server-side (P1-2); a client
+/// report for one is either a buggy reporter or a tampered one, and recording
+/// it would double-count the call against the spend cap.
+fn is_company_channel_report(channel_id: Option<&str>) -> bool {
+    channel_id.is_some_and(|channel| channel.starts_with("prov_chan_"))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClientUsageBody {
+    model: Option<String>,
+    /// Raw `providers.id` of the LOCAL configuration that served the call,
+    /// verbatim — the same convention the conversation path records. This is
+    /// the source marker: `prov_chan_<id>` means "company channel, the proxy
+    /// already meters this" (the row is dropped, see
+    /// [`is_company_channel_report`]); anything else is a personal
+    /// configuration the proxy never saw, which is exactly what this endpoint
+    /// exists for (P2-1).
+    channel_id: Option<String>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    /// Attribution, not content — same role as in `media-usage`.
+    conversation_id: Option<String>,
+}
+
+/// Report one LLM call the member's client made OUTSIDE any company channel
+/// (P2-1): personal API keys, local gateways — usage the server has no other
+/// way to see. Best-effort by contract: the client swallows transport errors
+/// and re-reports nothing, so an at-least-once duplicate here is accepted the
+/// same way media-usage accepts one.
+async fn billing_client_usage(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<ClientUsageBody>,
+) -> Result<Json<ApiResponse<()>>, BillingError> {
+    // A personal user has no company ledger to land in; a NULL-enterprise row
+    // would only clutter the tables this member can never query.
+    if state.service.resolve_enterprise_id(&user.id).await?.is_none() {
+        return Ok(Json(ApiResponse::ok(())));
+    }
+    if is_company_channel_report(body.channel_id.as_deref()) {
+        return Ok(Json(ApiResponse::ok(())));
+    }
+    state
+        .service
+        .record_turn(
+            &user.id,
+            body.conversation_id.as_deref(),
+            body.model.as_deref(),
+            body.channel_id.as_deref(),
+            body.input_tokens,
+            body.output_tokens,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
 async fn billing_get_license(
     State(state): State<OneBillingRouterState>,
     Extension(user): Extension<CurrentUser>,
@@ -303,7 +375,14 @@ async fn billing_usage_events(
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .list_usage_events(&scope, since, q.user_id.as_deref(), q.model.as_deref(), q.limit, q.offset)
+            .list_usage_events(
+                &scope,
+                since,
+                q.user_id.as_deref(),
+                q.model.as_deref(),
+                q.limit,
+                q.offset,
+            )
             .await?,
     )))
 }
@@ -346,7 +425,14 @@ async fn billing_llm_calls(
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .list_llm_calls(&scope, since, q.user_id.as_deref(), q.model.as_deref(), q.limit, q.offset)
+            .list_llm_calls(
+                &scope,
+                since,
+                q.user_id.as_deref(),
+                q.model.as_deref(),
+                q.limit,
+                q.offset,
+            )
             .await?,
     )))
 }
@@ -716,5 +802,101 @@ async fn billing_set_department_budget(
         .await?;
     Ok(Json(ApiResponse::ok(
         state.service.list_department_budgets(&eid).await?,
+    )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_company_channel_report;
+
+    /// The dedup contract of P2-1, pinned: only the `prov_chan_` prefix (the
+    /// managed-provider id form the model proxy meters authoritatively) may
+    /// suppress a client report — a personal provider id that merely
+    /// CONTAINS the substring, or a NULL one, is exactly the traffic this
+    /// endpoint exists to record.
+    #[test]
+    fn only_managed_provider_ids_count_as_company_channel_reports() {
+        assert!(is_company_channel_report(Some("prov_chan_abc123")));
+        assert!(is_company_channel_report(Some("prov_chan_")));
+        assert!(!is_company_channel_report(None));
+        assert!(!is_company_channel_report(Some("prov_local_key")));
+        assert!(!is_company_channel_report(Some("my prov_chan_ nickname")));
+        assert!(!is_company_channel_report(Some("provider-2")));
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationAuditRequestBody {
+    target_user_id: String,
+    /// The conversation id the admin wants. For a client-mode member this
+    /// is their LOCAL conversation id; the uploaded snapshot reuses it.
+    conversation_id: String,
+}
+
+/// Admin: request the content of a member conversation (on_demand tier).
+async fn billing_request_conversation_upload(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<ConversationAuditRequestBody>,
+) -> Result<Json<ApiResponse<()>>, BillingError> {
+    state
+        .service
+        .request_conversation_upload(&user.id, &body.target_user_id, &body.conversation_id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+/// Member: the admin content requests awaiting this client (the poll the
+/// 5-minute sync loop piggybacks on).
+async fn billing_my_audit_requests(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<ConversationAuditRequestDto>>>, BillingError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_my_conversation_audit_requests(&user.id).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationAuditFulfilBody {
+    #[serde(default)]
+    name: Option<String>,
+    messages: Vec<AuditMessageInput>,
+}
+
+/// Member: fulfil a request by uploading the conversation snapshot.
+async fn billing_fulfil_audit_request(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(request_id): Path<String>,
+    Json(body): Json<ConversationAuditFulfilBody>,
+) -> Result<Json<ApiResponse<()>>, BillingError> {
+    state
+        .service
+        .fulfil_conversation_audit_request(
+            &user.id,
+            &request_id,
+            body.name.as_deref().unwrap_or("Uploaded conversation"),
+            &body.messages,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+/// Admin: read one member conversation's content. Every call writes a
+/// `billing.conversation.read` audit row (who/when/whose) — the audit
+/// capability is itself audited.
+async fn billing_audit_read_conversation(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(conversation_id): Path<String>,
+) -> Result<Json<ApiResponse<AuditedConversationDto>>, BillingError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .audit_read_conversation(&user.id, &conversation_id)
+            .await?,
     )))
 }
