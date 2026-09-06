@@ -15,6 +15,7 @@ use crate::error::EmployeeError;
 use crate::models::{EmployeeGrantRow, EmployeeRunRow, PersonalAgentDto};
 use crate::service::{CreateEmployeeInput, ScheduleInput, UpdateEmployeeInput};
 use crate::state::OneEmployeeRouterState;
+use crate::team_sync::{TeamAgentPayload, TeamAgentSyncReport};
 
 pub fn one_employee_routes(state: OneEmployeeRouterState) -> Router {
     Router::new()
@@ -29,6 +30,13 @@ pub fn one_employee_routes(state: OneEmployeeRouterState) -> Router {
         .route("/api/one/employee/agents/{agent_id}/visibility", put(set_visibility))
         .route("/api/one/employee/agents/{agent_id}/runs", get(list_runs))
         .route("/api/one/employee/runs/{run_id}", get(get_run))
+        // Team-sync channel (P1-3): the client-mode desktop pushes the
+        // server's distributed employee view onto the LOCAL backend here,
+        // same shape as skills' /api/skills/team-sync and MCP's
+        // /api/mcp/team-sync. Mounted in every build on purpose — the crate
+        // is deliberately not enterprise-gated (see dream-core-app's
+        // Cargo.toml); personal deployments just never receive the call.
+        .route("/api/one/employee/team-sync", post(team_sync))
         // Admin registry + resource-authorization matrix (align-openocta §3,
         // delivery-gaps T4 step 2). Same admin gate devops uses for its own
         // registry writes (`require_registry_admin`) — direct SQL against
@@ -161,6 +169,70 @@ async fn create_agent(
 #[serde(rename_all = "camelCase")]
 struct SetVisibilityBody {
     visibility: String,
+}
+
+/// One team-distributed employee in the sync push (P1-3). Wire shape mirrors
+/// the server's `PersonalAgentDto` minus locally-meaningless fields — see
+/// `team_sync::TeamAgentPayload` for what is left out and why.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TeamSyncAgentBody {
+    id: String,
+    name: String,
+    description: Option<String>,
+    agent_type: String,
+    custom_agent_id: Option<String>,
+    cli_path: Option<String>,
+    assistant_id: Option<String>,
+    agent_id_override: Option<String>,
+    model_id: Option<String>,
+    /// dream only. `ProviderWithModel` has no `rename_all`, so its own keys
+    /// stay snake_case — same shape `create_agent` accepts.
+    model: Option<ProviderWithModel>,
+    automation_config: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TeamSyncBody {
+    #[serde(default)]
+    agents: Vec<TeamSyncAgentBody>,
+    /// True only when `agents` is the complete current server view (server
+    /// reachable). A non-authoritative pass writes without reconciling
+    /// removals, so an offline flush can never wipe the local cache.
+    #[serde(default)]
+    authoritative: bool,
+}
+
+async fn team_sync(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<TeamSyncBody>,
+) -> Result<Json<ApiResponse<TeamAgentSyncReport>>, EmployeeError> {
+    let tenant = state.tenant_of(&user.id).await;
+    let payloads: Vec<TeamAgentPayload> = body
+        .agents
+        .into_iter()
+        .map(|agent| TeamAgentPayload {
+            id: agent.id,
+            name: agent.name,
+            description: agent.description,
+            agent_type: agent.agent_type,
+            custom_agent_id: agent.custom_agent_id,
+            cli_path: agent.cli_path,
+            assistant_id: agent.assistant_id,
+            agent_id_override: agent.agent_id_override,
+            model_id: agent.model_id,
+            model: agent.model,
+            automation_config: agent.automation_config,
+        })
+        .collect();
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .sync_team_agents(&user.id, &tenant, &payloads, body.authoritative)
+            .await?,
+    )))
 }
 
 /// Share/unshare an employee within the owner's tenant. Owner-only.

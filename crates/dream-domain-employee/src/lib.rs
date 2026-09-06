@@ -16,6 +16,7 @@ pub mod models;
 pub mod routes;
 pub mod service;
 pub mod state;
+pub mod team_sync;
 pub mod tenant;
 
 pub use error::EmployeeError;
@@ -24,4 +25,5 @@ pub use models::CatalogEntryDto;
 pub use routes::one_employee_routes;
 pub use service::{EmployeeService, RunReply};
 pub use state::OneEmployeeRouterState;
+pub use team_sync::{TeamAgentPayload, TeamAgentSyncReport};
 pub use tenant::{DEFAULT_TENANT, TenantResolver};
