@@ -2785,7 +2785,7 @@ impl OrgService {
                    AND directory_map_root_external_id != ? \
                    AND directory_external_id IN ({placeholders}) LIMIT 1"
             );
-            let mut params = db_params![tenant_id, root_external_id];
+            let mut params = Vec::from(db_params![tenant_id, root_external_id]);
             for ext in &subtree_externals {
                 params.push(DbValue::Text((*ext).to_owned()));
             }

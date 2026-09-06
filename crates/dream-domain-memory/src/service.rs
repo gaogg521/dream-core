@@ -759,7 +759,7 @@ impl MemoryService {
              AND collection_id IN ({placeholders}) \
              ORDER BY created_at DESC, id DESC LIMIT ?"
         );
-        let mut params = db_params![tenant_id, query];
+        let mut params = Vec::from(db_params![tenant_id, query]);
         params.extend(collection_ids.iter().map(|id| id.as_str().into()));
         params.push(limit.into());
         let rows = self.db.fetch_all_as::<ItemRow>(&sql, &params).await?;
@@ -943,7 +943,7 @@ impl MemoryService {
              WHERE tenant_id = ? AND status = 'active' AND collection_id IN ({coll_ph}) AND ({where_any}) \
              ORDER BY ({score}) DESC, importance DESC, created_at DESC LIMIT ?"
         );
-        let mut params = db_params![tenant_id];
+        let mut params = Vec::from(db_params![tenant_id]);
         params.extend(collection_ids.iter().map(|id| id.as_str().into()));
         params.extend(terms.iter().map(|t| t.as_str().into())); // WHERE (…OR…)
         params.extend(terms.iter().map(|t| t.as_str().into())); // ORDER BY score

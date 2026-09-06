@@ -168,12 +168,21 @@ impl From<Option<f64>> for DbValue {
     }
 }
 
-/// Builds a `Vec<DbValue>` from expressions convertible via `From`:
+/// Builds a `[DbValue; N]` from expressions convertible via `From`:
 /// `db_params![tenant_id, "admin", Some(name.clone())]`.
+///
+/// An array rather than a `Vec` because nearly every call site is
+/// `&db_params![…]` — borrowed straight into a `&[DbValue]` parameter and
+/// never mutated. A `vec!` there allocates for the length of one query and
+/// drops it immediately, and clippy flags each one (`useless_vec`), which is
+/// where the bulk of this workspace's warning backlog came from.
+///
+/// The handful of call sites that DO mutate the list wrap it:
+/// `let mut params = Vec::from(db_params![…]); params.push(…);`
 #[macro_export]
 macro_rules! db_params {
     ($($v:expr),* $(,)?) => {
-        vec![$($crate::DbValue::from($v)),*]
+        [$($crate::DbValue::from($v)),*]
     };
 }
 
