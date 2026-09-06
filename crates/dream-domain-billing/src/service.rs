@@ -118,6 +118,36 @@ struct License {
 /// Rolling budget window (P1-2): 30 days.
 const BUDGET_WINDOW_MS: i64 = 30 * 24 * 3600 * 1000;
 
+/// Restricts a company-scoped audit query to one project group.
+///
+/// Appended immediately after `enterprise_id = ?` so the two binds it adds
+/// always sit in a known position, whatever else the statement goes on to
+/// bind (a `LIMIT ?`, an optional `user_id = ?`). Bound twice: the empty
+/// string disables the restriction, so one statement serves a company admin
+/// and a group admin with no dynamically built SQL.
+const AUDIT_TENANT_CLAUSE: &str =
+    " AND (? = '' OR user_id IN (SELECT user_id FROM one_user_org WHERE tenant_id = ?))";
+
+/// The slice of a company an admin may audit. See
+/// [`BillingService::resolve_audit_scope`].
+#[derive(Debug, Clone)]
+pub struct AuditScope {
+    pub enterprise_id: String,
+    /// `None` = the whole company; `Some` = this project group only.
+    pub tenant_id: Option<String>,
+}
+
+impl AuditScope {
+    pub fn enterprise_id(&self) -> &str {
+        &self.enterprise_id
+    }
+
+    /// The value bound twice by [`AUDIT_TENANT_CLAUSE`].
+    fn tenant_bind(&self) -> &str {
+        self.tenant_id.as_deref().unwrap_or("")
+    }
+}
+
 /// One completed media generation, as reported for metering.
 ///
 /// A struct rather than a positional argument list: these are seven mostly-
@@ -1162,7 +1192,7 @@ impl BillingService {
     /// so an unbounded query string can't force an unbounded response.
     pub async fn list_usage_events(
         &self,
-        enterprise_id: &str,
+        scope: &AuditScope,
         since_ms: i64,
         user_id: Option<&str>,
         model: Option<&str>,
@@ -1172,7 +1202,7 @@ impl BillingService {
         let limit = limit.clamp(1, 200);
         let offset = offset.max(0);
 
-        let mut where_sql = "WHERE enterprise_id = ? AND created_at >= ?".to_owned();
+        let mut where_sql = format!("WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND created_at >= ?");
         if user_id.is_some() {
             where_sql.push_str(" AND user_id = ?");
         }
@@ -1181,7 +1211,7 @@ impl BillingService {
         }
 
         let count_sql = format!("SELECT COUNT(*) FROM one_usage_events {where_sql}");
-        let mut params = db_params![enterprise_id, since_ms];
+        let mut params = db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms];
         if let Some(u) = user_id {
             params.push(u.into());
         }
@@ -1292,7 +1322,7 @@ impl BillingService {
     /// calls (`error IS NOT NULL`) are listed exactly like successful ones.
     pub async fn list_llm_calls(
         &self,
-        enterprise_id: &str,
+        scope: &AuditScope,
         since_ms: i64,
         user_id: Option<&str>,
         model: Option<&str>,
@@ -1302,7 +1332,7 @@ impl BillingService {
         let limit = limit.clamp(1, 200);
         let offset = offset.max(0);
 
-        let mut where_sql = "WHERE enterprise_id = ? AND created_at >= ?".to_owned();
+        let mut where_sql = format!("WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND created_at >= ?");
         if user_id.is_some() {
             where_sql.push_str(" AND user_id = ?");
         }
@@ -1311,7 +1341,7 @@ impl BillingService {
         }
 
         let count_sql = format!("SELECT COUNT(*) FROM one_llm_calls {where_sql}");
-                let mut params = db_params![enterprise_id, since_ms];
+                let mut params = db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms];
         if let Some(u) = user_id {
             params.push(u.into());
         }
@@ -1401,7 +1431,7 @@ impl BillingService {
     /// every derived field degrades to `null` / `0` rather than erroring.
     pub async fn enterprise_report(
         &self,
-        enterprise_id: &str,
+        scope: &AuditScope,
         since_ms: i64,
     ) -> Result<EnterpriseReportDto, BillingError> {
         let now = now_ms();
@@ -1412,14 +1442,18 @@ impl BillingService {
         // dimensions: an admin paging back to last quarter still wants
         // "who is active this week" to mean this week.
         let wau: i64 = self.db.fetch_one_scalar(
-            "SELECT COUNT(DISTINCT user_id) FROM one_usage_events \
-             WHERE enterprise_id = ? AND created_at >= ?",
-        &db_params![enterprise_id, now - SEVEN_DAYS_MS])
+            &format!(
+                "SELECT COUNT(DISTINCT user_id) FROM one_usage_events \
+                WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND created_at >= ?"
+            ),
+        &db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), now - SEVEN_DAYS_MS])
         .await?;
         let mau: i64 = self.db.fetch_one_scalar(
-            "SELECT COUNT(DISTINCT user_id) FROM one_usage_events \
-             WHERE enterprise_id = ? AND created_at >= ?",
-        &db_params![enterprise_id, now - BUDGET_WINDOW_MS])
+            &format!(
+                "SELECT COUNT(DISTINCT user_id) FROM one_usage_events \
+                WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND created_at >= ?"
+            ),
+        &db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), now - BUDGET_WINDOW_MS])
         .await?;
 
         // Per-capita tokens: window total / window active users. Division by
@@ -1429,9 +1463,11 @@ impl BillingService {
         let (active_users, window_tokens): (i64, i64) = self
             .db
             .fetch_one_as(
-                "SELECT COUNT(DISTINCT user_id), CAST(COALESCE(SUM(total_tokens), 0) AS SIGNED) \
-             FROM one_usage_events WHERE enterprise_id = ? AND created_at >= ?",
-                &db_params![enterprise_id, since_ms],
+                &format!(
+                    "SELECT COUNT(DISTINCT user_id), CAST(COALESCE(SUM(total_tokens), 0) AS SIGNED) \
+                    FROM one_usage_events WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND created_at >= ?"
+                ),
+                &db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms],
             )
             .await?;
         let avg_tokens_per_user = if active_users > 0 {
@@ -1445,10 +1481,12 @@ impl BillingService {
         // call count and unbounded, so the Top10 ordering is computed here
         // rather than re-sorted (and re-fetched in full) client-side.
         let top_rows: Vec<(String, i64, i64)> = self.db.fetch_all_as::<(String, i64, i64)>(
-            "SELECT user_id, CAST(COALESCE(SUM(total_tokens), 0) AS SIGNED), CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED) \
-             FROM one_usage_events WHERE enterprise_id = ? AND created_at >= ? \
-             GROUP BY user_id ORDER BY 2 DESC LIMIT 10",
-        &db_params![enterprise_id, since_ms])
+            &format!(
+                "SELECT user_id, CAST(COALESCE(SUM(total_tokens), 0) AS SIGNED), CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED) \
+                FROM one_usage_events WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND created_at >= ? \
+                GROUP BY user_id ORDER BY 2 DESC LIMIT 10"
+            ),
+        &db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms])
         .await?;
         let top_users = top_rows
             .into_iter()
@@ -1465,9 +1503,11 @@ impl BillingService {
         let (llm_call_count, llm_error_count): (i64, i64) = self
             .db
             .fetch_one_as(
-                "SELECT COUNT(*), COUNT(error) FROM one_llm_calls \
-             WHERE enterprise_id = ? AND created_at >= ?",
-                &db_params![enterprise_id, since_ms],
+                &format!(
+                    "SELECT COUNT(*), COUNT(error) FROM one_llm_calls \
+                    WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND created_at >= ?"
+                ),
+                &db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms],
             )
             .await?;
         let tool_success_rate = if llm_call_count > 0 {
@@ -1491,9 +1531,9 @@ impl BillingService {
                 &format!(
                     "SELECT {day_bucket} AS day, duration_ms \
                      FROM one_llm_calls \
-                     WHERE enterprise_id = ? AND created_at >= ? AND duration_ms IS NOT NULL"
+                     WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND created_at >= ? AND duration_ms IS NOT NULL"
                 ),
-                &db_params![enterprise_id, since_ms],
+                &db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms],
             )
             .await?;
 
@@ -1554,7 +1594,7 @@ impl BillingService {
     /// would mix unrelated turns together under a misleading shared identity.
     pub async fn list_sessions(
         &self,
-        enterprise_id: &str,
+        scope: &AuditScope,
         since_ms: i64,
         limit: i64,
         offset: i64,
@@ -1563,27 +1603,33 @@ impl BillingService {
         let offset = offset.max(0);
 
         let total: i64 = self.db.fetch_one_scalar(
-            "SELECT COUNT(DISTINCT conversation_id) FROM one_usage_events \
-             WHERE enterprise_id = ? AND created_at >= ? AND conversation_id IS NOT NULL",
-        &db_params![enterprise_id, since_ms])
+            &format!(
+                "SELECT COUNT(DISTINCT conversation_id) FROM one_usage_events \
+                WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND created_at >= ? AND conversation_id IS NOT NULL"
+            ),
+        &db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms])
         .await?;
 
         type Row = (String, String, i64, i64, i64, i64, i64);
         let rows: Vec<Row> = self.db.fetch_all_as::<Row>(
-            "SELECT conversation_id, MIN(user_id), COUNT(*), CAST(COALESCE(SUM(total_tokens), 0) AS SIGNED), \
-                    CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED), MIN(created_at), MAX(created_at) \
-             FROM one_usage_events \
-             WHERE enterprise_id = ? AND created_at >= ? AND conversation_id IS NOT NULL \
-             GROUP BY conversation_id ORDER BY MAX(created_at) DESC LIMIT ? OFFSET ?",
-        &db_params![enterprise_id, since_ms, limit, offset])
+            &format!(
+                "SELECT conversation_id, MIN(user_id), COUNT(*), CAST(COALESCE(SUM(total_tokens), 0) AS SIGNED), \
+                CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED), MIN(created_at), MAX(created_at) \
+                FROM one_usage_events \
+                WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND created_at >= ? AND conversation_id IS NOT NULL \
+                GROUP BY conversation_id ORDER BY MAX(created_at) DESC LIMIT ? OFFSET ?"
+            ),
+        &db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), since_ms, limit, offset])
         .await?;
 
         let mut sessions = Vec::with_capacity(rows.len());
         for (conversation_id, user_id, turn_count, total_tokens, cost, first_seen_at, last_seen_at) in rows {
             let models: Vec<String> = self.db.fetch_all_scalar(
-                "SELECT DISTINCT model FROM one_usage_events \
-                 WHERE enterprise_id = ? AND conversation_id = ? AND model IS NOT NULL",
-            &db_params![enterprise_id, &conversation_id])
+                &format!(
+                    "SELECT DISTINCT model FROM one_usage_events \
+                    WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND conversation_id = ? AND model IS NOT NULL"
+                ),
+            &db_params![scope.enterprise_id(), scope.tenant_bind(), scope.tenant_bind(), &conversation_id])
             .await?;
             sessions.push(AgentSessionDto {
                 conversation_id,
@@ -1622,6 +1668,48 @@ impl BillingService {
     ///
     /// Tolerant of absent tables (personal mode → falls through to the role
     /// read, which itself tolerates a missing `one_user_org`).
+    /// Who an admin is allowed to audit.
+    ///
+    /// A company admin (`one_enterprise_members.role = 'admin'`) sees the whole
+    /// company. A project-group admin (`one_user_org.role = 'system_admin'`) is
+    /// an admin OF THEIR GROUP — but used to reach every group in the company,
+    /// because the only filter these queries carried was `enterprise_id` and
+    /// the admin check let both kinds through. None of what they saw contained
+    /// message content, but it did contain who ran which conversation, on what
+    /// model, how many turns and for how much, across project groups that may
+    /// be separate customers, contractors, or confidential work.
+    pub async fn resolve_audit_scope(&self, user_id: &str) -> Result<Option<AuditScope>, BillingError> {
+        let Some(enterprise_id) = self.resolve_enterprise_id(user_id).await? else {
+            return Ok(None);
+        };
+        let company_role: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT role FROM one_enterprise_members WHERE user_id = ?",
+                &db_params![user_id],
+            )
+            .await
+            .unwrap_or(None);
+        if company_role.as_deref() == Some("admin") {
+            return Ok(Some(AuditScope { enterprise_id, tenant_id: None }));
+        }
+        // Active-tenant-aware role read, same shape one-devops / one-sso use.
+        let row: Option<(String, String)> = self
+            .db
+            .fetch_optional_as::<(String, String)>(
+                "SELECT uo.role, uo.tenant_id FROM one_user_org uo WHERE uo.user_id = ?                  ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC LIMIT 1",
+                &db_params![user_id],
+            )
+            .await
+            .unwrap_or(None);
+        match row {
+            Some((role, tenant_id)) if role == "system_admin" => {
+                Ok(Some(AuditScope { enterprise_id, tenant_id: Some(tenant_id) }))
+            }
+            _ => Ok(None),
+        }
+    }
+
     pub async fn is_billing_admin(&self, user_id: &str) -> Result<bool, BillingError> {
         let company_role: Option<String> =
             self.db.fetch_optional_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ?", &db_params![user_id])
@@ -1676,6 +1764,16 @@ mod tests {
             .unwrap();
         let svc = BillingService::new(dream_core_db::DbPool::Sqlite(pool.clone()), Arc::new(ManualBillingProvider));
         (svc, pool)
+    }
+
+    /// A company admin's scope: the whole company, no group restriction.
+    fn company(enterprise_id: &str) -> AuditScope {
+        AuditScope { enterprise_id: enterprise_id.to_owned(), tenant_id: None }
+    }
+
+    /// A project-group admin's scope: one group of that company.
+    fn group(enterprise_id: &str, tenant_id: &str) -> AuditScope {
+        AuditScope { enterprise_id: enterprise_id.to_owned(), tenant_id: Some(tenant_id.to_owned()) }
     }
 
     /// Real MySQL: exercises `set_tier`'s and `set_department_budget`'s
@@ -2039,7 +2137,7 @@ mod tests {
         assert_eq!(summary.by_model.len(), 2);
         // The raw row keeps the column verbatim — the frontend, not this
         // crate, strips the `prov_chan_` prefix and resolves display names.
-        let page = svc.list_usage_events("ent1", 0, None, None, 50, 0).await.unwrap();
+        let page = svc.list_usage_events(&company("ent1"), 0, None, None, 50, 0).await.unwrap();
         let event = page
             .events
             .iter()
@@ -2118,7 +2216,7 @@ mod tests {
         // Another company's active user must not be counted for ent1.
         add_usage_event_at(&sqlite, &svc, "ent2", "u-other", 10, now).await;
 
-        let report = svc.enterprise_report("ent1", 0).await.unwrap();
+        let report = svc.enterprise_report(&company("ent1"), 0).await.unwrap();
         assert_eq!(report.wau, 2, "now + 6d ago");
         assert_eq!(report.mau, 3, "now + 6d + 10d ago; 40d falls outside");
     }
@@ -2133,10 +2231,10 @@ mod tests {
         add_usage_event_at(&sqlite, &svc, "ent1", "bob", 300, now).await;
         add_usage_event_at(&sqlite, &svc, "ent1", "bob", 100, now).await;
 
-        let report = svc.enterprise_report("ent1", 0).await.unwrap();
+        let report = svc.enterprise_report(&company("ent1"), 0).await.unwrap();
         assert_eq!(report.avg_tokens_per_user, 250.0, "500 tokens / 2 users");
 
-        let empty = svc.enterprise_report("ent_empty", 0).await.unwrap();
+        let empty = svc.enterprise_report(&company("ent_empty"), 0).await.unwrap();
         assert_eq!(empty.avg_tokens_per_user, 0.0, "no active users → 0, not NaN");
         assert_eq!(empty.wau, 0);
         assert_eq!(empty.mau, 0);
@@ -2157,7 +2255,7 @@ mod tests {
             }
         }
 
-        let report = svc.enterprise_report("ent1", 0).await.unwrap();
+        let report = svc.enterprise_report(&company("ent1"), 0).await.unwrap();
         assert_eq!(report.top_users.len(), 10, "truncated to ten");
         assert_eq!(report.top_users[0].user_id, "user11");
         assert_eq!(report.top_users[0].total_tokens, 1100 + 50);
@@ -2181,7 +2279,7 @@ mod tests {
             add_llm_call_at(&sqlite, &svc, "ent1", Some(100 + 200 * i), error, now).await;
         }
 
-        let report = svc.enterprise_report("ent1", 0).await.unwrap();
+        let report = svc.enterprise_report(&company("ent1"), 0).await.unwrap();
         assert_eq!(report.latency_p50, Some(900));
         assert_eq!(report.latency_p95, Some(1700));
         assert_eq!(report.llm_call_count, 10);
@@ -2201,7 +2299,7 @@ mod tests {
             add_llm_call_at(&sqlite, &svc, "ent1", Some(100 + i), None, now).await;
         }
 
-        let report = svc.enterprise_report("ent1", 0).await.unwrap();
+        let report = svc.enterprise_report(&company("ent1"), 0).await.unwrap();
         assert_eq!(report.latency_p50, None);
         assert_eq!(report.latency_p95, None);
         assert_eq!(report.tool_success_rate, Some(1.0));
@@ -2223,7 +2321,7 @@ mod tests {
         // but still only 9 measured durations, so the gate must stay shut.
         add_llm_call_at(&sqlite, &svc, "ent1", None, None, now).await;
 
-        let report = svc.enterprise_report("ent1", 0).await.unwrap();
+        let report = svc.enterprise_report(&company("ent1"), 0).await.unwrap();
         assert_eq!(report.llm_call_count, 10);
         assert_eq!(report.latency_p50, None, "9 measured < 10 measured");
     }
@@ -2239,7 +2337,7 @@ mod tests {
         add_llm_call_at(&sqlite, &svc, "ent1", Some(300), None, now).await;
         add_llm_call_at(&sqlite, &svc, "ent1", Some(1000), None, now - DAY).await;
 
-        let report = svc.enterprise_report("ent1", 0).await.unwrap();
+        let report = svc.enterprise_report(&company("ent1"), 0).await.unwrap();
         assert_eq!(report.latency_trend.len(), 2, "two distinct days");
         let today = report.latency_trend.iter().find(|p| p.samples == 2).unwrap();
         assert_eq!(today.p50, 100, "sorted[0] of a 2-sample day");
@@ -2262,7 +2360,7 @@ mod tests {
     async fn empty_tables_report_nulls_and_zeros_without_erroring() {
         let (svc, sqlite) = service().await;
 
-        let report = svc.enterprise_report("ent1", 0).await.unwrap();
+        let report = svc.enterprise_report(&company("ent1"), 0).await.unwrap();
         assert_eq!(report.wau, 0);
         assert_eq!(report.mau, 0);
         assert_eq!(report.avg_tokens_per_user, 0.0);
@@ -2300,7 +2398,7 @@ mod tests {
 
         // Zero data: the report must build without erroring (this is the exact
         // path that 500'd — the query runs regardless of row count).
-        let empty = svc.enterprise_report("ent_empty", 0).await.unwrap();
+        let empty = svc.enterprise_report(&company("ent_empty"), 0).await.unwrap();
         assert!(empty.latency_trend.is_empty());
         assert_eq!(empty.llm_call_count, 0);
         assert_eq!(empty.latency_p50, None);
@@ -2333,7 +2431,7 @@ mod tests {
         .await
         .unwrap();
 
-        let report = svc.enterprise_report("ent1", 0).await.unwrap();
+        let report = svc.enterprise_report(&company("ent1"), 0).await.unwrap();
         assert_eq!(report.llm_call_count, 13);
         assert_eq!(report.llm_error_count, 2);
         // 13 measured durations ≥ MIN_LATENCY_SAMPLES → window percentiles publish.
@@ -2375,21 +2473,21 @@ mod tests {
             .await
             .unwrap();
 
-        let all = svc.list_usage_events("ent1", 0, None, None, 50, 0).await.unwrap();
+        let all = svc.list_usage_events(&company("ent1"), 0, None, None, 50, 0).await.unwrap();
         assert_eq!(all.total, 4);
         assert_eq!(all.events.len(), 4);
         // Newest first.
         assert!(all.events[0].created_at >= all.events[3].created_at);
 
         let by_model = svc
-            .list_usage_events("ent1", 0, None, Some("gpt-4"), 50, 0)
+            .list_usage_events(&company("ent1"), 0, None, Some("gpt-4"), 50, 0)
             .await
             .unwrap();
         assert_eq!(by_model.total, 1);
         assert_eq!(by_model.events[0].model.as_deref(), Some("gpt-4"));
 
-        let page1 = svc.list_usage_events("ent1", 0, None, None, 2, 0).await.unwrap();
-        let page2 = svc.list_usage_events("ent1", 0, None, None, 2, 2).await.unwrap();
+        let page1 = svc.list_usage_events(&company("ent1"), 0, None, None, 2, 0).await.unwrap();
+        let page2 = svc.list_usage_events(&company("ent1"), 0, None, None, 2, 2).await.unwrap();
         assert_eq!(
             page1.total, 4,
             "total reflects the whole filtered set, not just this page"
@@ -2421,7 +2519,7 @@ mod tests {
             .await
             .unwrap();
 
-        let ent1_events = svc.list_usage_events("ent1", 0, None, None, 50, 0).await.unwrap();
+        let ent1_events = svc.list_usage_events(&company("ent1"), 0, None, None, 50, 0).await.unwrap();
         assert_eq!(ent1_events.total, 1);
         assert_eq!(ent1_events.events[0].user_id, "alice");
     }
@@ -2449,7 +2547,7 @@ mod tests {
             .await
             .unwrap();
 
-        let page = svc.list_sessions("ent1", 0, 50, 0).await.unwrap();
+        let page = svc.list_sessions(&company("ent1"), 0, 50, 0).await.unwrap();
         assert_eq!(page.total, 2);
         let c1 = page.sessions.iter().find(|s| s.conversation_id == "c1").unwrap();
         assert_eq!(c1.turn_count, 2);
@@ -2742,8 +2840,9 @@ mod tests {
     async fn billing_admin_is_enterprise_scoped_not_project_group_scoped() {
         let (svc, sqlite) = service().await;
         sqlx::raw_sql(
-            "CREATE TABLE one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL, PRIMARY KEY (user_id, tenant_id));
-             CREATE TABLE one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL);
+            // Both tables come from the shared fixture now (the audit scope
+            // needs them in every test), so this only seeds rows.
+            "SELECT 1;
              INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('group_admin', 't1', 'org_admin');
              INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('machine_owner', 't1', 'system_admin');
              INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('plain', 't1', 'member');
@@ -2767,6 +2866,84 @@ mod tests {
         );
         assert!(!svc.is_billing_admin("plain").await.unwrap());
     }
+    /// The audit surfaces carry no message content, but they do carry who ran
+    /// which conversation, on what model, for how much. A project group can be
+    /// a different customer, a contractor, or confidential work, so a group
+    /// admin reading the whole company was a real boundary crossing — and an
+    /// invisible one, because every one of these queries filtered on
+    /// `enterprise_id` alone.
+    #[tokio::test]
+    async fn a_group_admin_audits_their_own_group_and_a_company_admin_the_whole_company() {
+        let (svc, sqlite) = service().await;
+        sqlx::raw_sql(
+            "INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) VALUES ('boss', 'entX', 'admin', 0, 0);
+             INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) VALUES ('lead_a', 'entX', 'member', 0, 0);
+             INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) VALUES ('alice', 'entX', 'member', 0, 0);
+             INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) VALUES ('bob', 'entX', 'member', 0, 0);
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('lead_a', 'ta', 'system_admin');
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('alice', 'ta', 'member');
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('bob', 'tb', 'member');",
+        )
+        .execute(&sqlite)
+        .await
+        .unwrap();
+
+        svc.record_turn("alice", Some("conv_a"), Some("m"), None, Some(10), Some(10)).await.unwrap();
+        svc.record_turn("bob", Some("conv_b"), Some("m"), None, Some(10), Some(10)).await.unwrap();
+
+        // Company admin: both groups.
+        let all = svc.list_sessions(&company("entX"), 0, 50, 0).await.unwrap();
+        let seen: Vec<&str> = all.sessions.iter().map(|s| s.conversation_id.as_str()).collect();
+        assert!(seen.contains(&"conv_a") && seen.contains(&"conv_b"), "company admin sees the company: {seen:?}");
+
+        // Group admin of `ta`: their own group only.
+        let mine = svc.list_sessions(&group("entX", "ta"), 0, 50, 0).await.unwrap();
+        let seen: Vec<&str> = mine.sessions.iter().map(|s| s.conversation_id.as_str()).collect();
+        assert_eq!(seen, vec!["conv_a"], "a group admin must not see another group's sessions");
+        assert_eq!(mine.total, 1, "the total must be scoped too, not just the page");
+
+        // Same boundary on the finer-grained surfaces.
+        let events = svc.list_usage_events(&group("entX", "ta"), 0, None, None, 50, 0).await.unwrap();
+        assert!(events.events.iter().all(|e| e.user_id == "alice"), "usage events leak across groups");
+        assert_eq!(events.total, 1);
+
+        let report = svc.enterprise_report(&group("entX", "ta"), 0).await.unwrap();
+        assert!(
+            report.top_users.iter().all(|u| u.user_id == "alice"),
+            "the report's top-spender list leaks across groups"
+        );
+    }
+
+    /// The resolution itself: which of the two admin kinds a caller is decides
+    /// the scope, and a plain member gets no scope at all.
+    #[tokio::test]
+    async fn audit_scope_follows_the_kind_of_admin_the_caller_is() {
+        let (svc, sqlite) = service().await;
+        sqlx::raw_sql(
+            "INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) VALUES ('boss', 'entY', 'admin', 0, 0);
+             INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) VALUES ('lead', 'entY', 'member', 0, 0);
+             INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) VALUES ('plain', 'entY', 'member', 0, 0);
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('lead', 'tz', 'system_admin');
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('plain', 'tz', 'member');",
+        )
+        .execute(&sqlite)
+        .await
+        .unwrap();
+
+        let boss = svc.resolve_audit_scope("boss").await.unwrap().expect("company admin");
+        assert_eq!(boss.enterprise_id, "entY");
+        assert!(boss.tenant_id.is_none(), "a company admin is not restricted to a group");
+
+        let lead = svc.resolve_audit_scope("lead").await.unwrap().expect("group admin");
+        assert_eq!(lead.tenant_id.as_deref(), Some("tz"));
+
+        assert!(svc.resolve_audit_scope("plain").await.unwrap().is_none(), "a member may not audit");
+        assert!(
+            svc.resolve_audit_scope("nobody").await.unwrap().is_none(),
+            "a personal user has no company to audit"
+        );
+    }
+
     /// Media generation reaches providers through the built-in MCP tool, which
     /// never passed through `SendGate` — so until the precheck existed, the
     /// priciest calls in the product ran outside the allowlist and the cap.
@@ -3473,7 +3650,7 @@ mod tests {
         svc.record_llm_call(llm_call("alice", "claude-opus-4-8")).await.unwrap();
         svc.record_llm_call(llm_call("alice", "gpt-4")).await.unwrap();
 
-        let all = svc.list_llm_calls("ent1", 0, None, None, 50, 0).await.unwrap();
+        let all = svc.list_llm_calls(&company("ent1"), 0, None, None, 50, 0).await.unwrap();
         assert_eq!(all.total, 3);
         assert_eq!(all.calls.len(), 3);
         let first = &all.calls[0];
@@ -3485,11 +3662,11 @@ mod tests {
         assert_eq!(first.duration_ms, Some(120));
         assert!(first.error.is_none());
 
-        let by_model = svc.list_llm_calls("ent1", 0, None, Some("gpt-4"), 50, 0).await.unwrap();
+        let by_model = svc.list_llm_calls(&company("ent1"), 0, None, Some("gpt-4"), 50, 0).await.unwrap();
         assert_eq!(by_model.total, 1);
         assert_eq!(by_model.calls[0].model.as_deref(), Some("gpt-4"));
 
-        let by_user = svc.list_llm_calls("ent1", 0, Some("alice"), None, 50, 0).await.unwrap();
+        let by_user = svc.list_llm_calls(&company("ent1"), 0, Some("alice"), None, 50, 0).await.unwrap();
         assert_eq!(by_user.total, 3);
 
         // `since` excludes everything stamped before it: push one row into the
@@ -3501,7 +3678,7 @@ mod tests {
             .await
             .unwrap();
         let recent = svc
-            .list_llm_calls("ent1", dream_core_common::now_ms() - 60_000, None, None, 50, 0)
+            .list_llm_calls(&company("ent1"), dream_core_common::now_ms() - 60_000, None, None, 50, 0)
             .await
             .unwrap();
         assert_eq!(recent.total, 2, "the pre-since row must be excluded");
@@ -3517,8 +3694,8 @@ mod tests {
             svc.record_llm_call(llm_call("alice", "claude-opus-4-8")).await.unwrap();
         }
 
-        let page1 = svc.list_llm_calls("ent1", 0, None, None, 2, 0).await.unwrap();
-        let page2 = svc.list_llm_calls("ent1", 0, None, None, 2, 2).await.unwrap();
+        let page1 = svc.list_llm_calls(&company("ent1"), 0, None, None, 2, 0).await.unwrap();
+        let page2 = svc.list_llm_calls(&company("ent1"), 0, None, None, 2, 2).await.unwrap();
         assert_eq!(page1.total, 4);
         assert_eq!(page1.calls.len(), 2);
         assert_eq!(page2.calls.len(), 2);
@@ -3596,7 +3773,7 @@ mod tests {
         .await
         .unwrap();
 
-        let page = svc.list_llm_calls("ent1", 0, None, None, 50, 0).await.unwrap();
+        let page = svc.list_llm_calls(&company("ent1"), 0, None, None, 50, 0).await.unwrap();
         assert_eq!(page.total, 2, "the failed call is listed beside the good one");
         let failed = &page.calls[0];
         assert_eq!(failed.error.as_deref(), Some("429 rate limited"));
