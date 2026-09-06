@@ -26,8 +26,9 @@ use crate::models::{
     ApiKeyDto, CollaborationConfigDto, ConfigBulkImportDto, ConfigEntryDto, ConfigSetDto, ConfigSetReference,
     ConfigSetReferencesDto, ContainerConfigDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto,
     FileVaultReconcileEntry, GrantMode, GrantModeDto, ImChannelMemberDto, ImChannelPluginDto, IpAllowlistConfigDto,
-    MyNotificationDto, MyNotificationsDto, NewApiKeyDto, NotificationDto, PolicyTemplateBindingDto, ResourceGrantDto,
-    SENSITIVE_PLACEHOLDER, SceneDto, SecurityPolicyDto, SecurityPolicyTemplateDto, SiemConfigDto,
+    MyNotificationDto, MyNotificationsDto, MySceneDto, MySceneResourceSummaryDto, NewApiKeyDto, NotificationDto,
+    PolicyTemplateBindingDto, ResourceGrantDto, SENSITIVE_PLACEHOLDER, SceneDto, SecurityPolicyDto,
+    SecurityPolicyTemplateDto, SiemConfigDto,
 };
 use crate::siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
 
@@ -1330,6 +1331,76 @@ impl PlatformService {
             self.db.fetch_all_as::<(String,)>("SELECT scene_id FROM one_scene_members WHERE tenant_id = ? AND user_id = ?", &db_params![tenant_id, user_id])
                 .await?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    /// The member-side half of scene management (E5): the scenes this member
+    /// belongs to, each with a summary of the grant package the scene
+    /// carries. The admin half (`list_scenes` et al.) stays behind
+    /// `RequirePlatformAdmin`; membership is the access control here — a
+    /// member never sees a scene they are not on the roster of.
+    pub async fn list_my_scenes(&self, tenant_id: &str, user_id: &str) -> Result<Vec<MySceneDto>, PlatformError> {
+        let rows: Vec<(String, String, Option<String>, String, bool, i64, i64)> = self
+            .db
+            .fetch_all_as::<(String, String, Option<String>, String, bool, i64, i64)>(
+                "SELECT s.id, s.name, s.description, s.job_functions, s.built_in, s.created_at, s.updated_at \
+                 FROM one_scene_members m \
+                 JOIN one_scenes s ON s.tenant_id = m.tenant_id AND s.id = m.scene_id \
+                 WHERE m.tenant_id = ? AND m.user_id = ? \
+                 ORDER BY s.built_in DESC, s.name ASC",
+            &db_params![tenant_id, user_id])
+            .await?;
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        // scene_id -> resource_type -> (explicit grant rows, carries '*').
+        let mut packages: std::collections::HashMap<String, std::collections::HashMap<String, (i64, bool)>> =
+            std::collections::HashMap::new();
+        let grants: Vec<(String, String, String)> = self.db.fetch_all_as::<(String, String, String)>(
+            "SELECT subject_id, resource_type, resource_id FROM one_resource_grants \
+             WHERE tenant_id = ? AND subject_type = 'scene'",
+        &db_params![tenant_id])
+        .await?;
+        for (scene_id, resource_type, resource_id) in grants {
+            let entry = packages.entry(scene_id).or_default().entry(resource_type).or_insert((0, false));
+            entry.0 += 1;
+            entry.1 |= resource_id == GRANT_ALL_RESOURCES;
+        }
+        let mut out = Vec::with_capacity(rows.len());
+        for (id, name, description, job_functions_json, built_in, created_at, updated_at) in rows {
+            let per_type = packages.remove(&id).unwrap_or_default();
+            // Canonical order = the matrix's own type order, so the client
+            // renders "skills before channels" consistently with the console.
+            let mut resource_types: Vec<String> = GRANT_RESOURCE_TYPES
+                .iter()
+                .filter(|t| per_type.contains_key(**t))
+                .map(|t| t.to_string())
+                .collect();
+            let mut extra: Vec<String> = per_type
+                .keys()
+                .filter(|t| !GRANT_RESOURCE_TYPES.contains(&t.as_str()))
+                .cloned()
+                .collect();
+            extra.sort();
+            resource_types.extend(extra);
+            let resources = resource_types
+                .into_iter()
+                .map(|resource_type| {
+                    let (count, includes_all) = per_type[&resource_type];
+                    MySceneResourceSummaryDto { resource_type, count, includes_all }
+                })
+                .collect();
+            out.push(MySceneDto {
+                id,
+                name,
+                description,
+                job_functions: serde_json::from_str(&job_functions_json).unwrap_or_default(),
+                built_in,
+                resources,
+                created_at,
+                updated_at,
+            });
+        }
+        Ok(out)
     }
 
     // --- Security policy baseline (E5) ---
@@ -3860,6 +3931,46 @@ mod tests {
         // Re-listing t1 must not duplicate its built-ins.
         let second = service.list_scenes("t1").await.unwrap();
         assert_eq!(second.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn my_scenes_lists_only_own_memberships_with_resource_summary() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "u1", "t1", "member").await;
+        seed_membership(db.pool(), "u1", "t2", "member").await;
+        seed_membership(db.pool(), "u2", "t1", "member").await;
+
+        let mine = service
+            .create_scene("t1", "场景A", Some("描述"), &["职能一".to_owned()])
+            .await
+            .unwrap();
+        let _not_a_member_of = service.create_scene("t1", "场景B", None, &[]).await.unwrap();
+        let foreign = service.create_scene("t2", "场景A", None, &[]).await.unwrap();
+
+        service.add_scene_member("t1", &mine.id, "u1").await.unwrap();
+        service.add_scene_member("t2", &foreign.id, "u1").await.unwrap();
+        service.grant_resource("t1", "scene", &mine.id, "skill", "s1", "use", "admin").await.unwrap();
+        service.grant_resource("t1", "scene", &mine.id, "skill", "s2", "use", "admin").await.unwrap();
+        service.grant_resource("t1", "scene", &mine.id, "model_channel", GRANT_ALL_RESOURCES, "use", "admin").await
+            .unwrap();
+
+        let out = service.list_my_scenes("t1", "u1").await.unwrap();
+        assert_eq!(out.len(), 1, "only the t1 scene; the same-named t2 scene must not leak across tenants");
+        let scene = &out[0];
+        assert_eq!(scene.id, mine.id);
+        assert_eq!(scene.job_functions, vec!["职能一".to_owned()]);
+        let skills = scene.resources.iter().find(|r| r.resource_type == "skill").unwrap();
+        assert_eq!(skills.count, 2);
+        assert!(!skills.includes_all);
+        let channels = scene.resources.iter().find(|r| r.resource_type == "model_channel").unwrap();
+        assert!(channels.includes_all, "'*' marks the wildcard grant");
+        // Types with no grants are omitted, not zero-filled.
+        assert!(!scene.resources.iter().any(|r| r.resource_type == "employee"));
+
+        // A member of the tenant but of no scene reads an empty list — not an
+        // error, not somebody else's scene.
+        let none = service.list_my_scenes("t1", "u2").await.unwrap();
+        assert!(none.is_empty());
     }
 
     #[tokio::test]
