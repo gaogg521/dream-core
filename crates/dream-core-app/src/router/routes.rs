@@ -4174,7 +4174,7 @@ mod tests {
         let (db, platform) = platform_service_for_test().await;
         seed_membership(db.pool(), "user-1", "t1").await;
         platform
-            .set_security_policy("t1", false, false, &[], false, false, false, Some(2))
+            .set_security_policy("t1", false, false, &[], false, false, false, Some(2), "off")
             .await
             .unwrap();
 
@@ -4194,7 +4194,7 @@ mod tests {
         seed_membership(db.pool(), "user-strict", "t-strict").await;
         seed_membership(db.pool(), "user-relaxed", "t-relaxed").await;
         platform
-            .set_security_policy("t-strict", false, false, &[], false, false, false, Some(1))
+            .set_security_policy("t-strict", false, false, &[], false, false, false, Some(1), "off")
             .await
             .unwrap();
 

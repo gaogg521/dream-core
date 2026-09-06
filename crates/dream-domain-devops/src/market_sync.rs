@@ -1148,7 +1148,7 @@ mod tests {
 
     #[tokio::test]
     async fn source_level_failures_record_error_status() {
-        let (pool, service) = setup().await;
+        let (_pool, service) = setup().await;
         let id = make_source(&service).await;
         let fetcher = FakeFetcher::new(&[]);
 
@@ -1207,7 +1207,7 @@ mod tests {
 
     #[tokio::test]
     async fn source_validation_and_tenant_isolation() {
-        let (pool, service) = setup().await;
+        let (_pool, service) = setup().await;
         assert_eq!(
             service
                 .create_market_source("t1", "x", "ftp://example.com/index.json", "admin1")

@@ -2511,7 +2511,7 @@ mod tests {
         let svc = service().await;
         seed_org(&svc).await;
 
-        let admin_only = svc
+        let _admin_only = svc
             .upsert_skill(
                 None,
                 "admin-only-probe",

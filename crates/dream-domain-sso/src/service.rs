@@ -932,7 +932,7 @@ mod tests {
 
     #[tokio::test]
     async fn effective_role_defaults_desktop_operator_to_system_admin() {
-        let (service, sqlite) = service_with_memory_db().await;
+        let (service, _sqlite) = service_with_memory_db().await;
         // No one_user_org row for the desktop-operator sentinel user.
         assert_eq!(
             service
@@ -945,7 +945,7 @@ mod tests {
 
     #[tokio::test]
     async fn effective_role_defaults_unknown_user_to_member() {
-        let (service, sqlite) = service_with_memory_db().await;
+        let (service, _sqlite) = service_with_memory_db().await;
         assert_eq!(service.effective_role("some_other_user").await.unwrap(), "member");
     }
 
