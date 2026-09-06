@@ -441,18 +441,21 @@ impl AppServices {
         #[cfg(feature = "enterprise")]
         let policy_grace = Arc::new(crate::router::PolicyGrace::new());
         #[cfg(feature = "enterprise")]
-        let billing = Arc::new(dream_domain_billing::BillingService::new(
-            db.clone(),
-            Arc::new(dream_domain_billing::ManualBillingProvider),
-        ));
+        let billing = Arc::new(
+            dream_domain_billing::BillingService::new(
+                db.clone(),
+                Arc::new(dream_domain_billing::ManualBillingProvider),
+            )
+            .with_conversation_repo(conversation_repo.clone()),
+        );
         // Own instance, same posture as `billing` above: cheap to construct
         // (pool clone + key), needed here so the agent factory can take the
         // destructive-command gate for the ACP permission router.
         #[cfg(feature = "enterprise")]
-        let platform_for_agent_factory = Arc::new(dream_domain_platform::PlatformService::new(
-            db.clone(),
-            encryption_key,
-        ));
+        let platform_for_agent_factory = Arc::new(
+            dream_domain_platform::PlatformService::new(db.clone(), encryption_key)
+                .with_conversation_repo(conversation_repo.clone()),
+        );
         // Same posture as `platform_for_agent_factory` above: a second
         // WorkflowService over the same pool is harmless (pool clone + no
         // in-memory state), and the terminal-tool approval gate needs one
@@ -545,8 +548,6 @@ impl AppServices {
             runtime_token_service: runtime_token_service.clone(),
             project_service: project_service.clone(),
         });
-
-        
 
         Ok(Self {
             database,

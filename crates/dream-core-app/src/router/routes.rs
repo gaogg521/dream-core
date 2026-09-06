@@ -628,6 +628,43 @@ impl dream_core_conversation::UsageRecorder for BillingUsageRecorder {
     }
 }
 
+/// Adapts one-billing to the model proxy's usage seam (P1-2). Fire-and-forget
+/// like `BillingUsageRecorder`: the proxy's response tap calls this once an
+/// upstream call has fully streamed through, and the insert runs on its own
+/// task so metering never blocks (or fails) the proxied call.
+///
+/// The proxy reports the raw registry channel id; usage rows store the local
+/// managed-provider id the member's session actually referenced —
+/// `prov_chan_<channel_id>`, the same form
+/// `dream-core-system::managed_provider::provider_id_for` materializes and
+/// `BillingService::record_turn` documents, so proxy rows land in the same
+/// channel buckets as conversation-path rows.
+#[cfg(feature = "enterprise")]
+struct BillingProxyUsageRecorder(std::sync::Arc<dream_domain_billing::BillingService>);
+
+#[cfg(feature = "enterprise")]
+impl dream_domain_devops::ProxyUsageRecorder for BillingProxyUsageRecorder {
+    fn record_proxy_usage(&self, event: dream_domain_devops::ProxyUsageEvent) {
+        let service = self.0.clone();
+        tokio::spawn(async move {
+            let channel_id = format!("prov_chan_{}", event.channel_id);
+            if let Err(e) = service
+                .record_turn(
+                    &event.user_id,
+                    None,
+                    event.model.as_deref(),
+                    Some(&channel_id),
+                    event.input_tokens,
+                    event.output_tokens,
+                )
+                .await
+            {
+                tracing::debug!(error = %e, "model proxy usage record failed (non-fatal)");
+            }
+        });
+    }
+}
+
 /// Adapts one-billing's `check_send_allowed` to the conversation crate's
 /// `SendGate` trait (P1-2 model control). Blocks a send when the team is over
 /// its spend budget / off-allowlist; personal users always pass.
@@ -1292,9 +1329,9 @@ impl dream_core_conversation::TurnMemoryExtractor for OneMemoryTurnExtractor {
                         &[],
                     )
                     .await
-                {
-                    tracing::debug!(error = %e, "memory extract: add_item failed (non-fatal)");
-                }
+            {
+                tracing::debug!(error = %e, "memory extract: add_item failed (non-fatal)");
+            }
         });
     }
 }
@@ -2696,7 +2733,10 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
         )
         // P2-4 personal file vault: same shared data dir / storage root as
         // the main binary (see create_router_with_runtime's wiring).
-        .with_storage_root(services.data_dir.join("file-vault")),
+        .with_storage_root(services.data_dir.join("file-vault"))
+        // P2-2 conversation sharing reads/writes through the same repo the
+        // conversation routes use.
+        .with_conversation_repo(services.conversation_repo.clone()),
     );
     let policy_grace = services.policy_grace.clone();
     let ip_allowlist: Option<std::sync::Arc<dyn dream_core_auth::IpAllowlistGate>> =
@@ -2901,7 +2941,10 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         )
         // P2-4 personal file vault: objects live under the shared data dir,
         // same volume both binaries see (T2 verified concurrent access).
-        .with_storage_root(services.data_dir.join("file-vault")),
+        .with_storage_root(services.data_dir.join("file-vault"))
+        // P2-2 conversation sharing (admin router serves the policy plane
+        // for the same subsystem).
+        .with_conversation_repo(services.conversation_repo.clone()),
     );
 
     // One tracker per process, shared by every enterprise gate: they all read
@@ -3210,6 +3253,14 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         dream_domain_devops::OneDevopsRouterState::new(one_devops_service).with_employee(one_employee_service.clone());
     #[cfg(feature = "enterprise")]
     let one_devops_state = one_devops_state.with_tenant_resolver(tenant_resolver.clone());
+    // P1-2 model-proxy usage metering: the proxy is mounted in every build
+    // (below), but only the enterprise edition has a billing plane to record
+    // into. Personal builds leave the slot empty and the proxy's tap stays a
+    // pure pass-through.
+    #[cfg(feature = "enterprise")]
+    let one_devops_state = one_devops_state.with_proxy_usage_recorder(std::sync::Arc::new(BillingProxyUsageRecorder(
+        one_billing_service.clone(),
+    )));
     let one_devops_authenticated = dream_domain_devops::one_devops_routes(one_devops_state.clone())
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
     // Not session-authenticated, for the same reason the Codex bridge is not:
