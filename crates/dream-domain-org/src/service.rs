@@ -2348,9 +2348,10 @@ impl OrgService {
         };
         for member in &members {
             if let Some(u) = user_filter
-                && member != u {
-                    continue;
-                }
+                && member != u
+            {
+                continue;
+            }
             // The repository has no cross-member "all tool calls" query, so
             // walk the member's conversations and page each one's messages.
             let Ok(convs) = self.message_repo.list_paginated(member, &conv_filters).await else {
@@ -2365,9 +2366,10 @@ impl OrgService {
                         continue;
                     }
                     if let Some(since) = since_ms
-                        && row.created_at < since {
-                            continue;
-                        }
+                        && row.created_at < since
+                    {
+                        continue;
+                    }
                     let content = serde_json::from_str::<serde_json::Value>(&row.content).unwrap_or_default();
                     let tool_name = content
                         .get("name")
@@ -2377,9 +2379,10 @@ impl OrgService {
                         .unwrap_or("")
                         .to_owned();
                     if let Some(tool) = tool_filter
-                        && tool_name != tool {
-                            continue;
-                        }
+                        && tool_name != tool
+                    {
+                        continue;
+                    }
                     let detail = [
                         "args.command",
                         "args.path",
@@ -3060,11 +3063,10 @@ impl OrgService {
             )
             .await?;
 
-        if require_approval
-            && let Some(sink) = self.node_review_sink.read().ok().and_then(|g| g.clone()) {
-                sink.on_node_awaiting_approval(tenant_id, &id, machine_id, display_name, user_id)
-                    .await;
-            }
+        if require_approval && let Some(sink) = self.node_review_sink.read().ok().and_then(|g| g.clone()) {
+            sink.on_node_awaiting_approval(tenant_id, &id, machine_id, display_name, user_id)
+                .await;
+        }
 
         Ok(HeartbeatOutcome {
             node_id: id,
@@ -3637,7 +3639,10 @@ mod tests {
 
         let frank = create_user(&user_repo, "frank").await;
         service.join_with_invite(&frank, &invite).await.unwrap();
-        service.auto_join_after_sso(&frank, Some("d_sales"), &departments).await.unwrap();
+        service
+            .auto_join_after_sso(&frank, Some("d_sales"), &departments)
+            .await
+            .unwrap();
 
         let (tid, department_id): (String, Option<String>) = service
             .db
@@ -4870,7 +4875,10 @@ mod tests {
             .fetch_one(service.pool())
             .await
             .unwrap();
-        assert_eq!(use_count, 1, "the other two seats must still be available to other people");
+        assert_eq!(
+            use_count, 1,
+            "the other two seats must still be available to other people"
+        );
 
         let member_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_user_org WHERE tenant_id = ?")
             .bind(&tenant_id)

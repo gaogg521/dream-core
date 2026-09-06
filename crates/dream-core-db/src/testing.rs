@@ -15,8 +15,8 @@
 //! the dev box; CI containers are ephemeral so that is acceptable there.
 
 use crate::pool::DbPool;
-use sqlx::mysql::MySqlPoolOptions;
 use sqlx::MySqlPool;
+use sqlx::mysql::MySqlPoolOptions;
 
 /// A throwaway MySQL database for one test, plus its pool.
 pub struct MySqlTestDb {

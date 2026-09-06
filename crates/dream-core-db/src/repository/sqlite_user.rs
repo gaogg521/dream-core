@@ -170,15 +170,13 @@ impl IUserRepository for SqliteUserRepository {
     }
 
     async fn set_mfa_flags(&self, user_id: &str, exempt: bool, force: bool) -> Result<(), DbError> {
-        sqlx::query(
-            "UPDATE users SET mfa_exempt = ?, mfa_force = ?, updated_at = ? WHERE id = ?",
-        )
-        .bind(exempt)
-        .bind(force)
-        .bind(dream_core_common::now_ms())
-        .bind(user_id)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("UPDATE users SET mfa_exempt = ?, mfa_force = ?, updated_at = ? WHERE id = ?")
+            .bind(exempt)
+            .bind(force)
+            .bind(dream_core_common::now_ms())
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 

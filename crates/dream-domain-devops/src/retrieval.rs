@@ -28,8 +28,8 @@
 
 use sqlx::Row;
 
-use dream_core_db::{DbPool, db_params};
 use crate::error::DevopsError;
+use dream_core_db::{DbPool, db_params};
 
 /// Reciprocal-rank-fusion constant. 60 is the value from the original RRF
 /// paper; it damps the influence of any single ranker's top position so the
@@ -88,18 +88,17 @@ pub async fn ensure_fts_table(pool: &DbPool) -> FtsMode {
 }
 
 /// Replace a document's rows in the lexical index.
-pub async fn sync_document(
-    pool: &DbPool,
-    document_id: &str,
-    chunks: &[(String, String)],
-) -> Result<(), DevopsError> {
+pub async fn sync_document(pool: &DbPool, document_id: &str, chunks: &[(String, String)]) -> Result<(), DevopsError> {
     if !ensure_fts_table(pool).await.is_available() {
         return Ok(());
     }
     delete_document(pool, document_id).await?;
     for (chunk_id, content) in chunks {
-        pool.execute(&format!("INSERT INTO {FTS_TABLE} (chunk_id, content) VALUES (?, ?)"), &db_params![chunk_id, content])
-            .await?;
+        pool.execute(
+            &format!("INSERT INTO {FTS_TABLE} (chunk_id, content) VALUES (?, ?)"),
+            &db_params![chunk_id, content],
+        )
+        .await?;
     }
     Ok(())
 }
@@ -112,9 +111,10 @@ pub async fn delete_document(pool: &DbPool, document_id: &str) -> Result<(), Dev
     if !ensure_fts_table(pool).await.is_available() {
         return Ok(());
     }
-    pool.execute(&format!(
-        "DELETE FROM {FTS_TABLE} WHERE chunk_id IN (SELECT id FROM one_rag_chunks WHERE document_id = ?)"
-    ), &db_params![document_id])
+    pool.execute(
+        &format!("DELETE FROM {FTS_TABLE} WHERE chunk_id IN (SELECT id FROM one_rag_chunks WHERE document_id = ?)"),
+        &db_params![document_id],
+    )
     .await?;
     Ok(())
 }
@@ -128,7 +128,8 @@ pub async fn rebuild_index(pool: &DbPool) -> Result<usize, DevopsError> {
     if !ensure_fts_table(pool).await.is_available() {
         return Ok(0);
     }
-    let indexed: i64 = pool.fetch_one_scalar(&format!("SELECT COUNT(*) FROM {FTS_TABLE}"), &[])
+    let indexed: i64 = pool
+        .fetch_one_scalar(&format!("SELECT COUNT(*) FROM {FTS_TABLE}"), &[])
         .await?;
     if indexed > 0 {
         return Ok(0);
@@ -270,6 +271,9 @@ pub fn rrf_fuse(vector_ranked: &[String], lexical_ranked: &[String]) -> Vec<(Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    // See migrate.rs: clippy does not compile `#[cfg(test)]`, so a top-level
+    // import used only here reads as unused.
+    use sqlx::SqlitePool;
 
     async fn pool() -> DbPool {
         let sqlite = SqlitePool::connect(":memory:").await.unwrap();
@@ -408,7 +412,8 @@ mod tests {
         seed(&pool).await;
         assert_eq!(rebuild_index(&pool).await.unwrap(), 3);
         assert_eq!(rebuild_index(&pool).await.unwrap(), 0, "second run must be a no-op");
-        let total: i64 = pool.fetch_one_scalar(&format!("SELECT COUNT(*) FROM {FTS_TABLE}"), &[])
+        let total: i64 = pool
+            .fetch_one_scalar(&format!("SELECT COUNT(*) FROM {FTS_TABLE}"), &[])
             .await
             .unwrap();
         assert_eq!(total, 3);

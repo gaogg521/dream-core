@@ -266,8 +266,7 @@ impl MemoryService {
             &db_params![tenant_id, extraction_channel_id, extraction_model, now],
         )
         .await?;
-        self
-            .memory_config(tenant_id)
+        self.memory_config(tenant_id)
             .await?
             .ok_or_else(|| MemoryError::Internal("memory config vanished immediately after write".into()))
     }
@@ -584,9 +583,10 @@ impl MemoryService {
             return Err(MemoryError::Forbidden("you cannot edit this memory collection".into()));
         }
         if let Some(name) = name.map(str::trim)
-            && name.is_empty() {
-                return Err(MemoryError::BadRequest("collection name must not be empty".into()));
-            }
+            && name.is_empty()
+        {
+            return Err(MemoryError::BadRequest("collection name must not be empty".into()));
+        }
         self.db.execute("UPDATE one_memory_collections SET name = COALESCE(?, name), description = COALESCE(?, description), updated_at = ? WHERE tenant_id = ? AND id = ?", &db_params![name.map(str::trim), description.map(str::trim), now_ms(), tenant_id, id])
             .await?;
         self.load_collection(tenant_id, id)
@@ -854,9 +854,10 @@ impl MemoryService {
         let now = now_ms();
         if let Ok(cache) = recall_pref_cache().lock()
             && let Some((enabled, cached_at)) = cache.get(&key)
-                && now.saturating_sub(*cached_at) < 60_000 {
-                    return *enabled;
-                }
+            && now.saturating_sub(*cached_at) < 60_000
+        {
+            return *enabled;
+        }
         match self.load_recall_enabled(tenant_id, user_id).await {
             Ok(enabled) => {
                 if let Ok(mut cache) = recall_pref_cache().lock() {

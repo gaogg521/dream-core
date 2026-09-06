@@ -13,21 +13,12 @@ use crate::error::MemoryError;
 /// reorder shipped entries — add a new file instead.
 const MIGRATIONS: &[(&str, &str)] = &[
     ("001_init", include_str!("../migrations/001_init.sql")),
-    (
-        "002_memory_config",
-        include_str!("../migrations/002_memory_config.sql"),
-    ),
-    (
-        "003_member_memory",
-        include_str!("../migrations/003_member_memory.sql"),
-    ),
+    ("002_memory_config", include_str!("../migrations/002_memory_config.sql")),
+    ("003_member_memory", include_str!("../migrations/003_member_memory.sql")),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
-    (
-        "001_init",
-        include_str!("../migrations_mysql/001_init.sql"),
-    ),
+    ("001_init", include_str!("../migrations_mysql/001_init.sql")),
     (
         "002_memory_config",
         include_str!("../migrations_mysql/002_memory_config.sql"),

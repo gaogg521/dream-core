@@ -348,7 +348,11 @@ async fn auth_middleware_aionpro_rejects_local_user_token() {
         .unwrap();
     let db = init_database_memory().await.unwrap();
     let repo = Arc::new(SqliteUserRepository::new(db.pool().clone()));
-    let app = protected_auth_app_with_mode(jwt_service, repo as Arc<dyn IUserRepository>, AuthIdentityMode::DreamPro);
+    let app = protected_auth_app_with_mode(
+        jwt_service,
+        repo as Arc<dyn IUserRepository>,
+        AuthIdentityMode::DreamPro,
+    );
 
     let resp = app
         .oneshot(

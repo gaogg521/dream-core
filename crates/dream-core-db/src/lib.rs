@@ -79,4 +79,7 @@ pub use repository::{
 // Re-export sqlx pool type for downstream crates
 pub use sqlx::SqlitePool;
 
-pub use repository::mfa::{AttemptBump, MfaAuditEntry, MfaAuditRow, MfaChallengePurpose, MfaChallengeRow, MfaMode, MfaStore, MFA_MAX_ATTEMPTS, SqliteMfaStore};
+pub use repository::mfa::{
+    AttemptBump, MFA_MAX_ATTEMPTS, MfaAuditEntry, MfaAuditRow, MfaChallengePurpose, MfaChallengeRow, MfaMode, MfaStore,
+    SqliteMfaStore,
+};

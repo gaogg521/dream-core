@@ -730,15 +730,15 @@ impl ConversationTurnOrchestrator {
         // reply. The extractor spawns its own work and reads the assistant
         // side from persistence; a failure here must never touch this turn's
         // result. Skipped for a synthetic (cron/dispatch) prompt.
-        if !final_failed
-            && let Some(extractor) = self.service.turn_memory_extractor.read().ok().and_then(|g| g.clone()) {
-                extractor.extract_from_turn(
-                    input.user_id.clone(),
-                    conv_id.clone(),
-                    user_message,
-                    input.synthetic_prompt,
-                );
-            }
+        if !final_failed && let Some(extractor) = self.service.turn_memory_extractor.read().ok().and_then(|g| g.clone())
+        {
+            extractor.extract_from_turn(
+                input.user_id.clone(),
+                conv_id.clone(),
+                user_message,
+                input.synthetic_prompt,
+            );
+        }
 
         ConversationTurnResult {
             status: if final_failed {
@@ -1289,7 +1289,7 @@ mod tests {
     #[test]
     fn prepend_preset_context_targets_the_right_field_per_kind() {
         use dream_core_ai_agent::session_context::{
-            AcpSessionBuildContext, AgentSessionContext, DreamEngineSessionBuildContext, ConversationContext,
+            AcpSessionBuildContext, AgentSessionContext, ConversationContext, DreamEngineSessionBuildContext,
             WorkspaceContext,
         };
         use dream_core_common::ProviderWithModel;
@@ -1337,11 +1337,13 @@ mod tests {
         assert!(ctx.ends_with("house rules"));
 
         // DreamEngine writes preset_rules, not preset_context.
-        let mut de = base(AgentSessionKind::DreamEngine(Box::new(DreamEngineSessionBuildContext {
-            config: Default::default(),
-            team: None,
-            belongs_to_team: false,
-        })));
+        let mut de = base(AgentSessionKind::DreamEngine(Box::new(
+            DreamEngineSessionBuildContext {
+                config: Default::default(),
+                team: None,
+                belongs_to_team: false,
+            },
+        )));
         prepend_preset_context(&mut de, "mem");
         let AgentSessionKind::DreamEngine(c) = &de.kind else {
             unreachable!()

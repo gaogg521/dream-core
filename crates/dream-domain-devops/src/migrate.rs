@@ -54,30 +54,15 @@ const MIGRATIONS: &[(&str, &str)] = &[
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
-    (
-        "001_init",
-        include_str!("../migrations_mysql/001_init.sql"),
-    ),
-    (
-        "002_milestones",
-        include_str!("../migrations_mysql/002_milestones.sql"),
-    ),
+    ("001_init", include_str!("../migrations_mysql/001_init.sql")),
+    ("002_milestones", include_str!("../migrations_mysql/002_milestones.sql")),
     (
         "003_rag_pipeline",
         include_str!("../migrations_mysql/003_rag_pipeline.sql"),
     ),
-    (
-        "004_autopilot",
-        include_str!("../migrations_mysql/004_autopilot.sql"),
-    ),
-    (
-        "005_test_plans",
-        include_str!("../migrations_mysql/005_test_plans.sql"),
-    ),
-    (
-        "006_pipelines",
-        include_str!("../migrations_mysql/006_pipelines.sql"),
-    ),
+    ("004_autopilot", include_str!("../migrations_mysql/004_autopilot.sql")),
+    ("005_test_plans", include_str!("../migrations_mysql/005_test_plans.sql")),
+    ("006_pipelines", include_str!("../migrations_mysql/006_pipelines.sql")),
     (
         "007_skill_auto_active",
         include_str!("../migrations_mysql/007_skill_auto_active.sql"),
@@ -103,10 +88,7 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
         "013_content_origin",
         include_str!("../migrations_mysql/013_content_origin.sql"),
     ),
-    (
-        "014_api_assets",
-        include_str!("../migrations_mysql/014_api_assets.sql"),
-    ),
+    ("014_api_assets", include_str!("../migrations_mysql/014_api_assets.sql")),
     (
         "015_market_sync",
         include_str!("../migrations_mysql/015_market_sync.sql"),
@@ -158,10 +140,11 @@ async fn backfill_collaboration_tenant_ids(pool: &DbPool) -> Result<(), DevopsEr
     let has_user_org = match pool.backend() {
         DbBackend::Sqlite => {
             let p = pool.sqlite();
-            let has: bool =
-                sqlx::query_scalar("SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = 'one_user_org'")
-                    .fetch_one(p)
-                    .await?;
+            let has: bool = sqlx::query_scalar(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = 'one_user_org'",
+            )
+            .fetch_one(p)
+            .await?;
             has
         }
         DbBackend::MySql => {

@@ -818,8 +818,10 @@ fn sqlite_sidecar_path(db_path: &Path, suffix: &str) -> Option<PathBuf> {
 /// rebuilt database is worse than losing a sidecar of an already-corrupt one.
 fn relocate_sqlite_sidecars(db_path: &Path, backup_path: &Path) {
     for suffix in ["-wal", "-shm"] {
-        let (Some(from), Some(to)) = (sqlite_sidecar_path(db_path, suffix), sqlite_sidecar_path(backup_path, suffix))
-        else {
+        let (Some(from), Some(to)) = (
+            sqlite_sidecar_path(db_path, suffix),
+            sqlite_sidecar_path(backup_path, suffix),
+        ) else {
             continue;
         };
         if !from.exists() {
@@ -1110,7 +1112,9 @@ mod tests {
     async fn corrupt_database_after_open(path: &Path) {
         use std::io::{Seek, SeekFrom, Write};
 
-        let db = init_database_staged(path).await.expect("build a healthy database first");
+        let db = init_database_staged(path)
+            .await
+            .expect("build a healthy database first");
         db.close().await;
 
         let mut file = OpenOptions::new().write(true).open(path).expect("open db for damage");
@@ -1127,7 +1131,10 @@ mod tests {
 
         let db = init_database_staged_with_options(
             &path,
-            DatabaseInitOptions { recover_corrupted_database: true, ..Default::default() },
+            DatabaseInitOptions {
+                recover_corrupted_database: true,
+                ..Default::default()
+            },
         )
         .await
         .expect("recovery must rebuild the database, not fail on a file this process itself holds");
@@ -1172,7 +1179,10 @@ mod tests {
         );
         assert!(dir.path().join("one-backend.db.backup.1788000000000-shm").exists());
         // And nothing is left at the live path for the rebuilt database to adopt.
-        assert!(!wal.exists(), "a WAL from another database must not sit beside the new one");
+        assert!(
+            !wal.exists(),
+            "a WAL from another database must not sit beside the new one"
+        );
         assert!(!shm.exists());
     }
 

@@ -7,16 +7,16 @@ mod error;
 mod extract;
 mod jwt;
 pub mod mfa;
-pub use mfa::{MfaDecision, MfaService};
 pub use dream_core_db::MfaMode;
+pub use mfa::{MfaDecision, MfaService};
 pub mod middleware;
 mod password;
 pub mod qr_token;
-pub mod totp;
 mod rate_limit;
 mod routes;
 mod security;
 mod service;
+pub mod totp;
 mod validation;
 
 // Error type

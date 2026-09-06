@@ -50,10 +50,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
-    (
-        "employee_001_init",
-        include_str!("../migrations_mysql/001_init.sql"),
-    ),
+    ("employee_001_init", include_str!("../migrations_mysql/001_init.sql")),
     (
         "employee_002_schedule",
         include_str!("../migrations_mysql/002_schedule.sql"),

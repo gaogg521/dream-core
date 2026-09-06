@@ -750,7 +750,9 @@ impl AcpAgentManager {
         // P2-2 §B.4 完整版: per-turn memory injection — only registered when
         // the app wired a recall implementation (enterprise memory plane).
         if let Some(recall) = params.memory_recall.clone() {
-            hooks.push(Arc::new(crate::manager::acp::memory_prompt_hook::MemoryPromptHook { recall }));
+            hooks.push(Arc::new(crate::manager::acp::memory_prompt_hook::MemoryPromptHook {
+                recall,
+            }));
         }
         let pipeline = PromptPipeline::new(hooks);
 

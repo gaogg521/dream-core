@@ -41,10 +41,10 @@ use sha2::{Digest, Sha256};
 use dream_core_common::now_ms;
 use dream_core_common::{decrypt_string, encrypt_string};
 
-use dream_core_db::db_params;
 use crate::error::DevopsError;
 use crate::models::ProviderChannelDto;
 use crate::service::DevopsService;
+use dream_core_db::db_params;
 
 const COLS: &str = "id, name, platform, upstream_base_url, \
                     (api_key_encrypted != '') AS has_key, models, model_settings, model_protocols, enabled, \
@@ -131,10 +131,7 @@ impl DevopsService {
         let api_key = decrypt_string(&api_key_encrypted, self.encryption_key()?)
             .map_err(|e| DevopsError::Internal(format!("failed to decrypt channel credential: {e}")))?;
         let models: Vec<String> = serde_json::from_str(&models_json).unwrap_or_default();
-        let Some(model) = model
-            .map(str::to_owned)
-            .or_else(|| models.first().cloned())
-        else {
+        let Some(model) = model.map(str::to_owned).or_else(|| models.first().cloned()) else {
             return Err(DevopsError::BadRequest(format!(
                 "extraction channel '{channel_id}' has no model configured"
             )));
@@ -163,8 +160,7 @@ impl DevopsService {
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
         if privileged {
             let sql = format!("SELECT {COLS} FROM one_provider_registry ORDER BY updated_at DESC");
-            return Ok(self.db.fetch_all_as::<ProviderChannelDto>(&sql, &[])
-                .await?);
+            return Ok(self.db.fetch_all_as::<ProviderChannelDto>(&sql, &[]).await?);
         }
         // Widened with `model_channel` grants, same as the other registries.
         // Without this the matrix accepts, stores and reports a
@@ -254,10 +250,14 @@ impl DevopsService {
                 // otherwise they could both rewrite another team's channel
                 // (base_url + rotate the key) and re-scope it away from that
                 // team in the same call. Same pattern as skill/MCP registries.
-                let current_team_id: Option<String> =
-                    self.db.fetch_optional_scalar("SELECT team_id FROM one_provider_registry WHERE id = ?", &db_params![existing])
-                        .await?
-                        .ok_or_else(|| DevopsError::NotFound(format!("model channel {existing}")))?;
+                let current_team_id: Option<String> = self
+                    .db
+                    .fetch_optional_scalar(
+                        "SELECT team_id FROM one_provider_registry WHERE id = ?",
+                        &db_params![existing],
+                    )
+                    .await?
+                    .ok_or_else(|| DevopsError::NotFound(format!("model channel {existing}")))?;
                 if !self
                     .actor_can_touch_team(created_by, current_team_id.as_deref())
                     .await?
@@ -302,7 +302,11 @@ impl DevopsService {
             }
         };
 
-        self.db.fetch_one_as::<ProviderChannelDto>(&format!("SELECT {COLS} FROM one_provider_registry WHERE id = ?"), &db_params![&id])
+        self.db
+            .fetch_one_as::<ProviderChannelDto>(
+                &format!("SELECT {COLS} FROM one_provider_registry WHERE id = ?"),
+                &db_params![&id],
+            )
             .await
             .map_err(Into::into)
     }
@@ -313,7 +317,12 @@ impl DevopsService {
     /// admin believes they deleted — and, worse, a recycled id would silently
     /// re-authorize them.
     pub async fn delete_provider_channel(&self, actor_user_id: &str, id: &str) -> Result<(), DevopsError> {
-        let team_id: Option<String> = self.db.fetch_optional_scalar("SELECT team_id FROM one_provider_registry WHERE id = ?", &db_params![id])
+        let team_id: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT team_id FROM one_provider_registry WHERE id = ?",
+                &db_params![id],
+            )
             .await?
             .ok_or_else(|| DevopsError::NotFound(format!("model channel {id}")))?;
         if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
@@ -322,9 +331,13 @@ impl DevopsService {
             ));
         }
         let mut tx = self.db.begin().await?;
-        tx.execute("DELETE FROM one_provider_channel_tokens WHERE channel_id = ?", &db_params![id])
-            .await?;
-        let deleted = tx.execute("DELETE FROM one_provider_registry WHERE id = ?", &db_params![id])
+        tx.execute(
+            "DELETE FROM one_provider_channel_tokens WHERE channel_id = ?",
+            &db_params![id],
+        )
+        .await?;
+        let deleted = tx
+            .execute("DELETE FROM one_provider_registry WHERE id = ?", &db_params![id])
             .await?;
         if deleted == 0 {
             return Err(DevopsError::NotFound(format!("model channel {id}")));
@@ -370,7 +383,8 @@ impl DevopsService {
              ON DUPLICATE KEY UPDATE \
                 token_hash = new.token_hash, created_at = new.created_at, \
                 last_used = NULL, revoked_at = NULL",
-        &db_params![hash_token(&token), user_id, channel_id, now])
+            &db_params![hash_token(&token), user_id, channel_id, now],
+        )
         .await?;
 
         Ok(IssuedChannelToken {
@@ -383,10 +397,13 @@ impl DevopsService {
     /// from the company: their session JWT is already invalidated there, and
     /// this closes the one credential that deliberately outlives it.
     pub async fn revoke_channel_tokens_for_user(&self, user_id: &str) -> Result<u64, DevopsError> {
-        let result = self.db.execute(
-            "UPDATE one_provider_channel_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
-        &db_params![now_ms(), user_id])
-        .await?;
+        let result = self
+            .db
+            .execute(
+                "UPDATE one_provider_channel_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+                &db_params![now_ms(), user_id],
+            )
+            .await?;
         Ok(result)
     }
 
@@ -401,13 +418,16 @@ impl DevopsService {
         channel_id: &str,
         token: &str,
     ) -> Result<Option<ResolvedChannel>, DevopsError> {
-        let row: Option<(String, String, String, String)> = self.db.fetch_optional_as::<(String, String, String, String)>(
-            "SELECT t.user_id, r.platform, r.upstream_base_url, r.api_key_encrypted \
+        let row: Option<(String, String, String, String)> = self
+            .db
+            .fetch_optional_as::<(String, String, String, String)>(
+                "SELECT t.user_id, r.platform, r.upstream_base_url, r.api_key_encrypted \
              FROM one_provider_channel_tokens t \
              JOIN one_provider_registry r ON r.id = t.channel_id \
              WHERE t.token_hash = ? AND t.channel_id = ? AND t.revoked_at IS NULL AND r.enabled = 1",
-        &db_params![hash_token(token), channel_id])
-        .await?;
+                &db_params![hash_token(token), channel_id],
+            )
+            .await?;
 
         let Some((user_id, platform, upstream_base_url, api_key_encrypted)) = row else {
             return Ok(None);
@@ -422,7 +442,12 @@ impl DevopsService {
 
         // Best-effort: a failed bookkeeping write must not fail the call the
         // user is actually making.
-        let _ = self.db.execute("UPDATE one_provider_channel_tokens SET last_used = ? WHERE token_hash = ?", &db_params![now_ms(), hash_token(token)])
+        let _ = self
+            .db
+            .execute(
+                "UPDATE one_provider_channel_tokens SET last_used = ? WHERE token_hash = ?",
+                &db_params![now_ms(), hash_token(token)],
+            )
             .await;
 
         Ok(Some(ResolvedChannel {
@@ -449,7 +474,9 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone())).await.unwrap();
+        run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone()))
+            .await
+            .unwrap();
         // The visibility predicate reads one-org's tables through the shared
         // pool, same cross-crate precedent the other registries use. Column
         // list copied from the existing service tests so the shapes cannot
@@ -697,7 +724,9 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone())).await.unwrap();
+        run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone()))
+            .await
+            .unwrap();
         sqlx::raw_sql("CREATE TABLE IF NOT EXISTS one_user_org (user_id TEXT, tenant_id TEXT, role TEXT);")
             .execute(&pool)
             .await

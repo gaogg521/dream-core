@@ -44,9 +44,9 @@
 //! because upstream shuffled its manifest.
 
 use async_trait::async_trait;
+use dream_core_db::{DbPool, db_params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use dream_core_db::{DbPool, db_params};
 
 use crate::error::DevopsError;
 use crate::service::{DevopsService, new_id};
@@ -106,9 +106,10 @@ impl MarketFetcher for ReqwestFetcher {
             return Err(format!("HTTP {}", response.status()));
         }
         if let Some(len) = response.content_length()
-            && len as usize > max_bytes {
-                return Err(format!("payload too large ({len} bytes, cap {max_bytes})"));
-            }
+            && len as usize > max_bytes
+        {
+            return Err(format!("payload too large ({len} bytes, cap {max_bytes})"));
+        }
         let bytes = response.bytes().await.map_err(|e| format!("body read failed: {e}"))?;
         if bytes.len() > max_bytes {
             return Err(format!("payload too large ({} bytes, cap {max_bytes})", bytes.len()));
@@ -280,12 +281,15 @@ impl DevopsService {
     // -- market sources (P1-1 round 2) -----------------------------------
 
     pub async fn list_market_sources(&self, tenant_id: &str) -> Result<Vec<MarketSourceDto>, DevopsError> {
-        let rows: Vec<SourceRow> = self.db.fetch_all_as::<SourceRow>(
-            "SELECT id, tenant_id, name, url, enabled, last_synced_at, last_sync_status, last_sync_error, \
+        let rows: Vec<SourceRow> = self
+            .db
+            .fetch_all_as::<SourceRow>(
+                "SELECT id, tenant_id, name, url, enabled, last_synced_at, last_sync_status, last_sync_error, \
                     created_by, created_at, updated_at \
              FROM one_market_sources WHERE tenant_id = ? ORDER BY created_at DESC",
-        &db_params![tenant_id])
-        .await?;
+                &db_params![tenant_id],
+            )
+            .await?;
         Ok(rows.into_iter().map(row_to_source).collect())
     }
 
@@ -348,7 +352,11 @@ impl DevopsService {
         let name = name.map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&existing.2);
         let url = url.map(str::trim).filter(|u| !u.is_empty()).unwrap_or(&existing.3);
         let enabled = enabled.unwrap_or(existing.4);
-        self.db.execute("UPDATE one_market_sources SET name = ?, url = ?, enabled = ?, updated_at = ? WHERE id = ?", &db_params![name, url, enabled, now_ms(), id])
+        self.db
+            .execute(
+                "UPDATE one_market_sources SET name = ?, url = ?, enabled = ?, updated_at = ? WHERE id = ?",
+                &db_params![name, url, enabled, now_ms(), id],
+            )
             .await?;
         Ok(row_to_source(self.get_market_source(tenant_id, id).await?))
     }
@@ -441,9 +449,13 @@ impl DevopsService {
 
         // Items this source previously imported that are gone from the
         // upstream index: reported, rows kept (see the migration's doc).
-        let known: Vec<(String, String)> =
-            self.db.fetch_all_as::<(String, String)>("SELECT kind, item_name FROM one_market_imports WHERE source_id = ?", &db_params![&source_id])
-                .await?;
+        let known: Vec<(String, String)> = self
+            .db
+            .fetch_all_as::<(String, String)>(
+                "SELECT kind, item_name FROM one_market_imports WHERE source_id = ?",
+                &db_params![&source_id],
+            )
+            .await?;
         for (kind, name) in known {
             let still_listed = manifest.items.iter().any(|item| item.kind == kind && item.name == name);
             if !still_listed {
@@ -480,10 +492,11 @@ impl DevopsService {
         // entirely — no fetch, no write. Everything below is for new or
         // changed items.
         if let (Some((_, existing_hash)), Some(declared)) = (&mapping, &item.sha256)
-            && declared.eq_ignore_ascii_case(existing_hash) {
-                report.skipped += 1;
-                return Ok(());
-            }
+            && declared.eq_ignore_ascii_case(existing_hash)
+        {
+            report.skipped += 1;
+            return Ok(());
+        }
 
         // A manifest `category` is a display name; resolve it to a row in
         // `one_content_categories` (get-or-create under this tenant) so the
@@ -545,11 +558,12 @@ impl DevopsService {
         };
 
         if let Some(declared) = &item.sha256
-            && !payload_hash.eq_ignore_ascii_case(declared) {
-                return Err(format!(
-                    "fetched payload hash {payload_hash} does not match the manifest pin {declared}"
-                ));
-            }
+            && !payload_hash.eq_ignore_ascii_case(declared)
+        {
+            return Err(format!(
+                "fetched payload hash {payload_hash} does not match the manifest pin {declared}"
+            ));
+        }
 
         if let Some((registry_id, existing_hash)) = mapping {
             if existing_hash == payload_hash {
@@ -571,12 +585,14 @@ impl DevopsService {
         // created), which also makes delete-source-then-re-add idempotent
         // instead of piling up orphan rows.
         let new_id = import.upsert_new(&self.db, &item.name, &item.kind).await?;
-        self.db.execute(
-            "INSERT INTO one_market_imports (source_id, kind, item_name, registry_id, content_hash, updated_at) \
+        self.db
+            .execute(
+                "INSERT INTO one_market_imports (source_id, kind, item_name, registry_id, content_hash, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?)",
-        &db_params![source_id, &item.kind, &item.name, &new_id, &payload_hash, now_ms()])
-        .await
-        .map_err(|e| format!("mapping insert failed: {e}"))?;
+                &db_params![source_id, &item.kind, &item.name, &new_id, &payload_hash, now_ms()],
+            )
+            .await
+            .map_err(|e| format!("mapping insert failed: {e}"))?;
         report.imported += 1;
         Ok(())
     }
@@ -720,10 +736,13 @@ impl MarketImport {
         } else {
             "one_mcp_registry"
         };
-        let existing: Option<(String, String)> =
-            pool.fetch_optional_as::<(String, String)>(&format!("SELECT id, origin FROM {table} WHERE name = ?"), &db_params![item_name])
-                .await
-                .map_err(|e| format!("collision check failed: {e}"))?;
+        let existing: Option<(String, String)> = pool
+            .fetch_optional_as::<(String, String)>(
+                &format!("SELECT id, origin FROM {table} WHERE name = ?"),
+                &db_params![item_name],
+            )
+            .await
+            .map_err(|e| format!("collision check failed: {e}"))?;
         if let Some((id, origin)) = existing {
             if origin != "market" {
                 return Err(format!(
@@ -749,7 +768,8 @@ impl MarketImport {
                      (id, name, description, content, enabled, auto_active, scope, team_id, visibility, \
                       origin, category_id, published, created_by, created_at, updated_at) \
                      VALUES (?, ?, ?, ?, 1, 0, 'org', NULL, 'all', 'market', ?, 1, 'market-sync', ?, ?)",
-                &db_params![&id, name, description, content, category_id, now, now])
+                    &db_params![&id, name, description, content, category_id, now, now],
+                )
                 .await
                 .map_err(|e| format!("registry insert failed: {e}"))?;
                 Ok(id)
@@ -766,7 +786,8 @@ impl MarketImport {
                      (id, name, type, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, \
                       origin, category_id, published, created_by, created_at, updated_at) \
                      VALUES (?, ?, ?, ?, 1, 0, NULL, 'org', NULL, 'all', 'market', ?, 1, 'market-sync', ?, ?)",
-                &db_params![&id, name, mcp_type, endpoint, category_id, now, now])
+                    &db_params![&id, name, mcp_type, endpoint, category_id, now, now],
+                )
                 .await
                 .map_err(|e| format!("registry insert failed: {e}"))?;
                 Ok(id)
@@ -787,7 +808,9 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        crate::migrate::run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone())).await.unwrap();
+        crate::migrate::run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone()))
+            .await
+            .unwrap();
         // `one_content_categories` is an employee-domain table; the sync now
         // resolves manifest categories against it (see `ensure_market_category`).
         dream_domain_employee::migrate::run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(pool.clone()))
@@ -874,7 +897,11 @@ mod tests {
             .expect("mcp imported");
         assert_eq!(mcp_origin, "market");
 
-        let count: i64 = dream_core_db::DbPool::Sqlite(pool.clone()).fetch_one_scalar("SELECT COUNT(*) FROM one_market_imports WHERE source_id = ?", &db_params![&id])
+        let count: i64 = dream_core_db::DbPool::Sqlite(pool.clone())
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_market_imports WHERE source_id = ?",
+                &db_params![&id],
+            )
             .await
             .unwrap();
         assert_eq!(count, 2);
@@ -896,7 +923,10 @@ mod tests {
 
         let pool = dream_core_db::DbPool::Sqlite(pool.clone());
         let cat_count: i64 = pool
-            .fetch_one_scalar("SELECT COUNT(*) FROM one_content_categories WHERE tenant_id = 't1'", &[])
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_content_categories WHERE tenant_id = 't1'",
+                &[],
+            )
             .await
             .unwrap();
         assert_eq!(cat_count, 2);
@@ -922,10 +952,16 @@ mod tests {
         // Re-sync with the SAME categories: no new category rows (get-or-create).
         service.sync_market_source("t1", &id, &fetcher).await.unwrap();
         let cat_count_after: i64 = pool
-            .fetch_one_scalar("SELECT COUNT(*) FROM one_content_categories WHERE tenant_id = 't1'", &[])
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_content_categories WHERE tenant_id = 't1'",
+                &[],
+            )
             .await
             .unwrap();
-        assert_eq!(cat_count_after, 2, "get-or-create must not duplicate existing categories");
+        assert_eq!(
+            cat_count_after, 2,
+            "get-or-create must not duplicate existing categories"
+        );
     }
 
     /// Real MySQL: `ensure_market_category`'s get-or-create runs the same
@@ -938,7 +974,9 @@ mod tests {
             return;
         };
         crate::migrate::run_one_devops_migrations(&mysql_db.pool).await.unwrap();
-        dream_domain_employee::migrate::run_one_employee_migrations(&mysql_db.pool).await.unwrap();
+        dream_domain_employee::migrate::run_one_employee_migrations(&mysql_db.pool)
+            .await
+            .unwrap();
         let service = DevopsService::new(mysql_db.pool.clone());
         let id = service
             .create_market_source("t1", "acme", source_url(), "admin1")
@@ -958,7 +996,10 @@ mod tests {
         // Same name, different resource_type → two distinct category rows.
         let cat_count: i64 = mysql_db
             .pool
-            .fetch_one_scalar("SELECT COUNT(*) FROM one_content_categories WHERE tenant_id = 't1'", &[])
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_content_categories WHERE tenant_id = 't1'",
+                &[],
+            )
             .await
             .unwrap();
         assert_eq!(cat_count, 2);
@@ -1080,10 +1121,7 @@ mod tests {
         assert_eq!(report.errors.len(), 1);
         assert!(report.errors[0].error.contains("self-built"));
         let origin: String = dream_core_db::DbPool::Sqlite(pool.clone())
-            .fetch_one_scalar(
-                "SELECT origin FROM one_skill_registry WHERE name = 'review-skill'",
-                &[],
-            )
+            .fetch_one_scalar("SELECT origin FROM one_skill_registry WHERE name = 'review-skill'", &[])
             .await
             .unwrap();
         assert_eq!(origin, "self_built");
@@ -1155,7 +1193,8 @@ mod tests {
 
         service.delete_market_source("t1", &id).await.unwrap();
         assert!(service.list_market_sources("t1").await.unwrap().is_empty());
-        let mappings: i64 = dream_core_db::DbPool::Sqlite(pool.clone()).fetch_one_scalar("SELECT COUNT(*) FROM one_market_imports", &[])
+        let mappings: i64 = dream_core_db::DbPool::Sqlite(pool.clone())
+            .fetch_one_scalar("SELECT COUNT(*) FROM one_market_imports", &[])
             .await
             .unwrap();
         assert_eq!(mappings, 0);

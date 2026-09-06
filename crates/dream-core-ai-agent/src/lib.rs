@@ -46,7 +46,7 @@ pub use dream_core_api_types::{AcpBuildExtra, AcpModelInfo, DreamEngineBuildExtr
 // Backend-static capability table (session layer's single source of truth) —
 // re-exported so the conversation layer can read the mid-turn bit for a
 // conversation whose agent task is not currently live.
-pub use capability::memory_extraction::{ExtractedFact, EXTRACTION_MIN_IMPORTANCE, extract_facts_via_llm};
+pub use capability::memory_extraction::{EXTRACTION_MIN_IMPORTANCE, ExtractedFact, extract_facts_via_llm};
 pub use capability::memory_recall::TurnMemoryRecall;
 pub use capability::skill_manager::{
     AcpSkillManager, SkillDefinition, SkillIndex, build_skills_index_text, build_system_instructions,
@@ -78,7 +78,7 @@ pub use services::AgentAvailabilityFeedbackPort;
 pub use services::AgentService;
 pub use services::RemoteAgentService;
 pub use session_context::{
-    AcpSessionBuildContext, AgentSessionContext, AgentSessionKind, DreamEngineSessionBuildContext, ConversationContext,
+    AcpSessionBuildContext, AgentSessionContext, AgentSessionKind, ConversationContext, DreamEngineSessionBuildContext,
     WorkspaceContext,
 };
 pub use task_manager::{IWorkerTaskManager, WorkerTaskManagerImpl};

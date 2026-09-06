@@ -123,21 +123,15 @@ pub trait MfaStore: Send + Sync {
     /// still unused (a concurrent verify loses the race).
     async fn challenge_consume(&self, token_hash: &str) -> Result<bool, DbError>;
 
-    async fn challenge_save_pending_secret(
-        &self,
-        token_hash: &str,
-        secret_cipher: &str,
-    ) -> Result<(), DbError>;
+    async fn challenge_save_pending_secret(&self, token_hash: &str, secret_cipher: &str) -> Result<(), DbError>;
 
     /// 用户管理的 MFA 状态清单：(id, username, enabled, bound_at, exempt, force)。
-    async fn list_users_mfa_status(
-        &self,
-    ) -> Result<Vec<(String, Option<String>, i64, Option<i64>, i64, i64)>, DbError>;
+    async fn list_users_mfa_status(&self)
+    -> Result<Vec<(String, Option<String>, i64, Option<i64>, i64, i64)>, DbError>;
 
     async fn audit_insert(&self, entry: &MfaAuditEntry) -> Result<(), DbError>;
     async fn audit_list(&self, limit: i64) -> Result<Vec<MfaAuditRow>, DbError>;
 }
-
 
 /// Audit row as returned by [`MfaStore::audit_list`].
 #[derive(Debug, Clone, serde::Serialize)]
@@ -243,7 +237,18 @@ impl MfaStore for SqliteMfaStore {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(
-            |(token_hash, user_id, purpose, attempts, expires_at, used, pending_secret_cipher, redirect_target, desktop, scheme)| MfaChallengeRow {
+            |(
+                token_hash,
+                user_id,
+                purpose,
+                attempts,
+                expires_at,
+                used,
+                pending_secret_cipher,
+                redirect_target,
+                desktop,
+                scheme,
+            )| MfaChallengeRow {
                 token_hash,
                 user_id,
                 purpose: match purpose.as_str() {
@@ -268,7 +273,10 @@ impl MfaStore for SqliteMfaStore {
                 .fetch_optional(&self.pool)
                 .await?;
         let Some((attempts,)) = row else {
-            return Ok(AttemptBump { attempts: 0, invalidated: true });
+            return Ok(AttemptBump {
+                attempts: 0,
+                invalidated: true,
+            });
         };
         let next = attempts + 1;
         let invalidated = next >= MFA_MAX_ATTEMPTS;
@@ -301,11 +309,7 @@ impl MfaStore for SqliteMfaStore {
         Ok(result.rows_affected() > 0)
     }
 
-    async fn challenge_save_pending_secret(
-        &self,
-        token_hash: &str,
-        secret_cipher: &str,
-    ) -> Result<(), DbError> {
+    async fn challenge_save_pending_secret(&self, token_hash: &str, secret_cipher: &str) -> Result<(), DbError> {
         sqlx::query("UPDATE mfa_challenges SET pending_secret_cipher = ? WHERE token_hash = ?")
             .bind(secret_cipher)
             .bind(token_hash)
@@ -339,10 +343,14 @@ impl MfaStore for SqliteMfaStore {
     }
 
     async fn audit_list(&self, limit: i64) -> Result<Vec<MfaAuditRow>, DbError> {
-        let rows: Vec<(i64, Option<String>, Option<String>, String, Option<String>, Option<String>)> =
-            sqlx::query_as(
-                "SELECT ts, user_id, username, action, detail, ip FROM mfa_audit ORDER BY ts DESC LIMIT ?",
-            )
+        let rows: Vec<(
+            i64,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+        )> = sqlx::query_as("SELECT ts, user_id, username, action, detail, ip FROM mfa_audit ORDER BY ts DESC LIMIT ?")
             .bind(limit.clamp(1, 500))
             .fetch_all(&self.pool)
             .await?;

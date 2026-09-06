@@ -1592,10 +1592,7 @@ mod tests {
         let pdf = dir.join("doc.pdf");
         std::fs::write(&pdf, b"fakepdf").unwrap();
         let pdf = pdf.to_string_lossy().into_owned();
-        let content = format!(
-            "look\n\n{}\n{img}\n{pdf}",
-            dream_core_common::constants::FILES_MARKER
-        );
+        let content = format!("look\n\n{}\n{img}\n{pdf}", dream_core_common::constants::FILES_MARKER);
         let data = SendMessageData {
             content,
             msg_id: "m2".into(),
@@ -1616,10 +1613,7 @@ mod tests {
                 // hand the agent a file to open.
                 assert_eq!(
                     text.text,
-                    format!(
-                        "look\n\n{}\n{img}\n{pdf}",
-                        dream_core_common::constants::FILES_MARKER
-                    )
+                    format!("look\n\n{}\n{img}\n{pdf}", dream_core_common::constants::FILES_MARKER)
                 );
             }
             other => panic!("expected text block, got {other:?}"),
