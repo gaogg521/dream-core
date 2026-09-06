@@ -1995,6 +1995,22 @@ impl BillingService {
     /// (scope = whole company) reach every `one_enterprise_members` row of
     /// their enterprise; group admins reach their own tenant only. This is
     /// P1-1's scope split applied to CONTENT, not just metadata.
+    /// The tenant a member belongs to — what an audit row about them should
+    /// be filed under, so the admins who can see that tenant can find it.
+    async fn tenant_of_user(&self, user_id: &str) -> String {
+        self.db
+            .fetch_optional_scalar::<String>(
+                // Active-tenant-aware, the same read `is_billing_admin` uses:
+                // a member of several groups is audited under the one they are
+                // currently working in.
+                "SELECT uo.tenant_id FROM one_user_org uo WHERE uo.user_id = ?                  ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC LIMIT 1",
+                &db_params![user_id],
+            )
+            .await
+            .unwrap_or(None)
+            .unwrap_or_default()
+    }
+
     async fn user_in_audit_scope(&self, scope: &AuditScope, user_id: &str) -> Result<bool, BillingError> {
         let in_scope: bool = if scope.tenant_id.is_none() {
             self.db
@@ -2020,9 +2036,19 @@ impl BillingService {
     /// Rows land in one-org's `one_audit_logs` — same-layer crates talk raw
     /// SQL to each other's tables for lookups this simple (same precedent
     /// as employee's `user_org_role`).
+    /// Record one admin action against a member's data.
+    ///
+    /// `tenant_id` is the tenant of the AUDITED resource, not of the caller's
+    /// scope. It used to be `scope.tenant_bind()`, which is a SQL sentinel:
+    /// the empty string there means "do not restrict by tenant" in a WHERE
+    /// clause. Stored as a value it meant "belongs to no tenant", and since
+    /// every reader of `one_audit_logs` filters by tenant, a company admin's
+    /// reads were written and then invisible — measured: an admin read a
+    /// member's whole conversation and the audit list showed nothing.
+    /// An audit trail nobody can find is not an audit trail.
     async fn write_audit(
         &self,
-        scope: &AuditScope,
+        tenant_id: &str,
         actor_user_id: &str,
         action: &str,
         resource: &str,
@@ -2036,7 +2062,7 @@ impl BillingService {
                  VALUES (?, ?, ?, NULL, ?, ?, ?, 'success', ?)",
                 &db_params![
                     generate_prefixed_id("audit"),
-                    scope.tenant_bind(),
+                    tenant_id,
                     actor_user_id,
                     action,
                     resource,
@@ -2081,6 +2107,7 @@ impl BillingService {
         if pending.is_some() {
             return Ok(());
         }
+        let target_tenant = self.tenant_of_user(target_user_id).await;
         self.db
             .execute(
                 "INSERT INTO one_conversation_audit_requests \
@@ -2089,7 +2116,11 @@ impl BillingService {
                 &db_params![
                     generate_prefixed_id("audreq"),
                     scope.enterprise_id(),
-                    scope.tenant_bind(),
+                    // The target's tenant, not `scope.tenant_bind()` — that is
+                    // a WHERE-clause sentinel whose empty string means "no
+                    // restriction", and storing it filed a company admin's
+                    // request under no tenant at all.
+                    target_tenant.as_str(),
                     target_user_id,
                     conversation_id,
                     actor_user_id,
@@ -2097,7 +2128,7 @@ impl BillingService {
                 ],
             )
             .await?;
-        self.write_audit(&scope, actor_user_id, "billing.audit.request", conversation_id, None)
+        self.write_audit(&target_tenant, actor_user_id, "billing.audit.request", conversation_id, None)
             .await;
         Ok(())
     }
@@ -2263,7 +2294,7 @@ impl BillingService {
             .map_err(Self::repo_err)?;
         let latency_ms = started.elapsed().as_millis() as i64;
         self.write_audit(
-            &scope,
+            &self.tenant_of_user(&owner_user_id).await,
             actor_user_id,
             "billing.conversation.read",
             conversation_id,
@@ -3509,6 +3540,47 @@ mod tests {
             report.top_users.iter().all(|u| u.user_id == "alice"),
             "the report's top-spender list leaks across groups"
         );
+    }
+
+    /// An audit trail nobody can find is not an audit trail. Every reader of
+    /// `one_audit_logs` filters by tenant, so the row has to carry the tenant
+    /// of the member who was audited — not `scope.tenant_bind()`, whose empty
+    /// string is a WHERE-clause sentinel meaning "no restriction". Filing a
+    /// company admin's read under `''` made it invisible: measured live, an
+    /// admin read a member's whole conversation and the audit list showed
+    /// nothing.
+    #[tokio::test]
+    async fn an_audited_read_is_filed_under_the_audited_member_tenant() {
+        let (svc, sqlite) = service().await;
+        sqlx::raw_sql(
+            "INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) VALUES ('boss', 'entZ', 'admin', 0, 0);
+             INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) VALUES ('mia', 'entZ', 'member', 0, 0);
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('mia', 'tm', 'member');
+             CREATE TABLE IF NOT EXISTS one_audit_logs (id TEXT PRIMARY KEY, tenant_id TEXT, user_id TEXT, username TEXT, action TEXT, resource TEXT, latency_ms INTEGER, result TEXT, created_at INTEGER);",
+        )
+        .execute(&sqlite)
+        .await
+        .unwrap();
+
+        // A company admin: `tenant_id` is None, so the sentinel would be "".
+        let scope = svc.resolve_audit_scope("boss").await.unwrap().expect("company admin");
+        assert!(scope.tenant_id.is_none());
+
+        svc.write_audit(
+            &svc.tenant_of_user("mia").await,
+            "boss",
+            "billing.conversation.read",
+            "conv_1",
+            Some(7),
+        )
+        .await;
+
+        let tenant: String = sqlx::query_scalar("SELECT tenant_id FROM one_audit_logs WHERE action = ?")
+            .bind("billing.conversation.read")
+            .fetch_one(&sqlite)
+            .await
+            .unwrap();
+        assert_eq!(tenant, "tm", "the row must be findable by the admins of the audited member's tenant");
     }
 
     /// The resolution itself: which of the two admin kinds a caller is decides

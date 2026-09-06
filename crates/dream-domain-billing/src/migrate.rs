@@ -148,7 +148,7 @@ pub(crate) mod tests {
              -- carries the group restriction as a subquery. Runtime always
              -- has them: one-org migrates before one-billing, inside the
              -- same `enterprise` feature gate.
-             CREATE TABLE IF NOT EXISTS one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', department_id TEXT, PRIMARY KEY (user_id, tenant_id));
+             CREATE TABLE IF NOT EXISTS one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', department_id TEXT, created_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, tenant_id));
              CREATE TABLE IF NOT EXISTS one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL);",
         )
         .execute(pool)
