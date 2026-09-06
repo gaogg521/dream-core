@@ -44,10 +44,10 @@ use crate::container::ContainerStatus;
 use crate::error::PlatformError;
 use crate::models::{
     ApiKeyDto, CollaborationConfigDto, ConfigBulkImportDto, ConfigEntryDto, ConfigSetDto, ConfigSetReferencesDto,
-    ContainerConfigDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto, FileVaultReconcileEntry,
-    GrantMode, GrantModeDto, ImChannelMemberDto, IpAllowlistConfigDto, MyNotificationsDto, MySceneDto, NewApiKeyDto,
-    NotificationDto, PolicyTemplateBindingDto, ResourceGrantDto, SceneDto, SecurityPolicyDto,
-    SecurityPolicyTemplateDto, SiemConfigDto,
+    ContainerConfigDto, ConversationShareDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto,
+    FileVaultReconcileEntry, GrantMode, GrantModeDto, ImChannelMemberDto, IpAllowlistConfigDto, MyNotificationsDto,
+    MySceneDto, NewApiKeyDto, NotificationDto, PolicyTemplateBindingDto, ResourceGrantDto, SceneDto, SecurityPolicyDto,
+    SecurityPolicyTemplateDto, ShareConversationInput, SharedConversationDetail, SharedMessageInput, SiemConfigDto,
 };
 use crate::rbac::{RequirePlatformAdmin, RequirePlatformMember};
 use crate::service::ConfigImportRow;
@@ -153,6 +153,29 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
         // messages read; composing stays admin-only above.
         .route("/api/one/notifications", get(my_notifications))
         .route("/api/one/notifications/read", post(mark_notifications_read))
+        // P2-2 conversation sharing (member half): policy-gated share/
+        // unshare, the "shared with me" inbox, and share-authorized
+        // content reads. The share ROW is the entire authorization for
+        // cross-user reads — see the service impl for the full contract.
+        .route(
+            "/api/one/platform/conversation-shares",
+            get(list_shared_conversations).post(share_conversation),
+        )
+        .route(
+            "/api/one/platform/conversation-shares/owned",
+            get(list_my_conversation_shares),
+        )
+        .route(
+            "/api/one/platform/conversation-shares/{conversation_id}",
+            delete(unshare_conversation),
+        )
+        .route(
+            "/api/one/platform/conversation-shares/{conversation_id}/messages",
+            get(read_shared_conversation_messages),
+        )
+        // P2-2 client gating: the member's client reads the mode to decide
+        // whether the share affordance exists at all (off = hidden).
+        .route("/api/one/platform/my-security-policy", get(my_security_policy))
         // Member-side half of the E5 scenes (§ 4.1): what the caller themself
         // belongs to, each with its grant-package summary. Lives under the
         // org path (not `/admin/platform`) because it is a self-service read
@@ -732,6 +755,10 @@ struct SetSecurityPolicyBody {
     message_redact_enabled: bool,
     #[serde(default)]
     send_rate_limit_per_minute: Option<i64>,
+    /// P2-2. Absent = leave the current mode unchanged (older console
+    /// builds keep working against this endpoint).
+    #[serde(default)]
+    conversation_share_mode: Option<String>,
 }
 
 async fn set_security_policy(
@@ -750,6 +777,17 @@ async fn set_security_policy(
             body.message_scan_enabled,
             body.message_redact_enabled,
             body.send_rate_limit_per_minute,
+            // P2-2. Absent field = keep the current mode.
+            &match body.conversation_share_mode.as_deref() {
+                Some(mode) => mode.to_owned(),
+                None => {
+                    state
+                        .service
+                        .get_security_policy(&actor.tenant_id)
+                        .await?
+                        .conversation_share_mode
+                }
+            },
         )
         .await?;
     Ok(Json(ApiResponse::ok(dto)))
@@ -1078,6 +1116,99 @@ async fn mark_notifications_read(
         .mark_notifications_read(&actor.tenant_id, &user.id, &body.ids)
         .await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShareConversationBody {
+    conversation_id: String,
+    #[serde(default)]
+    name: Option<String>,
+    /// `"tenant" | "enterprise"` — policy-gated (see the service impl).
+    scope: String,
+    /// Some = client-mode desktop uploading the snapshot in the same call.
+    #[serde(default)]
+    messages: Option<Vec<SharedMessageInput>>,
+}
+
+async fn share_conversation(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformMember(actor): RequirePlatformMember,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<ShareConversationBody>,
+) -> Result<Json<ApiResponse<ConversationShareDto>>, PlatformError> {
+    let share = state
+        .service
+        .share_conversation(
+            &actor,
+            &user.id,
+            ShareConversationInput {
+                conversation_id: body.conversation_id,
+                name: body.name,
+                scope: body.scope,
+                messages: body.messages,
+            },
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(share)))
+}
+
+async fn unshare_conversation(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformMember(_actor): RequirePlatformMember,
+    Extension(user): Extension<CurrentUser>,
+    Path(conversation_id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, PlatformError> {
+    state.service.unshare_conversation(&user.id, &conversation_id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+/// The member's own shares (owner view: manage/revoke).
+async fn list_my_conversation_shares(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformMember(_actor): RequirePlatformMember,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<ConversationShareDto>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_my_conversation_shares(&user.id).await?,
+    )))
+}
+
+/// The "shared with me" inbox.
+async fn list_shared_conversations(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformMember(actor): RequirePlatformMember,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<ConversationShareDto>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_shared_conversations(&actor, &user.id).await?,
+    )))
+}
+
+/// Share-authorized content read.
+async fn read_shared_conversation_messages(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformMember(actor): RequirePlatformMember,
+    Extension(user): Extension<CurrentUser>,
+    Path(conversation_id): Path<String>,
+) -> Result<Json<ApiResponse<SharedConversationDetail>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .read_shared_conversation(&actor, &user.id, &conversation_id)
+            .await?,
+    )))
+}
+
+/// The caller's tenant policy, member-visible subset: the client needs the
+/// share mode to decide whether sharing affordances render at all.
+async fn my_security_policy(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformMember(actor): RequirePlatformMember,
+) -> Result<Json<ApiResponse<SecurityPolicyDto>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.get_security_policy(&actor.tenant_id).await?,
+    )))
 }
 
 /// Member-side half of the E5 scenes (§ 4.1 of the 09-05 handoff): the

@@ -10,7 +10,6 @@
 
 use std::sync::Arc;
 
-
 use dream_core_common::constants::API_KEY_TOKEN_PREFIX;
 use dream_core_common::{decrypt_string, encrypt_string, generate_id_with_length, generate_prefixed_id, now_ms};
 use sha2::{Digest, Sha256};
@@ -20,17 +19,18 @@ use crate::collaboration::{
 };
 use crate::container::{ContainerRuntime, ContainerSettings, ContainerStatus, NoopContainerRuntime};
 use crate::error::PlatformError;
-use dream_core_db::{DbBackend, DbPool, DbValue, db_params};
 use crate::ip_allowlist::ip_allowed;
 use crate::models::{
     ApiKeyDto, CollaborationConfigDto, ConfigBulkImportDto, ConfigEntryDto, ConfigSetDto, ConfigSetReference,
-    ConfigSetReferencesDto, ContainerConfigDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto,
-    FileVaultReconcileEntry, GrantMode, GrantModeDto, ImChannelMemberDto, ImChannelPluginDto, IpAllowlistConfigDto,
-    MyNotificationDto, MyNotificationsDto, MySceneDto, MySceneResourceSummaryDto, NewApiKeyDto, NotificationDto,
-    PolicyTemplateBindingDto, ResourceGrantDto, SENSITIVE_PLACEHOLDER, SceneDto, SecurityPolicyDto,
-    SecurityPolicyTemplateDto, SiemConfigDto,
+    ConfigSetReferencesDto, ContainerConfigDto, ConversationShareDto, ConversationShareRow, EffectiveGrantDto,
+    FileVaultDto, FileVaultObjectDto, FileVaultReconcileEntry, GrantMode, GrantModeDto, ImChannelMemberDto,
+    ImChannelPluginDto, IpAllowlistConfigDto, MyNotificationDto, MyNotificationsDto, MySceneDto,
+    MySceneResourceSummaryDto, NewApiKeyDto, NotificationDto, PolicyTemplateBindingDto, ResourceGrantDto,
+    SENSITIVE_PLACEHOLDER, SceneDto, SecurityPolicyDto, SecurityPolicyTemplateDto, ShareConversationInput,
+    SharedConversationDetail, SharedMessageDto, SiemConfigDto,
 };
 use crate::siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
+use dream_core_db::{DbBackend, DbPool, DbValue, db_params};
 
 /// Valid `subject_type` values for a resource grant (E5 four-dimensional
 /// matrix): a specific member, every member under a department (resolved at
@@ -106,6 +106,14 @@ pub struct PlatformService {
     /// app layer (`<data_dir>/file-vault`); `None` → uploads and
     /// reconciliation report "not configured" instead of touching disk.
     storage_root: Option<std::path::PathBuf>,
+    /// Conversation repository handle for the P2-2 share subsystem. The
+    /// main-schema conversations/messages live behind this repo — which under
+    /// a MySQL enterprise deployment is a DIFFERENT backend than `db` — so
+    /// every conversation read/write here goes through it, never raw SQL on
+    /// `self.db`. `None` → share endpoints report "not configured"; that is
+    /// the personal-edition shape, where the whole subsystem is unreachable
+    /// anyway (the platform crate itself is enterprise-gated).
+    conversation: Option<Arc<dyn dream_core_db::IConversationRepository>>,
 }
 
 fn is_admin_role(role: &str) -> bool {
@@ -133,25 +141,29 @@ impl PlatformService {
         self.db.sqlite()
     }
 
-    pub fn new(
-        db: DbPool, encryption_key: [u8; 32]) -> Self {
-        Self { db,
+    pub fn new(db: DbPool, encryption_key: [u8; 32]) -> Self {
+        Self {
+            db,
             encryption_key,
             container_runtime: Arc::new(NoopContainerRuntime),
             collaboration_provider: Arc::new(NoopCollaborationProvider),
             siem_exporter: Arc::new(NoopSiemExporter),
             storage_root: None,
+            conversation: None,
         }
+    }
+
+    /// Wire the conversation repository for the P2-2 share subsystem. Called
+    /// by the app router after the repo exists (same handle the conversation
+    /// routes use).
+    pub fn with_conversation_repo(mut self, repo: Arc<dyn dream_core_db::IConversationRepository>) -> Self {
+        self.conversation = Some(repo);
+        self
     }
 
     /// Runs `sqlite_sql` or `mysql_sql` by backend — the two dialects
     /// diverge on upsert syntax only; params are shared.
-    async fn upsert(
-        &self,
-        sqlite_sql: &str,
-        mysql_sql: &str,
-        params: &[DbValue],
-    ) -> Result<u64, PlatformError> {
+    async fn upsert(&self, sqlite_sql: &str, mysql_sql: &str, params: &[DbValue]) -> Result<u64, PlatformError> {
         let sql = match self.db.backend() {
             DbBackend::Sqlite => sqlite_sql,
             DbBackend::MySql => mysql_sql,
@@ -193,12 +205,15 @@ impl PlatformService {
     /// is scoped to the active tenant (active membership first, else
     /// most-recently-joined), mirroring `dream_domain_devops::user_org_role`.
     pub async fn resolve_actor(&self, user_id: &str) -> Result<Option<PlatformActor>, PlatformError> {
-        let result = self.db.fetch_optional_as::<(String, String)>(
-            "SELECT uo.tenant_id, uo.role FROM one_user_org uo WHERE uo.user_id = ? \
+        let result = self
+            .db
+            .fetch_optional_as::<(String, String)>(
+                "SELECT uo.tenant_id, uo.role FROM one_user_org uo WHERE uo.user_id = ? \
              ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC, \
                       uo.created_at DESC, uo.tenant_id ASC LIMIT 1",
-        &db_params![user_id])
-        .await;
+                &db_params![user_id],
+            )
+            .await;
         match result {
             Ok(Some((tenant_id, role))) => Ok(Some(PlatformActor { tenant_id, role })),
             Ok(None) => Ok(None),
@@ -285,10 +300,14 @@ impl PlatformService {
         registry_secret: Option<&str>,
         enabled: bool,
     ) -> Result<ContainerConfigDto, PlatformError> {
-        let existing: Option<String> =
-            self.db.fetch_optional_scalar("SELECT registry_secret_encrypted FROM one_container_config WHERE tenant_id = ?", &db_params![tenant_id])
-                .await?
-                .flatten();
+        let existing: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT registry_secret_encrypted FROM one_container_config WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?
+            .flatten();
         let secret_encrypted = match registry_secret {
             Some(s) if !s.is_empty() => {
                 Some(encrypt_string(s, &self.encryption_key).map_err(|e| PlatformError::Internal(e.to_string()))?)
@@ -318,10 +337,14 @@ impl PlatformService {
     /// Decrypted registry credential, for a real `ContainerRuntime` to consume.
     /// `None` when unset or decryption fails (never panics).
     pub async fn container_registry_secret(&self, tenant_id: &str) -> Result<Option<String>, PlatformError> {
-        let encrypted: Option<String> =
-            self.db.fetch_optional_scalar("SELECT registry_secret_encrypted FROM one_container_config WHERE tenant_id = ?", &db_params![tenant_id])
-                .await?
-                .flatten();
+        let encrypted: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT registry_secret_encrypted FROM one_container_config WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?
+            .flatten();
         Ok(encrypted.and_then(|e| decrypt_string(&e, &self.encryption_key).ok()))
     }
 
@@ -346,11 +369,14 @@ impl PlatformService {
 
     pub async fn get_collaboration_config(&self, tenant_id: &str) -> Result<CollaborationConfigDto, PlatformError> {
         type Row = (Option<String>, Option<String>, Option<String>, bool, bool, i64);
-        let row: Option<Row> = self.db.fetch_optional_as::<Row>(
-            "SELECT provider, endpoint, secret_encrypted, presence, enabled, updated_at \
+        let row: Option<Row> = self
+            .db
+            .fetch_optional_as::<Row>(
+                "SELECT provider, endpoint, secret_encrypted, presence, enabled, updated_at \
              FROM one_collaboration_config WHERE tenant_id = ?",
-        &db_params![tenant_id])
-        .await?;
+                &db_params![tenant_id],
+            )
+            .await?;
         Ok(match row {
             Some((provider, endpoint, secret_encrypted, presence, enabled, updated_at)) => CollaborationConfigDto {
                 provider,
@@ -381,10 +407,14 @@ impl PlatformService {
         presence: bool,
         enabled: bool,
     ) -> Result<CollaborationConfigDto, PlatformError> {
-        let existing: Option<String> =
-            self.db.fetch_optional_scalar("SELECT secret_encrypted FROM one_collaboration_config WHERE tenant_id = ?", &db_params![tenant_id])
-                .await?
-                .flatten();
+        let existing: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT secret_encrypted FROM one_collaboration_config WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?
+            .flatten();
         let secret_encrypted = match secret {
             Some(s) if !s.is_empty() => {
                 Some(encrypt_string(s, &self.encryption_key).map_err(|e| PlatformError::Internal(e.to_string()))?)
@@ -404,17 +434,30 @@ impl PlatformService {
              ON DUPLICATE KEY UPDATE provider = new.provider, endpoint = new.endpoint, \
                  secret_encrypted = new.secret_encrypted, presence = new.presence, \
                  enabled = new.enabled, updated_at = new.updated_at",
-        &db_params![tenant_id, provider, endpoint, &secret_encrypted, presence, enabled, now_ms()])
+            &db_params![
+                tenant_id,
+                provider,
+                endpoint,
+                &secret_encrypted,
+                presence,
+                enabled,
+                now_ms()
+            ],
+        )
         .await?;
         self.get_collaboration_config(tenant_id).await
     }
 
     /// Decrypted collaboration credential, for a real `CollaborationProvider`.
     pub async fn collaboration_secret(&self, tenant_id: &str) -> Result<Option<String>, PlatformError> {
-        let encrypted: Option<String> =
-            self.db.fetch_optional_scalar("SELECT secret_encrypted FROM one_collaboration_config WHERE tenant_id = ?", &db_params![tenant_id])
-                .await?
-                .flatten();
+        let encrypted: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT secret_encrypted FROM one_collaboration_config WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?
+            .flatten();
         Ok(encrypted.and_then(|e| decrypt_string(&e, &self.encryption_key).ok()))
     }
 
@@ -436,9 +479,13 @@ impl PlatformService {
     // --- IP allowlist (P1-4) ---
 
     pub async fn get_ip_allowlist(&self, tenant_id: &str) -> Result<IpAllowlistConfigDto, PlatformError> {
-        let row: Option<(Option<String>, bool, i64)> =
-            self.db.fetch_optional_as::<(Option<String>, bool, i64)>("SELECT cidrs, enabled, updated_at FROM one_ip_allowlist_config WHERE tenant_id = ?", &db_params![tenant_id])
-                .await?;
+        let row: Option<(Option<String>, bool, i64)> = self
+            .db
+            .fetch_optional_as::<(Option<String>, bool, i64)>(
+                "SELECT cidrs, enabled, updated_at FROM one_ip_allowlist_config WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?;
         Ok(match row {
             Some((cidrs, enabled, updated_at)) => IpAllowlistConfigDto {
                 cidrs: cidrs
@@ -470,7 +517,8 @@ impl PlatformService {
             "INSERT INTO one_ip_allowlist_config (tenant_id, cidrs, enabled, updated_at) VALUES (?, ?, ?, ?) AS new \
              ON DUPLICATE KEY UPDATE cidrs = new.cidrs, enabled = new.enabled, \
                  updated_at = new.updated_at",
-        &db_params![tenant_id, &cidrs_json, enabled, now_ms()])
+            &db_params![tenant_id, &cidrs_json, enabled, now_ms()],
+        )
         .await?;
         self.get_ip_allowlist(tenant_id).await
     }
@@ -487,10 +535,13 @@ impl PlatformService {
 
     pub async fn get_siem_config(&self, tenant_id: &str) -> Result<SiemConfigDto, PlatformError> {
         type SiemRow = (Option<String>, Option<String>, Option<String>, bool, i64);
-        let row: Option<SiemRow> = self.db.fetch_optional_as::<SiemRow>(
-            "SELECT kind, endpoint, secret_encrypted, enabled, updated_at FROM one_siem_config WHERE tenant_id = ?",
-        &db_params![tenant_id])
-        .await?;
+        let row: Option<SiemRow> = self
+            .db
+            .fetch_optional_as::<SiemRow>(
+                "SELECT kind, endpoint, secret_encrypted, enabled, updated_at FROM one_siem_config WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?;
         Ok(match row {
             Some((kind, endpoint, secret_encrypted, enabled, updated_at)) => SiemConfigDto {
                 kind,
@@ -518,10 +569,14 @@ impl PlatformService {
         secret: Option<&str>,
         enabled: bool,
     ) -> Result<SiemConfigDto, PlatformError> {
-        let existing: Option<String> =
-            self.db.fetch_optional_scalar("SELECT secret_encrypted FROM one_siem_config WHERE tenant_id = ?", &db_params![tenant_id])
-                .await?
-                .flatten();
+        let existing: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT secret_encrypted FROM one_siem_config WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?
+            .flatten();
         let secret_encrypted = match secret {
             Some(s) if !s.is_empty() => {
                 Some(encrypt_string(s, &self.encryption_key).map_err(|e| PlatformError::Internal(e.to_string()))?)
@@ -539,17 +594,22 @@ impl PlatformService {
              ON DUPLICATE KEY UPDATE kind = new.kind, endpoint = new.endpoint, \
                  secret_encrypted = new.secret_encrypted, enabled = new.enabled, \
                  updated_at = new.updated_at",
-        &db_params![tenant_id, kind, endpoint, &secret_encrypted, enabled, now_ms()])
+            &db_params![tenant_id, kind, endpoint, &secret_encrypted, enabled, now_ms()],
+        )
         .await?;
         self.get_siem_config(tenant_id).await
     }
 
     /// Decrypted SIEM token, for a real `SiemExporter` to consume.
     pub async fn siem_secret(&self, tenant_id: &str) -> Result<Option<String>, PlatformError> {
-        let encrypted: Option<String> =
-            self.db.fetch_optional_scalar("SELECT secret_encrypted FROM one_siem_config WHERE tenant_id = ?", &db_params![tenant_id])
-                .await?
-                .flatten();
+        let encrypted: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT secret_encrypted FROM one_siem_config WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?
+            .flatten();
         Ok(encrypted.and_then(|e| decrypt_string(&e, &self.encryption_key).ok()))
     }
 
@@ -620,19 +680,22 @@ impl PlatformService {
                 _ => {
                     return Err(PlatformError::BadRequest(
                         "employee grants are 'use' or 'manage'".into(),
-                    ))
+                    ));
                 }
             }
         } else {
             "use"
         };
 
-        let existing: Option<(String,)> = self.db.fetch_optional_as::<(String,)>(
-            "SELECT id FROM one_resource_grants \
+        let existing: Option<(String,)> = self
+            .db
+            .fetch_optional_as::<(String,)>(
+                "SELECT id FROM one_resource_grants \
              WHERE tenant_id = ? AND subject_type = ? AND subject_id = ? \
                AND resource_type = ? AND resource_id = ?",
-        &db_params![tenant_id, subject_type, subject_id, resource_type, resource_id])
-        .await?;
+                &db_params![tenant_id, subject_type, subject_id, resource_type, resource_id],
+            )
+            .await?;
         let id = match existing {
             Some((id,)) => id,
             None => {
@@ -653,11 +716,14 @@ impl PlatformService {
 
     async fn get_grant(&self, tenant_id: &str, id: &str) -> Result<Option<ResourceGrantDto>, PlatformError> {
         type Row = (String, String, String, String, String, String, String, i64);
-        let row: Option<Row> = self.db.fetch_optional_as::<Row>(
-            "SELECT id, subject_type, subject_id, resource_type, resource_id, permission, granted_by, created_at \
+        let row: Option<Row> = self
+            .db
+            .fetch_optional_as::<Row>(
+                "SELECT id, subject_type, subject_id, resource_type, resource_id, permission, granted_by, created_at \
              FROM one_resource_grants WHERE tenant_id = ? AND id = ?",
-        &db_params![tenant_id, id])
-        .await?;
+                &db_params![tenant_id, id],
+            )
+            .await?;
         Ok(row.map(
             |(id, subject_type, subject_id, resource_type, resource_id, permission, granted_by, created_at)| {
                 ResourceGrantDto {
@@ -679,7 +745,12 @@ impl PlatformService {
     /// an admin in one project group could revoke another group's grant just
     /// by guessing its id).
     pub async fn revoke_resource(&self, tenant_id: &str, grant_id: &str) -> Result<(), PlatformError> {
-        let result = self.db.execute("DELETE FROM one_resource_grants WHERE id = ? AND tenant_id = ?", &db_params![grant_id, tenant_id])
+        let result = self
+            .db
+            .execute(
+                "DELETE FROM one_resource_grants WHERE id = ? AND tenant_id = ?",
+                &db_params![grant_id, tenant_id],
+            )
             .await?;
         if result == 0 {
             return Err(PlatformError::NotFound("grant not found".into()));
@@ -697,9 +768,10 @@ impl PlatformService {
         subject_id: Option<&str>,
         resource_type: Option<&str>,
     ) -> Result<Vec<ResourceGrantDto>, PlatformError> {
-        let mut sql = "SELECT id, subject_type, subject_id, resource_type, resource_id, permission, granted_by, created_at \
+        let mut sql =
+            "SELECT id, subject_type, subject_id, resource_type, resource_id, permission, granted_by, created_at \
                         FROM one_resource_grants WHERE tenant_id = ?"
-            .to_owned();
+                .to_owned();
         if subject_type.is_some() {
             sql.push_str(" AND subject_type = ?");
         }
@@ -751,10 +823,14 @@ impl PlatformService {
     /// already refuses to create a cycle, so this is a backstop against a
     /// tree that got corrupted some other way, not the primary guard.
     async fn department_ancestry(&self, tenant_id: &str, user_id: &str) -> Result<Vec<String>, PlatformError> {
-        let mut current: Option<String> =
-            self.db.fetch_optional_scalar("SELECT department_id FROM one_user_org WHERE tenant_id = ? AND user_id = ?", &db_params![tenant_id, user_id])
-                .await?
-                .flatten();
+        let mut current: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT department_id FROM one_user_org WHERE tenant_id = ? AND user_id = ?",
+                &db_params![tenant_id, user_id],
+            )
+            .await?
+            .flatten();
 
         let mut chain = Vec::new();
         let mut hops = 0;
@@ -765,7 +841,12 @@ impl PlatformService {
             }
             hops += 1;
             chain.push(department_id.clone());
-            current = self.db.fetch_optional_scalar("SELECT parent_id FROM one_departments WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, &department_id])
+            current = self
+                .db
+                .fetch_optional_scalar(
+                    "SELECT parent_id FROM one_departments WHERE tenant_id = ? AND id = ?",
+                    &db_params![tenant_id, &department_id],
+                )
                 .await?
                 .flatten();
         }
@@ -1077,11 +1158,14 @@ impl PlatformService {
     /// state is indistinguishable from "predates the seeder" using grant rows
     /// alone (a separate marker table would mean a migration).
     async fn seed_builtin_scene_grants(&self, tenant_id: &str) -> Result<(), PlatformError> {
-        let seeded: bool = self.db.fetch_one_scalar(
-            "SELECT COUNT(*) > 0 FROM one_resource_grants \
+        let seeded: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_resource_grants \
              WHERE tenant_id = ? AND subject_type = 'scene' AND granted_by = ?",
-        &db_params![tenant_id, Self::BUILTIN_SCENE_GRANTOR])
-        .await?;
+                &db_params![tenant_id, Self::BUILTIN_SCENE_GRANTOR],
+            )
+            .await?;
         if seeded {
             return Ok(());
         }
@@ -1089,9 +1173,13 @@ impl PlatformService {
             // `built_in = 1` keeps a custom scene that reuses the original
             // built-in name (possible once the admin renames the built-in
             // away) from inheriting the package.
-            let scene_id: Option<(String,)> =
-                self.db.fetch_optional_as::<(String,)>("SELECT id FROM one_scenes WHERE tenant_id = ? AND name = ? AND built_in = 1", &db_params![tenant_id, name])
-                    .await?;
+            let scene_id: Option<(String,)> = self
+                .db
+                .fetch_optional_as::<(String,)>(
+                    "SELECT id FROM one_scenes WHERE tenant_id = ? AND name = ? AND built_in = 1",
+                    &db_params![tenant_id, name],
+                )
+                .await?;
             let Some((scene_id,)) = scene_id else { continue };
             for resource_type in resource_types {
                 // Idempotent: the table's UNIQUE constraint plus the
@@ -1117,7 +1205,12 @@ impl PlatformService {
     }
 
     async fn scene_row_to_dto(&self, row: SceneRow) -> Result<SceneDto, PlatformError> {
-        let member_count: i64 = self.db.fetch_one_scalar("SELECT COUNT(*) FROM one_scene_members WHERE scene_id = ?", &db_params![&row.0])
+        let member_count: i64 = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_scene_members WHERE scene_id = ?",
+                &db_params![&row.0],
+            )
             .await?;
         Ok(SceneDto {
             id: row.0,
@@ -1138,17 +1231,28 @@ impl PlatformService {
     /// this tenant's members. Read-only: the bots stay owner-managed.
     pub async fn list_im_channels(&self, tenant_id: &str) -> Result<Vec<ImChannelMemberDto>, PlatformError> {
         // (owner_user_id, username, platform, name, enabled, status, last_connected, authorized_count)
-        let result = self.db.fetch_all_as::<(String, Option<String>, String, String, i64, Option<String>, Option<i64>, i64)>(
-            "SELECT p.owner_user_id, u.username, p.type, p.name, p.enabled, p.status, p.last_connected, \
+        let result = self
+            .db
+            .fetch_all_as::<(
+                String,
+                Option<String>,
+                String,
+                String,
+                i64,
+                Option<String>,
+                Option<i64>,
+                i64,
+            )>(
+                "SELECT p.owner_user_id, u.username, p.type, p.name, p.enabled, p.status, p.last_connected, \
                     (SELECT COUNT(*) FROM assistant_users au \
                      WHERE au.owner_user_id = p.owner_user_id AND au.platform_type = p.type) \
              FROM assistant_plugins p \
              JOIN users u ON u.id = p.owner_user_id \
              WHERE p.owner_user_id IN (SELECT user_id FROM one_user_org WHERE tenant_id = ?) \
              ORDER BY u.username ASC, p.type ASC",
-        &db_params![tenant_id],
-        )
-        .await;
+                &db_params![tenant_id],
+            )
+            .await;
         let rows = match result {
             Ok(rows) => rows,
             // A deployment where the channel tables were never created (or
@@ -1180,11 +1284,14 @@ impl PlatformService {
 
     pub async fn list_scenes(&self, tenant_id: &str) -> Result<Vec<SceneDto>, PlatformError> {
         self.seed_builtin_scenes(tenant_id).await?;
-        let rows: Vec<SceneRow> = self.db.fetch_all_as::<SceneRow>(
-            "SELECT id, tenant_id, name, description, job_functions, built_in, created_at, updated_at \
+        let rows: Vec<SceneRow> = self
+            .db
+            .fetch_all_as::<SceneRow>(
+                "SELECT id, tenant_id, name, description, job_functions, built_in, created_at, updated_at \
              FROM one_scenes WHERE tenant_id = ? ORDER BY built_in DESC, name ASC",
-        &db_params![tenant_id])
-        .await?;
+                &db_params![tenant_id],
+            )
+            .await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
             out.push(self.scene_row_to_dto(row).await?);
@@ -1224,11 +1331,14 @@ impl PlatformService {
     }
 
     async fn get_scene(&self, tenant_id: &str, scene_id: &str) -> Result<Option<SceneDto>, PlatformError> {
-        let row: Option<SceneRow> = self.db.fetch_optional_as::<SceneRow>(
-            "SELECT id, tenant_id, name, description, job_functions, built_in, created_at, updated_at \
+        let row: Option<SceneRow> = self
+            .db
+            .fetch_optional_as::<SceneRow>(
+                "SELECT id, tenant_id, name, description, job_functions, built_in, created_at, updated_at \
              FROM one_scenes WHERE tenant_id = ? AND id = ?",
-        &db_params![tenant_id, scene_id])
-        .await?;
+                &db_params![tenant_id, scene_id],
+            )
+            .await?;
         match row {
             Some(row) => Ok(Some(self.scene_row_to_dto(row).await?)),
             None => Ok(None),
@@ -1249,17 +1359,20 @@ impl PlatformService {
         }
         let job_functions_json =
             serde_json::to_string(job_functions).map_err(|e| PlatformError::Internal(e.to_string()))?;
-        let result = self.db.execute(
-            "UPDATE one_scenes SET name = ?, description = ?, job_functions = ?, updated_at = ? \
+        let result = self
+            .db
+            .execute(
+                "UPDATE one_scenes SET name = ?, description = ?, job_functions = ?, updated_at = ? \
              WHERE tenant_id = ? AND id = ?",
-        &db_params![name, description, &job_functions_json, now_ms(), tenant_id, scene_id])
-        .await
-        .map_err(|e| match &e {
-            sqlx::Error::Database(db) if db.is_unique_violation() => {
-                PlatformError::BadRequest(format!("a scene named '{name}' already exists"))
-            }
-            _ => PlatformError::from(e),
-        })?;
+                &db_params![name, description, &job_functions_json, now_ms(), tenant_id, scene_id],
+            )
+            .await
+            .map_err(|e| match &e {
+                sqlx::Error::Database(db) if db.is_unique_violation() => {
+                    PlatformError::BadRequest(format!("a scene named '{name}' already exists"))
+                }
+                _ => PlatformError::from(e),
+            })?;
         if result == 0 {
             return Err(PlatformError::NotFound("scene not found".into()));
         }
@@ -1272,9 +1385,13 @@ impl PlatformService {
     /// grants) but not removed, same posture as every other "seeded default"
     /// in this codebase.
     pub async fn delete_scene(&self, tenant_id: &str, scene_id: &str) -> Result<(), PlatformError> {
-        let built_in: Option<(bool,)> =
-            self.db.fetch_optional_as::<(bool,)>("SELECT built_in FROM one_scenes WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, scene_id])
-                .await?;
+        let built_in: Option<(bool,)> = self
+            .db
+            .fetch_optional_as::<(bool,)>(
+                "SELECT built_in FROM one_scenes WHERE tenant_id = ? AND id = ?",
+                &db_params![tenant_id, scene_id],
+            )
+            .await?;
         match built_in {
             None => return Err(PlatformError::NotFound("scene not found".into())),
             Some((true,)) => return Err(PlatformError::BadRequest("a built-in scene cannot be deleted".into())),
@@ -1282,14 +1399,21 @@ impl PlatformService {
         }
 
         let mut tx = self.db.begin().await?;
-        tx.execute("DELETE FROM one_scene_members WHERE scene_id = ?", &db_params![scene_id])
-            .await?;
+        tx.execute(
+            "DELETE FROM one_scene_members WHERE scene_id = ?",
+            &db_params![scene_id],
+        )
+        .await?;
         tx.execute(
             "DELETE FROM one_resource_grants WHERE tenant_id = ? AND subject_type = 'scene' AND subject_id = ?",
-        &db_params![tenant_id, scene_id])
+            &db_params![tenant_id, scene_id],
+        )
         .await?;
-        tx.execute("DELETE FROM one_scenes WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, scene_id])
-            .await?;
+        tx.execute(
+            "DELETE FROM one_scenes WHERE tenant_id = ? AND id = ?",
+            &db_params![tenant_id, scene_id],
+        )
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -1302,7 +1426,8 @@ impl PlatformService {
             "INSERT INTO one_scene_members (scene_id, tenant_id, user_id, added_at) VALUES (?, ?, ?, ?) \
              ON CONFLICT(scene_id, user_id) DO NOTHING",
             "INSERT IGNORE INTO one_scene_members (scene_id, tenant_id, user_id, added_at) VALUES (?, ?, ?, ?)",
-        &db_params![scene_id, tenant_id, user_id, now_ms()])
+            &db_params![scene_id, tenant_id, user_id, now_ms()],
+        )
         .await?;
         Ok(())
     }
@@ -1314,21 +1439,34 @@ impl PlatformService {
         user_id: &str,
     ) -> Result<(), PlatformError> {
         self.require_scene(tenant_id, scene_id).await?;
-        self.db.execute("DELETE FROM one_scene_members WHERE scene_id = ? AND user_id = ?", &db_params![scene_id, user_id])
+        self.db
+            .execute(
+                "DELETE FROM one_scene_members WHERE scene_id = ? AND user_id = ?",
+                &db_params![scene_id, user_id],
+            )
             .await?;
         Ok(())
     }
 
     pub async fn list_scene_members(&self, tenant_id: &str, scene_id: &str) -> Result<Vec<String>, PlatformError> {
         self.require_scene(tenant_id, scene_id).await?;
-        let rows: Vec<(String,)> =
-            self.db.fetch_all_as::<(String,)>("SELECT user_id FROM one_scene_members WHERE scene_id = ? ORDER BY added_at ASC", &db_params![scene_id])
-                .await?;
+        let rows: Vec<(String,)> = self
+            .db
+            .fetch_all_as::<(String,)>(
+                "SELECT user_id FROM one_scene_members WHERE scene_id = ? ORDER BY added_at ASC",
+                &db_params![scene_id],
+            )
+            .await?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
     async fn require_scene(&self, tenant_id: &str, scene_id: &str) -> Result<(), PlatformError> {
-        let exists: bool = self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_scenes WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, scene_id])
+        let exists: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_scenes WHERE tenant_id = ? AND id = ?",
+                &db_params![tenant_id, scene_id],
+            )
             .await?;
         if !exists {
             return Err(PlatformError::NotFound("scene not found".into()));
@@ -1340,9 +1478,13 @@ impl PlatformService {
     /// `effective_resource_ids` folds in alongside their own grants and
     /// their department ancestry.
     async fn scene_ids_for_member(&self, tenant_id: &str, user_id: &str) -> Result<Vec<String>, PlatformError> {
-        let rows: Vec<(String,)> =
-            self.db.fetch_all_as::<(String,)>("SELECT scene_id FROM one_scene_members WHERE tenant_id = ? AND user_id = ?", &db_params![tenant_id, user_id])
-                .await?;
+        let rows: Vec<(String,)> = self
+            .db
+            .fetch_all_as::<(String,)>(
+                "SELECT scene_id FROM one_scene_members WHERE tenant_id = ? AND user_id = ?",
+                &db_params![tenant_id, user_id],
+            )
+            .await?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
@@ -1360,7 +1502,8 @@ impl PlatformService {
                  JOIN one_scenes s ON s.tenant_id = m.tenant_id AND s.id = m.scene_id \
                  WHERE m.tenant_id = ? AND m.user_id = ? \
                  ORDER BY s.built_in DESC, s.name ASC",
-            &db_params![tenant_id, user_id])
+                &db_params![tenant_id, user_id],
+            )
             .await?;
         if rows.is_empty() {
             return Ok(Vec::new());
@@ -1368,13 +1511,20 @@ impl PlatformService {
         // scene_id -> resource_type -> (explicit grant rows, carries '*').
         let mut packages: std::collections::HashMap<String, std::collections::HashMap<String, (i64, bool)>> =
             std::collections::HashMap::new();
-        let grants: Vec<(String, String, String)> = self.db.fetch_all_as::<(String, String, String)>(
-            "SELECT subject_id, resource_type, resource_id FROM one_resource_grants \
+        let grants: Vec<(String, String, String)> = self
+            .db
+            .fetch_all_as::<(String, String, String)>(
+                "SELECT subject_id, resource_type, resource_id FROM one_resource_grants \
              WHERE tenant_id = ? AND subject_type = 'scene'",
-        &db_params![tenant_id])
-        .await?;
+                &db_params![tenant_id],
+            )
+            .await?;
         for (scene_id, resource_type, resource_id) in grants {
-            let entry = packages.entry(scene_id).or_default().entry(resource_type).or_insert((0, false));
+            let entry = packages
+                .entry(scene_id)
+                .or_default()
+                .entry(resource_type)
+                .or_insert((0, false));
             entry.0 += 1;
             entry.1 |= resource_id == GRANT_ALL_RESOURCES;
         }
@@ -1399,7 +1549,11 @@ impl PlatformService {
                 .into_iter()
                 .map(|resource_type| {
                     let (count, includes_all) = per_type[&resource_type];
-                    MySceneResourceSummaryDto { resource_type, count, includes_all }
+                    MySceneResourceSummaryDto {
+                        resource_type,
+                        count,
+                        includes_all,
+                    }
                 })
                 .collect();
             out.push(MySceneDto {
@@ -1419,13 +1573,16 @@ impl PlatformService {
     // --- Security policy baseline (E5) ---
 
     pub async fn get_security_policy(&self, tenant_id: &str) -> Result<SecurityPolicyDto, PlatformError> {
-        let row: Option<SecurityPolicyRow> = self.db.fetch_optional_as::<SecurityPolicyRow>(
-            "SELECT tier, terminal_tools_require_approval, destructive_commands_blocked, blocked_command_patterns, \
+        let row: Option<SecurityPolicyRow> = self
+            .db
+            .fetch_optional_as::<SecurityPolicyRow>(
+                "SELECT tier, terminal_tools_require_approval, destructive_commands_blocked, blocked_command_patterns, \
                     external_network_denied_by_default, message_scan_enabled, message_redact_enabled, \
-                    send_rate_limit_per_minute, updated_at \
+                    send_rate_limit_per_minute, updated_at, conversation_share_mode \
              FROM one_security_policy WHERE tenant_id = ?",
-        &db_params![tenant_id])
-        .await?;
+                &db_params![tenant_id],
+            )
+            .await?;
         Ok(match row {
             Some(row) => Self::security_policy_row_to_dto(row),
             // No row yet = the 'relaxed' tier's values, same convention as
@@ -1446,6 +1603,7 @@ impl PlatformService {
             message_redact_enabled: row.6,
             send_rate_limit_per_minute: row.7,
             updated_at: Some(row.8),
+            conversation_share_mode: row.9,
         }
     }
 
@@ -1472,6 +1630,7 @@ impl PlatformService {
                 message_scan_enabled: false,
                 message_redact_enabled: false,
                 send_rate_limit_per_minute: None,
+                conversation_share_mode: super::models::CONVERSATION_SHARE_OFF.to_owned(),
                 updated_at: None,
             },
             "standard" => SecurityPolicyDto {
@@ -1483,6 +1642,7 @@ impl PlatformService {
                 message_scan_enabled: false,
                 message_redact_enabled: false,
                 send_rate_limit_per_minute: Some(30),
+                conversation_share_mode: super::models::CONVERSATION_SHARE_OFF.to_owned(),
                 updated_at: None,
             },
             "strict" => SecurityPolicyDto {
@@ -1494,6 +1654,7 @@ impl PlatformService {
                 message_scan_enabled: true,
                 message_redact_enabled: true,
                 send_rate_limit_per_minute: Some(20),
+                conversation_share_mode: super::models::CONVERSATION_SHARE_OFF.to_owned(),
                 updated_at: None,
             },
             _ => return None,
@@ -1538,7 +1699,18 @@ impl PlatformService {
         message_scan_enabled: bool,
         message_redact_enabled: bool,
         send_rate_limit_per_minute: Option<i64>,
+        conversation_share_mode: &str,
     ) -> Result<SecurityPolicyDto, PlatformError> {
+        if !matches!(conversation_share_mode, "off" | "tenant" | "enterprise") {
+            return Err(PlatformError::BadRequest(format!(
+                "conversationShareMode must be off/tenant/enterprise, got '{conversation_share_mode}'"
+            )));
+        }
+        // P0-1 constraint 2 (知情): turning sharing ON is a company-wide
+        // decision, so every member learns about it through the notification
+        // inbox the moment it happens. The reverse transition stays silent —
+        // nothing new is being done to anyone's content.
+        let was_off = self.get_security_policy(tenant_id).await?.conversation_share_mode == "off";
         let dto = SecurityPolicyDto {
             tier: "custom".to_owned(),
             terminal_tools_require_approval,
@@ -1548,9 +1720,32 @@ impl PlatformService {
             message_scan_enabled,
             message_redact_enabled,
             send_rate_limit_per_minute,
+            conversation_share_mode: conversation_share_mode.to_owned(),
             updated_at: None,
         };
-        self.upsert_security_policy(tenant_id, &dto).await
+        let saved = self.upsert_security_policy(tenant_id, &dto).await?;
+        if was_off && conversation_share_mode != "off" {
+            // Best-effort: the policy IS saved even if the broadcast fails.
+            let scope = if conversation_share_mode == "tenant" {
+                "本组（项目组）"
+            } else {
+                "全企业"
+            };
+            let _ = self
+                .create_notification(
+                    tenant_id,
+                    "broadcast",
+                    "安全策略",
+                    "企业会话分享已开启",
+                    &format!(
+                        "管理员已开启会话分享（范围：{scope}）。开启后，成员可以按范围把自己的会话分享给同事；分享的会话内容将上传至企业服务器供被分享者查看。"
+                    ),
+                    &[],
+                    "system",
+                )
+                .await;
+        }
+        Ok(saved)
     }
 
     async fn upsert_security_policy(
@@ -1564,8 +1759,8 @@ impl PlatformService {
             "INSERT INTO one_security_policy \
                  (tenant_id, tier, terminal_tools_require_approval, destructive_commands_blocked, \
                   blocked_command_patterns, external_network_denied_by_default, message_scan_enabled, \
-                  message_redact_enabled, send_rate_limit_per_minute, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                  message_redact_enabled, send_rate_limit_per_minute, updated_at, conversation_share_mode) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(tenant_id) DO UPDATE SET \
                  tier = excluded.tier, \
                  terminal_tools_require_approval = excluded.terminal_tools_require_approval, \
@@ -1575,12 +1770,13 @@ impl PlatformService {
                  message_scan_enabled = excluded.message_scan_enabled, \
                  message_redact_enabled = excluded.message_redact_enabled, \
                  send_rate_limit_per_minute = excluded.send_rate_limit_per_minute, \
+                 conversation_share_mode = excluded.conversation_share_mode, \
                  updated_at = excluded.updated_at",
             "INSERT INTO one_security_policy \
                  (tenant_id, tier, terminal_tools_require_approval, destructive_commands_blocked, \
                   blocked_command_patterns, external_network_denied_by_default, message_scan_enabled, \
-                  message_redact_enabled, send_rate_limit_per_minute, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
+                  message_redact_enabled, send_rate_limit_per_minute, updated_at, conversation_share_mode) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
              ON DUPLICATE KEY UPDATE \
                  tier = new.tier, \
                  terminal_tools_require_approval = new.terminal_tools_require_approval, \
@@ -1590,8 +1786,22 @@ impl PlatformService {
                  message_scan_enabled = new.message_scan_enabled, \
                  message_redact_enabled = new.message_redact_enabled, \
                  send_rate_limit_per_minute = new.send_rate_limit_per_minute, \
+                 conversation_share_mode = new.conversation_share_mode, \
                  updated_at = new.updated_at",
-        &db_params![tenant_id, &dto.tier, dto.terminal_tools_require_approval, dto.destructive_commands_blocked, &patterns_json, dto.external_network_denied_by_default, dto.message_scan_enabled, dto.message_redact_enabled, dto.send_rate_limit_per_minute, now_ms()])
+            &db_params![
+                tenant_id,
+                &dto.tier,
+                dto.terminal_tools_require_approval,
+                dto.destructive_commands_blocked,
+                &patterns_json,
+                dto.external_network_denied_by_default,
+                dto.message_scan_enabled,
+                dto.message_redact_enabled,
+                dto.send_rate_limit_per_minute,
+                now_ms(),
+                &dto.conversation_share_mode,
+            ],
+        )
         .await?;
         self.get_security_policy(tenant_id).await
     }
@@ -1633,15 +1843,33 @@ impl PlatformService {
         let now = now_ms();
         let patterns_json =
             serde_json::to_string(blocked_command_patterns).map_err(|e| PlatformError::Internal(e.to_string()))?;
-        self.db.execute(
-            "INSERT INTO one_security_policy_templates \
+        self.db
+            .execute(
+                "INSERT INTO one_security_policy_templates \
                  (id, tenant_id, name, description, tier, terminal_tools_require_approval, \
                   destructive_commands_blocked, blocked_command_patterns, external_network_denied_by_default, \
                   message_scan_enabled, message_redact_enabled, send_rate_limit_per_minute, \
                   created_by, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        &db_params![&id, tenant_id, name, description.trim(), tier, terminal_tools_require_approval, destructive_commands_blocked, &patterns_json, external_network_denied_by_default, message_scan_enabled, message_redact_enabled, send_rate_limit_per_minute, created_by, now, now])
-        .await?;
+                &db_params![
+                    &id,
+                    tenant_id,
+                    name,
+                    description.trim(),
+                    tier,
+                    terminal_tools_require_approval,
+                    destructive_commands_blocked,
+                    &patterns_json,
+                    external_network_denied_by_default,
+                    message_scan_enabled,
+                    message_redact_enabled,
+                    send_rate_limit_per_minute,
+                    created_by,
+                    now,
+                    now
+                ],
+            )
+            .await?;
 
         self.get_policy_template(tenant_id, &id)
             .await?
@@ -1652,8 +1880,10 @@ impl PlatformService {
         &self,
         tenant_id: &str,
     ) -> Result<Vec<SecurityPolicyTemplateDto>, PlatformError> {
-        let rows: Vec<PolicyTemplateRow> = self.db.fetch_all_as::<PolicyTemplateRow>(
-            "SELECT t.id, t.name, t.description, t.tier, t.terminal_tools_require_approval, \
+        let rows: Vec<PolicyTemplateRow> = self
+            .db
+            .fetch_all_as::<PolicyTemplateRow>(
+                "SELECT t.id, t.name, t.description, t.tier, t.terminal_tools_require_approval, \
                     t.destructive_commands_blocked, t.blocked_command_patterns, \
                     t.external_network_denied_by_default, t.message_scan_enabled, t.message_redact_enabled, \
                     t.send_rate_limit_per_minute, t.created_by, t.created_at, t.updated_at, \
@@ -1663,8 +1893,9 @@ impl PlatformService {
              WHERE t.tenant_id = ? \
              GROUP BY t.id \
              ORDER BY t.created_at DESC",
-        &db_params![tenant_id])
-        .await?;
+                &db_params![tenant_id],
+            )
+            .await?;
         Ok(rows.into_iter().map(Self::policy_template_row_to_dto).collect())
     }
 
@@ -1673,16 +1904,19 @@ impl PlatformService {
         tenant_id: &str,
         id: &str,
     ) -> Result<Option<SecurityPolicyTemplateDto>, PlatformError> {
-        let row: Option<PolicyTemplateRow> = self.db.fetch_optional_as::<PolicyTemplateRow>(
-            "SELECT t.id, t.name, t.description, t.tier, t.terminal_tools_require_approval, \
+        let row: Option<PolicyTemplateRow> = self
+            .db
+            .fetch_optional_as::<PolicyTemplateRow>(
+                "SELECT t.id, t.name, t.description, t.tier, t.terminal_tools_require_approval, \
                     t.destructive_commands_blocked, t.blocked_command_patterns, \
                     t.external_network_denied_by_default, t.message_scan_enabled, t.message_redact_enabled, \
                     t.send_rate_limit_per_minute, t.created_by, t.created_at, t.updated_at, \
                     (SELECT COUNT(*) FROM one_security_policy_bindings b WHERE b.template_id = t.id) \
              FROM one_security_policy_templates t \
              WHERE t.tenant_id = ? AND t.id = ?",
-        &db_params![tenant_id, id])
-        .await?;
+                &db_params![tenant_id, id],
+            )
+            .await?;
         Ok(row.map(Self::policy_template_row_to_dto))
     }
 
@@ -1732,15 +1966,31 @@ impl PlatformService {
         }
         let patterns_json =
             serde_json::to_string(blocked_command_patterns).map_err(|e| PlatformError::Internal(e.to_string()))?;
-        let result = self.db.execute(
-            "UPDATE one_security_policy_templates SET \
+        let result = self
+            .db
+            .execute(
+                "UPDATE one_security_policy_templates SET \
                  name = ?, description = ?, terminal_tools_require_approval = ?, \
                  destructive_commands_blocked = ?, blocked_command_patterns = ?, \
                  external_network_denied_by_default = ?, message_scan_enabled = ?, \
                  message_redact_enabled = ?, send_rate_limit_per_minute = ?, updated_at = ? \
              WHERE tenant_id = ? AND id = ?",
-        &db_params![name, description.trim(), terminal_tools_require_approval, destructive_commands_blocked, &patterns_json, external_network_denied_by_default, message_scan_enabled, message_redact_enabled, send_rate_limit_per_minute, now_ms(), tenant_id, id])
-        .await?;
+                &db_params![
+                    name,
+                    description.trim(),
+                    terminal_tools_require_approval,
+                    destructive_commands_blocked,
+                    &patterns_json,
+                    external_network_denied_by_default,
+                    message_scan_enabled,
+                    message_redact_enabled,
+                    send_rate_limit_per_minute,
+                    now_ms(),
+                    tenant_id,
+                    id
+                ],
+            )
+            .await?;
         if result == 0 {
             return Err(PlatformError::NotFound("policy template not found".into()));
         }
@@ -1756,13 +2006,20 @@ impl PlatformService {
     /// of the copy semantics.
     pub async fn delete_policy_template(&self, tenant_id: &str, id: &str) -> Result<(), PlatformError> {
         let mut tx = self.db.begin().await?;
-        let deleted = tx.execute("DELETE FROM one_security_policy_templates WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, id])
+        let deleted = tx
+            .execute(
+                "DELETE FROM one_security_policy_templates WHERE tenant_id = ? AND id = ?",
+                &db_params![tenant_id, id],
+            )
             .await?;
         if deleted == 0 {
             return Err(PlatformError::NotFound("policy template not found".into()));
         }
-        tx.execute("DELETE FROM one_security_policy_bindings WHERE template_id = ?", &db_params![id])
-            .await?;
+        tx.execute(
+            "DELETE FROM one_security_policy_bindings WHERE template_id = ?",
+            &db_params![id],
+        )
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -1803,11 +2060,19 @@ impl PlatformService {
         // subject-type union equally honest.
         let subject_exists: bool = match subject_type {
             "member" => {
-                self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_user_org WHERE tenant_id = ? AND user_id = ?", &db_params![tenant_id, subject_id])
+                self.db
+                    .fetch_one_scalar(
+                        "SELECT COUNT(*) > 0 FROM one_user_org WHERE tenant_id = ? AND user_id = ?",
+                        &db_params![tenant_id, subject_id],
+                    )
                     .await?
             }
             _ => {
-                self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_departments WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, subject_id])
+                self.db
+                    .fetch_one_scalar(
+                        "SELECT COUNT(*) > 0 FROM one_departments WHERE tenant_id = ? AND id = ?",
+                        &db_params![tenant_id, subject_id],
+                    )
                     .await?
             }
         };
@@ -1830,7 +2095,17 @@ impl PlatformService {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?) AS new \
              ON DUPLICATE KEY UPDATE \
                  note = new.note, bound_by = new.bound_by, bound_at = new.bound_at",
-        &db_params![&id, tenant_id, template_id, subject_type, subject_id, note, bound_by, now])
+            &db_params![
+                &id,
+                tenant_id,
+                template_id,
+                subject_type,
+                subject_id,
+                note,
+                bound_by,
+                now
+            ],
+        )
         .await?;
 
         self.get_policy_template_binding(tenant_id, template_id, subject_type, subject_id)
@@ -1843,7 +2118,12 @@ impl PlatformService {
     /// states that can be reached twice (revoked keys), and a missing
     /// binding id is more likely a stale UI than a finished operation.
     pub async fn unbind_policy_template(&self, tenant_id: &str, binding_id: &str) -> Result<(), PlatformError> {
-        let deleted = self.db.execute("DELETE FROM one_security_policy_bindings WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, binding_id])
+        let deleted = self
+            .db
+            .execute(
+                "DELETE FROM one_security_policy_bindings WHERE tenant_id = ? AND id = ?",
+                &db_params![tenant_id, binding_id],
+            )
             .await?;
         if deleted == 0 {
             return Err(PlatformError::NotFound("policy template binding not found".into()));
@@ -1857,12 +2137,15 @@ impl PlatformService {
         template_id: &str,
     ) -> Result<Vec<PolicyTemplateBindingDto>, PlatformError> {
         self.require_policy_template(tenant_id, template_id).await?;
-        let rows: Vec<(String, String, String, Option<String>, String, i64)> = self.db.fetch_all_as::<(String, String, String, Option<String>, String, i64)>(
-            "SELECT id, subject_type, subject_id, note, bound_by, bound_at \
+        let rows: Vec<(String, String, String, Option<String>, String, i64)> = self
+            .db
+            .fetch_all_as::<(String, String, String, Option<String>, String, i64)>(
+                "SELECT id, subject_type, subject_id, note, bound_by, bound_at \
              FROM one_security_policy_bindings WHERE tenant_id = ? AND template_id = ? \
              ORDER BY bound_at ASC",
-        &db_params![tenant_id, template_id])
-        .await?;
+                &db_params![tenant_id, template_id],
+            )
+            .await?;
         Ok(rows
             .into_iter()
             .map(
@@ -1886,12 +2169,15 @@ impl PlatformService {
         subject_type: &str,
         subject_id: &str,
     ) -> Result<Option<PolicyTemplateBindingDto>, PlatformError> {
-        let row: Option<(String, String, String, Option<String>, String, i64)> = self.db.fetch_optional_as::<(String, String, String, Option<String>, String, i64)>(
-            "SELECT id, subject_type, subject_id, note, bound_by, bound_at \
+        let row: Option<(String, String, String, Option<String>, String, i64)> = self
+            .db
+            .fetch_optional_as::<(String, String, String, Option<String>, String, i64)>(
+                "SELECT id, subject_type, subject_id, note, bound_by, bound_at \
              FROM one_security_policy_bindings \
              WHERE tenant_id = ? AND template_id = ? AND subject_type = ? AND subject_id = ?",
-        &db_params![tenant_id, template_id, subject_type, subject_id])
-        .await?;
+                &db_params![tenant_id, template_id, subject_type, subject_id],
+            )
+            .await?;
         Ok(row.map(
             |(id, subject_type, subject_id, note, bound_by, bound_at)| PolicyTemplateBindingDto {
                 id,
@@ -1906,9 +2192,13 @@ impl PlatformService {
     }
 
     async fn require_policy_template(&self, tenant_id: &str, id: &str) -> Result<(), PlatformError> {
-        let exists: bool =
-            self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_security_policy_templates WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, id])
-                .await?;
+        let exists: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_security_policy_templates WHERE tenant_id = ? AND id = ?",
+                &db_params![tenant_id, id],
+            )
+            .await?;
         if !exists {
             return Err(PlatformError::NotFound("policy template not found".into()));
         }
@@ -1937,6 +2227,9 @@ impl PlatformService {
             .get_policy_template(tenant_id, template_id)
             .await?
             .ok_or_else(|| PlatformError::NotFound("policy template not found".into()))?;
+        // Templates snapshot the original seven E5 fields only; sharing is
+        // orthogonal, so applying one preserves the tenant's current mode.
+        let conversation_share_mode = self.get_security_policy(tenant_id).await?.conversation_share_mode;
         let applied = self
             .upsert_security_policy(
                 tenant_id,
@@ -1949,6 +2242,7 @@ impl PlatformService {
                     message_scan_enabled: template.message_scan_enabled,
                     message_redact_enabled: template.message_redact_enabled,
                     send_rate_limit_per_minute: template.send_rate_limit_per_minute,
+                    conversation_share_mode,
                     updated_at: None,
                 },
             )
@@ -2003,13 +2297,25 @@ impl PlatformService {
             serde_json::to_string(allowed_paths).map_err(|e| PlatformError::Internal(e.to_string()))?;
         let now = now_ms();
 
-        self.db.execute(
-            "INSERT INTO one_api_keys \
+        self.db
+            .execute(
+                "INSERT INTO one_api_keys \
                  (id, tenant_id, name, key_prefix, key_hash, allowed_paths, rate_limit_per_minute, status, \
                   created_by, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
-        &db_params![&id, tenant_id, name, &key_prefix, &key_hash, &allowed_paths_json, rate_limit_per_minute, created_by, now])
-        .await?;
+                &db_params![
+                    &id,
+                    tenant_id,
+                    name,
+                    &key_prefix,
+                    &key_hash,
+                    &allowed_paths_json,
+                    rate_limit_per_minute,
+                    created_by,
+                    now
+                ],
+            )
+            .await?;
 
         let key = self
             .get_api_key(tenant_id, &id)
@@ -2036,10 +2342,13 @@ impl PlatformService {
         request_path: &str,
     ) -> Result<ApiKeyAuthOutcome, PlatformError> {
         let key_hash = Self::hash_api_key_secret(secret);
-        let row: Option<(String, String, String)> = self.db.fetch_optional_as::<(String, String, String)>(
-            "SELECT id, created_by, allowed_paths FROM one_api_keys WHERE key_hash = ? AND status = 'active'",
-        &db_params![&key_hash])
-        .await?;
+        let row: Option<(String, String, String)> = self
+            .db
+            .fetch_optional_as::<(String, String, String)>(
+                "SELECT id, created_by, allowed_paths FROM one_api_keys WHERE key_hash = ? AND status = 'active'",
+                &db_params![&key_hash],
+            )
+            .await?;
 
         let Some((id, created_by, allowed_paths_json)) = row else {
             return Ok(ApiKeyAuthOutcome::Invalid);
@@ -2050,7 +2359,11 @@ impl PlatformService {
             return Ok(ApiKeyAuthOutcome::PathNotAllowed);
         }
 
-        self.db.execute("UPDATE one_api_keys SET last_used_at = ? WHERE id = ?", &db_params![now_ms(), &id])
+        self.db
+            .execute(
+                "UPDATE one_api_keys SET last_used_at = ? WHERE id = ?",
+                &db_params![now_ms(), &id],
+            )
             .await?;
 
         Ok(ApiKeyAuthOutcome::Authenticated { user_id: created_by })
@@ -2072,22 +2385,28 @@ impl PlatformService {
     }
 
     async fn get_api_key(&self, tenant_id: &str, id: &str) -> Result<Option<ApiKeyDto>, PlatformError> {
-        let row: Option<ApiKeyRow> = self.db.fetch_optional_as::<ApiKeyRow>(
-            "SELECT id, name, key_prefix, allowed_paths, rate_limit_per_minute, status, created_by, created_at, \
+        let row: Option<ApiKeyRow> = self
+            .db
+            .fetch_optional_as::<ApiKeyRow>(
+                "SELECT id, name, key_prefix, allowed_paths, rate_limit_per_minute, status, created_by, created_at, \
                     revoked_at, last_used_at \
              FROM one_api_keys WHERE tenant_id = ? AND id = ?",
-        &db_params![tenant_id, id])
-        .await?;
+                &db_params![tenant_id, id],
+            )
+            .await?;
         Ok(row.map(Self::api_key_row_to_dto))
     }
 
     pub async fn list_api_keys(&self, tenant_id: &str) -> Result<Vec<ApiKeyDto>, PlatformError> {
-        let rows: Vec<ApiKeyRow> = self.db.fetch_all_as::<ApiKeyRow>(
-            "SELECT id, name, key_prefix, allowed_paths, rate_limit_per_minute, status, created_by, created_at, \
+        let rows: Vec<ApiKeyRow> = self
+            .db
+            .fetch_all_as::<ApiKeyRow>(
+                "SELECT id, name, key_prefix, allowed_paths, rate_limit_per_minute, status, created_by, created_at, \
                     revoked_at, last_used_at \
              FROM one_api_keys WHERE tenant_id = ? ORDER BY created_at DESC",
-        &db_params![tenant_id])
-        .await?;
+                &db_params![tenant_id],
+            )
+            .await?;
         Ok(rows.into_iter().map(Self::api_key_row_to_dto).collect())
     }
 
@@ -2102,11 +2421,14 @@ impl PlatformService {
     ///
     /// Returns the number of keys revoked so the caller can log it.
     pub async fn revoke_api_keys_for_user(&self, user_id: &str) -> Result<u64, PlatformError> {
-        let result = self.db.execute(
-            "UPDATE one_api_keys SET status = 'revoked', revoked_at = ? \
+        let result = self
+            .db
+            .execute(
+                "UPDATE one_api_keys SET status = 'revoked', revoked_at = ? \
              WHERE created_by = ? AND status = 'active'",
-        &db_params![now_ms(), user_id])
-        .await?;
+                &db_params![now_ms(), user_id],
+            )
+            .await?;
         Ok(result)
     }
 
@@ -2114,17 +2436,23 @@ impl PlatformService {
     /// posture as `grant_resource`/`add_scene_member`. Only a key that never
     /// existed for this tenant is `NotFound`.
     pub async fn revoke_api_key(&self, tenant_id: &str, id: &str) -> Result<(), PlatformError> {
-        let current: Option<(String,)> =
-            self.db.fetch_optional_as::<(String,)>("SELECT status FROM one_api_keys WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, id])
-                .await?;
+        let current: Option<(String,)> = self
+            .db
+            .fetch_optional_as::<(String,)>(
+                "SELECT status FROM one_api_keys WHERE tenant_id = ? AND id = ?",
+                &db_params![tenant_id, id],
+            )
+            .await?;
         match current {
             None => Err(PlatformError::NotFound("API key not found".into())),
             Some((status,)) if status == "revoked" => Ok(()),
             Some(_) => {
-                self.db.execute(
-                    "UPDATE one_api_keys SET status = 'revoked', revoked_at = ? WHERE tenant_id = ? AND id = ?",
-                &db_params![now_ms(), tenant_id, id])
-                .await?;
+                self.db
+                    .execute(
+                        "UPDATE one_api_keys SET status = 'revoked', revoked_at = ? WHERE tenant_id = ? AND id = ?",
+                        &db_params![now_ms(), tenant_id, id],
+                    )
+                    .await?;
                 Ok(())
             }
         }
@@ -2193,12 +2521,14 @@ impl PlatformService {
             tx.execute(
                 "INSERT INTO one_notifications (id, tenant_id, kind, category, title, body, created_by, created_at) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            &db_params![&id, tenant_id, kind, category.trim(), title, body, created_by, now])
+                &db_params![&id, tenant_id, kind, category.trim(), title, body, created_by, now],
+            )
             .await?;
             for user_id in recipient_ids {
                 tx.execute(
                     "INSERT OR IGNORE INTO one_notification_recipients (notification_id, user_id) VALUES (?, ?)",
-                &db_params![&id, user_id])
+                    &db_params![&id, user_id],
+                )
                 .await?;
             }
             tx.commit().await?;
@@ -2216,11 +2546,14 @@ impl PlatformService {
     }
 
     async fn get_notification(&self, tenant_id: &str, id: &str) -> Result<Option<NotificationDto>, PlatformError> {
-        let row: Option<(String, String, String, String, String, String, i64)> = self.db.fetch_optional_as::<(String, String, String, String, String, String, i64)>(
-            "SELECT id, kind, category, title, body, created_by, created_at \
+        let row: Option<(String, String, String, String, String, String, i64)> = self
+            .db
+            .fetch_optional_as::<(String, String, String, String, String, String, i64)>(
+                "SELECT id, kind, category, title, body, created_by, created_at \
              FROM one_notifications WHERE tenant_id = ? AND id = ?",
-        &db_params![tenant_id, id])
-        .await?;
+                &db_params![tenant_id, id],
+            )
+            .await?;
         let Some((id, kind, category, title, body, created_by, created_at)) = row else {
             return Ok(None);
         };
@@ -2249,19 +2582,29 @@ impl PlatformService {
         kind: &str,
     ) -> Result<(i64, i64), PlatformError> {
         let recipient_count: i64 = if kind == "broadcast" {
-            self.db.fetch_one_scalar("SELECT COUNT(*) FROM one_user_org WHERE tenant_id = ?", &db_params![tenant_id])
+            self.db
+                .fetch_one_scalar(
+                    "SELECT COUNT(*) FROM one_user_org WHERE tenant_id = ?",
+                    &db_params![tenant_id],
+                )
                 .await?
         } else {
-            self.db.fetch_one_scalar("SELECT COUNT(*) FROM one_notification_recipients WHERE notification_id = ?", &db_params![id])
+            self.db
+                .fetch_one_scalar(
+                    "SELECT COUNT(*) FROM one_notification_recipients WHERE notification_id = ?",
+                    &db_params![id],
+                )
                 .await?
         };
         let read_count: i64 = if kind == "broadcast" {
-            self.db.fetch_one_scalar(
-                "SELECT COUNT(*) FROM one_notification_reads rd \
+            self.db
+                .fetch_one_scalar(
+                    "SELECT COUNT(*) FROM one_notification_reads rd \
                  JOIN one_user_org uo ON uo.user_id = rd.user_id AND uo.tenant_id = ? \
                  WHERE rd.notification_id = ?",
-            &db_params![tenant_id, id])
-            .await?
+                    &db_params![tenant_id, id],
+                )
+                .await?
         } else {
             self.db.fetch_one_scalar(
                 "SELECT COUNT(*) FROM one_notification_reads rd \
@@ -2275,11 +2618,14 @@ impl PlatformService {
 
     /// The admin's sent history, newest first.
     pub async fn list_notifications(&self, tenant_id: &str) -> Result<Vec<NotificationDto>, PlatformError> {
-        let rows: Vec<(String, String, String, String, String, String, i64)> = self.db.fetch_all_as::<(String, String, String, String, String, String, i64)>(
-            "SELECT id, kind, category, title, body, created_by, created_at \
+        let rows: Vec<(String, String, String, String, String, String, i64)> = self
+            .db
+            .fetch_all_as::<(String, String, String, String, String, String, i64)>(
+                "SELECT id, kind, category, title, body, created_by, created_at \
              FROM one_notifications WHERE tenant_id = ? ORDER BY created_at DESC",
-        &db_params![tenant_id])
-        .await?;
+                &db_params![tenant_id],
+            )
+            .await?;
         let mut out = Vec::with_capacity(rows.len());
         for (id, kind, category, title, body, created_by, created_at) in rows {
             let (recipient_count, read_count) = self.notification_audience_counts(tenant_id, &id, &kind).await?;
@@ -2304,15 +2650,25 @@ impl PlatformService {
     /// longer exists for anyone.
     pub async fn delete_notification(&self, tenant_id: &str, id: &str) -> Result<(), PlatformError> {
         let mut tx = self.db.begin().await?;
-        let deleted = tx.execute("DELETE FROM one_notifications WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, id])
+        let deleted = tx
+            .execute(
+                "DELETE FROM one_notifications WHERE tenant_id = ? AND id = ?",
+                &db_params![tenant_id, id],
+            )
             .await?;
         if deleted == 0 {
             return Err(PlatformError::NotFound("notification not found".into()));
         }
-        tx.execute("DELETE FROM one_notification_recipients WHERE notification_id = ?", &db_params![id])
-            .await?;
-        tx.execute("DELETE FROM one_notification_reads WHERE notification_id = ?", &db_params![id])
-            .await?;
+        tx.execute(
+            "DELETE FROM one_notification_recipients WHERE notification_id = ?",
+            &db_params![id],
+        )
+        .await?;
+        tx.execute(
+            "DELETE FROM one_notification_reads WHERE notification_id = ?",
+            &db_params![id],
+        )
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -2328,8 +2684,10 @@ impl PlatformService {
         user_id: &str,
         limit: i64,
     ) -> Result<MyNotificationsDto, PlatformError> {
-        let rows: Vec<NotificationRow> = self.db.fetch_all_as::<NotificationRow>(
-            "SELECT n.id, n.kind, n.category, n.title, n.body, n.created_by, n.created_at, rd.read_at \
+        let rows: Vec<NotificationRow> = self
+            .db
+            .fetch_all_as::<NotificationRow>(
+                "SELECT n.id, n.kind, n.category, n.title, n.body, n.created_by, n.created_at, rd.read_at \
              FROM one_notifications n \
              LEFT JOIN one_notification_reads rd ON rd.notification_id = n.id AND rd.user_id = ? \
              WHERE n.tenant_id = ? \
@@ -2337,18 +2695,22 @@ impl PlatformService {
                     OR EXISTS (SELECT 1 FROM one_notification_recipients r \
                                WHERE r.notification_id = n.id AND r.user_id = ?)) \
              ORDER BY n.created_at DESC LIMIT ?",
-        &db_params![user_id, tenant_id, user_id, limit])
-        .await?;
-        let unread_count: i64 = self.db.fetch_one_scalar(
-            "SELECT COUNT(*) FROM one_notifications n \
+                &db_params![user_id, tenant_id, user_id, limit],
+            )
+            .await?;
+        let unread_count: i64 = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_notifications n \
              WHERE n.tenant_id = ? \
                AND (n.kind = 'broadcast' \
                     OR EXISTS (SELECT 1 FROM one_notification_recipients r \
                                WHERE r.notification_id = n.id AND r.user_id = ?)) \
                AND NOT EXISTS (SELECT 1 FROM one_notification_reads rd \
                                WHERE rd.notification_id = n.id AND rd.user_id = ?)",
-        &db_params![tenant_id, user_id, user_id])
-        .await?;
+                &db_params![tenant_id, user_id, user_id],
+            )
+            .await?;
         Ok(MyNotificationsDto {
             notifications: rows
                 .into_iter()
@@ -2385,20 +2747,27 @@ impl PlatformService {
                   OR EXISTS (SELECT 1 FROM one_notification_recipients r \
                              WHERE r.notification_id = n.id AND r.user_id = ?))";
         if ids.is_empty() {
-            self.db.execute(&format!(
-                "INSERT OR IGNORE INTO one_notification_reads (notification_id, user_id, read_at) \
+            self.db
+                .execute(
+                    &format!(
+                        "INSERT OR IGNORE INTO one_notification_reads (notification_id, user_id, read_at) \
                  SELECT n.id, ?, ? FROM one_notifications n WHERE {visibility} \
                    AND NOT EXISTS (SELECT 1 FROM one_notification_reads rd \
                                    WHERE rd.notification_id = n.id AND rd.user_id = ?)"
-            ), &db_params![user_id, now_ms(), tenant_id, user_id, user_id])
-            .await?;
+                    ),
+                    &db_params![user_id, now_ms(), tenant_id, user_id, user_id],
+                )
+                .await?;
             return Ok(());
         }
         for id in ids {
-            let visible: Option<(String,)> = self.db.fetch_optional_as::<(String,)>(&format!(
-                "SELECT n.id FROM one_notifications n WHERE n.id = ? AND {visibility}"
-            ), &db_params![id, tenant_id, user_id])
-            .await?;
+            let visible: Option<(String,)> = self
+                .db
+                .fetch_optional_as::<(String,)>(
+                    &format!("SELECT n.id FROM one_notifications n WHERE n.id = ? AND {visibility}"),
+                    &db_params![id, tenant_id, user_id],
+                )
+                .await?;
             if visible.is_some() {
                 self.db.execute(
                     "INSERT OR IGNORE INTO one_notification_reads (notification_id, user_id, read_at) VALUES (?, ?, ?)",
@@ -2415,10 +2784,13 @@ impl PlatformService {
     /// the row is created lazily on first freeze/quota touch (see the
     /// migration's comment), so absence must not read as frozen.
     async fn vault_settings(&self, tenant_id: &str, user_id: &str) -> Result<(String, Option<i64>), PlatformError> {
-        let row: Option<(String, Option<i64>)> = self.db.fetch_optional_as::<(String, Option<i64>)>(
-            "SELECT status, quota_bytes FROM one_file_vault_settings WHERE tenant_id = ? AND user_id = ?",
-        &db_params![tenant_id, user_id])
-        .await?;
+        let row: Option<(String, Option<i64>)> = self
+            .db
+            .fetch_optional_as::<(String, Option<i64>)>(
+                "SELECT status, quota_bytes FROM one_file_vault_settings WHERE tenant_id = ? AND user_id = ?",
+                &db_params![tenant_id, user_id],
+            )
+            .await?;
         Ok(row.unwrap_or_else(|| ("available".to_owned(), None)))
     }
 
@@ -2475,9 +2847,10 @@ impl PlatformService {
             )
             .await?;
         if let Some(quota) = quota_bytes
-            && usage_bytes + bytes.len() as i64 > quota {
-                return Err(PlatformError::BadRequest("file vault quota exceeded".into()));
-            }
+            && usage_bytes + bytes.len() as i64 > quota
+        {
+            return Err(PlatformError::BadRequest("file vault quota exceeded".into()));
+        }
         let file_name = sanitize_vault_file_name(file_name);
         if file_name.is_empty() {
             return Err(PlatformError::BadRequest("file name must not be empty".into()));
@@ -2498,7 +2871,9 @@ impl PlatformService {
         if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join(&storage_name), bytes)) {
             // The ledger row must not outlive its bytes: roll the row back so
             // usage stays truthful for the reconcile pass.
-            let _ = self.db.execute("DELETE FROM one_file_vault_objects WHERE id = ?", &db_params![&id])
+            let _ = self
+                .db
+                .execute("DELETE FROM one_file_vault_objects WHERE id = ?", &db_params![&id])
                 .await;
             return Err(PlatformError::Internal(format!("failed to store vault object: {e}")));
         }
@@ -2528,11 +2903,14 @@ impl PlatformService {
         tenant_id: &str,
         user_id: &str,
     ) -> Result<Vec<FileVaultObjectDto>, PlatformError> {
-        let rows: Vec<(String, String, i64, String, i64, Option<i64>)> = self.db.fetch_all_as::<(String, String, i64, String, i64, Option<i64>)>(
-            "SELECT id, file_name, size_bytes, sha256, created_at, deleted_at \
+        let rows: Vec<(String, String, i64, String, i64, Option<i64>)> = self
+            .db
+            .fetch_all_as::<(String, String, i64, String, i64, Option<i64>)>(
+                "SELECT id, file_name, size_bytes, sha256, created_at, deleted_at \
              FROM one_file_vault_objects WHERE tenant_id = ? AND user_id = ? ORDER BY created_at DESC",
-        &db_params![tenant_id, user_id])
-        .await?;
+                &db_params![tenant_id, user_id],
+            )
+            .await?;
         Ok(rows
             .into_iter()
             .map(
@@ -2557,11 +2935,14 @@ impl PlatformService {
         user_id: &str,
         id: &str,
     ) -> Result<(FileVaultObjectDto, Vec<u8>), PlatformError> {
-        let row: Option<(String, i64, String, String, i64)> = self.db.fetch_optional_as::<(String, i64, String, String, i64)>(
-            "SELECT file_name, size_bytes, storage_key, sha256, created_at FROM one_file_vault_objects \
+        let row: Option<(String, i64, String, String, i64)> = self
+            .db
+            .fetch_optional_as::<(String, i64, String, String, i64)>(
+                "SELECT file_name, size_bytes, storage_key, sha256, created_at FROM one_file_vault_objects \
              WHERE tenant_id = ? AND user_id = ? AND id = ? AND deleted_at IS NULL",
-        &db_params![tenant_id, user_id, id])
-        .await?;
+                &db_params![tenant_id, user_id, id],
+            )
+            .await?;
         let Some((file_name, size_bytes, storage_key, sha256, created_at)) = row else {
             return Err(PlatformError::NotFound("vault object not found".into()));
         };
@@ -2589,15 +2970,22 @@ impl PlatformService {
     /// reports leftovers, and a delete that 500s forever because a file
     /// vanished out-of-band would be worse.
     pub async fn delete_vault_object(&self, tenant_id: &str, user_id: &str, id: &str) -> Result<(), PlatformError> {
-        let row: Option<(String,)> = self.db.fetch_optional_as::<(String,)>(
-            "SELECT storage_key FROM one_file_vault_objects \
+        let row: Option<(String,)> = self
+            .db
+            .fetch_optional_as::<(String,)>(
+                "SELECT storage_key FROM one_file_vault_objects \
              WHERE tenant_id = ? AND user_id = ? AND id = ? AND deleted_at IS NULL",
-        &db_params![tenant_id, user_id, id])
-        .await?;
+                &db_params![tenant_id, user_id, id],
+            )
+            .await?;
         let Some((storage_key,)) = row else {
             return Err(PlatformError::NotFound("vault object not found".into()));
         };
-        self.db.execute("UPDATE one_file_vault_objects SET deleted_at = ? WHERE id = ?", &db_params![now_ms(), id])
+        self.db
+            .execute(
+                "UPDATE one_file_vault_objects SET deleted_at = ? WHERE id = ?",
+                &db_params![now_ms(), id],
+            )
             .await?;
         if let Some(root) = self.storage_root.as_ref() {
             let _ = std::fs::remove_file(root.join(&storage_key));
@@ -2610,8 +2998,10 @@ impl PlatformService {
     /// member's frozen vault with files still shows up — that is exactly the
     /// row an admin needs to see when offboarding).
     pub async fn admin_list_vaults(&self, tenant_id: &str) -> Result<Vec<FileVaultDto>, PlatformError> {
-        let rows: Vec<VaultFileRow> = self.db.fetch_all_as::<VaultFileRow>(
-            "SELECT u.user_id, s.status, s.quota_bytes, COALESCE(o.usage_bytes, 0), COALESCE(o.object_count, 0) \
+        let rows: Vec<VaultFileRow> = self
+            .db
+            .fetch_all_as::<VaultFileRow>(
+                "SELECT u.user_id, s.status, s.quota_bytes, COALESCE(o.usage_bytes, 0), COALESCE(o.object_count, 0) \
              FROM (SELECT user_id FROM one_user_org WHERE tenant_id = ? \
                    UNION SELECT DISTINCT user_id FROM one_file_vault_objects WHERE tenant_id = ?) u \
              LEFT JOIN one_file_vault_settings s ON s.tenant_id = ? AND s.user_id = u.user_id \
@@ -2619,8 +3009,9 @@ impl PlatformService {
                         FROM one_file_vault_objects WHERE tenant_id = ? AND deleted_at IS NULL GROUP BY user_id) o \
                       ON o.user_id = u.user_id \
              ORDER BY u.user_id",
-        &db_params![tenant_id, tenant_id, tenant_id, tenant_id])
-        .await?;
+                &db_params![tenant_id, tenant_id, tenant_id, tenant_id],
+            )
+            .await?;
         Ok(rows
             .into_iter()
             .map(
@@ -2654,7 +3045,8 @@ impl PlatformService {
             "INSERT INTO one_file_vault_settings (tenant_id, user_id, status, quota_bytes, updated_at) \
              VALUES (?, ?, ?, NULL, ?) AS new \
              ON DUPLICATE KEY UPDATE status = new.status, updated_at = new.updated_at",
-        &db_params![tenant_id, user_id, status, now_ms()])
+            &db_params![tenant_id, user_id, status, now_ms()],
+        )
         .await?;
         Ok(())
     }
@@ -2668,9 +3060,10 @@ impl PlatformService {
         quota_bytes: Option<i64>,
     ) -> Result<(), PlatformError> {
         if let Some(q) = quota_bytes
-            && q < 0 {
-                return Err(PlatformError::BadRequest("quota must not be negative".into()));
-            }
+            && q < 0
+        {
+            return Err(PlatformError::BadRequest("quota must not be negative".into()));
+        }
         let (status, _) = self.vault_settings(tenant_id, user_id).await?;
         self.upsert(
             "INSERT INTO one_file_vault_settings (tenant_id, user_id, status, quota_bytes, updated_at) \
@@ -2681,7 +3074,8 @@ impl PlatformService {
              VALUES (?, ?, ?, ?, ?) AS new \
              ON DUPLICATE KEY UPDATE quota_bytes = new.quota_bytes, \
                  updated_at = new.updated_at",
-        &db_params![tenant_id, user_id, status, quota_bytes, now_ms()])
+            &db_params![tenant_id, user_id, status, quota_bytes, now_ms()],
+        )
         .await?;
         Ok(())
     }
@@ -2701,11 +3095,14 @@ impl PlatformService {
         let mut entries: Vec<FileVaultReconcileEntry> = Vec::new();
 
         // Ledger side, grouped by member: id + file_name + size per live row.
-        let rows: Vec<(String, String, String, i64)> = self.db.fetch_all_as::<(String, String, String, i64)>(
-            "SELECT user_id, id, file_name, size_bytes FROM one_file_vault_objects \
+        let rows: Vec<(String, String, String, i64)> = self
+            .db
+            .fetch_all_as::<(String, String, String, i64)>(
+                "SELECT user_id, id, file_name, size_bytes FROM one_file_vault_objects \
              WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY user_id, id",
-        &db_params![tenant_id])
-        .await?;
+                &db_params![tenant_id],
+            )
+            .await?;
         let mut ledger: std::collections::BTreeMap<String, Vec<(String, String, i64)>> = Default::default();
         for (user_id, id, file_name, size_bytes) in rows {
             ledger.entry(user_id).or_default().push((id, file_name, size_bytes));
@@ -2797,29 +3194,34 @@ impl PlatformService {
         }
         let id = generate_prefixed_id("cfgset");
         let now = now_ms();
-        self.db.execute(
-            "INSERT INTO one_config_sets (id, tenant_id, name, description, created_by, created_at, updated_at) \
+        self.db
+            .execute(
+                "INSERT INTO one_config_sets (id, tenant_id, name, description, created_by, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?)",
-        &db_params![&id, tenant_id, name, description.trim(), created_by, now, now])
-        .await
-        .map_err(|e| match &e {
-            sqlx::Error::Database(db) if db.is_unique_violation() => {
-                PlatformError::BadRequest(format!("a config set named '{name}' already exists"))
-            }
-            _ => PlatformError::from(e),
-        })?;
+                &db_params![&id, tenant_id, name, description.trim(), created_by, now, now],
+            )
+            .await
+            .map_err(|e| match &e {
+                sqlx::Error::Database(db) if db.is_unique_violation() => {
+                    PlatformError::BadRequest(format!("a config set named '{name}' already exists"))
+                }
+                _ => PlatformError::from(e),
+            })?;
         self.get_config_set(tenant_id, &id)
             .await?
             .ok_or_else(|| PlatformError::Internal("config set vanished immediately after insert".into()))
     }
 
     pub async fn list_config_sets(&self, tenant_id: &str) -> Result<Vec<ConfigSetDto>, PlatformError> {
-        let rows: Vec<ConfigSetRow> = self.db.fetch_all_as::<ConfigSetRow>(
-            "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.updated_at, \
+        let rows: Vec<ConfigSetRow> = self
+            .db
+            .fetch_all_as::<ConfigSetRow>(
+                "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.updated_at, \
                     (SELECT COUNT(*) FROM one_config_entries e WHERE e.set_id = s.id) AS entry_count \
              FROM one_config_sets s WHERE s.tenant_id = ? ORDER BY s.created_at DESC",
-        &db_params![tenant_id])
-        .await?;
+                &db_params![tenant_id],
+            )
+            .await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
             // Reference counting is one extra scan per set; sets are a
@@ -2850,16 +3252,19 @@ impl PlatformService {
         if name.is_empty() {
             return Err(PlatformError::BadRequest("config set name must not be empty".into()));
         }
-        let result = self.db.execute(
-            "UPDATE one_config_sets SET name = ?, description = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
-        &db_params![name, description.trim(), now_ms(), tenant_id, id])
-        .await
-        .map_err(|e| match &e {
-            sqlx::Error::Database(db) if db.is_unique_violation() => {
-                PlatformError::BadRequest(format!("a config set named '{name}' already exists"))
-            }
-            _ => PlatformError::from(e),
-        })?;
+        let result = self
+            .db
+            .execute(
+                "UPDATE one_config_sets SET name = ?, description = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+                &db_params![name, description.trim(), now_ms(), tenant_id, id],
+            )
+            .await
+            .map_err(|e| match &e {
+                sqlx::Error::Database(db) if db.is_unique_violation() => {
+                    PlatformError::BadRequest(format!("a config set named '{name}' already exists"))
+                }
+                _ => PlatformError::from(e),
+            })?;
         if result == 0 {
             return Err(PlatformError::NotFound("config set not found".into()));
         }
@@ -2875,7 +3280,11 @@ impl PlatformService {
     /// precisely so an admin can check before deleting.
     pub async fn delete_config_set(&self, tenant_id: &str, id: &str) -> Result<(), PlatformError> {
         let mut tx = self.db.begin().await?;
-        let deleted = tx.execute("DELETE FROM one_config_sets WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, id])
+        let deleted = tx
+            .execute(
+                "DELETE FROM one_config_sets WHERE tenant_id = ? AND id = ?",
+                &db_params![tenant_id, id],
+            )
             .await?;
         if deleted == 0 {
             return Err(PlatformError::NotFound("config set not found".into()));
@@ -2887,12 +3296,15 @@ impl PlatformService {
     }
 
     async fn get_config_set(&self, tenant_id: &str, id: &str) -> Result<Option<ConfigSetDto>, PlatformError> {
-        let row: Option<ConfigSetRow> = self.db.fetch_optional_as::<ConfigSetRow>(
-            "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.updated_at, \
+        let row: Option<ConfigSetRow> = self
+            .db
+            .fetch_optional_as::<ConfigSetRow>(
+                "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.updated_at, \
                     (SELECT COUNT(*) FROM one_config_entries e WHERE e.set_id = s.id) AS entry_count \
              FROM one_config_sets s WHERE s.tenant_id = ? AND s.id = ?",
-        &db_params![tenant_id, id])
-        .await?;
+                &db_params![tenant_id, id],
+            )
+            .await?;
         match row {
             Some(row) => {
                 let ref_count = self.config_reference_count(&row.1).await?;
@@ -2928,16 +3340,24 @@ impl PlatformService {
         if key.is_empty() {
             return Err(PlatformError::BadRequest("config entry key must not be empty".into()));
         }
-        let exists: bool =
-            self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_config_sets WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, set_id])
-                .await?;
+        let exists: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_config_sets WHERE tenant_id = ? AND id = ?",
+                &db_params![tenant_id, set_id],
+            )
+            .await?;
         if !exists {
             return Err(PlatformError::NotFound("config set not found".into()));
         }
 
-        let existing: Option<(String, String, bool)> =
-            self.db.fetch_optional_as::<(String, String, bool)>("SELECT id, `value`, `sensitive` FROM one_config_entries WHERE set_id = ? AND `key` = ?", &db_params![set_id, key])
-                .await?;
+        let existing: Option<(String, String, bool)> = self
+            .db
+            .fetch_optional_as::<(String, String, bool)>(
+                "SELECT id, `value`, `sensitive` FROM one_config_entries WHERE set_id = ? AND `key` = ?",
+                &db_params![set_id, key],
+            )
+            .await?;
 
         let entry_id;
         let stored;
@@ -2956,7 +3376,11 @@ impl PlatformService {
                     // silently shipping garbage).
                     _ => Self::entry_restamp_value(&old_value, old_sensitive, sensitive, &self.encryption_key)?,
                 };
-                self.db.execute("UPDATE one_config_entries SET `value` = ?, `sensitive` = ? WHERE id = ?", &db_params![&stored, sensitive, &entry_id])
+                self.db
+                    .execute(
+                        "UPDATE one_config_entries SET `value` = ?, `sensitive` = ? WHERE id = ?",
+                        &db_params![&stored, sensitive, &entry_id],
+                    )
                     .await?;
             }
             None => {
@@ -2965,11 +3389,13 @@ impl PlatformService {
                 };
                 entry_id = generate_prefixed_id("cfge");
                 stored = Self::entry_storage_value(v, sensitive, &self.encryption_key)?;
-                self.db.execute(
-                    "INSERT INTO one_config_entries (id, tenant_id, set_id, `key`, `value`, `sensitive`) \
+                self.db
+                    .execute(
+                        "INSERT INTO one_config_entries (id, tenant_id, set_id, `key`, `value`, `sensitive`) \
                      VALUES (?, ?, ?, ?, ?, ?)",
-                &db_params![&entry_id, tenant_id, set_id, key, &stored, sensitive])
-                .await?;
+                        &db_params![&entry_id, tenant_id, set_id, key, &stored, sensitive],
+                    )
+                    .await?;
             }
         }
 
@@ -3024,9 +3450,13 @@ impl PlatformService {
         tenant_id: &str,
         set_id: &str,
     ) -> Result<Vec<ConfigEntryDto>, PlatformError> {
-        let exists: bool =
-            self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_config_sets WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, set_id])
-                .await?;
+        let exists: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_config_sets WHERE tenant_id = ? AND id = ?",
+                &db_params![tenant_id, set_id],
+            )
+            .await?;
         if !exists {
             return Err(PlatformError::NotFound("config set not found".into()));
         }
@@ -3055,7 +3485,12 @@ impl PlatformService {
     /// another tenant — the tenant filter is load-bearing, same as
     /// `revoke_resource`.
     pub async fn delete_config_entry(&self, tenant_id: &str, entry_id: &str) -> Result<(), PlatformError> {
-        let deleted = self.db.execute("DELETE FROM one_config_entries WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, entry_id])
+        let deleted = self
+            .db
+            .execute(
+                "DELETE FROM one_config_entries WHERE tenant_id = ? AND id = ?",
+                &db_params![tenant_id, entry_id],
+            )
             .await?;
         if deleted == 0 {
             return Err(PlatformError::NotFound("config entry not found".into()));
@@ -3081,14 +3516,23 @@ impl PlatformService {
         rows: &[ConfigImportRow],
         merge: bool,
     ) -> Result<ConfigBulkImportDto, PlatformError> {
-        let exists: bool =
-            self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_config_sets WHERE tenant_id = ? AND id = ?", &db_params![tenant_id, set_id])
-                .await?;
+        let exists: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_config_sets WHERE tenant_id = ? AND id = ?",
+                &db_params![tenant_id, set_id],
+            )
+            .await?;
         if !exists {
             return Err(PlatformError::NotFound("config set not found".into()));
         }
         if !merge {
-            let has_entries: bool = self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_config_entries WHERE set_id = ?", &db_params![set_id])
+            let has_entries: bool = self
+                .db
+                .fetch_one_scalar(
+                    "SELECT COUNT(*) > 0 FROM one_config_entries WHERE set_id = ?",
+                    &db_params![set_id],
+                )
                 .await?;
             if has_entries {
                 return Err(PlatformError::BadRequest(
@@ -3128,7 +3572,8 @@ impl PlatformService {
             let stored = Self::entry_storage_value(value, *sensitive, &self.encryption_key)?;
             tx.execute(
                 import_sql,
-            &db_params![generate_prefixed_id("cfge"), tenant_id, set_id, key, &stored, sensitive])
+                &db_params![generate_prefixed_id("cfge"), tenant_id, set_id, key, &stored, sensitive],
+            )
             .await?;
         }
         tx.commit().await?;
@@ -3204,9 +3649,13 @@ impl PlatformService {
     /// [`Self::config_set_references`].
     async fn config_reference_count(&self, set_name: &str) -> Result<i64, PlatformError> {
         let needle = format!("{{{{config.{}.", set_name);
-        let result =
-            self.db.fetch_one_scalar::<i64>("SELECT COUNT(*) FROM one_skill_registry WHERE INSTR(content, ?) > 0", &db_params![&needle])
-                .await;
+        let result = self
+            .db
+            .fetch_one_scalar::<i64>(
+                "SELECT COUNT(*) FROM one_skill_registry WHERE INSTR(content, ?) > 0",
+                &db_params![&needle],
+            )
+            .await;
         match result {
             Ok(count) => Ok(count),
             Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => Ok(0),
@@ -3229,13 +3678,16 @@ impl PlatformService {
         // One query for the tenant's whole vault: a skill rarely references
         // more than a couple of keys, but this keeps it to a single round
         // trip regardless of token count.
-        let rows: Vec<(String, String, String, bool)> = self.db.fetch_all_as::<(String, String, String, bool)>(
-            "SELECT s.name, e.key, e.value, e.sensitive \
+        let rows: Vec<(String, String, String, bool)> = self
+            .db
+            .fetch_all_as::<(String, String, String, bool)>(
+                "SELECT s.name, e.key, e.value, e.sensitive \
              FROM one_config_entries e JOIN one_config_sets s ON s.id = e.set_id \
              WHERE s.tenant_id = ?",
-        &db_params![tenant_id])
-        .await
-        .unwrap_or_default();
+                &db_params![tenant_id],
+            )
+            .await
+            .unwrap_or_default();
         let mut lookup: std::collections::HashMap<(String, String), String> = std::collections::HashMap::new();
         for (set_name, key, stored, sensitive) in rows {
             let value = if sensitive {
@@ -3354,7 +3806,18 @@ fn api_key_path_allowed(request_path: &str, allowed_paths: &[String]) -> bool {
     })
 }
 
-type SecurityPolicyRow = (String, bool, bool, String, bool, bool, bool, Option<i64>, i64);
+type SecurityPolicyRow = (
+    String,      // tier
+    bool,        // terminal_tools_require_approval
+    bool,        // destructive_commands_blocked
+    String,      // blocked_command_patterns (JSON)
+    bool,        // external_network_denied_by_default
+    bool,        // message_scan_enabled
+    bool,        // message_redact_enabled
+    Option<i64>, // send_rate_limit_per_minute
+    i64,         // updated_at
+    String,      // conversation_share_mode
+);
 
 type PolicyTemplateRow = (
     String,      // id
@@ -3380,13 +3843,649 @@ type SceneRow = (String, String, String, Option<String>, String, bool, i64, i64)
 /// created_at, updated_at, entry_count.
 type ConfigSetRow = (String, String, String, String, i64, i64, i64);
 
+// --- P2-2: member-to-organization conversation sharing ---
+
+/// One active share per conversation (UNIQUE in the migration). The row is
+/// the ENTIRE authorization for cross-user reads: reads fetch the
+/// conversation through the repository under the owner's user id, which is
+/// only reachable by first producing a share row for it. Unsharing deletes
+/// the row (and, for uploaded snapshots, the snapshot itself) — after that
+/// the content is unreachable through this subsystem again.
+impl PlatformService {
+    /// `one_enterprise_members` has one row per user (PK `user_id`).
+    /// `None` = personal user: sharing never applies (P0-1 constraint 1).
+    async fn enterprise_id_of(&self, user_id: &str) -> Result<Option<String>, PlatformError> {
+        let row: Option<(String,)> = self
+            .db
+            .fetch_optional_as(
+                "SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?",
+                &db_params![user_id],
+            )
+            .await?;
+        Ok(row.map(|(enterprise_id,)| enterprise_id))
+    }
+
+    fn conversation_repo(&self) -> Result<Arc<dyn dream_core_db::IConversationRepository>, PlatformError> {
+        self.conversation
+            .clone()
+            .ok_or_else(|| PlatformError::Internal("conversation repository is not wired".into()))
+    }
+
+    /// The repository speaks `DbError` (its backend is not necessarily the
+    /// same database as `self.db`); surface failures as internal errors.
+    fn repo_err(e: dream_core_db::DbError) -> PlatformError {
+        PlatformError::Internal(format!("conversation repository: {e}"))
+    }
+
+    /// Share one of the member's conversations. Desktop clients upload the
+    /// content in the same request (snapshot under the member's own server
+    /// user id); WebUI clients share their existing server conversation by
+    /// reference. Policy gates: mode `off` refuses everything, mode
+    /// `tenant` refuses `enterprise` scope.
+    pub async fn share_conversation(
+        &self,
+        actor: &PlatformActor,
+        user_id: &str,
+        input: ShareConversationInput,
+    ) -> Result<ConversationShareDto, PlatformError> {
+        let mode = self
+            .get_security_policy(&actor.tenant_id)
+            .await?
+            .conversation_share_mode;
+        if mode == crate::models::CONVERSATION_SHARE_OFF {
+            return Err(PlatformError::BadRequest(
+                "conversation sharing is disabled by company policy".into(),
+            ));
+        }
+        if input.scope != crate::models::SHARE_SCOPE_TENANT && input.scope != crate::models::SHARE_SCOPE_ENTERPRISE {
+            return Err(PlatformError::BadRequest(format!(
+                "scope must be tenant or enterprise, got '{}'",
+                input.scope
+            )));
+        }
+        if input.scope == crate::models::SHARE_SCOPE_ENTERPRISE && mode != crate::models::CONVERSATION_SHARE_ENTERPRISE
+        {
+            return Err(PlatformError::BadRequest(
+                "company policy only allows sharing within your project group".into(),
+            ));
+        }
+        let Some(enterprise_id) = self.enterprise_id_of(user_id).await? else {
+            return Err(PlatformError::BadRequest(
+                "personal accounts cannot share conversations with an organization".into(),
+            ));
+        };
+        let repo = self.conversation_repo()?;
+
+        // The row the share points at. Snapshot uploads create it here,
+        // under the member's own server identity: the snapshot is THEIR
+        // conversation as far as storage is concerned, just server-hosted.
+        let mut uploaded = false;
+        let mut name = input.name.clone().unwrap_or_else(|| "Shared conversation".to_owned());
+        if let Some(messages) = &input.messages {
+            let conversation_id = input.conversation_id.clone();
+            let now = now_ms() as i64;
+            let extra = serde_json::json!({
+                "sharedSnapshot": true,
+                "originalConversationId": input.conversation_id,
+            });
+            repo.create(&dream_core_db::models::ConversationRow {
+                id: conversation_id.clone(),
+                user_id: user_id.to_owned(),
+                name: name.clone(),
+                r#type: "dream".to_owned(),
+                extra: extra.to_string(),
+                model: None,
+                status: Some("finished".to_owned()),
+                source: Some("shared".to_owned()),
+                channel_chat_id: None,
+                pinned: false,
+                pinned_at: None,
+                created_at: now,
+                updated_at: now,
+                project_id: None,
+                folder_id: None,
+                name_source: None,
+            })
+            .await
+            .map_err(Self::repo_err)?;
+            for message in messages {
+                repo.insert_message(
+                    user_id,
+                    &dream_core_db::models::MessageRow {
+                        id: generate_prefixed_id("msg"),
+                        conversation_id: conversation_id.clone(),
+                        msg_id: message.id.clone(),
+                        r#type: message.message_type.clone(),
+                        content: message.content.clone(),
+                        position: message.position.clone(),
+                        status: Some("finish".to_owned()),
+                        hidden: false,
+                        created_at: message.created_at.unwrap_or(now),
+                        backend_turn_id: None,
+                    },
+                )
+                .await
+                .map_err(Self::repo_err)?;
+            }
+            uploaded = true;
+            // Share the SNAPSHOT, not the (client-local) original id.
+            self.upsert_share_row(
+                &enterprise_id,
+                actor,
+                user_id,
+                &conversation_id,
+                &input.scope,
+                &name,
+                uploaded,
+            )
+            .await?;
+            return Ok(ConversationShareDto {
+                conversation_id,
+                owner_user_id: user_id.to_owned(),
+                name,
+                tenant_id: actor.tenant_id.clone(),
+                enterprise_id,
+                scope: input.scope,
+                shared_at: now,
+                uploaded,
+            });
+        }
+
+        // Reference path: must exist and belong to the caller (WebUI
+        // conversation). The user-scoped repo call IS the ownership check.
+        let row = repo
+            .get(user_id, &input.conversation_id)
+            .await
+            .map_err(Self::repo_err)?
+            .ok_or_else(|| PlatformError::NotFound("conversation not found".into()))?;
+        name = row.name.clone();
+        self.upsert_share_row(
+            &enterprise_id,
+            actor,
+            user_id,
+            &input.conversation_id,
+            &input.scope,
+            &name,
+            uploaded,
+        )
+        .await?;
+        Ok(ConversationShareDto {
+            conversation_id: input.conversation_id.clone(),
+            owner_user_id: user_id.to_owned(),
+            name,
+            tenant_id: actor.tenant_id.clone(),
+            enterprise_id,
+            scope: input.scope,
+            shared_at: now_ms() as i64,
+            uploaded,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn upsert_share_row(
+        &self,
+        enterprise_id: &str,
+        actor: &PlatformActor,
+        owner_user_id: &str,
+        conversation_id: &str,
+        scope: &str,
+        name: &str,
+        uploaded: bool,
+    ) -> Result<(), PlatformError> {
+        self.upsert(
+            "INSERT INTO one_conversation_shares \
+             (id, conversation_id, owner_user_id, enterprise_id, tenant_id, scope, name, uploaded, shared_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(conversation_id) DO UPDATE SET \
+                 owner_user_id = excluded.owner_user_id, \
+                 enterprise_id = excluded.enterprise_id, \
+                 tenant_id = excluded.tenant_id, \
+                 scope = excluded.scope, \
+                 name = excluded.name, \
+                 uploaded = excluded.uploaded, \
+                 shared_at = excluded.shared_at",
+            "INSERT INTO one_conversation_shares \
+             (id, conversation_id, owner_user_id, enterprise_id, tenant_id, scope, name, uploaded, shared_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE \
+                 owner_user_id = new.owner_user_id, \
+                 enterprise_id = new.enterprise_id, \
+                 tenant_id = new.tenant_id, \
+                 scope = new.scope, \
+                 name = new.name, \
+                 uploaded = new.uploaded, \
+                 shared_at = new.shared_at",
+            &db_params![
+                generate_prefixed_id("share"),
+                conversation_id,
+                owner_user_id,
+                enterprise_id,
+                &actor.tenant_id,
+                scope,
+                name,
+                uploaded as i64,
+                now_ms() as i64,
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Owner-side unshare. An uploaded snapshot exists only to back this
+    /// share, so it goes too; a referenced native conversation obviously
+    /// stays.
+    pub async fn unshare_conversation(&self, user_id: &str, conversation_id: &str) -> Result<(), PlatformError> {
+        let row: Option<(i64,)> = self
+            .db
+            .fetch_optional_as(
+                "SELECT uploaded FROM one_conversation_shares WHERE conversation_id = ? AND owner_user_id = ?",
+                &db_params![conversation_id, user_id],
+            )
+            .await?;
+        let Some((uploaded,)) = row else {
+            return Err(PlatformError::NotFound("share not found".into()));
+        };
+        self.db
+            .execute(
+                "DELETE FROM one_conversation_shares WHERE conversation_id = ? AND owner_user_id = ?",
+                &db_params![conversation_id, user_id],
+            )
+            .await?;
+        if uploaded != 0
+            && let Ok(repo) = self.conversation_repo()
+{
+            repo.delete(user_id, conversation_id).await.map_err(Self::repo_err)?;
+        }
+        Ok(())
+    }
+
+    /// The member's own shares (owner view).
+    pub async fn list_my_conversation_shares(&self, user_id: &str) -> Result<Vec<ConversationShareDto>, PlatformError> {
+        let rows = self
+            .db
+            .fetch_all_as::<ConversationShareRow>(
+                "SELECT conversation_id, owner_user_id, enterprise_id, tenant_id, scope, name, uploaded, shared_at \
+                 FROM one_conversation_shares WHERE owner_user_id = ? ORDER BY shared_at DESC LIMIT 200",
+                &db_params![user_id],
+            )
+            .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// The member's inbox: everything shared with them. `tenant` scope
+    /// reaches the actor's tenant; `enterprise` scope reaches everyone in
+    /// the SAME enterprise as the caller (resolved from their membership,
+    /// so a personal user with no enterprise sees only tenant rows).
+    pub async fn list_shared_conversations(
+        &self,
+        actor: &PlatformActor,
+        user_id: &str,
+    ) -> Result<Vec<ConversationShareDto>, PlatformError> {
+        let enterprise_id = self.enterprise_id_of(user_id).await?.unwrap_or_default();
+        let rows = self
+            .db
+            .fetch_all_as::<ConversationShareRow>(
+                "SELECT conversation_id, owner_user_id, enterprise_id, tenant_id, scope, name, uploaded, shared_at \
+                 FROM one_conversation_shares \
+                 WHERE (scope = 'tenant' AND tenant_id = ?) OR (scope = 'enterprise' AND enterprise_id = ?) \
+                 ORDER BY shared_at DESC LIMIT 200",
+                &db_params![&actor.tenant_id, &enterprise_id],
+            )
+            .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// Read a shared conversation's content. Authorization is the share row
+    /// alone: owner, same-tenant member (scope `tenant`), or same-enterprise
+    /// member (scope `enterprise`).
+    pub async fn read_shared_conversation(
+        &self,
+        actor: &PlatformActor,
+        user_id: &str,
+        conversation_id: &str,
+    ) -> Result<SharedConversationDetail, PlatformError> {
+        let share = self
+            .db
+            .fetch_optional_as::<ConversationShareRow>(
+                "SELECT conversation_id, owner_user_id, enterprise_id, tenant_id, scope, name, uploaded, shared_at \
+                 FROM one_conversation_shares WHERE conversation_id = ?",
+                &db_params![conversation_id],
+            )
+            .await?
+            .ok_or_else(|| PlatformError::NotFound("share not found".into()))?;
+        if share.owner_user_id != user_id {
+            let allowed = match share.scope.as_str() {
+                crate::models::SHARE_SCOPE_TENANT => share.tenant_id == actor.tenant_id,
+                _ => {
+                    let enterprise_id = self.enterprise_id_of(user_id).await?.unwrap_or_default();
+                    !enterprise_id.is_empty() && share.enterprise_id == enterprise_id
+                }
+            };
+            if !allowed {
+                return Err(PlatformError::NotFound("share not found".into()));
+            }
+        }
+        let repo = self.conversation_repo()?;
+        // Deliberately NOT `NotFound`-distinct from a revoked share: whether
+        // a conversation id exists is the owner's information, not the
+        // reader's.
+        let conversation = repo
+            .get(&share.owner_user_id, conversation_id)
+            .await
+            .map_err(Self::repo_err)?
+            .ok_or_else(|| PlatformError::NotFound("shared conversation is no longer available".into()))?;
+        let page = repo
+            .list_messages_page(
+                &share.owner_user_id,
+                conversation_id,
+                &dream_core_db::MessagePageParams {
+                    limit: 500,
+                    direction: dream_core_db::MessagePageDirection::InitialLatest,
+                },
+            )
+            .await
+            .map_err(Self::repo_err)?;
+        Ok(SharedConversationDetail {
+            share: share.into(),
+            model: conversation.model,
+            created_at: conversation.created_at,
+            updated_at: conversation.updated_at,
+            messages: page
+                .items
+                .into_iter()
+                .map(|message| SharedMessageDto {
+                    id: message.id,
+                    message_type: message.r#type,
+                    content: message.content,
+                    position: message.position,
+                    status: message.status,
+                    created_at: message.created_at,
+                })
+                .collect(),
+            has_more_before: page.has_more_before,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Trait methods (`get`, `list_messages_page`) are exercised directly by the share tests.
+    use dream_core_db::IConversationRepository as _;
+
+    /// Share-subsystem fixture: repo wired, two enterprise members in
+    /// `ent-1` (member-1 in tenant `t1`, member-2 in tenant `t2`), plus
+    /// the users rows the conversations FK needs.
+    async fn share_setup() -> (dream_core_db::Database, PlatformService) {
+        let (db, service) = setup().await;
+        // Platform migrations don't create one_enterprise_members (that is the
+        // enterprise crate's table); the share subsystem only ever SELECTs it.
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS one_enterprise_members (user_id TEXT PRIMARY KEY, enterprise_id TEXT NOT NULL, display_name TEXT, department TEXT, job_title TEXT, role TEXT NOT NULL DEFAULT 'member', seat_status TEXT NOT NULL DEFAULT 'active', joined_at INTEGER, updated_at INTEGER)",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let repo = std::sync::Arc::new(dream_core_db::SqliteConversationRepository::new(db.pool().clone()));
+        let service = service.with_conversation_repo(repo);
+        for user in ["member-1", "member-2"] {
+            sqlx::query(
+                "INSERT INTO users (id, username, password_hash, created_at, updated_at) VALUES (?, ?, 'x', 1, 1)",
+            )
+            .bind(user)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        }
+        for (user, joined_at) in [("member-1", 1), ("member-2", 2)] {
+            sqlx::query(
+                "INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at) VALUES (?, 'ent-1', 'member', ?)",
+            )
+            .bind(user)
+            .bind(joined_at)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        }
+        (db, service)
+    }
+
+    fn actor(tenant_id: &str) -> PlatformActor {
+        PlatformActor {
+            tenant_id: tenant_id.to_owned(),
+            role: "member".to_owned(),
+        }
+    }
+
+    fn snapshot(conv_id: &str) -> ShareConversationInput {
+        ShareConversationInput {
+            conversation_id: conv_id.to_owned(),
+            name: Some("Weekly ops".to_owned()),
+            scope: crate::models::SHARE_SCOPE_TENANT.to_owned(),
+            messages: Some(vec![
+                crate::models::SharedMessageInput {
+                    id: Some("local-1".into()),
+                    message_type: "text".into(),
+                    content: r#"{"text":"hello"}"#.into(),
+                    position: Some("right".into()),
+                    created_at: Some(100),
+                },
+                crate::models::SharedMessageInput {
+                    id: None,
+                    message_type: "text".into(),
+                    content: r#"{"text":"hi"}"#.into(),
+                    position: Some("left".into()),
+                    created_at: Some(101),
+                },
+            ]),
+        }
+    }
+
+    /// P0-1 constraint 1: with the policy off (the default), sharing
+    /// refuses outright — the member never gets as far as uploading.
+    #[tokio::test]
+    async fn share_refuses_while_policy_is_off() {
+        let (_db, service) = share_setup().await;
+        let error = service
+            .share_conversation(&actor("t1"), "member-1", snapshot("conv-1"))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, PlatformError::BadRequest(_)));
+    }
+
+    /// Mode `tenant` gates scope: enterprise scope refuses, tenant scope
+    /// uploads the snapshot under the SAME conversation id and lands it in
+    /// the same-tenant member's inbox — but not in the other tenant's.
+    #[tokio::test]
+    async fn tenant_mode_shares_within_the_tenant_only() {
+        let (db, service) = share_setup().await;
+        service
+            .set_security_policy(
+                "t1",
+                false,
+                false,
+                &[],
+                false,
+                false,
+                false,
+                None,
+                crate::models::CONVERSATION_SHARE_TENANT,
+            )
+            .await
+            .unwrap();
+
+        let error = service
+            .share_conversation(
+                &actor("t1"),
+                "member-1",
+                ShareConversationInput {
+                    scope: crate::models::SHARE_SCOPE_ENTERPRISE.to_owned(),
+                    ..snapshot("conv-1")
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, PlatformError::BadRequest(_)),
+            "enterprise scope must refuse in tenant mode"
+        );
+
+        let share = service
+            .share_conversation(&actor("t1"), "member-1", snapshot("conv-1"))
+            .await
+            .unwrap();
+        assert!(share.uploaded, "snapshot share is marked uploaded");
+        assert_eq!(share.conversation_id, "conv-1", "snapshot keeps the original id");
+
+        // The snapshot is a real server-side conversation owned by the member.
+        let repo = dream_core_db::SqliteConversationRepository::new(db.pool().clone());
+        let row = repo.get("member-1", "conv-1").await.unwrap().expect("snapshot stored");
+        assert_eq!(row.name, "Weekly ops");
+        let page = repo
+            .list_messages_page(
+                "member-1",
+                "conv-1",
+                &dream_core_db::MessagePageParams {
+                    limit: 10,
+                    direction: dream_core_db::MessagePageDirection::InitialLatest,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(
+            page.items[0].msg_id.as_deref(),
+            Some("local-1"),
+            "original ids kept in msg_id"
+        );
+
+        // Same tenant → inbox + readable. Other tenant → invisible AND
+        // indistinguishable from nonexistent.
+        let inbox = service
+            .list_shared_conversations(&actor("t1"), "member-1")
+            .await
+            .unwrap();
+        assert!(inbox.iter().any(|s| s.conversation_id == "conv-1"));
+        let detail = service
+            .read_shared_conversation(&actor("t1"), "member-1", "conv-1")
+            .await
+            .unwrap();
+        assert_eq!(detail.messages.len(), 2);
+        assert!(
+            service
+                .read_shared_conversation(&actor("t2"), "member-2", "conv-1")
+                .await
+                .is_err(),
+            "cross-tenant read must refuse"
+        );
+        assert!(
+            service
+                .list_shared_conversations(&actor("t2"), "member-2")
+                .await
+                .unwrap()
+                .iter()
+                .all(|s| s.conversation_id != "conv-1"),
+            "cross-tenant inbox must stay empty"
+        );
+    }
+
+    /// Mode `enterprise` opens enterprise scope; a member of the same
+    /// enterprise in ANOTHER tenant reads through it. Personal users
+    /// (no enterprise membership) can never share (P0-1 constraint 1).
+    #[tokio::test]
+    async fn enterprise_mode_reaches_across_tenants_and_personal_users_never_share() {
+        let (_db, service) = share_setup().await;
+        service
+            .set_security_policy(
+                "t1",
+                false,
+                false,
+                &[],
+                false,
+                false,
+                false,
+                None,
+                crate::models::CONVERSATION_SHARE_ENTERPRISE,
+            )
+            .await
+            .unwrap();
+        service
+            .share_conversation(
+                &actor("t1"),
+                "member-1",
+                ShareConversationInput {
+                    scope: crate::models::SHARE_SCOPE_ENTERPRISE.to_owned(),
+                    ..snapshot("conv-1")
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            service
+                .read_shared_conversation(&actor("t2"), "member-2", "conv-1")
+                .await
+                .is_ok(),
+            "same-enterprise member reads across tenants"
+        );
+
+        // A user with no enterprise membership cannot share at all.
+        let error = service
+            .share_conversation(&actor("t9"), "nobody", snapshot("conv-9"))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, PlatformError::BadRequest(_)));
+    }
+
+    /// Unshare removes the row AND the snapshot that only existed to back
+    /// it — after that the content is unreachable through the subsystem.
+    #[tokio::test]
+    async fn unshare_removes_the_snapshot_and_the_visibility() {
+        let (db, service) = share_setup().await;
+        service
+            .set_security_policy(
+                "t1",
+                false,
+                false,
+                &[],
+                false,
+                false,
+                false,
+                None,
+                crate::models::CONVERSATION_SHARE_TENANT,
+            )
+            .await
+            .unwrap();
+        service
+            .share_conversation(&actor("t1"), "member-1", snapshot("conv-1"))
+            .await
+            .unwrap();
+
+        service.unshare_conversation("member-1", "conv-1").await.unwrap();
+        assert!(
+            service
+                .read_shared_conversation(&actor("t1"), "member-2", "conv-1")
+                .await
+                .is_err(),
+        );
+        let repo = dream_core_db::SqliteConversationRepository::new(db.pool().clone());
+        assert!(
+            repo.get("member-1", "conv-1").await.unwrap().is_none(),
+            "snapshot deleted"
+        );
+
+        // Only the owner can unshare.
+        service
+            .share_conversation(&actor("t1"), "member-1", snapshot("conv-1"))
+            .await
+            .unwrap();
+        assert!(service.unshare_conversation("member-2", "conv-1").await.is_err());
+    }
 
     async fn setup() -> (dream_core_db::Database, PlatformService) {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        crate::migrate::run_one_platform_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        crate::migrate::run_one_platform_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
         let service = PlatformService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()), [7u8; 32]);
         (db, service)
     }
@@ -3553,13 +4652,23 @@ mod tests {
             eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
             return;
         };
-        crate::migrate::run_one_platform_migrations(&mysql_db.pool).await.unwrap();
+        crate::migrate::run_one_platform_migrations(&mysql_db.pool)
+            .await
+            .unwrap();
         let service = PlatformService::new(mysql_db.pool.clone(), [7u8; 32]);
 
         // Insert, then update-on-conflict (same tenant_id) — the exact shape
         // that threw `1064` with the bare `ON CONFLICT` left unported.
         let saved = service
-            .set_container_config("t1", Some("docker"), Some("unix:///var/run/docker.sock"), None, None, Some("reg_secret"), true)
+            .set_container_config(
+                "t1",
+                Some("docker"),
+                Some("unix:///var/run/docker.sock"),
+                None,
+                None,
+                Some("reg_secret"),
+                true,
+            )
             .await
             .unwrap();
         assert!(saved.has_registry_secret);
@@ -3589,12 +4698,18 @@ mod tests {
                 sensitive: true,
             },
         ];
-        let report = service.bulk_import_config_entries("t1", &set.id, &rows, false).await.unwrap();
+        let report = service
+            .bulk_import_config_entries("t1", &set.id, &rows, false)
+            .await
+            .unwrap();
         assert_eq!(report.imported, 2);
         let entries = service.list_config_entries("t1", &set.id).await.unwrap();
         assert_eq!(entries.len(), 2);
         let sensitive_entry = entries.iter().find(|e| e.key == "api_token").unwrap();
-        assert_eq!(sensitive_entry.value, SENSITIVE_PLACEHOLDER, "sensitive value must never round-trip in plaintext");
+        assert_eq!(
+            sensitive_entry.value, SENSITIVE_PLACEHOLDER,
+            "sensitive value must never round-trip in plaintext"
+        );
 
         // Re-import with merge=true hits the ON DUPLICATE KEY UPDATE branch.
         let updated_rows = vec![ConfigImportRow {
@@ -3602,9 +4717,15 @@ mod tests {
             value: "https://api2.acme.com".into(),
             sensitive: false,
         }];
-        service.bulk_import_config_entries("t1", &set.id, &updated_rows, true).await.unwrap();
+        service
+            .bulk_import_config_entries("t1", &set.id, &updated_rows, true)
+            .await
+            .unwrap();
         let entries = service.list_config_entries("t1", &set.id).await.unwrap();
-        assert_eq!(entries.iter().find(|e| e.key == "api_base").unwrap().value, "https://api2.acme.com");
+        assert_eq!(
+            entries.iter().find(|e| e.key == "api_base").unwrap().value,
+            "https://api2.acme.com"
+        );
 
         mysql_db.cleanup().await.unwrap();
     }
@@ -3961,20 +5082,44 @@ mod tests {
 
         service.add_scene_member("t1", &mine.id, "u1").await.unwrap();
         service.add_scene_member("t2", &foreign.id, "u1").await.unwrap();
-        service.grant_resource("t1", "scene", &mine.id, "skill", "s1", "use", "admin").await.unwrap();
-        service.grant_resource("t1", "scene", &mine.id, "skill", "s2", "use", "admin").await.unwrap();
-        service.grant_resource("t1", "scene", &mine.id, "model_channel", GRANT_ALL_RESOURCES, "use", "admin").await
+        service
+            .grant_resource("t1", "scene", &mine.id, "skill", "s1", "use", "admin")
+            .await
+            .unwrap();
+        service
+            .grant_resource("t1", "scene", &mine.id, "skill", "s2", "use", "admin")
+            .await
+            .unwrap();
+        service
+            .grant_resource(
+                "t1",
+                "scene",
+                &mine.id,
+                "model_channel",
+                GRANT_ALL_RESOURCES,
+                "use",
+                "admin",
+            )
+            .await
             .unwrap();
 
         let out = service.list_my_scenes("t1", "u1").await.unwrap();
-        assert_eq!(out.len(), 1, "only the t1 scene; the same-named t2 scene must not leak across tenants");
+        assert_eq!(
+            out.len(),
+            1,
+            "only the t1 scene; the same-named t2 scene must not leak across tenants"
+        );
         let scene = &out[0];
         assert_eq!(scene.id, mine.id);
         assert_eq!(scene.job_functions, vec!["职能一".to_owned()]);
         let skills = scene.resources.iter().find(|r| r.resource_type == "skill").unwrap();
         assert_eq!(skills.count, 2);
         assert!(!skills.includes_all);
-        let channels = scene.resources.iter().find(|r| r.resource_type == "model_channel").unwrap();
+        let channels = scene
+            .resources
+            .iter()
+            .find(|r| r.resource_type == "model_channel")
+            .unwrap();
         assert!(channels.includes_all, "'*' marks the wildcard grant");
         // Types with no grants are omitted, not zero-filled.
         assert!(!scene.resources.iter().any(|r| r.resource_type == "employee"));
@@ -4303,15 +5448,22 @@ mod tests {
         for rt in GRANT_RESOURCE_TYPES {
             // 'employee' is the one type whose untouched default is the
             // whitelist it has always been.
-            let expected = if rt == "employee" { GrantMode::Restrictive } else { GrantMode::Additive };
+            let expected = if rt == "employee" {
+                GrantMode::Restrictive
+            } else {
+                GrantMode::Additive
+            };
             assert_eq!(service.grant_mode("t1", rt).await, expected);
         }
         let listed = service.list_grant_modes("t1").await.unwrap();
         assert_eq!(listed.len(), GRANT_RESOURCE_TYPES.len(), "every type is reported");
         assert!(
             listed.iter().all(|m| {
-                let expected =
-                    if m.resource_type == "employee" { GrantMode::Restrictive } else { GrantMode::Additive };
+                let expected = if m.resource_type == "employee" {
+                    GrantMode::Restrictive
+                } else {
+                    GrantMode::Additive
+                };
                 m.mode == expected.as_str()
             }),
             "an untouched type is reported explicitly, not omitted"
@@ -4466,6 +5618,7 @@ mod tests {
                 true,
                 true,
                 Some(99),
+                "off",
             )
             .await
             .unwrap();
@@ -5468,7 +6621,8 @@ mod tests {
         let (db, _) = setup().await;
         let root = std::env::temp_dir().join(format!("one-platform-vault-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let service = PlatformService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()), [7u8; 32]).with_storage_root(root.clone());
+        let service = PlatformService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()), [7u8; 32])
+            .with_storage_root(root.clone());
         (db, service, root)
     }
 

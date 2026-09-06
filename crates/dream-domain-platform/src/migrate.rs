@@ -39,41 +39,30 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "012_employee_grant_unification",
         include_str!("../migrations/012_employee_grant_unification.sql"),
     ),
+    (
+        "013_conversation_shares",
+        include_str!("../migrations/013_conversation_shares.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
-    (
-        "001_init",
-        include_str!("../migrations_mysql/001_init.sql"),
-    ),
-    (
-        "002_security",
-        include_str!("../migrations_mysql/002_security.sql"),
-    ),
+    ("001_init", include_str!("../migrations_mysql/001_init.sql")),
+    ("002_security", include_str!("../migrations_mysql/002_security.sql")),
     (
         "003_resource_grants",
         include_str!("../migrations_mysql/003_resource_grants.sql"),
     ),
-    (
-        "004_scenes",
-        include_str!("../migrations_mysql/004_scenes.sql"),
-    ),
+    ("004_scenes", include_str!("../migrations_mysql/004_scenes.sql")),
     (
         "005_security_policy",
         include_str!("../migrations_mysql/005_security_policy.sql"),
     ),
-    (
-        "006_api_keys",
-        include_str!("../migrations_mysql/006_api_keys.sql"),
-    ),
+    ("006_api_keys", include_str!("../migrations_mysql/006_api_keys.sql")),
     (
         "007_notifications",
         include_str!("../migrations_mysql/007_notifications.sql"),
     ),
-    (
-        "008_file_vault",
-        include_str!("../migrations_mysql/008_file_vault.sql"),
-    ),
+    ("008_file_vault", include_str!("../migrations_mysql/008_file_vault.sql")),
     (
         "009_security_policy_templates",
         include_str!("../migrations_mysql/009_security_policy_templates.sql"),
@@ -89,6 +78,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "012_employee_grant_unification",
         include_str!("../migrations_mysql/012_employee_grant_unification.sql"),
+    ),
+    (
+        "013_conversation_shares",
+        include_str!("../migrations_mysql/013_conversation_shares.sql"),
     ),
 ];
 
