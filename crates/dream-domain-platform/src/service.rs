@@ -4093,7 +4093,7 @@ impl PlatformService {
             .await?;
         if uploaded != 0
             && let Ok(repo) = self.conversation_repo()
-{
+        {
             repo.delete(user_id, conversation_id).await.map_err(Self::repo_err)?;
         }
         Ok(())
