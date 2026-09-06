@@ -524,7 +524,7 @@ mod tests {
         crate::run_one_enterprise_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
             .await
             .unwrap();
-        let sqlite = db.pool().clone();
+        let _sqlite = db.pool().clone();
         let svc = EnterpriseService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()));
 
         let people: Vec<_> = (0..DIRECTORY_WRITE_CHUNK * 2 + 7)
@@ -623,7 +623,7 @@ mod tests {
     /// one-org owns the project-group tables. Stand up just enough of them to
     /// exercise the join; tests that skip this are the standalone deployment,
     /// where the tables genuinely do not exist.
-    async fn with_project_groups(svc: &EnterpriseService, sqlite: &sqlx::SqlitePool) {
+    async fn with_project_groups(_svc: &EnterpriseService, sqlite: &sqlx::SqlitePool) {
         sqlx::query("CREATE TABLE one_tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL)")
             .execute(sqlite)
             .await
@@ -635,7 +635,7 @@ mod tests {
     }
 
     async fn join_group(
-        svc: &EnterpriseService,
+        _svc: &EnterpriseService,
         sqlite: &sqlx::SqlitePool,
         user_id: &str,
         tenant_id: &str,
@@ -674,7 +674,7 @@ mod tests {
         .unwrap();
     }
 
-    async fn bind_identity(svc: &EnterpriseService, sqlite: &sqlx::SqlitePool, external_id: &str, user_id: &str) {
+    async fn bind_identity(_svc: &EnterpriseService, sqlite: &sqlx::SqlitePool, external_id: &str, user_id: &str) {
         sqlx::query("INSERT INTO one_sso_identities (provider, external_id, user_id) VALUES ('feishu', ?, ?)")
             .bind(external_id)
             .bind(user_id)
@@ -685,7 +685,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_complete_pull_flags_whoever_stopped_appearing() {
-        let (svc, sqlite) = service().await;
+        let (svc, _sqlite) = service().await;
         svc.apply_directory_snapshot(
             "ent1",
             &snapshot(vec![person("ou_a", true), person("ou_b", true)], true),
@@ -739,7 +739,7 @@ mod tests {
     /// is not "still employed".
     #[tokio::test]
     async fn a_resigned_person_is_flagged_even_though_still_listed() {
-        let (svc, sqlite) = service().await;
+        let (svc, _sqlite) = service().await;
         svc.apply_directory_snapshot("ent1", &snapshot(vec![person("ou_a", true)], true))
             .await
             .unwrap();
@@ -754,7 +754,7 @@ mod tests {
     /// somebody who is back at work.
     #[tokio::test]
     async fn someone_who_comes_back_is_unflagged() {
-        let (svc, sqlite) = service().await;
+        let (svc, _sqlite) = service().await;
         svc.apply_directory_snapshot(
             "ent1",
             &snapshot(vec![person("ou_a", true), person("ou_b", true)], true),
@@ -868,7 +868,7 @@ mod tests {
     /// adapter) read this flat list.
     #[tokio::test]
     async fn list_directory_departments_returns_the_flat_mirror() {
-        let (svc, sqlite) = service().await;
+        let (svc, _sqlite) = service().await;
         svc.apply_directory_snapshot(
             "ent1",
             &DirectorySyncInput {
@@ -915,7 +915,7 @@ mod tests {
     /// "the directory really is empty".
     #[tokio::test]
     async fn a_failed_pull_is_recorded_as_partial_with_its_reason() {
-        let (svc, sqlite) = service().await;
+        let (svc, _sqlite) = service().await;
         let mut input = snapshot(vec![], false);
         input.error = Some("tenant token: HTTP 500".into());
         svc.apply_directory_snapshot("ent1", &input).await.unwrap();
@@ -946,7 +946,7 @@ mod tests {
     /// — not just a headcount, and not just the departed-diff.
     #[tokio::test]
     async fn list_directory_people_returns_present_members_with_department_names() {
-        let (svc, sqlite) = service().await;
+        let (svc, _sqlite) = service().await;
         svc.apply_directory_snapshot(
             "ent1",
             &snapshot(vec![person("ou_a", true), person("ou_b", true)], true),

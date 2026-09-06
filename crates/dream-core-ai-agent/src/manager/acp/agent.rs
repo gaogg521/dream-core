@@ -1876,9 +1876,12 @@ impl AcpAgentManager {
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionIdPersistence, build_acp_final_input_dump_value, emit_kill_terminal, exit_status_parts,
-        normalize_config_option_request_value, register_spawned_process, user_facing_message,
+        build_acp_final_input_dump_value, emit_kill_terminal, exit_status_parts, normalize_config_option_request_value,
+        user_facing_message,
     };
+    // Both are only touched by the unix-gated process tests below.
+    #[cfg(unix)]
+    use super::{SessionIdPersistence, register_spawned_process};
     use crate::agent_runtime::AgentRuntime;
     use crate::error::AgentError;
     use crate::manager::acp::config_options::ConfigSnapshot;

@@ -378,6 +378,8 @@ fn resolve_program(program: &OsStr) -> OsString {
 mod tests {
     use super::*;
     use crate::ResolvedCommand;
+    // Only the unix-gated pid-reaping helpers below need these.
+    #[cfg(unix)]
     use std::time::{Duration, Instant};
 
     #[tokio::test]

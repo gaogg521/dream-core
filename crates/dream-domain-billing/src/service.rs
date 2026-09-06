@@ -2128,8 +2128,14 @@ impl BillingService {
                 ],
             )
             .await?;
-        self.write_audit(&target_tenant, actor_user_id, "billing.audit.request", conversation_id, None)
-            .await;
+        self.write_audit(
+            &target_tenant,
+            actor_user_id,
+            "billing.audit.request",
+            conversation_id,
+            None,
+        )
+        .await;
         Ok(())
     }
 
@@ -2407,7 +2413,7 @@ mod tests {
         mysql_db.cleanup().await.unwrap();
     }
 
-    async fn add_members(svc: &BillingService, sqlite: &sqlx::SqlitePool, enterprise_id: &str, n: usize) {
+    async fn add_members(_svc: &BillingService, sqlite: &sqlx::SqlitePool, enterprise_id: &str, n: usize) {
         for i in 0..n {
             sqlx::query("INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) VALUES (?, ?, 'member', 0, 0)")
                 .bind(format!("u{enterprise_id}{i}"))
@@ -2511,7 +2517,7 @@ mod tests {
 
     #[tokio::test]
     async fn personal_no_enterprise_allows_all_and_unlimited_seats() {
-        let (svc, sqlite) = service().await;
+        let (svc, _sqlite) = service().await;
         // No enterprise → every feature allowed, seats always addable.
         assert!(svc.resolve_enterprise_id("nobody").await.unwrap().is_none());
         assert!(svc.can_add_seat(None).await.unwrap());
@@ -2564,7 +2570,7 @@ mod tests {
     /// scheme is decorative.
     #[tokio::test]
     async fn set_tier_refuses_upgrade_without_license() {
-        let (svc, sqlite) = service().await;
+        let (svc, _sqlite) = service().await;
         force_tier(&svc, "ent_x", Tier::Free, None).await;
 
         for target in [Tier::Team, Tier::Enterprise] {
@@ -2755,7 +2761,7 @@ mod tests {
     /// with exact timestamps — percentile and window math needs that control.
     async fn add_usage_event_at(
         sqlite: &sqlx::SqlitePool,
-        svc: &BillingService,
+        _svc: &BillingService,
         enterprise_id: &str,
         user_id: &str,
         total_tokens: i64,
@@ -2777,7 +2783,7 @@ mod tests {
 
     async fn add_llm_call_at(
         sqlite: &sqlx::SqlitePool,
-        svc: &BillingService,
+        _svc: &BillingService,
         enterprise_id: &str,
         duration_ms: Option<i64>,
         error: Option<&str>,
@@ -2955,7 +2961,7 @@ mod tests {
     /// well-formed report — every percentile null, every count zero, no 500.
     #[tokio::test]
     async fn empty_tables_report_nulls_and_zeros_without_erroring() {
-        let (svc, sqlite) = service().await;
+        let (svc, _sqlite) = service().await;
 
         let report = svc.enterprise_report(&company("ent1"), 0).await.unwrap();
         assert_eq!(report.wau, 0);
@@ -3179,7 +3185,7 @@ mod tests {
     /// scoped by `user_id`, not by company membership.
     #[tokio::test]
     async fn conversation_cost_sums_every_turn_for_that_conversation() {
-        let (svc, sqlite) = service().await;
+        let (svc, _sqlite) = service().await;
         svc.record_turn(
             "solo",
             Some("conv_x"),
@@ -3224,7 +3230,7 @@ mod tests {
 
     #[tokio::test]
     async fn conversation_cost_is_zero_for_a_conversation_with_no_turns_yet() {
-        let (svc, sqlite) = service().await;
+        let (svc, _sqlite) = service().await;
         assert_eq!(svc.conversation_cost("solo", "brand_new_conv").await.unwrap(), 0);
     }
 
@@ -3302,7 +3308,7 @@ mod tests {
 
     #[tokio::test]
     async fn manual_checkout_is_stubbed() {
-        let (svc, sqlite) = service().await;
+        let (svc, _sqlite) = service().await;
         let result = svc.create_checkout("ent1", "team");
         assert_eq!(result.status, "manual");
         assert!(result.checkout_url.is_none());
@@ -3359,7 +3365,7 @@ mod tests {
         assert!(plan.cost_used_micros >= 100);
     }
 
-    async fn add_pending_member(svc: &BillingService, sqlite: &sqlx::SqlitePool, enterprise_id: &str, user_id: &str) {
+    async fn add_pending_member(_svc: &BillingService, sqlite: &sqlx::SqlitePool, enterprise_id: &str, user_id: &str) {
         sqlx::query(
             "INSERT INTO one_enterprise_members (user_id, enterprise_id, role, seat_status, joined_at, updated_at) \
              VALUES (?, ?, 'member', 'pending', 0, 0)",
@@ -3580,7 +3586,10 @@ mod tests {
             .fetch_one(&sqlite)
             .await
             .unwrap();
-        assert_eq!(tenant, "tm", "the row must be findable by the admins of the audited member's tenant");
+        assert_eq!(
+            tenant, "tm",
+            "the row must be findable by the admins of the audited member's tenant"
+        );
     }
 
     /// The resolution itself: which of the two admin kinds a caller is decides
@@ -3872,7 +3881,12 @@ mod tests {
     /// tests exercising department resolution must stand up their own copy,
     /// same as `billing_admin_is_enterprise_scoped_not_project_group_scoped`
     /// already does for role resolution.
-    async fn add_user_org(svc: &BillingService, sqlite: &sqlx::SqlitePool, user_id: &str, department_id: Option<&str>) {
+    async fn add_user_org(
+        _svc: &BillingService,
+        sqlite: &sqlx::SqlitePool,
+        user_id: &str,
+        department_id: Option<&str>,
+    ) {
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL, department_id TEXT, PRIMARY KEY (user_id, tenant_id))",
         )
@@ -4284,7 +4298,7 @@ mod tests {
 
     /// Map one user onto a company, so `record_llm_call`'s tenancy resolution
     /// finds them (same fixture pattern the usage-events tests use).
-    async fn seed_llm_member(svc: &BillingService, sqlite: &sqlx::SqlitePool, enterprise_id: &str, user_id: &str) {
+    async fn seed_llm_member(_svc: &BillingService, sqlite: &sqlx::SqlitePool, enterprise_id: &str, user_id: &str) {
         sqlx::query(
             "INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) \
              VALUES (?, ?, 'member', 0, 0)",

@@ -1012,9 +1012,17 @@ mod tests {
         CreateProviderParams, IAgentMetadataRepository, IProviderRepository, SqliteAgentMetadataRepository,
         SqliteProviderRepository, UpsertAgentMetadataParams, init_database_memory,
     };
+    // Only reached from the unix-gated tests below.
+    #[cfg(unix)]
     use dream_core_realtime::BroadcastEventBus;
+    // Only reached from the unix-gated tests below.
+    #[cfg(unix)]
     use dream_core_runtime::{ManagedResourcesMode, init as init_runtime, set_managed_resources_mode};
+    // Both statics below are only reached by the unix-gated tests.
+    #[cfg(unix)]
     use std::sync::OnceLock;
+    // Only reached from the unix-gated tests below.
+    #[cfg(unix)]
     use std::{
         mem,
         path::{Path, PathBuf},
@@ -1138,11 +1146,13 @@ mod tests {
         .to_string()
     }
 
+    #[cfg(unix)]
     fn path_test_lock() -> &'static tokio::sync::Mutex<()> {
         static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
+    #[cfg(unix)]
     fn is_npx_command_path(command: &str) -> bool {
         command == "npx" || command.ends_with("/npx") || command.ends_with("\\npx.cmd")
     }

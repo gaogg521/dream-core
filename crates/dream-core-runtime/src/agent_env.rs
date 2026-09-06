@@ -256,7 +256,11 @@ fn is_valid_env_key(key: &str) -> bool {
     chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
-#[cfg(test)]
+// Every test in here drives a real POSIX shell through a re-exec of the
+// test binary, so the module has nothing to compile on Windows -- gating
+// the module rather than each item keeps its imports from reading as
+// unused there.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::ffi::OsStr;
