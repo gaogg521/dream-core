@@ -3928,6 +3928,30 @@ impl PlatformService {
                 "sharedSnapshot": true,
                 "originalConversationId": input.conversation_id,
             });
+            // Re-sharing replaces the snapshot rather than colliding with it.
+            // `create` on an id that already exists raises the table's UNIQUE
+            // constraint, which surfaced as a 500 carrying the raw SQL text
+            // ("UNIQUE constraint failed: conversations.id") while the user was
+            // told "分享失败，请稍后重试" — advice that could never work, since
+            // every retry hit the same row. A member re-sharing means "share
+            // what this conversation looks like now", so the previous snapshot
+            // is dropped first (its messages go with it).
+            //
+            // Only a row THIS member owns and that carries the snapshot marker
+            // is removed: an id that happens to match one of their real
+            // server-side conversations is refused instead of deleted.
+            if let Some(existing) = repo.get(user_id, &conversation_id).await.map_err(Self::repo_err)? {
+                let is_snapshot = serde_json::from_str::<serde_json::Value>(&existing.extra)
+                    .ok()
+                    .and_then(|v| v.get("sharedSnapshot").and_then(serde_json::Value::as_bool))
+                    .unwrap_or(false);
+                if !is_snapshot {
+                    return Err(PlatformError::BadRequest(
+                        "a server-side conversation already uses this id; it is not a shared snapshot".into(),
+                    ));
+                }
+                repo.delete(user_id, &conversation_id).await.map_err(Self::repo_err)?;
+            }
             repo.create(&dream_core_db::models::ConversationRow {
                 id: conversation_id.clone(),
                 user_id: user_id.to_owned(),
@@ -4392,6 +4416,90 @@ mod tests {
     /// Mode `enterprise` opens enterprise scope; a member of the same
     /// enterprise in ANOTHER tenant reads through it. Personal users
     /// (no enterprise membership) can never share (P0-1 constraint 1).
+    /// Re-sharing means "share what this looks like now". It used to mean a
+    /// 500: `create` hit the conversations table's UNIQUE constraint and the
+    /// raw SQL text went back to the client, while the member was told to
+    /// retry — advice that could never work, because every retry hit the same
+    /// row.
+    #[tokio::test]
+    async fn re_sharing_replaces_the_snapshot_instead_of_colliding() {
+        let (db, service) = share_setup().await;
+        service
+            .set_security_policy(
+                "t1",
+                false,
+                false,
+                &[],
+                false,
+                false,
+                false,
+                None,
+                crate::models::CONVERSATION_SHARE_TENANT,
+            )
+            .await
+            .unwrap();
+
+        service
+            .share_conversation(&actor("t1"), "member-1", snapshot("conv-1"))
+            .await
+            .unwrap();
+
+        // Same conversation, later content.
+        let mut again = snapshot("conv-1");
+        again.name = Some("Weekly ops (updated)".to_owned());
+        if let Some(messages) = again.messages.as_mut() {
+            messages.push(crate::models::SharedMessageInput {
+                id: Some("m-late".to_owned()),
+                message_type: "text".to_owned(),
+                content: "one more thing".to_owned(),
+                position: Some("right".to_owned()),
+                created_at: Some(2),
+            });
+        }
+        let share = service
+            .share_conversation(&actor("t1"), "member-1", again)
+            .await
+            .expect("re-sharing must succeed, not raise a UNIQUE violation");
+        assert!(share.uploaded);
+
+        let repo = dream_core_db::SqliteConversationRepository::new(db.pool().clone());
+        let row = repo
+            .get("member-1", "conv-1")
+            .await
+            .unwrap()
+            .expect("snapshot still there");
+        assert_eq!(
+            row.name, "Weekly ops (updated)",
+            "the snapshot carries the newer content"
+        );
+
+        let page = repo
+            .list_messages_page(
+                "member-1",
+                "conv-1",
+                &dream_core_db::MessagePageParams {
+                    limit: 50,
+                    direction: dream_core_db::MessagePageDirection::InitialLatest,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            page.items.iter().any(|m| m.content == "one more thing"),
+            "the replacement's messages replaced the previous ones, not stacked on them"
+        );
+        // The replacement carries three messages; stacking on top of the first
+        // snapshot's two would give five.
+        assert_eq!(
+            page.items.len(),
+            3,
+            "the old snapshot's messages went with it: {:?}",
+            page.items.iter().map(|m| &m.content).collect::<Vec<_>>()
+        );
+
+        db.close().await;
+    }
+
     #[tokio::test]
     async fn enterprise_mode_reaches_across_tenants_and_personal_users_never_share() {
         let (_db, service) = share_setup().await;
