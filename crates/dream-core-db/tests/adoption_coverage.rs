@@ -55,6 +55,14 @@ const GLOBAL_TABLES: &[(&str, &str)] = &[
         "codex_bridge_config",
         "single-row local install setting; the spawned CLI has no Core session to scope by",
     ),
+    // Whether this install requires a second factor at all — one row, pinned
+    // by `CHECK (id = 1)`. It is a property of the deployment that the login
+    // path reads BEFORE any user is identified, so there is no account to
+    // scope it to. Per-user enrolment lives in `user_mfa`, which is adopted.
+    (
+        "mfa_policy",
+        "single-row deployment setting, read before a user is identified; per-user state is in user_mfa",
+    ),
 ];
 
 /// Tables whose `user_id` column is NOT a Core-user ownership column — it
