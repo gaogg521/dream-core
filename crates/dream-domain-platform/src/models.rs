@@ -266,6 +266,35 @@ pub struct SceneDto {
     pub updated_at: i64,
 }
 
+/// One resource-type slice of a scene's grant package, as the member-side
+/// scene list summarizes it. `includes_all` marks the `'*'` wildcard grant
+/// ("every resource of this type"); `count` always reports the number of
+/// explicit grant rows regardless.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MySceneResourceSummaryDto {
+    pub resource_type: String,
+    pub count: i64,
+    pub includes_all: bool,
+}
+
+/// A scene as the member who belongs to it sees it: descriptive fields plus
+/// a summary of the grant package that joining the scene delivers. No
+/// roster, and no visibility into scenes the caller is not a member of —
+/// membership is the access control on this read.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MySceneDto {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub job_functions: Vec<String>,
+    pub built_in: bool,
+    pub resources: Vec<MySceneResourceSummaryDto>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 /// One sent in-app notification, as the admin's sent-history list shows it
 /// ("站内消息", align-openocta P2-3). `recipient_count` / `read_count` are
 /// aggregates, not rows: a broadcast has an unbounded audience (every

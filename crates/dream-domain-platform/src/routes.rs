@@ -45,7 +45,7 @@ use crate::error::PlatformError;
 use crate::models::{
     ApiKeyDto, CollaborationConfigDto, ConfigBulkImportDto, ConfigEntryDto, ConfigSetDto, ConfigSetReferencesDto,
     ContainerConfigDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto, FileVaultReconcileEntry,
-    GrantMode, GrantModeDto, ImChannelMemberDto, IpAllowlistConfigDto, MyNotificationsDto, NewApiKeyDto,
+    GrantMode, GrantModeDto, ImChannelMemberDto, IpAllowlistConfigDto, MyNotificationsDto, MySceneDto, NewApiKeyDto,
     NotificationDto, PolicyTemplateBindingDto, ResourceGrantDto, SceneDto, SecurityPolicyDto,
     SecurityPolicyTemplateDto, SiemConfigDto,
 };
@@ -153,6 +153,11 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
         // messages read; composing stays admin-only above.
         .route("/api/one/notifications", get(my_notifications))
         .route("/api/one/notifications/read", post(mark_notifications_read))
+        // Member-side half of the E5 scenes (§ 4.1): what the caller themself
+        // belongs to, each with its grant-package summary. Lives under the
+        // org path (not `/admin/platform`) because it is a self-service read
+        // gated by scene membership, not by the admin role.
+        .route("/api/one/org/scenes", get(my_scenes))
         // P2-4 personal file vault — member self-service half. Uploads are
         // 10 MiB-capped by the shared `BODY_LIMIT`; frozen vaults refuse
         // uploads but keep existing objects readable/deletable.
@@ -1073,6 +1078,21 @@ async fn mark_notifications_read(
         .mark_notifications_read(&actor.tenant_id, &user.id, &body.ids)
         .await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+/// Member-side half of the E5 scenes (§ 4.1 of the 09-05 handoff): the
+/// scenes the caller belongs to, each with a summary of the grant package
+/// joining it delivers. Membership is the access control — a member never
+/// reads a scene they are not on the roster of, and the response carries no
+/// roster either.
+async fn my_scenes(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformMember(actor): RequirePlatformMember,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<MySceneDto>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_my_scenes(&actor.tenant_id, &user.id).await?,
+    )))
 }
 
 /// The inbox caps the rows it returns (an old tenant can accumulate a long
