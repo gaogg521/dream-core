@@ -795,6 +795,19 @@ impl OrgService {
             )
             .await?;
         if already_member {
+            // "Never re-file" stands: this hook must not move an existing
+            // member between groups behind an admin's back.
+            //
+            // But a member's PROFILE is not their filing, and one field of it
+            // — `department_id` — is what department-scoped grants resolve
+            // against. Skipping the whole snapshot left it at whatever it was
+            // the day they first joined: NULL for anyone onboarded by invite,
+            // and stale for anyone the directory has since moved. Either way
+            // the department dimension of the authorization matrix silently
+            // does not apply to them, which is why testing it needed an admin
+            // to PUT the column by hand first.
+            self.refresh_sso_org_profile(user_id, department_external_id, all_departments)
+                .await?;
             return Ok(None);
         }
 
@@ -900,6 +913,72 @@ impl OrgService {
     /// first `(tenant_id, local_department_id)` some project group has mapped
     /// in. Cycle-safe: a malformed mirror with a parent loop would otherwise
     /// spin here forever, and this runs on the login path.
+    /// Re-apply the directory's view of an EXISTING member onto their
+    /// membership row: the identity snapshot, and `department_id` when — and
+    /// only when — the directory places them inside the tenant they already
+    /// belong to.
+    ///
+    /// A directory that now maps them into a *different* tenant is deliberately
+    /// ignored: acting on it would be the re-filing this hook promises never to
+    /// do. Their department is cleared in that case rather than left pointing
+    /// at a department of the group they are no longer placed in, so a stale
+    /// grant cannot keep applying.
+    async fn refresh_sso_org_profile(
+        &self,
+        user_id: &str,
+        department_external_id: Option<&str>,
+        all_departments: &[DirectoryDepartmentRef],
+    ) -> Result<(), OrgError> {
+        let Some((current_tenant,)) = self
+            .db
+            .fetch_optional_as::<(String,)>(
+                "SELECT tenant_id FROM one_user_org WHERE user_id = ? ORDER BY created_at ASC LIMIT 1",
+                &db_params![user_id],
+            )
+            .await?
+        else {
+            return Ok(());
+        };
+
+        let placement = match department_external_id.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(dept) => self.resolve_mapped_department(dept, all_departments).await?,
+            None => None,
+        };
+        let department_id = match placement {
+            Some((tenant_id, department_id)) if tenant_id == current_tenant => Some(department_id),
+            _ => None,
+        };
+
+        let (display_name, org_unit_path, job_title, org_profile_source) = match self.sso_profile_for(user_id).await {
+            Some((d, o, j, p)) => (d, o, j, Some(p)),
+            None => (None, None, None, None),
+        };
+        // Nothing to say about this member — leave the row exactly as it is
+        // rather than blanking a snapshot an admin may have curated.
+        if department_id.is_none() && org_profile_source.is_none() {
+            return Ok(());
+        }
+
+        let now = now_ms() as i64;
+        self.db
+            .execute(
+                "UPDATE one_user_org SET department_id = ?, display_name = COALESCE(?, display_name),                  org_unit_path = COALESCE(?, org_unit_path), job_title = COALESCE(?, job_title),                  org_profile_source = COALESCE(?, org_profile_source), org_profile_synced_at = ?, updated_at = ?                  WHERE user_id = ? AND tenant_id = ?",
+                &db_params![
+                    department_id.as_deref(),
+                    display_name.as_deref(),
+                    org_unit_path.as_deref(),
+                    job_title.as_deref(),
+                    org_profile_source.as_deref(),
+                    now,
+                    now,
+                    user_id,
+                    &current_tenant
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
     async fn resolve_mapped_department(
         &self,
         department_external_id: &str,
@@ -3484,6 +3563,94 @@ mod tests {
             .unwrap();
         assert_eq!(tid, first);
         let _ = local_dept;
+    }
+
+    #[tokio::test]
+    async fn sso_login_fills_in_the_department_of_a_member_who_joined_by_invite() {
+        let (_db, service, user_repo) = setup().await;
+        let (tenant, _, invite) = service
+            .create_tenant_for_enterprise("ent_dept", "Dept", SYSTEM_DEFAULT_USER_ID, None)
+            .await
+            .unwrap();
+        let dept = map_department(&service, &tenant, "信息安全中心", "d_sec").await;
+        let departments = vec![DirectoryDepartmentRef {
+            external_id: "d_sec".into(),
+            parent_external_id: None,
+            name: "信息安全中心".into(),
+        }];
+
+        // Onboarded by invite: no directory ever placed them, so the column
+        // the department dimension of the matrix resolves against is NULL.
+        let erin = create_user(&user_repo, "erin").await;
+        service.join_with_invite(&erin, &invite).await.unwrap();
+        let before: Option<String> = service
+            .db
+            .fetch_one_scalar(
+                "SELECT department_id FROM one_user_org WHERE user_id = ?",
+                &db_params![&erin],
+            )
+            .await
+            .unwrap();
+        assert!(before.is_none(), "invite onboarding leaves the department unset");
+
+        // A later SSO login still must not re-file them, but it now knows
+        // which department of their OWN group they sit in.
+        assert!(
+            service
+                .auto_join_after_sso(&erin, Some("d_sec"), &departments)
+                .await
+                .unwrap()
+                .is_none(),
+            "no join happened — they were already a member"
+        );
+        let (tid, department_id): (String, Option<String>) = service
+            .db
+            .fetch_optional_as::<(String, Option<String>)>(
+                "SELECT tenant_id, department_id FROM one_user_org WHERE user_id = ?",
+                &db_params![&erin],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(tid, tenant, "still in the group the invite put them in");
+        assert_eq!(department_id.as_deref(), Some(dept.as_str()));
+    }
+
+    #[tokio::test]
+    async fn sso_login_never_files_a_member_into_a_department_of_another_group() {
+        let (_db, service, user_repo) = setup().await;
+        let (first, _, invite) = service
+            .create_tenant_for_enterprise("ent_a", "A", SYSTEM_DEFAULT_USER_ID, None)
+            .await
+            .unwrap();
+        let (second, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "B").await.unwrap();
+        let other_dept = map_department(&service, &second, "销售部", "d_sales").await;
+        let departments = vec![DirectoryDepartmentRef {
+            external_id: "d_sales".into(),
+            parent_external_id: None,
+            name: "销售部".into(),
+        }];
+
+        let frank = create_user(&user_repo, "frank").await;
+        service.join_with_invite(&frank, &invite).await.unwrap();
+        service.auto_join_after_sso(&frank, Some("d_sales"), &departments).await.unwrap();
+
+        let (tid, department_id): (String, Option<String>) = service
+            .db
+            .fetch_optional_as::<(String, Option<String>)>(
+                "SELECT tenant_id, department_id FROM one_user_org WHERE user_id = ?",
+                &db_params![&frank],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(tid, first, "re-filing stays forbidden");
+        assert_ne!(
+            department_id.as_deref(),
+            Some(other_dept.as_str()),
+            "a department of a group they are not in must never be written"
+        );
+        assert!(department_id.is_none());
     }
 
     #[tokio::test]
