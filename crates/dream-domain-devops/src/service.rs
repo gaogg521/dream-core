@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-
 use dream_core_common::now_ms;
 use dream_core_db::{DbBackend, DbPool, DbValue, db_params};
 
@@ -86,7 +85,8 @@ fn validate_one_of(value: &str, allowed: &[&str], label: &str) -> Result<(), Dev
 
 impl DevopsService {
     pub fn new(db: DbPool) -> Self {
-        Self { db,
+        Self {
+            db,
             encryption_key: None,
             grants: std::sync::OnceLock::new(),
             config_resolver: std::sync::OnceLock::new(),
@@ -238,12 +238,15 @@ impl DevopsService {
     /// Full requirements forest, children nested, roots + children both
     /// ordered by updated_at DESC (matches the 1one tree endpoint).
     pub async fn requirements_tree(&self, tenant_id: &str) -> Result<Vec<RequirementDto>, DevopsError> {
-        let rows = self.db.fetch_all_as::<RequirementRow>(
-            "SELECT id, parent_id, `type`, subject, description, status, priority, assigned_to, \
+        let rows = self
+            .db
+            .fetch_all_as::<RequirementRow>(
+                "SELECT id, parent_id, `type`, subject, description, status, priority, assigned_to, \
                     milestone_id, autopilot, creator_id, creator_name, created_at, updated_at \
              FROM one_requirements WHERE tenant_id = ? ORDER BY updated_at DESC",
-        &db_params![tenant_id])
-        .await?;
+                &db_params![tenant_id],
+            )
+            .await?;
 
         let mut nodes: Vec<RequirementDto> = rows.into_iter().map(RequirementDto::from_row).collect();
         // Detach children from the flat list into their parents. Orphans
@@ -292,13 +295,29 @@ impl DevopsService {
 
         let id = new_id("req");
         let now = now_ms();
-        self.db.execute(
-            "INSERT INTO one_requirements \
+        self.db
+            .execute(
+                "INSERT INTO one_requirements \
                 (id, parent_id, `type`, subject, description, status, priority, assigned_to, \
                  milestone_id, autopilot, creator_id, creator_name, tenant_id, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, 'backlog', ?, NULL, ?, ?, ?, ?, ?, ?, ?)",
-        &db_params![&id, &input.parent_id, kind, subject, &input.description, priority, &input.milestone_id, input.autopilot.unwrap_or(false), creator_id, creator_name, tenant_id, now, now])
-        .await?;
+                &db_params![
+                    &id,
+                    &input.parent_id,
+                    kind,
+                    subject,
+                    &input.description,
+                    priority,
+                    &input.milestone_id,
+                    input.autopilot.unwrap_or(false),
+                    creator_id,
+                    creator_name,
+                    tenant_id,
+                    now,
+                    now
+                ],
+            )
+            .await?;
 
         Ok(RequirementDto::from_row(self.fetch_requirement(tenant_id, &id).await?))
     }
@@ -365,8 +384,9 @@ impl DevopsService {
             None => None,
         };
 
-        self.db.execute(
-            "UPDATE one_requirements SET \
+        self.db
+            .execute(
+                "UPDATE one_requirements SET \
                 subject = COALESCE(?, subject), \
                 description = CASE WHEN ? THEN ? ELSE description END, \
                 status = COALESCE(?, status), \
@@ -377,8 +397,24 @@ impl DevopsService {
                 autopilot = COALESCE(?, autopilot), \
                 updated_at = ? \
              WHERE id = ?",
-        &db_params![&subject, input.description.is_some(), input.description.clone().flatten(), &input.status, &input.priority, input.assigned_to.is_some(), input.assigned_to.clone().flatten(), input.parent_id.is_some(), input.parent_id.clone().flatten(), input.milestone_id.is_some(), input.milestone_id.clone().flatten(), input.autopilot, now_ms(), &row.id])
-        .await?;
+                &db_params![
+                    &subject,
+                    input.description.is_some(),
+                    input.description.clone().flatten(),
+                    &input.status,
+                    &input.priority,
+                    input.assigned_to.is_some(),
+                    input.assigned_to.clone().flatten(),
+                    input.parent_id.is_some(),
+                    input.parent_id.clone().flatten(),
+                    input.milestone_id.is_some(),
+                    input.milestone_id.clone().flatten(),
+                    input.autopilot,
+                    now_ms(),
+                    &row.id
+                ],
+            )
+            .await?;
         Ok(())
     }
 
@@ -395,11 +431,14 @@ impl DevopsService {
     /// Requirements already in `developing` or a later status are not claimable
     /// here; the caller decides whether a deliberate re-dispatch is still allowed.
     pub async fn claim_requirement_for_dispatch(&self, tenant_id: &str, id: &str) -> Result<bool, DevopsError> {
-        let res = self.db.execute(
-            "UPDATE one_requirements SET status = 'developing', updated_at = ? \
+        let res = self
+            .db
+            .execute(
+                "UPDATE one_requirements SET status = 'developing', updated_at = ? \
              WHERE id = ? AND tenant_id = ? AND status IN ('backlog', 'planning')",
-        &db_params![now_ms(), id, tenant_id])
-        .await?;
+                &db_params![now_ms(), id, tenant_id],
+            )
+            .await?;
         Ok(res == 1)
     }
 
@@ -437,11 +476,14 @@ impl DevopsService {
         requirement_id: &str,
     ) -> Result<Vec<RequirementCommentDto>, DevopsError> {
         self.require_requirement(tenant_id, requirement_id).await?;
-        Ok(self.db.fetch_all_as::<RequirementCommentDto>(
-            "SELECT id, requirement_id, author_type, author_id, author_name, body, metadata, created_at \
+        Ok(self
+            .db
+            .fetch_all_as::<RequirementCommentDto>(
+                "SELECT id, requirement_id, author_type, author_id, author_name, body, metadata, created_at \
              FROM one_requirement_comments WHERE requirement_id = ? AND tenant_id = ? ORDER BY created_at ASC",
-        &db_params![requirement_id, tenant_id])
-        .await?)
+                &db_params![requirement_id, tenant_id],
+            )
+            .await?)
     }
 
     pub async fn create_comment(
@@ -459,12 +501,14 @@ impl DevopsService {
         }
         let id = new_id("reqc");
         let now = now_ms();
-        self.db.execute(
-            "INSERT INTO one_requirement_comments \
+        self.db
+            .execute(
+                "INSERT INTO one_requirement_comments \
                 (id, requirement_id, author_type, author_id, author_name, body, metadata, tenant_id, created_at) \
              VALUES (?, ?, 'user', ?, ?, ?, NULL, ?, ?)",
-        &db_params![&id, requirement_id, author_id, author_name, body, tenant_id, now])
-        .await?;
+                &db_params![&id, requirement_id, author_id, author_name, body, tenant_id, now],
+            )
+            .await?;
         Ok(RequirementCommentDto {
             id,
             requirement_id: requirement_id.to_owned(),
@@ -501,12 +545,24 @@ impl DevopsService {
         self.require_requirement(tenant_id, requirement_id).await?;
         let id = new_id("reqc");
         let now = now_ms();
-        self.db.execute(
-            "INSERT INTO one_requirement_comments \
+        self.db
+            .execute(
+                "INSERT INTO one_requirement_comments \
                 (id, requirement_id, author_type, author_id, author_name, body, metadata, tenant_id, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        &db_params![&id, requirement_id, author_type, author_id, author_name, body, metadata.as_deref(), tenant_id, now])
-        .await?;
+                &db_params![
+                    &id,
+                    requirement_id,
+                    author_type,
+                    author_id,
+                    author_name,
+                    body,
+                    metadata.as_deref(),
+                    tenant_id,
+                    now
+                ],
+            )
+            .await?;
         Ok(RequirementCommentDto {
             id,
             requirement_id: requirement_id.to_owned(),
@@ -520,13 +576,15 @@ impl DevopsService {
     }
 
     async fn fetch_requirement(&self, tenant_id: &str, id: &str) -> Result<RequirementRow, DevopsError> {
-        self.db.fetch_optional_as::<RequirementRow>(
-            "SELECT id, parent_id, `type`, subject, description, status, priority, assigned_to, \
+        self.db
+            .fetch_optional_as::<RequirementRow>(
+                "SELECT id, parent_id, `type`, subject, description, status, priority, assigned_to, \
                     milestone_id, autopilot, creator_id, creator_name, created_at, updated_at \
              FROM one_requirements WHERE id = ? AND tenant_id = ?",
-        &db_params![id, tenant_id])
-        .await?
-        .ok_or_else(|| DevopsError::NotFound(format!("requirement {id}")))
+                &db_params![id, tenant_id],
+            )
+            .await?
+            .ok_or_else(|| DevopsError::NotFound(format!("requirement {id}")))
     }
 
     async fn require_requirement(&self, tenant_id: &str, id: &str) -> Result<RequirementRow, DevopsError> {
@@ -540,21 +598,57 @@ impl DevopsService {
     /// request. Records a SUCCESS; `result = 'failure'` goes through
     /// [`Self::audit_failure`]. `latency_ms` is the caller's wall-clock or
     /// `None` when the action is not timed.
-    pub async fn audit(&self, tenant_id: &str, user_id: &str, action: &str, resource: Option<&str>, latency_ms: Option<i64>) {
-        self.write_audit(tenant_id, user_id, action, resource, latency_ms, "success").await;
+    pub async fn audit(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        action: &str,
+        resource: Option<&str>,
+        latency_ms: Option<i64>,
+    ) {
+        self.write_audit(tenant_id, user_id, action, resource, latency_ms, "success")
+            .await;
     }
 
     /// Audit a policy-changing action that FAILED (`result = 'failure'`).
-    pub async fn audit_failure(&self, tenant_id: &str, user_id: &str, action: &str, resource: Option<&str>, latency_ms: Option<i64>) {
-        self.write_audit(tenant_id, user_id, action, resource, latency_ms, "failure").await;
+    pub async fn audit_failure(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        action: &str,
+        resource: Option<&str>,
+        latency_ms: Option<i64>,
+    ) {
+        self.write_audit(tenant_id, user_id, action, resource, latency_ms, "failure")
+            .await;
     }
 
-    async fn write_audit(&self, tenant_id: &str, user_id: &str, action: &str, resource: Option<&str>, latency_ms: Option<i64>, result: &str) {
-        let write = self.db.execute(
-            "INSERT INTO one_audit_logs (id, tenant_id, user_id, action, resource, latency_ms, result, created_at) \
+    async fn write_audit(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        action: &str,
+        resource: Option<&str>,
+        latency_ms: Option<i64>,
+        result: &str,
+    ) {
+        let write = self
+            .db
+            .execute(
+                "INSERT INTO one_audit_logs (id, tenant_id, user_id, action, resource, latency_ms, result, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        &db_params![new_id("audit"), tenant_id, user_id, action, resource, latency_ms, result, now_ms()])
-        .await;
+                &db_params![
+                    new_id("audit"),
+                    tenant_id,
+                    user_id,
+                    action,
+                    resource,
+                    latency_ms,
+                    result,
+                    now_ms()
+                ],
+            )
+            .await;
         if let Err(e) = write {
             tracing::debug!(error = %e, action, "one-devops audit skipped (table absent or write failed)");
         }
@@ -571,12 +665,15 @@ impl DevopsService {
     /// (active membership first, else most-recently-joined) — mirrors
     /// `OrgService::active_tenant_id`.
     pub async fn user_org_role(&self, user_id: &str) -> Result<Option<String>, DevopsError> {
-        let result = self.db.fetch_optional_scalar::<String>(
-            "SELECT uo.role FROM one_user_org uo WHERE uo.user_id = ? \
+        let result = self
+            .db
+            .fetch_optional_scalar::<String>(
+                "SELECT uo.role FROM one_user_org uo WHERE uo.user_id = ? \
              ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC, \
                       uo.created_at DESC, uo.tenant_id ASC LIMIT 1",
-        &db_params![user_id])
-        .await;
+                &db_params![user_id],
+            )
+            .await;
         match result {
             Ok(role) => Ok(role),
             // Table missing = one-org never initialized = standalone.
@@ -589,7 +686,12 @@ impl DevopsService {
     /// deployment (no `one_user_org` row) or one where one-org's migrations
     /// never ran. Same missing-table fallback as `user_org_role`.
     async fn active_tenant_id(&self, user_id: &str) -> Result<Option<String>, DevopsError> {
-        let result = self.db.fetch_optional_scalar::<String>("SELECT tenant_id FROM one_active_tenant WHERE user_id = ?", &db_params![user_id])
+        let result = self
+            .db
+            .fetch_optional_scalar::<String>(
+                "SELECT tenant_id FROM one_active_tenant WHERE user_id = ?",
+                &db_params![user_id],
+            )
             .await;
         match result {
             Ok(tenant_id) => Ok(tenant_id),
@@ -668,14 +770,22 @@ impl DevopsService {
     pub async fn count_owned_resources(&self, user_id: &str, tenant_id: &str) -> Result<i64, DevopsError> {
         let mut total = 0i64;
         for table in Self::REGISTRY_OWNER_TABLES {
-            let n: i64 = self.db.fetch_one_scalar(&format!(
-                "SELECT COUNT(*) FROM {table} WHERE created_by = ? AND (scope = 'org' OR team_id = ?)"
-            ), &db_params![user_id, tenant_id])
-            .await?;
+            let n: i64 = self
+                .db
+                .fetch_one_scalar(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE created_by = ? AND (scope = 'org' OR team_id = ?)"),
+                    &db_params![user_id, tenant_id],
+                )
+                .await?;
             total += n;
         }
         for table in Self::BOARD_OWNER_TABLES {
-            let n: i64 = self.db.fetch_one_scalar(&format!("SELECT COUNT(*) FROM {table} WHERE creator_id = ?"), &db_params![user_id])
+            let n: i64 = self
+                .db
+                .fetch_one_scalar(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE creator_id = ?"),
+                    &db_params![user_id],
+                )
                 .await?;
             total += n;
         }
@@ -713,14 +823,18 @@ impl DevopsService {
         // The recipient must be inside the tenant we are transferring within.
         // Missing table = standalone/personal edition, where there is no
         // membership model and thus nothing to enforce.
-        let recipient_in_tenant =
-            match self.db.fetch_one_scalar::<i64>("SELECT COUNT(*) FROM one_user_org WHERE user_id = ? AND tenant_id = ?", &db_params![to_user, tenant_id])
-                .await
-            {
-                Ok(n) => n > 0,
-                Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => true,
-                Err(e) => return Err(e.into()),
-            };
+        let recipient_in_tenant = match self
+            .db
+            .fetch_one_scalar::<i64>(
+                "SELECT COUNT(*) FROM one_user_org WHERE user_id = ? AND tenant_id = ?",
+                &db_params![to_user, tenant_id],
+            )
+            .await
+        {
+            Ok(n) => n > 0,
+            Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => true,
+            Err(e) => return Err(e.into()),
+        };
         if !recipient_in_tenant {
             return Err(DevopsError::BadRequest(format!(
                 "target owner {to_user} is not a member of project group {tenant_id}"
@@ -735,20 +849,26 @@ impl DevopsService {
         let mut moved = 0i64;
 
         for table in Self::REGISTRY_OWNER_TABLES {
-            let res = tx.execute(&format!(
-                "UPDATE {table} SET created_by = ? WHERE created_by = ? AND (scope = 'org' OR team_id = ?)"
-            ), &db_params![to_user, from_user, tenant_id])
-            .await?;
+            let res = tx
+                .execute(
+                    &format!(
+                        "UPDATE {table} SET created_by = ? WHERE created_by = ? AND (scope = 'org' OR team_id = ?)"
+                    ),
+                    &db_params![to_user, from_user, tenant_id],
+                )
+                .await?;
             moved += res as i64;
         }
 
         for table in Self::BOARD_OWNER_TABLES {
             // `creator_name` is denormalized for display; move it with the id
             // or the board shows the departed employee as the owner.
-            let res = tx.execute(&format!(
-                "UPDATE {table} SET creator_id = ?, creator_name = ? WHERE creator_id = ?"
-            ), &db_params![to_user, to_name.as_deref(), from_user])
-            .await?;
+            let res = tx
+                .execute(
+                    &format!("UPDATE {table} SET creator_id = ?, creator_name = ? WHERE creator_id = ?"),
+                    &db_params![to_user, to_name.as_deref(), from_user],
+                )
+                .await?;
             moved += res as i64;
         }
 
@@ -766,7 +886,8 @@ impl DevopsService {
     /// Display name for a user id, for the denormalized `creator_name` columns.
     /// A missing `users` table (standalone) or absent row just yields `None`.
     async fn lookup_creator_name(&self, user_id: &str) -> Option<String> {
-        self.db.fetch_optional_scalar::<Option<String>>("SELECT username FROM users WHERE id = ?", &db_params![user_id])
+        self.db
+            .fetch_optional_scalar::<Option<String>>("SELECT username FROM users WHERE id = ?", &db_params![user_id])
             .await
             .ok()
             .flatten()
@@ -861,7 +982,9 @@ impl DevopsService {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| DevopsError::BadRequest("team scope requires a project group".into()))?;
-        let exists: bool = self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_tenants WHERE id = ?", &db_params![tid])
+        let exists: bool = self
+            .db
+            .fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_tenants WHERE id = ?", &db_params![tid])
             .await?;
         if !exists {
             return Err(DevopsError::BadRequest(format!("project group '{tid}' not found")));
@@ -878,17 +1001,25 @@ impl DevopsService {
         user_id: &str,
         feature: dream_core_common::license::Feature,
     ) -> Result<bool, DevopsError> {
-        let enterprise_id: Option<String> =
-            self.db.fetch_optional_scalar("SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?", &db_params![user_id])
-                .await
-                .unwrap_or(None);
+        let enterprise_id: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?",
+                &db_params![user_id],
+            )
+            .await
+            .unwrap_or(None);
         let Some(enterprise_id) = enterprise_id else {
             return Ok(true);
         };
-        let tier: Option<String> =
-            self.db.fetch_optional_scalar("SELECT tier FROM one_enterprise_license WHERE enterprise_id = ?", &db_params![&enterprise_id])
-                .await
-                .unwrap_or(None);
+        let tier: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT tier FROM one_enterprise_license WHERE enterprise_id = ?",
+                &db_params![&enterprise_id],
+            )
+            .await
+            .unwrap_or(None);
         let tier = tier
             .map(|t| dream_core_common::license::Tier::parse(&t))
             .unwrap_or(dream_core_common::license::Tier::Free);
@@ -903,8 +1034,7 @@ impl DevopsService {
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
         if privileged {
             let sql = format!("SELECT {COLS} FROM one_skill_registry ORDER BY updated_at DESC");
-            return Ok(self.db.fetch_all_as::<SkillRegistryDto>(&sql, &[])
-                .await?);
+            return Ok(self.db.fetch_all_as::<SkillRegistryDto>(&sql, &[]).await?);
         }
         // A matrix grant can only widen this predicate, never narrow it, so a
         // deployment with no matrix configured runs the identical query it ran
@@ -980,9 +1110,13 @@ impl DevopsService {
         // materialize two SKILL.md dirs on every member and shadow each other
         // (and can mask a built-in skill) — last-write-wins is unsafe for a
         // distributed capability.
-        let name_taken: bool =
-            self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_skill_registry WHERE name = ? AND id != ?", &db_params![name, id.unwrap_or("")])
-                .await?;
+        let name_taken: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_skill_registry WHERE name = ? AND id != ?",
+                &db_params![name, id.unwrap_or("")],
+            )
+            .await?;
         if name_taken {
             return Err(DevopsError::BadRequest(format!(
                 "a team skill named '{name}' already exists"
@@ -995,10 +1129,14 @@ impl DevopsService {
                 // actor editing must already own what the row belongs to today,
                 // otherwise they could both overwrite another team's resource
                 // and re-scope it away from that team in the same call.
-                let current_team_id: Option<String> =
-                    self.db.fetch_optional_scalar("SELECT team_id FROM one_skill_registry WHERE id = ?", &db_params![existing])
-                        .await?
-                        .ok_or_else(|| DevopsError::NotFound(format!("skill {existing}")))?;
+                let current_team_id: Option<String> = self
+                    .db
+                    .fetch_optional_scalar(
+                        "SELECT team_id FROM one_skill_registry WHERE id = ?",
+                        &db_params![existing],
+                    )
+                    .await?
+                    .ok_or_else(|| DevopsError::NotFound(format!("skill {existing}")))?;
                 if !self
                     .actor_can_touch_team(created_by, current_team_id.as_deref())
                     .await?
@@ -1028,13 +1166,15 @@ impl DevopsService {
                 id
             }
         };
-        self.db.fetch_one_as::<SkillRegistryDto>(
-            "SELECT id, name, description, content, enabled, auto_active, scope, team_id, visibility, \
+        self.db
+            .fetch_one_as::<SkillRegistryDto>(
+                "SELECT id, name, description, content, enabled, auto_active, scope, team_id, visibility, \
              origin, category_id, published, created_by, created_at, updated_at \
              FROM one_skill_registry WHERE id = ?",
-        &db_params![&id])
-        .await
-        .map_err(Into::into)
+                &db_params![&id],
+            )
+            .await
+            .map_err(Into::into)
     }
 
     /// Batch set `published` for a set of skill ids (P1-1 round 1). Loops
@@ -1044,14 +1184,20 @@ impl DevopsService {
     pub async fn set_skills_published(&self, ids: &[String], published: bool) -> Result<(), DevopsError> {
         let now = now_ms();
         for id in ids {
-            self.db.execute("UPDATE one_skill_registry SET published = ?, updated_at = ? WHERE id = ?", &db_params![published, now, id])
+            self.db
+                .execute(
+                    "UPDATE one_skill_registry SET published = ?, updated_at = ? WHERE id = ?",
+                    &db_params![published, now, id],
+                )
                 .await?;
         }
         Ok(())
     }
 
     pub async fn delete_skill(&self, actor_user_id: &str, id: &str) -> Result<(), DevopsError> {
-        let team_id: Option<String> = self.db.fetch_optional_scalar("SELECT team_id FROM one_skill_registry WHERE id = ?", &db_params![id])
+        let team_id: Option<String> = self
+            .db
+            .fetch_optional_scalar("SELECT team_id FROM one_skill_registry WHERE id = ?", &db_params![id])
             .await?
             .ok_or_else(|| DevopsError::NotFound(format!("skill {id}")))?;
         if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
@@ -1059,7 +1205,9 @@ impl DevopsService {
                 "this skill belongs to a different project group".into(),
             ));
         }
-        let deleted = self.db.execute("DELETE FROM one_skill_registry WHERE id = ?", &db_params![id])
+        let deleted = self
+            .db
+            .execute("DELETE FROM one_skill_registry WHERE id = ?", &db_params![id])
             .await?;
         if deleted == 0 {
             return Err(DevopsError::NotFound(format!("skill {id}")));
@@ -1138,9 +1286,13 @@ impl DevopsService {
         }
         // D7: MCP connector names must be unique — the member's local MCP
         // config keys on name (upsert-by-name), so duplicates would clobber.
-        let name_taken: bool =
-            self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_mcp_registry WHERE name = ? AND id != ?", &db_params![name, id.unwrap_or("")])
-                .await?;
+        let name_taken: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_mcp_registry WHERE name = ? AND id != ?",
+                &db_params![name, id.unwrap_or("")],
+            )
+            .await?;
         if name_taken {
             return Err(DevopsError::BadRequest(format!(
                 "a team MCP named '{name}' already exists"
@@ -1151,10 +1303,14 @@ impl DevopsService {
             Some(existing) => {
                 // Same reasoning as upsert_skill: check the row's CURRENT
                 // team_id before applying whatever the request wants it to be.
-                let current_team_id: Option<String> =
-                    self.db.fetch_optional_scalar("SELECT team_id FROM one_mcp_registry WHERE id = ?", &db_params![existing])
-                        .await?
-                        .ok_or_else(|| DevopsError::NotFound(format!("mcp registry entry {existing}")))?;
+                let current_team_id: Option<String> = self
+                    .db
+                    .fetch_optional_scalar(
+                        "SELECT team_id FROM one_mcp_registry WHERE id = ?",
+                        &db_params![existing],
+                    )
+                    .await?
+                    .ok_or_else(|| DevopsError::NotFound(format!("mcp registry entry {existing}")))?;
                 if !self
                     .actor_can_touch_team(created_by, current_team_id.as_deref())
                     .await?
@@ -1184,13 +1340,15 @@ impl DevopsService {
                 id
             }
         };
-        self.db.fetch_one_as::<McpRegistryDto>(
-            "SELECT id, name, `type`, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, \
+        self.db
+            .fetch_one_as::<McpRegistryDto>(
+                "SELECT id, name, `type`, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, \
              origin, category_id, published, created_by, created_at, updated_at \
              FROM one_mcp_registry WHERE id = ?",
-        &db_params![&id])
-        .await
-        .map_err(Into::into)
+                &db_params![&id],
+            )
+            .await
+            .map_err(Into::into)
     }
 
     /// Batch set `published` for a set of MCP entry ids (P1-1 round 1).
@@ -1198,14 +1356,20 @@ impl DevopsService {
     pub async fn set_mcp_published(&self, ids: &[String], published: bool) -> Result<(), DevopsError> {
         let now = now_ms();
         for id in ids {
-            self.db.execute("UPDATE one_mcp_registry SET published = ?, updated_at = ? WHERE id = ?", &db_params![published, now, id])
+            self.db
+                .execute(
+                    "UPDATE one_mcp_registry SET published = ?, updated_at = ? WHERE id = ?",
+                    &db_params![published, now, id],
+                )
                 .await?;
         }
         Ok(())
     }
 
     pub async fn delete_mcp_registry(&self, actor_user_id: &str, id: &str) -> Result<(), DevopsError> {
-        let team_id: Option<String> = self.db.fetch_optional_scalar("SELECT team_id FROM one_mcp_registry WHERE id = ?", &db_params![id])
+        let team_id: Option<String> = self
+            .db
+            .fetch_optional_scalar("SELECT team_id FROM one_mcp_registry WHERE id = ?", &db_params![id])
             .await?
             .ok_or_else(|| DevopsError::NotFound(format!("mcp registry entry {id}")))?;
         if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
@@ -1213,7 +1377,9 @@ impl DevopsService {
                 "this MCP server belongs to a different project group".into(),
             ));
         }
-        let deleted = self.db.execute("DELETE FROM one_mcp_registry WHERE id = ?", &db_params![id])
+        let deleted = self
+            .db
+            .execute("DELETE FROM one_mcp_registry WHERE id = ?", &db_params![id])
             .await?;
         if deleted == 0 {
             return Err(DevopsError::NotFound(format!("mcp registry entry {id}")));
@@ -1284,17 +1450,21 @@ impl DevopsService {
              VALUES (?, ?, ?, ?, ?, 'pending', NULL, 0, ?, ?, ?, ?, ?)",
         &db_params![&id, title, file_path, file_size, mime_type, scope, team_id, visibility, created_by, now])
         .await?;
-        self.db.fetch_one_as::<RagDocumentDto>(
-            "SELECT id, title, file_path, file_size, mime_type, status, last_error, chunk_count, \
+        self.db
+            .fetch_one_as::<RagDocumentDto>(
+                "SELECT id, title, file_path, file_size, mime_type, status, last_error, chunk_count, \
                     scope, team_id, visibility, created_by, created_at \
              FROM one_rag_documents WHERE id = ?",
-        &db_params![&id])
-        .await
-        .map_err(Into::into)
+                &db_params![&id],
+            )
+            .await
+            .map_err(Into::into)
     }
 
     pub async fn delete_rag_document(&self, actor_user_id: &str, id: &str) -> Result<(), DevopsError> {
-        let team_id: Option<String> = self.db.fetch_optional_scalar("SELECT team_id FROM one_rag_documents WHERE id = ?", &db_params![id])
+        let team_id: Option<String> = self
+            .db
+            .fetch_optional_scalar("SELECT team_id FROM one_rag_documents WHERE id = ?", &db_params![id])
             .await?
             .ok_or_else(|| DevopsError::NotFound(format!("rag document {id}")))?;
         if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
@@ -1310,7 +1480,8 @@ impl DevopsService {
         crate::retrieval::delete_document(&self.db, id).await?;
 
         let mut tx = self.db.begin().await?;
-        let deleted = tx.execute("DELETE FROM one_rag_documents WHERE id = ?", &db_params![id])
+        let deleted = tx
+            .execute("DELETE FROM one_rag_documents WHERE id = ?", &db_params![id])
             .await?;
         if deleted == 0 {
             return Err(DevopsError::NotFound(format!("rag document {id}")));
@@ -1324,12 +1495,15 @@ impl DevopsService {
     // -- milestones -------------------------------------------------------
 
     pub async fn list_milestones(&self, tenant_id: &str) -> Result<Vec<MilestoneDto>, DevopsError> {
-        Ok(self.db.fetch_all_as::<MilestoneDto>(
-            "SELECT id, title, description, status, due_at, creator_id, creator_name, created_at, updated_at \
+        Ok(self
+            .db
+            .fetch_all_as::<MilestoneDto>(
+                "SELECT id, title, description, status, due_at, creator_id, creator_name, created_at, updated_at \
              FROM one_milestones WHERE tenant_id = ? ORDER BY \
                 CASE status WHEN 'active' THEN 0 WHEN 'completed' THEN 1 ELSE 2 END, updated_at DESC",
-        &db_params![tenant_id])
-        .await?)
+                &db_params![tenant_id],
+            )
+            .await?)
     }
 
     pub async fn create_milestone(
@@ -1347,12 +1521,24 @@ impl DevopsService {
         }
         let id = new_id("mile");
         let now = now_ms();
-        self.db.execute(
-            "INSERT INTO one_milestones \
+        self.db
+            .execute(
+                "INSERT INTO one_milestones \
                 (id, title, description, status, due_at, creator_id, creator_name, tenant_id, created_at, updated_at) \
              VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)",
-        &db_params![&id, title, description, due_at, creator_id, creator_name, tenant_id, now, now])
-        .await?;
+                &db_params![
+                    &id,
+                    title,
+                    description,
+                    due_at,
+                    creator_id,
+                    creator_name,
+                    tenant_id,
+                    now,
+                    now
+                ],
+            )
+            .await?;
         self.fetch_milestone(tenant_id, &id).await
     }
 
@@ -1371,16 +1557,31 @@ impl DevopsService {
         let now = now_ms();
         // CASE WHEN ? guards mirror update_requirement: absent field = keep,
         // present = overwrite (Option<Option<_>> distinguishes null-clear).
-        let res = self.db.execute(
-            "UPDATE one_milestones SET \
+        let res = self
+            .db
+            .execute(
+                "UPDATE one_milestones SET \
                 title = CASE WHEN ? THEN ? ELSE title END, \
                 description = CASE WHEN ? THEN ? ELSE description END, \
                 status = CASE WHEN ? THEN ? ELSE status END, \
                 due_at = CASE WHEN ? THEN ? ELSE due_at END, \
                 updated_at = ? \
              WHERE id = ? AND tenant_id = ?",
-        &db_params![title.is_some(), title, description.is_some(), description.flatten(), status.is_some(), status, due_at.is_some(), due_at.flatten(), now, id, tenant_id])
-        .await?;
+                &db_params![
+                    title.is_some(),
+                    title,
+                    description.is_some(),
+                    description.flatten(),
+                    status.is_some(),
+                    status,
+                    due_at.is_some(),
+                    due_at.flatten(),
+                    now,
+                    id,
+                    tenant_id
+                ],
+            )
+            .await?;
         if res == 0 {
             return Err(DevopsError::NotFound(format!("milestone {id}")));
         }
@@ -1389,44 +1590,58 @@ impl DevopsService {
 
     pub async fn delete_milestone(&self, tenant_id: &str, id: &str) -> Result<(), DevopsError> {
         let mut tx = self.db.begin().await?;
-        let deleted = tx.execute("DELETE FROM one_milestones WHERE id = ? AND tenant_id = ?", &db_params![id, tenant_id])
+        let deleted = tx
+            .execute(
+                "DELETE FROM one_milestones WHERE id = ? AND tenant_id = ?",
+                &db_params![id, tenant_id],
+            )
             .await?;
         if deleted == 0 {
             return Err(DevopsError::NotFound(format!("milestone {id}")));
         }
         // Clear the soft link on requirements that pointed here.
-        tx.execute("UPDATE one_requirements SET milestone_id = NULL WHERE milestone_id = ?", &db_params![id])
-            .await?;
+        tx.execute(
+            "UPDATE one_requirements SET milestone_id = NULL WHERE milestone_id = ?",
+            &db_params![id],
+        )
+        .await?;
         tx.commit().await?;
         Ok(())
     }
 
     async fn fetch_milestone(&self, tenant_id: &str, id: &str) -> Result<MilestoneDto, DevopsError> {
-        self.db.fetch_optional_as::<MilestoneDto>(
-            "SELECT id, title, description, status, due_at, creator_id, creator_name, created_at, updated_at \
+        self.db
+            .fetch_optional_as::<MilestoneDto>(
+                "SELECT id, title, description, status, due_at, creator_id, creator_name, created_at, updated_at \
              FROM one_milestones WHERE id = ? AND tenant_id = ?",
-        &db_params![id, tenant_id])
-        .await?
-        .ok_or_else(|| DevopsError::NotFound(format!("milestone {id}")))
+                &db_params![id, tenant_id],
+            )
+            .await?
+            .ok_or_else(|| DevopsError::NotFound(format!("milestone {id}")))
     }
 
     // -- RAG pipeline (A2) ------------------------------------------------
 
     pub async fn get_rag_config(&self) -> Result<RagConfigDto, DevopsError> {
-        let row: Option<(String, String, String, Option<i64>, i64)> = self.db.fetch_optional_as::<(String, String, String, Option<i64>, i64)>(
-            "SELECT base_url, api_key, model, dimensions, updated_at FROM one_rag_config WHERE id = 'default'",
-        &[])
-        .await?;
+        let row: Option<(String, String, String, Option<i64>, i64)> = self
+            .db
+            .fetch_optional_as::<(String, String, String, Option<i64>, i64)>(
+                "SELECT base_url, api_key, model, dimensions, updated_at FROM one_rag_config WHERE id = 'default'",
+                &[],
+            )
+            .await?;
         if let Some((base_url, api_key, model, dimensions, updated_at)) = &row
-            && !base_url.trim().is_empty() && !model.trim().is_empty() {
-                return Ok(RagConfigDto {
-                    base_url: base_url.clone(),
-                    model: model.clone(),
-                    has_key: !api_key.trim().is_empty(),
-                    dimensions: *dimensions,
-                    updated_at: *updated_at,
-                });
-            }
+            && !base_url.trim().is_empty()
+            && !model.trim().is_empty()
+        {
+            return Ok(RagConfigDto {
+                base_url: base_url.clone(),
+                model: model.clone(),
+                has_key: !api_key.trim().is_empty(),
+                dimensions: *dimensions,
+                updated_at: *updated_at,
+            });
+        }
         // No admin-configured row → surface the bundled default (P3-2) so the
         // config UI shows the deployment's embedding endpoint instead of a
         // blank form. `updated_at: 0` marks it as never set by an admin.
@@ -1463,7 +1678,9 @@ impl DevopsService {
         // Preserve the existing key when the caller omits it.
         let key = match api_key {
             Some(k) => k.to_owned(),
-            None => self.db.fetch_optional_scalar::<String>("SELECT api_key FROM one_rag_config WHERE id = 'default'", &[])
+            None => self
+                .db
+                .fetch_optional_scalar::<String>("SELECT api_key FROM one_rag_config WHERE id = 'default'", &[])
                 .await?
                 .unwrap_or_default(),
         };
@@ -1476,15 +1693,20 @@ impl DevopsService {
              VALUES ('default', ?, ?, ?, ?) AS new \
              ON DUPLICATE KEY UPDATE base_url = new.base_url, api_key = new.api_key, \
                 model = new.model, updated_at = new.updated_at",
-        &db_params![base_url.trim(), &key, model.trim(), now])
+            &db_params![base_url.trim(), &key, model.trim(), now],
+        )
         .await?;
         self.get_rag_config().await
     }
 
     async fn load_embedding_config(&self) -> Result<EmbeddingConfig, DevopsError> {
-        let row: Option<(String, String, String)> =
-            self.db.fetch_optional_as::<(String, String, String)>("SELECT base_url, api_key, model FROM one_rag_config WHERE id = 'default'", &[])
-                .await?;
+        let row: Option<(String, String, String)> = self
+            .db
+            .fetch_optional_as::<(String, String, String)>(
+                "SELECT base_url, api_key, model FROM one_rag_config WHERE id = 'default'",
+                &[],
+            )
+            .await?;
         let (env_base, env_model, env_key) = crate::embedding::env_embedding_config();
         crate::embedding::resolve_embedding_config(row, env_base, env_model, env_key)
             .ok_or_else(|| DevopsError::BadRequest("RAG embedding endpoint not configured".into()))
@@ -1492,7 +1714,9 @@ impl DevopsService {
 
     /// Set a document's inline content (the text to embed on process).
     pub async fn set_document_content(&self, actor_user_id: &str, id: &str, content: &str) -> Result<(), DevopsError> {
-        let team_id: Option<String> = self.db.fetch_optional_scalar("SELECT team_id FROM one_rag_documents WHERE id = ?", &db_params![id])
+        let team_id: Option<String> = self
+            .db
+            .fetch_optional_scalar("SELECT team_id FROM one_rag_documents WHERE id = ?", &db_params![id])
             .await?
             .ok_or_else(|| DevopsError::NotFound(format!("rag document {id}")))?;
         if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
@@ -1500,7 +1724,12 @@ impl DevopsService {
                 "this document belongs to a different project group".into(),
             ));
         }
-        let updated = self.db.execute("UPDATE one_rag_documents SET content = ? WHERE id = ?", &db_params![content, id])
+        let updated = self
+            .db
+            .execute(
+                "UPDATE one_rag_documents SET content = ? WHERE id = ?",
+                &db_params![content, id],
+            )
             .await?;
         if updated == 0 {
             return Err(DevopsError::NotFound(format!("rag document {id}")));
@@ -1512,9 +1741,13 @@ impl DevopsService {
     /// chunk rows, and update status/chunk_count. Records the dimension on
     /// first success. Returns the chunk count.
     pub async fn process_rag_document(&self, actor_user_id: &str, id: &str) -> Result<i64, DevopsError> {
-        let row: Option<(Option<String>, Option<String>)> =
-            self.db.fetch_optional_as::<(Option<String>, Option<String>)>("SELECT content, team_id FROM one_rag_documents WHERE id = ?", &db_params![id])
-                .await?;
+        let row: Option<(Option<String>, Option<String>)> = self
+            .db
+            .fetch_optional_as::<(Option<String>, Option<String>)>(
+                "SELECT content, team_id FROM one_rag_documents WHERE id = ?",
+                &db_params![id],
+            )
+            .await?;
         let (content, team_id) = row.ok_or_else(|| DevopsError::NotFound(format!("rag document {id}")))?;
         if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
             return Err(DevopsError::Forbidden(
@@ -1531,7 +1764,12 @@ impl DevopsService {
         let vectors = match crate::embedding::embed(&config, &chunks).await {
             Ok(v) => v,
             Err(e) => {
-                let _ = self.db.execute("UPDATE one_rag_documents SET status = 'error', last_error = ? WHERE id = ?", &db_params![e.to_string(), id])
+                let _ = self
+                    .db
+                    .execute(
+                        "UPDATE one_rag_documents SET status = 'error', last_error = ? WHERE id = ?",
+                        &db_params![e.to_string(), id],
+                    )
                     .await;
                 return Err(e);
             }
@@ -1548,14 +1786,24 @@ impl DevopsService {
             tx.execute(
                 "INSERT INTO one_rag_chunks (id, document_id, chunk_index, content, embedding, created_at) \
                  VALUES (?, ?, ?, ?, ?, ?)",
-                &db_params![&chunk_id, id, idx as i64, chunk, crate::embedding::pack_embedding(vector), now],
+                &db_params![
+                    &chunk_id,
+                    id,
+                    idx as i64,
+                    chunk,
+                    crate::embedding::pack_embedding(vector),
+                    now
+                ],
             )
             .await?;
             lexical_rows.push((chunk_id, chunk.clone()));
         }
         let count = chunks.len() as i64;
-        tx.execute("UPDATE one_rag_documents SET status = 'ready', last_error = NULL, chunk_count = ? WHERE id = ?", &db_params![count, id])
-            .await?;
+        tx.execute(
+            "UPDATE one_rag_documents SET status = 'ready', last_error = NULL, chunk_count = ? WHERE id = ?",
+            &db_params![count, id],
+        )
+        .await?;
         tx.commit().await?;
 
         // The lexical index is derived, so it is refreshed only after the
@@ -1567,7 +1815,12 @@ impl DevopsService {
         }
 
         if let Some(dims) = dims {
-            let _ = self.db.execute("UPDATE one_rag_config SET dimensions = ? WHERE id = 'default'", &db_params![dims])
+            let _ = self
+                .db
+                .execute(
+                    "UPDATE one_rag_config SET dimensions = ? WHERE id = 'default'",
+                    &db_params![dims],
+                )
                 .await;
         }
         Ok(count)
@@ -1639,8 +1892,7 @@ impl DevopsService {
         for bind in &acl_binds {
             params.push(bind.as_str().into());
         }
-        let rows: Vec<(String, String, i64, String, Vec<u8>, String)> =
-            self.db.fetch_all_as(&sql, &params).await?;
+        let rows: Vec<(String, String, i64, String, Vec<u8>, String)> = self.db.fetch_all_as(&sql, &params).await?;
 
         let mut by_id: HashMap<String, (RagSearchHit, f32)> = HashMap::with_capacity(rows.len());
         let mut dense: Vec<(String, f32)> = Vec::with_capacity(rows.len());
@@ -1706,14 +1958,17 @@ impl DevopsService {
     // -- test plans (A4) --------------------------------------------------
 
     pub async fn list_test_plans(&self, tenant_id: &str) -> Result<Vec<TestPlanDto>, DevopsError> {
-        Ok(self.db.fetch_all_as::<TestPlanDto>(
-            "SELECT id, title, description, status, requirement_id, creator_id, creator_name, \
+        Ok(self
+            .db
+            .fetch_all_as::<TestPlanDto>(
+                "SELECT id, title, description, status, requirement_id, creator_id, creator_name, \
                     created_at, updated_at \
              FROM one_test_plans WHERE tenant_id = ? ORDER BY \
                 CASE status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 WHEN 'completed' THEN 2 ELSE 3 END, \
                 updated_at DESC",
-        &db_params![tenant_id])
-        .await?)
+                &db_params![tenant_id],
+            )
+            .await?)
     }
 
     pub async fn create_test_plan(
@@ -1753,16 +2008,31 @@ impl DevopsService {
             validate_one_of(status, TEST_PLAN_STATUSES, "test plan status")?;
         }
         let now = now_ms();
-        let res = self.db.execute(
-            "UPDATE one_test_plans SET \
+        let res = self
+            .db
+            .execute(
+                "UPDATE one_test_plans SET \
                 title = CASE WHEN ? THEN ? ELSE title END, \
                 description = CASE WHEN ? THEN ? ELSE description END, \
                 status = CASE WHEN ? THEN ? ELSE status END, \
                 requirement_id = CASE WHEN ? THEN ? ELSE requirement_id END, \
                 updated_at = ? \
              WHERE id = ? AND tenant_id = ?",
-        &db_params![title.is_some(), title, description.is_some(), description.flatten(), status.is_some(), status, requirement_id.is_some(), requirement_id.flatten(), now, id, tenant_id])
-        .await?;
+                &db_params![
+                    title.is_some(),
+                    title,
+                    description.is_some(),
+                    description.flatten(),
+                    status.is_some(),
+                    status,
+                    requirement_id.is_some(),
+                    requirement_id.flatten(),
+                    now,
+                    id,
+                    tenant_id
+                ],
+            )
+            .await?;
         if res == 0 {
             return Err(DevopsError::NotFound(format!("test plan {id}")));
         }
@@ -1771,7 +2041,11 @@ impl DevopsService {
 
     pub async fn delete_test_plan(&self, tenant_id: &str, id: &str) -> Result<(), DevopsError> {
         let mut tx = self.db.begin().await?;
-        let deleted = tx.execute("DELETE FROM one_test_plans WHERE id = ? AND tenant_id = ?", &db_params![id, tenant_id])
+        let deleted = tx
+            .execute(
+                "DELETE FROM one_test_plans WHERE id = ? AND tenant_id = ?",
+                &db_params![id, tenant_id],
+            )
             .await?;
         if deleted == 0 {
             return Err(DevopsError::NotFound(format!("test plan {id}")));
@@ -1783,30 +2057,40 @@ impl DevopsService {
     }
 
     async fn fetch_test_plan(&self, tenant_id: &str, id: &str) -> Result<TestPlanDto, DevopsError> {
-        self.db.fetch_optional_as::<TestPlanDto>(
-            "SELECT id, title, description, status, requirement_id, creator_id, creator_name, \
+        self.db
+            .fetch_optional_as::<TestPlanDto>(
+                "SELECT id, title, description, status, requirement_id, creator_id, creator_name, \
                     created_at, updated_at \
              FROM one_test_plans WHERE id = ? AND tenant_id = ?",
-        &db_params![id, tenant_id])
-        .await?
-        .ok_or_else(|| DevopsError::NotFound(format!("test plan {id}")))
+                &db_params![id, tenant_id],
+            )
+            .await?
+            .ok_or_else(|| DevopsError::NotFound(format!("test plan {id}")))
     }
 
     // -- test cases ---------------------------------------------------------
 
     pub async fn list_test_cases(&self, tenant_id: &str, plan_id: &str) -> Result<Vec<TestCaseDto>, DevopsError> {
         // Verify the plan exists AND belongs to the caller's tenant first.
-        let exists: bool = self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_test_plans WHERE id = ? AND tenant_id = ?", &db_params![plan_id, tenant_id])
+        let exists: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_test_plans WHERE id = ? AND tenant_id = ?",
+                &db_params![plan_id, tenant_id],
+            )
             .await?;
         if !exists {
             return Err(DevopsError::NotFound(format!("test plan {plan_id}")));
         }
-        Ok(self.db.fetch_all_as::<TestCaseDto>(
-            "SELECT id, plan_id, title, description, steps, expected, status, creator_id, creator_name, \
+        Ok(self
+            .db
+            .fetch_all_as::<TestCaseDto>(
+                "SELECT id, plan_id, title, description, steps, expected, status, creator_id, creator_name, \
                     created_at, updated_at \
              FROM one_test_cases WHERE plan_id = ? AND tenant_id = ? ORDER BY created_at ASC",
-        &db_params![plan_id, tenant_id])
-        .await?)
+                &db_params![plan_id, tenant_id],
+            )
+            .await?)
     }
 
     // The 012 tenant-scope fix (see migration header) added `tenant_id` to
@@ -1830,7 +2114,12 @@ impl DevopsService {
         if title.is_empty() {
             return Err(DevopsError::BadRequest("title is required".into()));
         }
-        let exists: bool = self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_test_plans WHERE id = ? AND tenant_id = ?", &db_params![plan_id, tenant_id])
+        let exists: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_test_plans WHERE id = ? AND tenant_id = ?",
+                &db_params![plan_id, tenant_id],
+            )
             .await?;
         if !exists {
             return Err(DevopsError::NotFound(format!("test plan {plan_id}")));
@@ -1862,8 +2151,10 @@ impl DevopsService {
             validate_one_of(status, TEST_CASE_STATUSES, "test case status")?;
         }
         let now = now_ms();
-        let res = self.db.execute(
-            "UPDATE one_test_cases SET \
+        let res = self
+            .db
+            .execute(
+                "UPDATE one_test_cases SET \
                 title = CASE WHEN ? THEN ? ELSE title END, \
                 status = CASE WHEN ? THEN ? ELSE status END, \
                 description = CASE WHEN ? THEN ? ELSE description END, \
@@ -1871,8 +2162,23 @@ impl DevopsService {
                 expected = CASE WHEN ? THEN ? ELSE expected END, \
                 updated_at = ? \
              WHERE id = ? AND tenant_id = ?",
-        &db_params![title.is_some(), title, status.is_some(), status, description.is_some(), description.flatten(), steps.is_some(), steps.flatten(), expected.is_some(), expected.flatten(), now, id, tenant_id])
-        .await?;
+                &db_params![
+                    title.is_some(),
+                    title,
+                    status.is_some(),
+                    status,
+                    description.is_some(),
+                    description.flatten(),
+                    steps.is_some(),
+                    steps.flatten(),
+                    expected.is_some(),
+                    expected.flatten(),
+                    now,
+                    id,
+                    tenant_id
+                ],
+            )
+            .await?;
         if res == 0 {
             return Err(DevopsError::NotFound(format!("test case {id}")));
         }
@@ -1880,7 +2186,12 @@ impl DevopsService {
     }
 
     pub async fn delete_test_case(&self, tenant_id: &str, id: &str) -> Result<(), DevopsError> {
-        let deleted = self.db.execute("DELETE FROM one_test_cases WHERE id = ? AND tenant_id = ?", &db_params![id, tenant_id])
+        let deleted = self
+            .db
+            .execute(
+                "DELETE FROM one_test_cases WHERE id = ? AND tenant_id = ?",
+                &db_params![id, tenant_id],
+            )
             .await?;
         if deleted == 0 {
             return Err(DevopsError::NotFound(format!("test case {id}")));
@@ -1889,25 +2200,30 @@ impl DevopsService {
     }
 
     async fn fetch_test_case(&self, tenant_id: &str, id: &str) -> Result<TestCaseDto, DevopsError> {
-        self.db.fetch_optional_as::<TestCaseDto>(
-            "SELECT id, plan_id, title, description, steps, expected, status, creator_id, creator_name, \
+        self.db
+            .fetch_optional_as::<TestCaseDto>(
+                "SELECT id, plan_id, title, description, steps, expected, status, creator_id, creator_name, \
                     created_at, updated_at \
              FROM one_test_cases WHERE id = ? AND tenant_id = ?",
-        &db_params![id, tenant_id])
-        .await?
-        .ok_or_else(|| DevopsError::NotFound(format!("test case {id}")))
+                &db_params![id, tenant_id],
+            )
+            .await?
+            .ok_or_else(|| DevopsError::NotFound(format!("test case {id}")))
     }
 
     // -- pipelines (A4) ---------------------------------------------------
 
     pub async fn list_pipelines(&self, tenant_id: &str) -> Result<Vec<PipelineDto>, DevopsError> {
-        Ok(self.db.fetch_all_as::<PipelineDto>(
-            "SELECT id, name, description, status, `trigger`, creator_id, creator_name, \
+        Ok(self
+            .db
+            .fetch_all_as::<PipelineDto>(
+                "SELECT id, name, description, status, `trigger`, creator_id, creator_name, \
                     created_at, updated_at \
              FROM one_pipelines WHERE tenant_id = ? ORDER BY \
                 CASE status WHEN 'active' THEN 0 ELSE 1 END, updated_at DESC",
-        &db_params![tenant_id])
-        .await?)
+                &db_params![tenant_id],
+            )
+            .await?)
     }
 
     pub async fn create_pipeline(
@@ -1952,16 +2268,31 @@ impl DevopsService {
             validate_one_of(trigger, PIPELINE_TRIGGERS, "pipeline trigger")?;
         }
         let now = now_ms();
-        let res = self.db.execute(
-            "UPDATE one_pipelines SET \
+        let res = self
+            .db
+            .execute(
+                "UPDATE one_pipelines SET \
                 name = CASE WHEN ? THEN ? ELSE name END, \
                 description = CASE WHEN ? THEN ? ELSE description END, \
                 status = CASE WHEN ? THEN ? ELSE status END, \
                 `trigger` = CASE WHEN ? THEN ? ELSE trigger END, \
                 updated_at = ? \
              WHERE id = ? AND tenant_id = ?",
-        &db_params![name.is_some(), name, description.is_some(), description.flatten(), status.is_some(), status, trigger.is_some(), trigger, now, id, tenant_id])
-        .await?;
+                &db_params![
+                    name.is_some(),
+                    name,
+                    description.is_some(),
+                    description.flatten(),
+                    status.is_some(),
+                    status,
+                    trigger.is_some(),
+                    trigger,
+                    now,
+                    id,
+                    tenant_id
+                ],
+            )
+            .await?;
         if res == 0 {
             return Err(DevopsError::NotFound(format!("pipeline {id}")));
         }
@@ -1970,7 +2301,11 @@ impl DevopsService {
 
     pub async fn delete_pipeline(&self, tenant_id: &str, id: &str) -> Result<(), DevopsError> {
         let mut tx = self.db.begin().await?;
-        let deleted = tx.execute("DELETE FROM one_pipelines WHERE id = ? AND tenant_id = ?", &db_params![id, tenant_id])
+        let deleted = tx
+            .execute(
+                "DELETE FROM one_pipelines WHERE id = ? AND tenant_id = ?",
+                &db_params![id, tenant_id],
+            )
             .await?;
         if deleted == 0 {
             return Err(DevopsError::NotFound(format!("pipeline {id}")));
@@ -1982,13 +2317,15 @@ impl DevopsService {
     }
 
     async fn fetch_pipeline(&self, tenant_id: &str, id: &str) -> Result<PipelineDto, DevopsError> {
-        self.db.fetch_optional_as::<PipelineDto>(
-            "SELECT id, name, description, status, `trigger`, creator_id, creator_name, \
+        self.db
+            .fetch_optional_as::<PipelineDto>(
+                "SELECT id, name, description, status, `trigger`, creator_id, creator_name, \
                     created_at, updated_at \
              FROM one_pipelines WHERE id = ? AND tenant_id = ?",
-        &db_params![id, tenant_id])
-        .await?
-        .ok_or_else(|| DevopsError::NotFound(format!("pipeline {id}")))
+                &db_params![id, tenant_id],
+            )
+            .await?
+            .ok_or_else(|| DevopsError::NotFound(format!("pipeline {id}")))
     }
 
     // -- pipeline runs ------------------------------------------------------
@@ -1998,17 +2335,25 @@ impl DevopsService {
         tenant_id: &str,
         pipeline_id: &str,
     ) -> Result<Vec<PipelineRunDto>, DevopsError> {
-        let exists: bool = self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_pipelines WHERE id = ? AND tenant_id = ?", &db_params![pipeline_id, tenant_id])
+        let exists: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_pipelines WHERE id = ? AND tenant_id = ?",
+                &db_params![pipeline_id, tenant_id],
+            )
             .await?;
         if !exists {
             return Err(DevopsError::NotFound(format!("pipeline {pipeline_id}")));
         }
-        Ok(self.db.fetch_all_as::<PipelineRunDto>(
-            "SELECT id, pipeline_id, status, triggered_by, started_at, finished_at, log, \
+        Ok(self
+            .db
+            .fetch_all_as::<PipelineRunDto>(
+                "SELECT id, pipeline_id, status, triggered_by, started_at, finished_at, log, \
                     created_at, updated_at \
              FROM one_pipeline_runs WHERE pipeline_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT 100",
-        &db_params![pipeline_id, tenant_id])
-        .await?)
+                &db_params![pipeline_id, tenant_id],
+            )
+            .await?)
     }
 
     pub async fn create_pipeline_run(
@@ -2017,7 +2362,12 @@ impl DevopsService {
         pipeline_id: &str,
         triggered_by: Option<&str>,
     ) -> Result<PipelineRunDto, DevopsError> {
-        let exists: bool = self.db.fetch_one_scalar("SELECT COUNT(*) > 0 FROM one_pipelines WHERE id = ? AND tenant_id = ?", &db_params![pipeline_id, tenant_id])
+        let exists: bool = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) > 0 FROM one_pipelines WHERE id = ? AND tenant_id = ?",
+                &db_params![pipeline_id, tenant_id],
+            )
             .await?;
         if !exists {
             return Err(DevopsError::NotFound(format!("pipeline {pipeline_id}")));
@@ -2046,16 +2396,31 @@ impl DevopsService {
             validate_one_of(status, PIPELINE_RUN_STATUSES, "pipeline run status")?;
         }
         let now = now_ms();
-        let res = self.db.execute(
-            "UPDATE one_pipeline_runs SET \
+        let res = self
+            .db
+            .execute(
+                "UPDATE one_pipeline_runs SET \
                 status = CASE WHEN ? THEN ? ELSE status END, \
                 started_at = CASE WHEN ? THEN ? ELSE started_at END, \
                 finished_at = CASE WHEN ? THEN ? ELSE finished_at END, \
                 log = CASE WHEN ? THEN ? ELSE log END, \
                 updated_at = ? \
              WHERE id = ? AND tenant_id = ?",
-        &db_params![status.is_some(), status, started_at.is_some(), started_at.flatten(), finished_at.is_some(), finished_at.flatten(), log.is_some(), log.flatten(), now, id, tenant_id])
-        .await?;
+                &db_params![
+                    status.is_some(),
+                    status,
+                    started_at.is_some(),
+                    started_at.flatten(),
+                    finished_at.is_some(),
+                    finished_at.flatten(),
+                    log.is_some(),
+                    log.flatten(),
+                    now,
+                    id,
+                    tenant_id
+                ],
+            )
+            .await?;
         if res == 0 {
             return Err(DevopsError::NotFound(format!("pipeline run {id}")));
         }
@@ -2063,13 +2428,15 @@ impl DevopsService {
     }
 
     async fn fetch_pipeline_run(&self, tenant_id: &str, id: &str) -> Result<PipelineRunDto, DevopsError> {
-        self.db.fetch_optional_as::<PipelineRunDto>(
-            "SELECT id, pipeline_id, status, triggered_by, started_at, finished_at, log, \
+        self.db
+            .fetch_optional_as::<PipelineRunDto>(
+                "SELECT id, pipeline_id, status, triggered_by, started_at, finished_at, log, \
                     created_at, updated_at \
              FROM one_pipeline_runs WHERE id = ? AND tenant_id = ?",
-        &db_params![id, tenant_id])
-        .await?
-        .ok_or_else(|| DevopsError::NotFound(format!("pipeline run {id}")))
+                &db_params![id, tenant_id],
+            )
+            .await?
+            .ok_or_else(|| DevopsError::NotFound(format!("pipeline run {id}")))
     }
 }
 
@@ -2088,7 +2455,9 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone())).await.unwrap();
+        run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone()))
+            .await
+            .unwrap();
         DevopsService::new(dream_core_db::DbPool::Sqlite(pool.clone()))
     }
 
@@ -2640,7 +3009,8 @@ mod tests {
         let svc = service().await;
 
         // Standalone: one_audit_logs table absent → silent no-op, no panic.
-        svc.audit("default", "u1", "devops.skill.upsert", Some("s1"), None).await;
+        svc.audit("default", "u1", "devops.skill.upsert", Some("s1"), None)
+            .await;
 
         // Enterprise: table present → the action is recorded. Schema mirrors
         // one-org migration 001 + 014 (latency_ms / result).
@@ -2650,20 +3020,22 @@ mod tests {
         .execute(svc.db.sqlite())
         .await
         .unwrap();
-        svc.audit("t1", "admin1", "devops.skill.delete", Some("s2"), Some(3)).await;
-        svc.audit_failure("t1", "admin1", "devops.market.sync", Some("src1"), Some(120)).await;
-        let (count, latency): (i64, Option<i64>) = sqlx::query_as(
-            "SELECT COUNT(*), MAX(latency_ms) FROM one_audit_logs WHERE action = 'devops.skill.delete'",
-        )
-        .fetch_one(svc.db.sqlite())
-        .await
-        .unwrap();
+        svc.audit("t1", "admin1", "devops.skill.delete", Some("s2"), Some(3))
+            .await;
+        svc.audit_failure("t1", "admin1", "devops.market.sync", Some("src1"), Some(120))
+            .await;
+        let (count, latency): (i64, Option<i64>) =
+            sqlx::query_as("SELECT COUNT(*), MAX(latency_ms) FROM one_audit_logs WHERE action = 'devops.skill.delete'")
+                .fetch_one(svc.db.sqlite())
+                .await
+                .unwrap();
         assert_eq!(count, 1);
         assert_eq!(latency, Some(3));
-        let failed: String = sqlx::query_scalar("SELECT result FROM one_audit_logs WHERE action = 'devops.market.sync'")
-            .fetch_one(svc.db.sqlite())
-            .await
-            .unwrap();
+        let failed: String =
+            sqlx::query_scalar("SELECT result FROM one_audit_logs WHERE action = 'devops.market.sync'")
+                .fetch_one(svc.db.sqlite())
+                .await
+                .unwrap();
         assert_eq!(failed, "failure");
     }
 

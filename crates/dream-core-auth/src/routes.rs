@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Query, Json, Path, Request, State};
+use axum::extract::{Json, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::{Html, IntoResponse, Response};
@@ -24,8 +24,8 @@ use dream_core_common::constants::COOKIE_MAX_AGE_DAYS;
 use dream_core_db::{DbError, IUserRepository, UserStatus, UserType, models::User};
 
 use crate::error::AuthError;
-use crate::mfa::MfaDecision;
 use crate::extract::extract_token_from_headers;
+use crate::mfa::MfaDecision;
 use crate::middleware::{AuthIdentityMode, AuthState, CurrentUser, auth_middleware, is_webui_proxied};
 use crate::password::{
     GENERATED_PASSWORD_LEN, dummy_password_hash, generate_password, hash_password, verify_password_timed,
@@ -298,14 +298,8 @@ pub fn auth_routes(state: AuthRouterState) -> Router {
     // through the proxy.
     let api_public = Router::new()
         .route("/api/auth/status", get(status_handler))
-        .route(
-            "/api/auth/mfa/verify",
-            post(mfa_verify_handler),
-        )
-        .route(
-            "/api/auth/mfa/enroll-info",
-            get(mfa_enroll_info_handler),
-        )
+        .route("/api/auth/mfa/verify", post(mfa_verify_handler))
+        .route("/api/auth/mfa/enroll-info", get(mfa_enroll_info_handler))
         .route_layer(from_fn_with_state(api_limiter.clone(), api_rate_limit_middleware))
         .with_state(state.clone());
 
@@ -657,16 +651,25 @@ async fn mfa_verify_handler(
     let user = match mfa.verify(&req.mfa_token, &req.code, Some(ip.as_str())).await {
         Ok(Ok((user_id, username, _enrolled))) => (user_id, username),
         Ok(Err((message, attempts_left))) => {
-            return Ok(
-                (StatusCode::TOO_MANY_REQUESTS, Json(MfaVerifyError { success: false, message, attempts_left }))
-                    .into_response(),
-            );
+            return Ok((
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(MfaVerifyError {
+                    success: false,
+                    message,
+                    attempts_left,
+                }),
+            )
+                .into_response());
         }
         Err(e) if e.is_not_found() => {
-            return Ok(
-                (StatusCode::GONE, Json(MfaGone { success: false, message: "MFA 挑战已过期或已使用，请重新登录。".into() }))
-                    .into_response(),
-            );
+            return Ok((
+                StatusCode::GONE,
+                Json(MfaGone {
+                    success: false,
+                    message: "MFA 挑战已过期或已使用，请重新登录。".into(),
+                }),
+            )
+                .into_response());
         }
         Err(e) => return Err(ApiError::BadRequest(e.message())),
     };
@@ -713,11 +716,20 @@ async fn mfa_enroll_info_handler(
         return Err(ApiError::BadRequest("mfa_token is required".into()));
     };
     match mfa.enroll_info(mfa_token).await {
-        Ok((otpauth_uri, secret)) => Ok(Json(MfaEnrollInfo { success: true, otpauth_uri, secret }).into_response()),
-        Err(e) if e.is_not_found() => Ok(
-            (StatusCode::GONE, Json(MfaGone { success: false, message: "MFA 挑战已过期或已使用，请重新登录。".into() }))
-                .into_response(),
-        ),
+        Ok((otpauth_uri, secret)) => Ok(Json(MfaEnrollInfo {
+            success: true,
+            otpauth_uri,
+            secret,
+        })
+        .into_response()),
+        Err(e) if e.is_not_found() => Ok((
+            StatusCode::GONE,
+            Json(MfaGone {
+                success: false,
+                message: "MFA 挑战已过期或已使用，请重新登录。".into(),
+            }),
+        )
+            .into_response()),
         Err(e) => Err(ApiError::BadRequest(e.message())),
     }
 }
@@ -1106,11 +1118,12 @@ async fn qr_login_handler(
     // 登录二次认证闸：QR 扫码登录同样不得绕过第二步。该流程没有输动态码的
     // 界面，需要 MFA 的账号请改用账号密码或企业 SSO 登录（判定矩阵见 mfa.rs）。
     if let Some(mfa) = state.mfa.as_ref()
-        && let MfaDecision::Challenge(_) = mfa.decide(&user).await.map_err(|e| ApiError::BadRequest(e.message()))? {
-            return Err(ApiError::Forbidden(
-                "该账号已开启登录二次认证（MFA），扫码登录不支持第二步验证，请使用账号密码或企业 SSO 登录。".into(),
-            ));
-        }
+        && let MfaDecision::Challenge(_) = mfa.decide(&user).await.map_err(|e| ApiError::BadRequest(e.message()))?
+    {
+        return Err(ApiError::Forbidden(
+            "该账号已开启登录二次认证（MFA），扫码登录不支持第二步验证，请使用账号密码或企业 SSO 登录。".into(),
+        ));
+    }
 
     let token = state
         .jwt_service

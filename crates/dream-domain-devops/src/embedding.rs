@@ -66,13 +66,15 @@ pub fn resolve_embedding_config(
     env_api_key: Option<String>,
 ) -> Option<EmbeddingConfig> {
     if let Some((base_url, api_key, model)) = stored
-        && !base_url.trim().is_empty() && !model.trim().is_empty() {
-            return Some(EmbeddingConfig {
-                base_url,
-                api_key,
-                model,
-            });
-        }
+        && !base_url.trim().is_empty()
+        && !model.trim().is_empty()
+    {
+        return Some(EmbeddingConfig {
+            base_url,
+            api_key,
+            model,
+        });
+    }
     let base_url = env_base_url?;
     let model = env_model?;
     if base_url.trim().is_empty() || model.trim().is_empty() {

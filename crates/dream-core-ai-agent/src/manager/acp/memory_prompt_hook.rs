@@ -26,19 +26,20 @@ const QUERY_MAX_CHARS: usize = 2000;
 impl PreSendHook for MemoryPromptHook {
     async fn pre_send(&self, ctx: &mut PromptCtx<'_>, prompt: String) -> String {
         let query: String = prompt.chars().take(QUERY_MAX_CHARS).collect();
-        let recalled = tokio::time::timeout(
-            RECALL_TIMEOUT,
-            self.recall.recall(&ctx.params.user_id, &query),
-        )
-        .await;
+        let recalled = tokio::time::timeout(RECALL_TIMEOUT, self.recall.recall(&ctx.params.user_id, &query)).await;
         match recalled {
             Ok(hits) if !hits.is_empty() => {
-                format!("[Relevant Memory]
+                format!(
+                    "[Relevant Memory]
 {}
 [/Relevant Memory]
 
-{prompt}", hits.join("
-"))
+{prompt}",
+                    hits.join(
+                        "
+"
+                    )
+                )
             }
             Ok(_) => prompt,
             Err(_) => {

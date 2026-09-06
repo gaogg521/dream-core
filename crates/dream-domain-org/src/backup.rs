@@ -233,22 +233,21 @@ async fn export_table(pool: &DbPool, table: &str) -> Result<Option<TableRows>, O
         }
     };
     let raw_rows: Vec<String> = match pool.backend() {
-        DbBackend::Sqlite => {
-            sqlx::query(&sql)
-                .fetch_all(pool.sqlite())
-                .await?
-                .into_iter()
-                .map(|r| r.try_get("row_json"))
-                .collect::<Result<_, _>>()?
-        }
-        DbBackend::MySql => {
-            sqlx::query(&sql)
-                .fetch_all(pool.mysql())
-                .await?
-                .into_iter()
-                .map(|r| r.try_get::<Option<String>, _>("row_json").map(|v| v.unwrap_or_default()))
-                .collect::<Result<_, _>>()?
-        }
+        DbBackend::Sqlite => sqlx::query(&sql)
+            .fetch_all(pool.sqlite())
+            .await?
+            .into_iter()
+            .map(|r| r.try_get("row_json"))
+            .collect::<Result<_, _>>()?,
+        DbBackend::MySql => sqlx::query(&sql)
+            .fetch_all(pool.mysql())
+            .await?
+            .into_iter()
+            .map(|r| {
+                r.try_get::<Option<String>, _>("row_json")
+                    .map(|v| v.unwrap_or_default())
+            })
+            .collect::<Result<_, _>>()?,
     };
 
     let mut out: TableRows = Vec::with_capacity(raw_rows.len());
@@ -363,7 +362,11 @@ pub async fn import_bundle(pool: &DbPool, bundle: &BackupBundle) -> Result<Impor
                     format!("REPLACE INTO {table} ({column_list}) VALUES ({placeholders})")
                 }
                 _ => {
-                    let column_list = columns.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", ");
+                    let column_list = columns
+                        .iter()
+                        .map(|c| format!("\"{c}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     format!("INSERT OR REPLACE INTO {table} ({column_list}) VALUES ({placeholders})")
                 }
             };
@@ -396,9 +399,9 @@ pub async fn import_bundle(pool: &DbPool, bundle: &BackupBundle) -> Result<Impor
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use dream_core_db::{IUserRepository, SqliteUserRepository};
     use crate::service::OrgService;
+    use dream_core_db::{IUserRepository, SqliteUserRepository};
+    use std::sync::Arc;
 
     async fn pool() -> sqlx::SqlitePool {
         let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
@@ -451,14 +454,22 @@ mod tests {
         let source_service = Arc::new(OrgService::new(
             source_db.pool.clone(),
             user_repo.clone(),
-            std::sync::Arc::new(dream_core_db::SqliteConversationRepository::new(sqlite_db.pool().clone())),
+            std::sync::Arc::new(dream_core_db::SqliteConversationRepository::new(
+                sqlite_db.pool().clone(),
+            )),
             std::env::temp_dir().join(format!("one-org-backup-src-{}", uuid::Uuid::now_v7())),
             [7u8; 32],
         ));
-        let (tenant_id, _) = source_service.create_tenant("system_default_user", "Acme Backup Co").await.unwrap();
+        let (tenant_id, _) = source_service
+            .create_tenant("system_default_user", "Acme Backup Co")
+            .await
+            .unwrap();
 
         let bundle = export_bundle(&source_db.pool, &tenant_id, 1000).await.unwrap();
-        assert!(bundle.tables["one_tenants"].len() == 1, "the export's JSON_OBJECT read must actually return the row");
+        assert!(
+            bundle.tables["one_tenants"].len() == 1,
+            "the export's JSON_OBJECT read must actually return the row"
+        );
 
         let report = import_bundle(&dest_db.pool, &bundle).await.unwrap();
         assert!(report.rows_applied > 0);
@@ -568,7 +579,9 @@ mod tests {
             contains_redactions: true,
             tables: Default::default(),
         };
-        let err = import_bundle(&DbPool::Sqlite(target.clone()), &bundle).await.unwrap_err();
+        let err = import_bundle(&DbPool::Sqlite(target.clone()), &bundle)
+            .await
+            .unwrap_err();
         assert!(
             matches!(err, OrgError::BadRequest(ref m) if m.contains("unsupported backup version")),
             "expected a version refusal, got {err:?}"

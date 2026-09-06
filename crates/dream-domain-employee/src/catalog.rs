@@ -78,7 +78,8 @@ fn catalog_agent_id() -> String {
 /// two can never drift. Called from every catalog read/write path — cheap
 /// (28 guarded inserts against a small table) and self-healing.
 async fn seed_catalog_for_tenant(pool: &DbPool, tenant_id: &str) -> Result<(), EmployeeError> {
-    let entries = pool.fetch_all_as::<CatalogEntryRow>("SELECT * FROM one_employee_catalog ORDER BY id ASC", &[])
+    let entries = pool
+        .fetch_all_as::<CatalogEntryRow>("SELECT * FROM one_employee_catalog ORDER BY id ASC", &[])
         .await?;
     let now = now_ms() as i64;
     for entry in entries {
@@ -91,7 +92,23 @@ async fn seed_catalog_for_tenant(pool: &DbPool, tenant_id: &str) -> Result<(), E
              WHERE NOT EXISTS ( \
                  SELECT 1 FROM one_personal_agents \
                  WHERE tenant_id = ? AND origin = ? AND owner_user_id = ? AND name = ?)",
-        &db_params![catalog_agent_id(), CATALOG_OWNER_SENTINEL, tenant_id, &entry.name, &entry.description, CATALOG_AGENT_TYPE, &config, CATALOG_ORIGIN, now, now, tenant_id, CATALOG_ORIGIN, CATALOG_OWNER_SENTINEL, &entry.name])
+            &db_params![
+                catalog_agent_id(),
+                CATALOG_OWNER_SENTINEL,
+                tenant_id,
+                &entry.name,
+                &entry.description,
+                CATALOG_AGENT_TYPE,
+                &config,
+                CATALOG_ORIGIN,
+                now,
+                now,
+                tenant_id,
+                CATALOG_ORIGIN,
+                CATALOG_OWNER_SENTINEL,
+                &entry.name
+            ],
+        )
         .await?;
     }
     Ok(())
@@ -105,29 +122,34 @@ async fn seed_catalog_for_tenant(pool: &DbPool, tenant_id: &str) -> Result<(), E
 pub(crate) async fn list_catalog(pool: &DbPool, tenant_id: &str) -> Result<Vec<CatalogEntryDto>, EmployeeError> {
     seed_catalog_for_tenant(pool, tenant_id).await?;
 
-    let entries = pool.fetch_all_as::<CatalogEntryRow>("SELECT * FROM one_employee_catalog ORDER BY id ASC", &[])
+    let entries = pool
+        .fetch_all_as::<CatalogEntryRow>("SELECT * FROM one_employee_catalog ORDER BY id ASC", &[])
         .await?;
 
     // Sentinel-owned placeholders, keyed by entry name (names are unique
     // across the catalog content).
-    let placeholders: HashMap<String, String> = pool.fetch_all_as::<(String, String)>(
-        "SELECT name, id FROM one_personal_agents \
+    let placeholders: HashMap<String, String> = pool
+        .fetch_all_as::<(String, String)>(
+            "SELECT name, id FROM one_personal_agents \
          WHERE tenant_id = ? AND origin = ? AND owner_user_id = ?",
-    &db_params![tenant_id, CATALOG_ORIGIN, CATALOG_OWNER_SENTINEL])
-    .await?
-    .into_iter()
-    .collect();
+            &db_params![tenant_id, CATALOG_ORIGIN, CATALOG_OWNER_SENTINEL],
+        )
+        .await?
+        .into_iter()
+        .collect();
 
     // Formal instances: earliest per entry name wins (instantiate is
     // idempotent, so there is normally exactly one; ordering keeps the
     // mapping stable even if an old duplicate predates the guard).
     let mut instances: HashMap<String, String> = HashMap::new();
-    let rows = pool.fetch_all_as::<(String, String)>(
-        "SELECT name, id FROM one_personal_agents \
+    let rows = pool
+        .fetch_all_as::<(String, String)>(
+            "SELECT name, id FROM one_personal_agents \
          WHERE tenant_id = ? AND origin = ? AND owner_user_id != ? \
          ORDER BY created_at ASC, id ASC",
-    &db_params![tenant_id, CATALOG_ORIGIN, CATALOG_OWNER_SENTINEL])
-    .await?;
+            &db_params![tenant_id, CATALOG_ORIGIN, CATALOG_OWNER_SENTINEL],
+        )
+        .await?;
     for (name, id) in rows {
         instances.entry(name).or_insert(id);
     }
@@ -188,18 +210,24 @@ pub(crate) async fn instantiate_catalog_entry(
     // complete no matter which endpoint an admin hits first.
     seed_catalog_for_tenant(pool, tenant_id).await?;
 
-    let entry = pool.fetch_optional_as::<CatalogEntryRow>("SELECT * FROM one_employee_catalog WHERE id = ?", &db_params![catalog_id])
+    let entry = pool
+        .fetch_optional_as::<CatalogEntryRow>(
+            "SELECT * FROM one_employee_catalog WHERE id = ?",
+            &db_params![catalog_id],
+        )
         .await?
         .ok_or_else(|| EmployeeError::BadRequest(format!("catalog entry '{catalog_id}' not found")))?;
 
     // Idempotency: an instance (owner ≠ sentinel) for this entry already
     // exists → return it instead of creating a second one.
-    if let Some(existing) = pool.fetch_optional_as::<PersonalAgentRow>(
-        "SELECT * FROM one_personal_agents \
+    if let Some(existing) = pool
+        .fetch_optional_as::<PersonalAgentRow>(
+            "SELECT * FROM one_personal_agents \
          WHERE tenant_id = ? AND origin = ? AND name = ? AND owner_user_id != ? \
          ORDER BY created_at ASC, id ASC LIMIT 1",
-    &db_params![tenant_id, CATALOG_ORIGIN, &entry.name, CATALOG_OWNER_SENTINEL])
-    .await?
+            &db_params![tenant_id, CATALOG_ORIGIN, &entry.name, CATALOG_OWNER_SENTINEL],
+        )
+        .await?
     {
         return Ok(existing);
     }
@@ -212,7 +240,19 @@ pub(crate) async fn instantiate_catalog_entry(
              (id, owner_user_id, tenant_id, name, description, agent_type, automation_config, \
               visibility, origin, created_at, updated_at) \
          VALUES (?, ?, ?, ?, ?, ?, ?, 'shared', ?, ?, ?)",
-    &db_params![&id, admin_user_id, tenant_id, &entry.name, &entry.description, CATALOG_AGENT_TYPE, &config, CATALOG_ORIGIN, now, now])
+        &db_params![
+            &id,
+            admin_user_id,
+            tenant_id,
+            &entry.name,
+            &entry.description,
+            CATALOG_AGENT_TYPE,
+            &config,
+            CATALOG_ORIGIN,
+            now,
+            now
+        ],
+    )
     .await?;
 
     pool.fetch_optional_as::<PersonalAgentRow>("SELECT * FROM one_personal_agents WHERE id = ?", &db_params![&id])

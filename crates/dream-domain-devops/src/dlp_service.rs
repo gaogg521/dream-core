@@ -18,8 +18,8 @@ use serde::Serialize;
 use sqlx::FromRow;
 
 use crate::error::DevopsError;
-use dream_core_db::{day_bucket_expr, db_params};
 use crate::service::DevopsService;
+use dream_core_db::{day_bucket_expr, db_params};
 
 const RULE_COLS: &str =
     "id, name, matcher, pattern, action, enabled, scope, team_id, created_by, created_at, updated_at";
@@ -154,10 +154,13 @@ impl DevopsService {
     /// Every rule, for the admin console. Includes disabled ones — an admin
     /// managing rules needs to see the ones they switched off.
     pub async fn list_dlp_rules(&self) -> Result<Vec<DlpRuleDto>, DevopsError> {
-        Ok(self.db.fetch_all_as::<DlpRuleDto>(&format!(
-            "SELECT {RULE_COLS} FROM one_dlp_rules ORDER BY updated_at DESC"
-        ), &[])
-        .await?)
+        Ok(self
+            .db
+            .fetch_all_as::<DlpRuleDto>(
+                &format!("SELECT {RULE_COLS} FROM one_dlp_rules ORDER BY updated_at DESC"),
+                &[],
+            )
+            .await?)
     }
 
     /// The rules a given member is actually subject to: enabled, and either
@@ -175,7 +178,9 @@ impl DevopsService {
                (SELECT tenant_id FROM one_user_org WHERE user_id = ?))) \
              ORDER BY updated_at DESC"
         );
-        Ok(self.db.fetch_all_as::<DlpRuleDto>(&sql, &db_params![viewer_user_id])
+        Ok(self
+            .db
+            .fetch_all_as::<DlpRuleDto>(&sql, &db_params![viewer_user_id])
             .await?)
     }
 
@@ -244,10 +249,11 @@ impl DevopsService {
             Some(existing) => {
                 // The row's CURRENT team_id, not the incoming one — same
                 // reasoning as the skill/MCP/RAG registries.
-                let current_team_id: Option<String> =
-                    self.db.fetch_optional_scalar("SELECT team_id FROM one_dlp_rules WHERE id = ?", &db_params![existing])
-                        .await?
-                        .ok_or_else(|| DevopsError::NotFound(format!("dlp rule {existing}")))?;
+                let current_team_id: Option<String> = self
+                    .db
+                    .fetch_optional_scalar("SELECT team_id FROM one_dlp_rules WHERE id = ?", &db_params![existing])
+                    .await?
+                    .ok_or_else(|| DevopsError::NotFound(format!("dlp rule {existing}")))?;
                 if !self
                     .actor_can_touch_team(created_by, current_team_id.as_deref())
                     .await?
@@ -256,11 +262,14 @@ impl DevopsService {
                         "this DLP rule belongs to a different project group".into(),
                     ));
                 }
-                let updated = self.db.execute(
-                    "UPDATE one_dlp_rules SET name = ?, matcher = ?, pattern = ?, action = ?, enabled = ?, \
+                let updated = self
+                    .db
+                    .execute(
+                        "UPDATE one_dlp_rules SET name = ?, matcher = ?, pattern = ?, action = ?, enabled = ?, \
                      scope = ?, team_id = ?, updated_at = ? WHERE id = ?",
-                &db_params![name, matcher, pattern, action, enabled, scope, team_id, now, existing])
-                .await?;
+                        &db_params![name, matcher, pattern, action, enabled, scope, team_id, now, existing],
+                    )
+                    .await?;
                 if updated == 0 {
                     return Err(DevopsError::NotFound(format!("dlp rule {existing}")));
                 }
@@ -278,13 +287,19 @@ impl DevopsService {
             }
         };
 
-        self.db.fetch_one_as::<DlpRuleDto>(&format!("SELECT {RULE_COLS} FROM one_dlp_rules WHERE id = ?"), &db_params![&id])
+        self.db
+            .fetch_one_as::<DlpRuleDto>(
+                &format!("SELECT {RULE_COLS} FROM one_dlp_rules WHERE id = ?"),
+                &db_params![&id],
+            )
             .await
             .map_err(Into::into)
     }
 
     pub async fn delete_dlp_rule(&self, actor_user_id: &str, id: &str) -> Result<(), DevopsError> {
-        let team_id: Option<String> = self.db.fetch_optional_scalar("SELECT team_id FROM one_dlp_rules WHERE id = ?", &db_params![id])
+        let team_id: Option<String> = self
+            .db
+            .fetch_optional_scalar("SELECT team_id FROM one_dlp_rules WHERE id = ?", &db_params![id])
             .await?
             .ok_or_else(|| DevopsError::NotFound(format!("dlp rule {id}")))?;
         if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
@@ -292,7 +307,9 @@ impl DevopsService {
                 "this DLP rule belongs to a different project group".into(),
             ));
         }
-        let deleted = self.db.execute("DELETE FROM one_dlp_rules WHERE id = ?", &db_params![id])
+        let deleted = self
+            .db
+            .execute("DELETE FROM one_dlp_rules WHERE id = ?", &db_params![id])
             .await?;
         if deleted == 0 {
             return Err(DevopsError::NotFound(format!("dlp rule {id}")));
@@ -311,10 +328,14 @@ impl DevopsService {
         }
         // Which project group the member was acting in, so a reviewer can scope
         // by team the same way the rest of the console does.
-        let team_id: Option<String> =
-            self.db.fetch_optional_scalar("SELECT tenant_id FROM one_user_org WHERE user_id = ? LIMIT 1", &db_params![user_id])
-                .await
-                .unwrap_or(None);
+        let team_id: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT tenant_id FROM one_user_org WHERE user_id = ? LIMIT 1",
+                &db_params![user_id],
+            )
+            .await
+            .unwrap_or(None);
 
         let now = now_ms();
         let mut written = 0u64;
@@ -373,7 +394,10 @@ impl DevopsService {
         let sql = format!(
             "SELECT {key_expr} AS k, COUNT(*) FROM one_dlp_events WHERE created_at >= ? GROUP BY k ORDER BY COUNT(*) DESC"
         );
-        let rows: Vec<(String, i64)> = self.db.fetch_all_as::<(String, i64)>(&sql, &db_params![since_ms]).await?;
+        let rows: Vec<(String, i64)> = self
+            .db
+            .fetch_all_as::<(String, i64)>(&sql, &db_params![since_ms])
+            .await?;
         Ok(rows
             .into_iter()
             .map(|(key, count)| DlpBucketDto { key, count })
@@ -392,7 +416,9 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone())).await.unwrap();
+        run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone()))
+            .await
+            .unwrap();
         sqlx::raw_sql(
             "CREATE TABLE one_tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, tenant_id));
@@ -461,7 +487,11 @@ mod tests {
         let summary = svc.dlp_summary(0).await.unwrap();
         assert_eq!(summary.total_events, 1);
         assert_eq!(summary.total_blocked, 1);
-        assert_eq!(summary.by_day.len(), 1, "the DATE_FORMAT/FROM_UNIXTIME bucket must group the one event into one day");
+        assert_eq!(
+            summary.by_day.len(),
+            1,
+            "the DATE_FORMAT/FROM_UNIXTIME bucket must group the one event into one day"
+        );
         assert_eq!(summary.by_day[0].count, 1);
 
         mysql_db.cleanup().await.unwrap();

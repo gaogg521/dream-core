@@ -97,9 +97,7 @@ async fn extract_facts_with_provider_inner(
             Role::User,
             vec![
                 ContentBlock::Text { text: user_block },
-                ContentBlock::Text {
-                    text: assistant_block,
-                },
+                ContentBlock::Text { text: assistant_block },
             ],
         )],
         tools: Vec::new(),
@@ -108,10 +106,12 @@ async fn extract_facts_with_provider_inner(
         reasoning_effort: None,
     };
 
-    let mut stream = provider
-        .stream(&request)
-        .await
-        .map_err(|error| format!("memory extraction model '{}' could not be reached: {error}", config.model))?;
+    let mut stream = provider.stream(&request).await.map_err(|error| {
+        format!(
+            "memory extraction model '{}' could not be reached: {error}",
+            config.model
+        )
+    })?;
 
     let mut text = String::new();
     while let Some(event) = stream.recv().await {
@@ -159,11 +159,7 @@ fn parse_extracted_facts(text: &str) -> Vec<ExtractedFact> {
         let tags = value
             .get("tags")
             .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|t| t.as_str().map(str::to_owned))
-                    .collect()
-            })
+            .map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_owned)).collect())
             .unwrap_or_default();
         out.push(ExtractedFact {
             content: content.to_owned(),

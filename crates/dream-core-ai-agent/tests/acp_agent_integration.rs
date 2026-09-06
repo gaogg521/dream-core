@@ -117,8 +117,8 @@ async fn make_mock_agent(script: &str, backend: &str) -> (Arc<AcpAgentManager>, 
             std::env::temp_dir(),
             false,
             dream_core_ai_agent::capability::AcpVisionPolicy::NotBridged,
-        
-    None,)
+            None,
+        )
         .await,
     );
 

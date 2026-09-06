@@ -417,25 +417,26 @@ async fn callback(
     // 第二步（挑战 token 只存哈希，≤5 分钟一次性）。桌面深链流程在挑战期间
     // 暂不支持（v1 限制，见交付说明）——浏览器里完成两步后仍可直接使用控制台。
     if let Some(mfa) = state.mfa.as_ref()
-        && let dream_core_auth::mfa::MfaDecision::Challenge(purpose) = mfa.decide_for_user(&user_id, &username).await? {
-            let (mfa_token, _expires_at, _purpose) = mfa
-                .create_challenge_for_user(
-                    &user_id,
-                    &username,
-                    purpose,
-                    None,
-                    entry.redirect_target.as_deref(),
-                    entry.desktop,
-                    Some(entry.deep_link_scheme),
-                )
-                .await?;
-            let login_path = format!(
-                "/admin/login?mfa_token={}&mfa_purpose={}",
-                urlencode(&mfa_token),
-                purpose.as_str()
-            );
-            return Ok(Redirect::to(&login_path).into_response());
-        }
+        && let dream_core_auth::mfa::MfaDecision::Challenge(purpose) = mfa.decide_for_user(&user_id, &username).await?
+    {
+        let (mfa_token, _expires_at, _purpose) = mfa
+            .create_challenge_for_user(
+                &user_id,
+                &username,
+                purpose,
+                None,
+                entry.redirect_target.as_deref(),
+                entry.desktop,
+                Some(entry.deep_link_scheme),
+            )
+            .await?;
+        let login_path = format!(
+            "/admin/login?mfa_token={}&mfa_purpose={}",
+            urlencode(&mfa_token),
+            purpose.as_str()
+        );
+        return Ok(Redirect::to(&login_path).into_response());
+    }
 
     let session = state
         .service
@@ -639,26 +640,27 @@ async fn ldap_login(
 
     // 登录二次认证闸：需要 MFA 时返回挑战（JSON），前端进入第二步。
     if let Some(mfa) = state.mfa.as_ref()
-        && let dream_core_auth::mfa::MfaDecision::Challenge(purpose) = mfa.decide_for_user(&user_id, &username).await? {
-            let (mfa_token, expires_at, purpose) = mfa
-                .create_challenge_for_user(
-                    &user_id,
-                    &username,
-                    purpose,
-                    None,
-                    redirect_target.as_deref(),
-                    false,
-                    None,
-                )
-                .await?;
-            return Ok(Json(ApiResponse::ok(serde_json::json!({
-                "mfaRequired": true,
-                "mfaToken": mfa_token,
-                "purpose": purpose.as_str(),
-                "expiresAt": expires_at,
-            })))
-            .into_response());
-        }
+        && let dream_core_auth::mfa::MfaDecision::Challenge(purpose) = mfa.decide_for_user(&user_id, &username).await?
+    {
+        let (mfa_token, expires_at, purpose) = mfa
+            .create_challenge_for_user(
+                &user_id,
+                &username,
+                purpose,
+                None,
+                redirect_target.as_deref(),
+                false,
+                None,
+            )
+            .await?;
+        return Ok(Json(ApiResponse::ok(serde_json::json!({
+            "mfaRequired": true,
+            "mfaToken": mfa_token,
+            "purpose": purpose.as_str(),
+            "expiresAt": expires_at,
+        })))
+        .into_response());
+    }
 
     let session = state
         .service

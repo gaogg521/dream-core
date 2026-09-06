@@ -5,7 +5,6 @@
 //! is `dream_domain_memory`-backed and wired in dream-app. `None` in personal
 //! builds — no hook registered, prompts flow through unmodified.
 
-
 /// Recalls the caller's readable enterprise memory for injection into an
 /// agent prompt. Unlike the first-turn `preset_context` path, a hook
 /// registered in the ACP prompt pipeline runs on EVERY turn — accumulated

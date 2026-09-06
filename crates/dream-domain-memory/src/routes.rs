@@ -18,8 +18,7 @@ use dream_core_auth::CurrentUser;
 
 use crate::error::MemoryError;
 use crate::models::{
-    GrantCoverageDto, MemoryCollectionDto, MemoryConfigDto, MemoryGrantDto, MemoryItemDto,
-    MemoryRefineJobDto,
+    GrantCoverageDto, MemoryCollectionDto, MemoryConfigDto, MemoryGrantDto, MemoryItemDto, MemoryRefineJobDto,
 };
 use crate::rbac::{RequireMemoryAdmin, RequireMemoryMember};
 use crate::state::OneMemoryRouterState;

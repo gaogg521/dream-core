@@ -90,7 +90,6 @@ pub async fn assemble_acp_params(
     dump_prompts: bool,
     vision_policy: AcpVisionPolicy,
     memory_recall: Option<std::sync::Arc<dyn crate::capability::memory_recall::TurnMemoryRecall>>,
-
 ) -> AcpSessionParams {
     let mcp_servers = resolve_mcp_servers(&config, user_mcp_servers);
     let preset_context = compose_preset_context(config.preset_context.as_deref());
@@ -240,8 +239,8 @@ mod tests {
             PathBuf::from("/tmp/data"),
             true,
             AcpVisionPolicy::NotBridged,
-        
-    None,)
+            None,
+        )
         .await;
 
         assert!(params.dump_prompts);
@@ -324,8 +323,8 @@ mod tests {
             PathBuf::from("/tmp/data"),
             false,
             AcpVisionPolicy::NotBridged,
-        
-    None,)
+            None,
+        )
         .await;
 
         let request = params.new_session_request();

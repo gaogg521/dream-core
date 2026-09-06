@@ -52,7 +52,9 @@ pub const MISSING_TABLE_MESSAGE_MARKERS: &[&str] = &["no such table", "doesn't e
 /// on either backend. See [`MISSING_TABLE_MESSAGE_MARKERS`].
 pub fn message_indicates_missing_table(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
-    MISSING_TABLE_MESSAGE_MARKERS.iter().any(|marker| lower.contains(marker))
+    MISSING_TABLE_MESSAGE_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
 }
 
 impl DbError {

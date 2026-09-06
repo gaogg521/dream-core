@@ -28,10 +28,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
-    (
-        "sso_001_init",
-        include_str!("../migrations_mysql/001_init.sql"),
-    ),
+    ("sso_001_init", include_str!("../migrations_mysql/001_init.sql")),
     (
         "sso_002_identity_display",
         include_str!("../migrations_mysql/002_identity_display.sql"),
@@ -67,8 +64,12 @@ mod tests {
     #[tokio::test]
     async fn migrations_are_idempotent() {
         let db = dream_core_db::init_database_memory().await.unwrap();
-        run_one_sso_migrations(&DbPool::Sqlite(db.pool().clone())).await.unwrap();
-        run_one_sso_migrations(&DbPool::Sqlite(db.pool().clone())).await.unwrap();
+        run_one_sso_migrations(&DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
+        run_one_sso_migrations(&DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
 
         for table in ["one_sso_providers", "one_sso_identities"] {
             let exists: bool =

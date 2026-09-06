@@ -12,8 +12,8 @@ use crate::totp;
 use dream_core_common::{decrypt_string, encrypt_string};
 use dream_core_db::models::User;
 use dream_core_db::{
-    AttemptBump, DbError, MfaAuditEntry, MfaAuditRow, MfaChallengePurpose, MfaChallengeRow, MfaMode,
-    MfaStore, IUserRepository, MFA_MAX_ATTEMPTS,
+    AttemptBump, DbError, IUserRepository, MFA_MAX_ATTEMPTS, MfaAuditEntry, MfaAuditRow, MfaChallengePurpose,
+    MfaChallengeRow, MfaMode, MfaStore,
 };
 use std::sync::Arc;
 
@@ -82,7 +82,11 @@ impl From<DbError> for MfaError {
 
 impl MfaService {
     pub fn new(user_repo: Arc<dyn IUserRepository>, store: Arc<dyn MfaStore>, encryption_key: [u8; 32]) -> Self {
-        Self { user_repo, store, encryption_key }
+        Self {
+            user_repo,
+            store,
+            encryption_key,
+        }
     }
 
     /// 判定矩阵（严格按序）：全局关闭 → 放行；豁免 → 放行；单用户强制 → 阻断
@@ -117,7 +121,8 @@ impl MfaService {
         let token_hash = sha256_hex(token.as_bytes());
         let secret_cipher = if purpose == MfaChallengePurpose::Enroll {
             let secret = totp::generate_secret();
-            let cipher = encrypt_string(&secret, &self.encryption_key).map_err(|e| MfaError::Internal(e.to_string()))?;
+            let cipher =
+                encrypt_string(&secret, &self.encryption_key).map_err(|e| MfaError::Internal(e.to_string()))?;
             Some((secret, cipher))
         } else {
             None
@@ -139,7 +144,11 @@ impl MfaService {
         self.audit(
             Some(&user.id),
             user.username.as_deref(),
-            if purpose == MfaChallengePurpose::Enroll { "mfa_enroll_started" } else { "mfa_challenge_issued" },
+            if purpose == MfaChallengePurpose::Enroll {
+                "mfa_enroll_started"
+            } else {
+                "mfa_challenge_issued"
+            },
             None,
             ip,
         )
@@ -199,7 +208,11 @@ impl MfaService {
                     ip,
                 )
                 .await;
-                Ok(Ok((user.id, user.username.unwrap_or_else(|| "external_user".into()), enrolled)))
+                Ok(Ok((
+                    user.id,
+                    user.username.unwrap_or_else(|| "external_user".into()),
+                    enrolled,
+                )))
             }
             None => {
                 let AttemptBump { attempts, invalidated } = self.store.challenge_fail(&token_hash).await?;
@@ -213,7 +226,14 @@ impl MfaService {
                 .await;
                 let attempts_left = (MFA_MAX_ATTEMPTS - attempts).max(0);
                 if invalidated {
-                    self.audit(Some(&user.id), user.username.as_deref(), "mfa_challenge_invalidated", Some("attempts exhausted".to_string()), ip).await;
+                    self.audit(
+                        Some(&user.id),
+                        user.username.as_deref(),
+                        "mfa_challenge_invalidated",
+                        Some("attempts exhausted".to_string()),
+                        ip,
+                    )
+                    .await;
                     return Err(MfaError::NotFound);
                 }
                 Ok(Err(("动态码错误".into(), attempts_left)))
@@ -231,7 +251,12 @@ impl MfaService {
         if challenge.used || challenge.expires_at <= dream_core_common::now_ms() {
             return Err(MfaError::NotFound);
         }
-        let MfaChallengeRow { purpose, user_id, pending_secret_cipher, .. } = challenge;
+        let MfaChallengeRow {
+            purpose,
+            user_id,
+            pending_secret_cipher,
+            ..
+        } = challenge;
         if purpose != MfaChallengePurpose::Enroll {
             return Err(MfaError::BadRequest("不是绑定挑战".into()));
         }
@@ -245,7 +270,10 @@ impl MfaService {
             .await?
             .and_then(|u| u.username)
             .unwrap_or_else(|| "external_user".into());
-        Ok((totp::otpauth_uri(OPTRAUTH_ISSUER_PLACEHOLDER, &username, &secret), secret))
+        Ok((
+            totp::otpauth_uri(OPTRAUTH_ISSUER_PLACEHOLDER, &username, &secret),
+            secret,
+        ))
     }
 
     /// 供 SSO 回调 / LDAP 使用的闸入口：按 user_id 取用户后走同一判定矩阵。
@@ -277,7 +305,8 @@ impl MfaService {
             .await?
             .ok_or_else(|| MfaError::Internal("mfa gate: user missing".into()))?;
         let _ = username;
-        self.create_challenge(&user, purpose, ip, redirect_target, desktop, scheme).await
+        self.create_challenge(&user, purpose, ip, redirect_target, desktop, scheme)
+            .await
     }
 
     pub async fn admin_audit_list(&self, limit: i64) -> Result<Vec<MfaAuditRow>, MfaError> {
@@ -332,7 +361,13 @@ impl MfaService {
         Ok(())
     }
 
-    pub async fn admin_set_flags(&self, user_id: &str, exempt: bool, force: bool, operator: &str) -> Result<(), MfaError> {
+    pub async fn admin_set_flags(
+        &self,
+        user_id: &str,
+        exempt: bool,
+        force: bool,
+        operator: &str,
+    ) -> Result<(), MfaError> {
         self.user_repo.set_mfa_flags(user_id, exempt, force).await?;
         self.audit(
             Some(user_id),
@@ -384,4 +419,3 @@ fn sha256_hex(data: &[u8]) -> String {
 
 /// otpauth issuer 的占位（避免模块间命名抖动；实际值见 totp.rs 调用方常量）。
 const OPTRAUTH_ISSUER_PLACEHOLDER: &str = "One Work";
-

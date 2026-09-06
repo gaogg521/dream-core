@@ -28,10 +28,10 @@ use sqlx::FromRow;
 
 use dream_core_common::now_ms;
 
-use dream_core_db::db_params;
 use crate::error::DevopsError;
 use crate::models::SkillRegistryDto;
 use crate::service::{DevopsService, new_id};
+use dream_core_db::db_params;
 
 /// One parsed endpoint summary. Method/path casing is kept exactly as it
 /// appears in the document; unparseable optional fields become `None` rather
@@ -237,7 +237,9 @@ impl DevopsService {
             "SELECT {ASSET_COLS} FROM one_api_assets \
                            WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY created_at DESC"
         );
-        let rows = self.db.fetch_all_as::<ApiAssetRow>(&sql, &db_params![tenant_id])
+        let rows = self
+            .db
+            .fetch_all_as::<ApiAssetRow>(&sql, &db_params![tenant_id])
             .await?;
         rows.into_iter().map(ApiAssetRow::into_dto).collect()
     }
@@ -246,7 +248,9 @@ impl DevopsService {
     pub async fn get_api_asset(&self, tenant_id: &str, id: &str) -> Result<ApiAssetDetailDto, DevopsError> {
         let sql =
             format!("SELECT {ASSET_COLS} FROM one_api_assets WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL");
-        let row = self.db.fetch_optional_as::<ApiAssetRow>(&sql, &db_params![id, tenant_id])
+        let row = self
+            .db
+            .fetch_optional_as::<ApiAssetRow>(&sql, &db_params![id, tenant_id])
             .await?
             .ok_or_else(|| DevopsError::NotFound(format!("api asset {id}")))?;
         let spec = row.spec.clone();
@@ -274,13 +278,28 @@ impl DevopsService {
 
         let id = new_id("oapi");
         let now = now_ms();
-        self.db.execute(
-            "INSERT INTO one_api_assets \
+        self.db
+            .execute(
+                "INSERT INTO one_api_assets \
                 (id, tenant_id, name, source_format, title, version, base_url, spec, endpoints, imported_by, \
                  created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        &db_params![&id, tenant_id, name, parsed.source_format, &parsed.title, &parsed.version, &parsed.base_url, spec.to_string(), serde_json::to_string(&parsed.endpoints).map_err(|e| DevopsError::Internal(e.to_string()))?, imported_by, now, now])
-        .await?;
+                &db_params![
+                    &id,
+                    tenant_id,
+                    name,
+                    parsed.source_format,
+                    &parsed.title,
+                    &parsed.version,
+                    &parsed.base_url,
+                    spec.to_string(),
+                    serde_json::to_string(&parsed.endpoints).map_err(|e| DevopsError::Internal(e.to_string()))?,
+                    imported_by,
+                    now,
+                    now
+                ],
+            )
+            .await?;
 
         self.get_api_asset(tenant_id, &id).await.map(|d| d.asset)
     }
@@ -288,10 +307,13 @@ impl DevopsService {
     /// Soft delete (the row keeps its spec for audit; it just leaves every
     /// listing). Tenant-scoped like every other read.
     pub async fn delete_api_asset(&self, tenant_id: &str, id: &str) -> Result<(), DevopsError> {
-        let result = self.db.execute(
-            "UPDATE one_api_assets SET deleted_at = ? WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL",
-        &db_params![now_ms(), id, tenant_id])
-        .await?;
+        let result = self
+            .db
+            .execute(
+                "UPDATE one_api_assets SET deleted_at = ? WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL",
+                &db_params![now_ms(), id, tenant_id],
+            )
+            .await?;
         if result == 0 {
             return Err(DevopsError::NotFound(format!("api asset {id}")));
         }
@@ -319,7 +341,9 @@ impl DevopsService {
     ) -> Result<SkillRegistryDto, DevopsError> {
         let sql =
             format!("SELECT {ASSET_COLS} FROM one_api_assets WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL");
-        let row = self.db.fetch_optional_as::<ApiAssetRow>(&sql, &db_params![id, tenant_id])
+        let row = self
+            .db
+            .fetch_optional_as::<ApiAssetRow>(&sql, &db_params![id, tenant_id])
             .await?
             .ok_or_else(|| DevopsError::NotFound(format!("api asset {id}")))?;
 
@@ -356,7 +380,11 @@ impl DevopsService {
             .await?;
 
         if row.published_skill_id.as_deref() != Some(dto.id.as_str()) {
-            self.db.execute("UPDATE one_api_assets SET published_skill_id = ?, updated_at = ? WHERE id = ?", &db_params![&dto.id, now_ms(), &row.id])
+            self.db
+                .execute(
+                    "UPDATE one_api_assets SET published_skill_id = ?, updated_at = ? WHERE id = ?",
+                    &db_params![&dto.id, now_ms(), &row.id],
+                )
                 .await?;
         }
         Ok(dto)
@@ -444,7 +472,9 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone())).await.unwrap();
+        run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone()))
+            .await
+            .unwrap();
         DevopsService::new(dream_core_db::DbPool::Sqlite(pool.clone()))
     }
 

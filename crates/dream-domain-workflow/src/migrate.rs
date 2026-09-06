@@ -13,10 +13,7 @@ use crate::error::WorkflowError;
 /// reorder shipped entries — add a new file instead.
 const MIGRATIONS: &[(&str, &str)] = &[("001_init", include_str!("../migrations/001_init.sql"))];
 
-const MIGRATIONS_MYSQL: &[(&str, &str)] = &[(
-    "001_init",
-    include_str!("../migrations_mysql/001_init.sql"),
-)];
+const MIGRATIONS_MYSQL: &[(&str, &str)] = &[("001_init", include_str!("../migrations_mysql/001_init.sql"))];
 
 /// Run all pending one-workflow migrations on the pool's backend. Idempotent;
 /// call once at startup after the upstream database has been initialized.

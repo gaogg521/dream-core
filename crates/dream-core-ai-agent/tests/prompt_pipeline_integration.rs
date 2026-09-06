@@ -92,7 +92,7 @@ async fn fixture_params_with_vision_policy(
             false,
             vision_policy,
             None,
-    )
+        )
         .await,
     )
 }

@@ -173,9 +173,7 @@ async fn rewrite_image_attachment_paths(
 
     let marker = format!("{FILES_MARKER}\n");
     let legacy_marker = format!("{LEGACY_FILES_MARKER}\n");
-    let split = prompt
-        .split_once(&marker)
-        .or_else(|| prompt.split_once(&legacy_marker));
+    let split = prompt.split_once(&marker).or_else(|| prompt.split_once(&legacy_marker));
     let Some((prefix, attachment_lines)) = split else {
         return RewriteOutcome {
             prompt,

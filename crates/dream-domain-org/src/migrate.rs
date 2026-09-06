@@ -59,20 +59,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "013_runtime_control",
         include_str!("../migrations/013_runtime_control.sql"),
     ),
-    (
-        "014_audit_outcome",
-        include_str!("../migrations/014_audit_outcome.sql"),
-    ),
+    ("014_audit_outcome", include_str!("../migrations/014_audit_outcome.sql")),
 ];
 
 /// Embedded MySQL migrations (final-state ports, not a replay of the SQLite
 /// history — see the P3-3 implementation plan §1). Append-only like the
 /// SQLite tree; new schema changes land in both trees with the same ledger key.
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
-    (
-        "001_init",
-        include_str!("../migrations_mysql/001_init.sql"),
-    ),
+    ("001_init", include_str!("../migrations_mysql/001_init.sql")),
     (
         "002_membership_display",
         include_str!("../migrations_mysql/002_membership_display.sql"),
@@ -97,10 +91,7 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
         "007_multi_membership",
         include_str!("../migrations_mysql/007_multi_membership.sql"),
     ),
-    (
-        "008_onboarding",
-        include_str!("../migrations_mysql/008_onboarding.sql"),
-    ),
+    ("008_onboarding", include_str!("../migrations_mysql/008_onboarding.sql")),
     (
         "009_departments",
         include_str!("../migrations_mysql/009_departments.sql"),
@@ -222,12 +213,11 @@ mod tests {
             .execute(db.pool.mysql())
             .await
             .unwrap();
-        let miss: Option<String> =
-            sqlx::query_scalar("SELECT name FROM one_tenants WHERE name = ?")
-                .bind("api")
-                .fetch_optional(db.pool.mysql())
-                .await
-                .unwrap();
+        let miss: Option<String> = sqlx::query_scalar("SELECT name FROM one_tenants WHERE name = ?")
+            .bind("api")
+            .fetch_optional(db.pool.mysql())
+            .await
+            .unwrap();
         assert_eq!(miss, None, "one_* tables must be case-sensitive");
 
         db.cleanup().await.unwrap();

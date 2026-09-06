@@ -80,19 +80,18 @@ fn hotp_at(secret: &[u8], counter: u64) -> u32 {
 pub fn totp_code(secret_b32: &str, at_ms: i64) -> Option<String> {
     let secret = base32_decode(secret_b32)?;
     let step = at_ms / 1000 / STEP_SECONDS;
-    Some(format!("{:0width$}", hotp_at(&secret, step as u64), width = CODE_DIGITS))
+    Some(format!(
+        "{:0width$}",
+        hotp_at(&secret, step as u64),
+        width = CODE_DIGITS
+    ))
 }
 
 /// 带窗口与防重放的校验。命中时返回该码对应的时间片（调用方持久化，
 /// 之后任何 `step <= 该值` 的码一律拒绝，保证同一动态码不可重放）。
 ///
 /// `code` 用常数时间比较（subtle），防时序侧信道。
-pub fn verify_with_window(
-    secret_b32: &str,
-    code: &str,
-    last_used_step: Option<i64>,
-    at_ms: i64,
-) -> Option<i64> {
+pub fn verify_with_window(secret_b32: &str, code: &str, last_used_step: Option<i64>, at_ms: i64) -> Option<i64> {
     let normalized = code.trim();
     if normalized.len() != CODE_DIGITS || !normalized.chars().all(|c| c.is_ascii_digit()) {
         return None;
@@ -104,9 +103,10 @@ pub fn verify_with_window(
     for delta in -WINDOW_STEPS..=WINDOW_STEPS {
         let step = now_step + delta;
         if let Some(used) = last_used_step
-            && step <= used {
-                continue; // 防重放：已用过（或更早）的时间片直接跳过
-            }
+            && step <= used
+        {
+            continue; // 防重放：已用过（或更早）的时间片直接跳过
+        }
         let candidate = hotp_at(&secret, step as u64);
         if candidate.ct_eq(&supplied).into() {
             return Some(step);
@@ -119,7 +119,9 @@ pub fn verify_with_window(
 pub fn otpauth_uri(issuer: &str, account: &str, secret_b32: &str) -> String {
     let label = urlencoding_lite(issuer);
     let account = urlencoding_lite(account);
-    format!("otpauth://totp/{label}:{account}?secret={secret_b32}&issuer={label}&algorithm=SHA1&digits={CODE_DIGITS}&period={STEP_SECONDS}")
+    format!(
+        "otpauth://totp/{label}:{account}?secret={secret_b32}&issuer={label}&algorithm=SHA1&digits={CODE_DIGITS}&period={STEP_SECONDS}"
+    )
 }
 
 /// 最小化的百分号编码（otpauth URI 参数只需这一档）。
@@ -127,9 +129,7 @@ fn urlencoding_lite(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for b in raw.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }
