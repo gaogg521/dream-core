@@ -516,6 +516,51 @@ impl OrgService {
         let org_profile_synced_at = org_profile_source.as_ref().map(|_| now);
 
         let mut tx = self.db.begin().await?;
+        let user_org_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO one_user_org \
+                 (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
+                  org_profile_synced_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(user_id, tenant_id) DO NOTHING"
+            }
+            DbBackend::MySql => {
+                "INSERT INTO one_user_org \
+                 (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
+                  org_profile_synced_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
+                 ON DUPLICATE KEY UPDATE user_id = user_id"
+            }
+        };
+        // The membership insert IS the guard, and it runs before the invite
+        // is consumed. `already_member` above is only a fast path: it reads
+        // outside this transaction, so two concurrent joins by the same user
+        // both passed it, both consumed a use, and the second insert quietly
+        // became an UPDATE — one person taking several seats of a multi-use
+        // code. `DO NOTHING` plus `rows_affected() == 0` makes the database's
+        // own uniqueness the arbiter, and failing here rolls the transaction
+        // back before any use is spent.
+        let inserted = tx
+            .execute(
+                user_org_sql,
+                &db_params![
+                    user_id,
+                    &invite.tenant_id,
+                    ROLE_MEMBER,
+                    &display_name,
+                    &org_unit_path,
+                    &job_title,
+                    &org_profile_source,
+                    org_profile_synced_at,
+                    now,
+                    now
+                ],
+            )
+            .await?;
+        if inserted == 0 {
+            return Err(OrgError::AlreadyInEnterprise);
+        }
+
         // Re-check every condition `is_active()` checked above, atomically
         // with the increment: the SELECT above ran outside this transaction,
         // so two concurrent joins could both pass that check and both land
@@ -536,44 +581,6 @@ impl OrgService {
         if claimed == 0 {
             return Err(OrgError::InvalidCode);
         }
-        let user_org_sql = match tx.backend() {
-            DbBackend::Sqlite => {
-                "INSERT INTO one_user_org \
-                 (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
-                  org_profile_synced_at, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-                 ON CONFLICT(user_id, tenant_id) DO UPDATE SET updated_at = excluded.updated_at, \
-                     display_name = excluded.display_name, org_unit_path = excluded.org_unit_path, \
-                     job_title = excluded.job_title, org_profile_source = excluded.org_profile_source, \
-                     org_profile_synced_at = excluded.org_profile_synced_at"
-            }
-            DbBackend::MySql => {
-                "INSERT INTO one_user_org \
-                 (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
-                  org_profile_synced_at, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
-                 ON DUPLICATE KEY UPDATE updated_at = new.updated_at, \
-                     display_name = new.display_name, org_unit_path = new.org_unit_path, \
-                     job_title = new.job_title, org_profile_source = new.org_profile_source, \
-                     org_profile_synced_at = new.org_profile_synced_at"
-            }
-        };
-        tx.execute(
-            user_org_sql,
-            &db_params![
-                user_id,
-                &invite.tenant_id,
-                ROLE_MEMBER,
-                &display_name,
-                &org_unit_path,
-                &job_title,
-                &org_profile_source,
-                org_profile_synced_at,
-                now,
-                now
-            ],
-        )
-        .await?;
         // The group just joined becomes the active one.
         let active_tenant_sql = match tx.backend() {
             DbBackend::Sqlite => {
@@ -4829,6 +4836,51 @@ mod tests {
             .unwrap();
         // The creator (system_admin) plus exactly one racer — not two.
         assert_eq!(member_count, 2);
+
+        db.close().await;
+    }
+
+    /// A multi-use invite is a seat budget, and one person must not be able to
+    /// spend more than one of it. The `already_member` read sits outside the
+    /// join transaction, so concurrent joins by the SAME user all passed it;
+    /// the membership insert was an upsert, so every one of them quietly
+    /// succeeded while each consumed a use. Three requests, three seats gone,
+    /// one member — and the seats the invite was meant for are no longer there.
+    #[tokio::test]
+    async fn one_user_cannot_spend_several_uses_of_a_multi_use_invite() {
+        let (db, service, user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let (invite_id, code) = service
+            .create_invite(&tenant_id, SYSTEM_DEFAULT_USER_ID, Some(3), None)
+            .await
+            .unwrap();
+        let greedy = create_user(&user_repo, "greedy").await;
+
+        let spawn = |svc: std::sync::Arc<OrgService>, user: String, code: String| {
+            tokio::spawn(async move { svc.join_with_invite(&user, &code).await })
+        };
+        let (r1, r2, r3) = tokio::join!(
+            spawn(service.clone(), greedy.clone(), code.clone()),
+            spawn(service.clone(), greedy.clone(), code.clone()),
+            spawn(service.clone(), greedy.clone(), code.clone()),
+        );
+        let results = [r1.unwrap(), r2.unwrap(), r3.unwrap()];
+        let successes = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(successes, 1, "one person, one seat: {results:?}");
+
+        let use_count: i64 = sqlx::query_scalar("SELECT use_count FROM one_tenant_invites WHERE id = ?")
+            .bind(&invite_id.id)
+            .fetch_one(service.pool())
+            .await
+            .unwrap();
+        assert_eq!(use_count, 1, "the other two seats must still be available to other people");
+
+        let member_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_user_org WHERE tenant_id = ?")
+            .bind(&tenant_id)
+            .fetch_one(service.pool())
+            .await
+            .unwrap();
+        assert_eq!(member_count, 2, "the creator plus one greedy joiner");
 
         db.close().await;
     }
