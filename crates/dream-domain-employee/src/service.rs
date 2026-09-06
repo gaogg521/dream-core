@@ -20,7 +20,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-
 use dream_core_ai_agent::AgentRegistry;
 use dream_core_api_types::{
     AssistantConversationOverridesRequest, AssistantConversationRequest, CreateConversationRequest, CronScheduleDto,
@@ -797,7 +796,7 @@ fn merge_optional(incoming: Option<&str>, existing: Option<String>) -> Option<St
     }
 }
 
-fn serialize_model(model: Option<&ProviderWithModel>) -> Result<Option<String>, EmployeeError> {
+pub(crate) fn serialize_model(model: Option<&ProviderWithModel>) -> Result<Option<String>, EmployeeError> {
     model
         .map(|model| {
             serde_json::to_string(model).map_err(|e| EmployeeError::Internal(format!("serialize employee model: {e}")))
@@ -1479,6 +1478,19 @@ impl EmployeeService {
             return Err(EmployeeError::NotFound);
         }
         Ok(())
+    }
+
+    /// Materialize the team view onto this member's local registry (P1-3).
+    /// Thin delegation to [`crate::team_sync::sync_team_agents`] — the free
+    /// function is what the module's tests exercise, same split as catalog.
+    pub async fn sync_team_agents(
+        &self,
+        owner_user_id: &str,
+        tenant_id: &str,
+        payloads: &[crate::team_sync::TeamAgentPayload],
+        authoritative: bool,
+    ) -> Result<crate::team_sync::TeamAgentSyncReport, EmployeeError> {
+        crate::team_sync::sync_team_agents(&self.db, owner_user_id, tenant_id, payloads, authoritative).await
     }
 
     // --- schedule ---
