@@ -147,6 +147,43 @@ pub struct SecurityPolicyDto {
     pub message_redact_enabled: bool,
     pub send_rate_limit_per_minute: Option<i64>,
     pub updated_at: Option<i64>,
+    /// P2-2 conversation-sharing gate: `"off"` (default; share endpoints
+    /// refuse), `"tenant"` (share within the project group) or `"enterprise"`
+    /// (share company-wide). Unlike the E5 fields above this one HAS an
+    /// enforcer — the conversation-share endpoints.
+    pub conversation_share_mode: String,
+}
+
+/// `one_security_policy.conversation_share_mode` — off (default).
+pub const CONVERSATION_SHARE_OFF: &str = "off";
+/// `…conversation_share_mode` — shareable within the member's tenant.
+pub const CONVERSATION_SHARE_TENANT: &str = "tenant";
+/// `…conversation_share_mode` — shareable across the whole enterprise.
+pub const CONVERSATION_SHARE_ENTERPRISE: &str = "enterprise";
+/// `one_conversation_shares.scope` values. `tenant` reaches the owner's
+/// tenant; `enterprise` reaches everyone in the owner's enterprise (only
+/// offered when the policy mode is `enterprise`).
+pub const SHARE_SCOPE_TENANT: &str = "tenant";
+pub const SHARE_SCOPE_ENTERPRISE: &str = "enterprise";
+
+/// One conversation a member shared with the organization (P2-2).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationShareDto {
+    pub conversation_id: String,
+    pub owner_user_id: String,
+    /// Denormalized conversation title — inbox rows render without a join
+    /// into the main schema (a different backend under MySQL deployments).
+    pub name: String,
+    pub tenant_id: String,
+    pub enterprise_id: String,
+    /// `"tenant" | "enterprise"`.
+    pub scope: String,
+    pub shared_at: i64,
+    /// True when the share points at a snapshot the owner's client uploaded
+    /// at share time (desktop/client-mode conversations) rather than at a
+    /// conversation that lives on the server natively (WebUI).
+    pub uploaded: bool,
 }
 
 /// One security policy template (P1-8 安全策略模板层, second layer of the
@@ -453,4 +490,104 @@ pub struct ConfigSetReferencesDto {
 pub struct ConfigBulkImportDto {
     pub imported: i64,
     pub skipped: i64,
+}
+
+/// P2-2 member request: share one of my conversations with the
+/// organization. `messages = Some(..)` is the client-mode desktop
+/// uploading a snapshot at share time (its conversations live on the
+/// local dreamcore, so the server has nothing to share yet); `None`
+/// shares an existing server-side conversation (WebUI) by reference.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareConversationInput {
+    pub conversation_id: String,
+    /// Snapshot title override. Defaults to the conversation's own name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// `"tenant" | "enterprise"` — who may see the share. Policy-gated.
+    pub scope: String,
+    #[serde(default)]
+    pub messages: Option<Vec<SharedMessageInput>>,
+}
+
+/// One message of a snapshot upload. `content` is the message's JSON
+/// blob stored verbatim (same wire shape the local conversation API
+/// returns, so the client can forward its rows unmodified).
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedMessageInput {
+    /// Original local message id, kept in `messages.msg_id` for traceability.
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(rename = "type")]
+    pub message_type: String,
+    pub content: String,
+    /// `"left" | "right" | "center" | "pop"`.
+    #[serde(default)]
+    pub position: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<i64>,
+}
+
+/// The member-side inbox/detail payload: the share row plus the shared
+/// conversation's messages, read through the conversation repository
+/// under the OWNER's user id (the share row is the authorization).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedConversationDetail {
+    pub share: ConversationShareDto,
+    pub model: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    /// Messages in ascending display order (latest page; `has_more_before`
+    /// reports when a longer history was truncated for this response).
+    pub messages: Vec<SharedMessageDto>,
+    pub has_more_before: bool,
+}
+
+/// One message of a shared conversation. `content` stays the raw JSON
+/// string — the client parses it per message type, exactly like its own
+/// conversation reads.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedMessageDto {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub message_type: String,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    pub created_at: i64,
+}
+
+/// `one_conversation_shares` row (P2-2). The single authorization record for
+/// cross-user conversation reads — see the service impl for why no other
+/// cross-user read path exists.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ConversationShareRow {
+    pub conversation_id: String,
+    pub owner_user_id: String,
+    pub enterprise_id: String,
+    pub tenant_id: String,
+    pub scope: String,
+    pub name: String,
+    pub uploaded: i64,
+    pub shared_at: i64,
+}
+
+impl From<ConversationShareRow> for ConversationShareDto {
+    fn from(row: ConversationShareRow) -> Self {
+        Self {
+            conversation_id: row.conversation_id,
+            owner_user_id: row.owner_user_id,
+            name: row.name,
+            tenant_id: row.tenant_id,
+            enterprise_id: row.enterprise_id,
+            scope: row.scope,
+            shared_at: row.shared_at,
+            uploaded: row.uploaded != 0,
+        }
+    }
 }
