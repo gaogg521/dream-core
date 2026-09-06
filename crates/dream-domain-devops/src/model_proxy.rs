@@ -26,10 +26,14 @@
 //!
 //! # Streaming
 //!
-//! Request and response bodies are streamed, never buffered. Buffering would
-//! turn every streamed chat reply into a long silence followed by the whole
-//! answer at once, and would hold multi-megabyte image payloads in memory on
-//! the server for no reason.
+//! Response bodies are always streamed, never buffered — the usage tap (P1-2)
+//! watches the bytes go by without holding them up. Request bodies stream too,
+//! with one bounded exception: a JSON body the size of a normal chat request
+//! is peeked at long enough to learn the model and ask OpenAI-shaped streams
+//! for usage (see `proxy_usage::prepare_forward_body`). Anything over the
+//! probe cap — image-to-image payloads in the tens of megabytes — streams
+//! through exactly as before, and there is never a long silence followed by
+//! the whole answer.
 //!
 //! # Not session-authenticated
 //!
@@ -77,6 +81,16 @@ const HOP_BY_HOP: &[&str] = &[
     "transfer-encoding",
     "upgrade",
     "content-length",
+    // Not hop-by-hop in the RFC sense either — it is content negotiation —
+    // but it is dropped for the same reason as `cookie`: consequence, not
+    // category. The usage tap (P1-2) reads the upstream response as bytes to
+    // pull `model`/`usage` out of an SSE frame or a JSON body; if the caller's
+    // accept-encoding were forwarded, the vendor could answer compressed and
+    // the tap would be parsing gzip. Dropping it means the proxy's leg runs
+    // identity, the tap sees plaintext, and the caller's leg is untouched.
+    // (A vendor that compresses anyway degrades gracefully: the tap simply
+    // finds nothing to parse and records no row.)
+    "accept-encoding",
     // Not hop-by-hop in the RFC sense, and — to be precise about what is and
     // is not known — not a leak observed in production either. The caller
     // today is an agent CLI using reqwest with no cookie jar (see "Not
@@ -219,10 +233,13 @@ async fn handle_proxy(
     // Bedrock channels re-sign server-side, which requires the whole body —
     // branch off before the streaming pass-through.
     if channel.platform == "bedrock" {
-        return handle_bedrock_proxy(channel, method, headers, uri, body).await;
+        return handle_bedrock_proxy(channel, method, headers, uri, body, state.usage_recorder.clone()).await;
     }
 
     let url = build_upstream_url(&channel.upstream_base_url, &params.path, uri.query());
+
+    // Compared before `method` is moved into the reqwest builder.
+    let is_post = method == Method::POST;
 
     let client = reqwest::Client::new();
     let mut request = client.request(method, &url);
@@ -233,11 +250,27 @@ async fn handle_proxy(
     }
     let (credential_name, credential_value) = credential_header(&channel.platform, &channel.api_key);
     request = request.header(credential_name, credential_value);
-    // Stream the request body straight through: an image-to-image payload can
-    // be tens of megabytes and there is no reason for it to land in memory.
-    request = request.body(reqwest::Body::wrap_stream(
-        body.into_data_stream().map_err(std::io::Error::other),
-    ));
+
+    // P1-2 usage accounting, request side: peek at a JSON body to learn the
+    // requested model and ask OpenAI-shaped streaming requests for usage in
+    // their final frame. Non-POST requests (model lists, file deletes) have
+    // neither, and are forwarded untouched.
+    let (forward_body, request_model) = if is_post {
+        let content_type = headers
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        crate::proxy_usage::prepare_forward_body(body, &channel.platform, content_type).await
+    } else {
+        (
+            crate::proxy_usage::PreparedBody::Stream(Box::pin(body.into_data_stream().map_err(std::io::Error::other))),
+            None,
+        )
+    };
+    request = match forward_body {
+        crate::proxy_usage::PreparedBody::Bytes(bytes) => request.body(reqwest::Body::from(bytes)),
+        crate::proxy_usage::PreparedBody::Stream(stream) => request.body(reqwest::Body::wrap_stream(stream)),
+    };
 
     let upstream = match request.send().await {
         Ok(response) => response,
@@ -274,9 +307,25 @@ async fn handle_proxy(
         }
     }
 
-    // Stream the response too, so SSE arrives token by token instead of as one
-    // long pause followed by the whole answer.
-    let stream = upstream.bytes_stream().map_err(std::io::Error::other);
+    // P1-2 usage accounting, response side: tee the stream through the usage
+    // tap. Every byte still reaches the client unchanged — SSE stays token by
+    // token — while the tap accumulates just enough to lift `model`/`usage`
+    // out of the final frame or the JSON body, and fires the billing seam
+    // once the call has fully streamed through.
+    let response_content_type = upstream
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    let tap = crate::proxy_usage::UsageTap::new(
+        state.usage_recorder.clone(),
+        channel.user_id.clone(),
+        channel.id.clone(),
+        response_content_type,
+        status.is_success(),
+        request_model,
+    );
+    let stream = crate::proxy_usage::UsageTapStream::new(upstream.bytes_stream().map_err(std::io::Error::other), tap);
     builder
         .body(Body::from_stream(stream))
         .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
@@ -384,10 +433,11 @@ fn region_from_bedrock_host(base_url: &str) -> Option<String> {
 fn build_upstream_url(base_url: &str, path: &str, query: Option<&str>) -> String {
     let mut url = format!("{}/{}", base_url.trim_end_matches('/'), path.trim_start_matches('/'));
     if let Some(query) = query
-        && !query.is_empty() {
-            url.push('?');
-            url.push_str(query);
-        }
+        && !query.is_empty()
+    {
+        url.push('?');
+        url.push_str(query);
+    }
     url
 }
 
@@ -475,6 +525,7 @@ async fn handle_bedrock_proxy(
     headers: HeaderMap,
     uri: Uri,
     body: Body,
+    usage_recorder: Option<std::sync::Arc<dyn crate::proxy_usage::ProxyUsageRecorder>>,
 ) -> Response {
     // SigV4 covers the payload hash, so the whole body must be in hand before
     // any header goes out. Bedrock invokes are JSON documents — tens of KB,
@@ -542,7 +593,26 @@ async fn handle_bedrock_proxy(
             builder = builder.header(name, value);
         }
     }
-    let stream = upstream.bytes_stream().map_err(std::io::Error::other);
+    // Same usage tap as the main path — wrapping the RESPONSE stream only;
+    // the signing path above is untouched. Bedrock's Anthropic-style
+    // InvokeModel bodies and the OpenAI-compat endpoint carry parseable
+    // usage; the binary eventstream frames of Converse streams parse as
+    // nothing and simply record no row (the tap's generic graceful
+    // degradation).
+    let response_content_type = upstream
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    let tap = crate::proxy_usage::UsageTap::new(
+        usage_recorder,
+        channel.user_id.clone(),
+        channel.id.clone(),
+        response_content_type,
+        status.is_success(),
+        None,
+    );
+    let stream = crate::proxy_usage::UsageTapStream::new(upstream.bytes_stream().map_err(std::io::Error::other), tap);
     builder
         .body(Body::from_stream(stream))
         .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
