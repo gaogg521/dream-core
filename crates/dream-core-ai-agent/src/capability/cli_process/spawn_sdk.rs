@@ -1,6 +1,7 @@
 use dream_core_common::{CommandSpec, ErrorChain};
 use dream_core_runtime::Builder as CmdBuilder;
-#[cfg(test)]
+// Only the unix-gated fake-shell helper in the tests below takes a &Path.
+#[cfg(all(test, unix))]
 use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -130,7 +131,10 @@ mod tests {
     use super::*;
     use dream_core_common::EnvVar;
     use std::time::Duration;
+    // Both are only reached from the unix-gated shell test below.
+    #[cfg(unix)]
     use tokio::io::AsyncReadExt;
+    #[cfg(unix)]
     use tokio::time::timeout;
 
     // ── SDK mode tests ───────────────────────────────────────────────

@@ -1019,15 +1019,21 @@ mod model_settings_test;
 mod tests {
     use super::*;
     use dream_core_realtime::BroadcastEventBus;
+    // Only reached from the unix-gated tests below.
+    #[cfg(unix)]
     use dream_core_runtime::{ManagedResourcesMode, init as init_runtime, set_managed_resources_mode};
+    // Both statics below are only reached by the unix-gated tests.
+    use std::path::Path;
+    #[cfg(unix)]
     use std::sync::OnceLock;
-    use std::{
-        mem,
-        path::{Path, PathBuf},
-    };
+    // `mem::forget` and the PathBuf holder only exist for the unix-gated
+    // runtime-dir tests below.
+    #[cfg(unix)]
+    use std::{mem, path::PathBuf};
 
     const TEST_USER_ID: &str = "user-1";
 
+    #[cfg(unix)]
     fn path_test_lock() -> &'static tokio::sync::Mutex<()> {
         static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))

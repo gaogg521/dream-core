@@ -266,7 +266,9 @@ mod tests {
     use crate::migrate::run_one_employee_migrations;
     // Both are crate-private free functions in service.rs (made pub(crate)
     // for testability, same convention as the other free functions there).
-    use crate::service::{grant_employee_access, is_missing_table_error, select_agent_for_use};
+    // `is_missing_table_error` arrives through `use super::*` — the module
+    // above already imports it.
+    use crate::service::{grant_employee_access, select_agent_for_use};
 
     async fn test_pool() -> dream_core_db::DbPool {
         let db = dream_core_db::init_database_memory().await.unwrap();

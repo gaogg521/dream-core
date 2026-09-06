@@ -1017,7 +1017,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_member_then_identity_of_roundtrips() {
-        let (svc, sqlite) = service().await;
+        let (svc, _sqlite) = service().await;
         svc.sync_member(
             "u1",
             "feishu",
@@ -1285,7 +1285,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_company_id_is_a_noop() {
-        let (svc, sqlite) = service().await;
+        let (svc, _sqlite) = service().await;
         svc.sync_member("u1", "feishu", "  ", "", Some("x"), None, None)
             .await
             .unwrap();
@@ -1294,13 +1294,13 @@ mod tests {
 
     #[tokio::test]
     async fn identity_of_is_none_without_membership() {
-        let (svc, sqlite) = service().await;
+        let (svc, _sqlite) = service().await;
         assert!(svc.identity_of("nobody").await.unwrap().is_none());
     }
 
     // --- Direction B: company tier ---
 
-    async fn insert_manual_company(svc: &EnterpriseService, sqlite: &sqlx::SqlitePool, id: &str, name: &str) {
+    async fn insert_manual_company(_svc: &EnterpriseService, sqlite: &sqlx::SqlitePool, id: &str, name: &str) {
         sqlx::query(
             "INSERT INTO one_enterprises (id, provider, external_id, display_name, origin, created_at, updated_at) \
              VALUES (?, 'manual', ?, ?, 'manual', 1, 1)",
@@ -1350,7 +1350,7 @@ mod tests {
     async fn sync_member_without_company_is_noop() {
         // Lock-in: no explicit company AND no tenant_key → nothing written. This
         // is the personal / standalone path (which never reaches SSO anyway).
-        let (svc, sqlite) = service().await;
+        let (svc, _sqlite) = service().await;
         svc.sync_member("u1", "feishu", "", "", Some("x"), None, None)
             .await
             .unwrap();
@@ -1390,7 +1390,7 @@ mod tests {
 
     #[tokio::test]
     async fn setup_company_seeds_creator_as_admin() {
-        let (svc, sqlite) = service_with_governance().await;
+        let (svc, _sqlite) = service_with_governance().await;
         // system_default_user is system_admin by default (no one_user_org row).
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         assert_eq!(overview.name.as_deref(), Some("Acme"));
@@ -1413,7 +1413,7 @@ mod tests {
 
     #[tokio::test]
     async fn rename_company_updates_display_name() {
-        let (svc, sqlite) = service_with_governance().await;
+        let (svc, _sqlite) = service_with_governance().await;
         svc.setup_company("system_default_user", "Acme").await.unwrap();
         let enterprise_id = svc.company_of("system_default_user").await.unwrap().unwrap();
 
@@ -1445,7 +1445,7 @@ mod tests {
 
     #[tokio::test]
     async fn second_company_rejected() {
-        let (svc, sqlite) = service_with_governance().await;
+        let (svc, _sqlite) = service_with_governance().await;
         svc.setup_company("system_default_user", "Acme").await.unwrap();
         let err = svc.setup_company("system_default_user", "Beta").await.unwrap_err();
         assert_eq!(err.code(), "COMPANY_ALREADY_EXISTS");
@@ -1544,7 +1544,7 @@ mod tests {
 
     #[tokio::test]
     async fn members_listed_and_role_managed_with_last_admin_guard() {
-        let (svc, sqlite) = service_with_governance().await;
+        let (svc, _sqlite) = service_with_governance().await;
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         let ent = overview.company_id;
         // A second SSO member joins the (manual) company.
@@ -1798,7 +1798,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_invite_then_list_shows_it() {
-        let (svc, sqlite) = service_with_governance().await;
+        let (svc, _sqlite) = service_with_governance().await;
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         let ent = overview.company_id;
 
@@ -1823,7 +1823,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_invite_rejects_empty_external_id() {
-        let (svc, sqlite) = service_with_governance().await;
+        let (svc, _sqlite) = service_with_governance().await;
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         let err = svc
             .create_invite(
@@ -1842,7 +1842,7 @@ mod tests {
 
     #[tokio::test]
     async fn re_inviting_the_same_person_replaces_not_duplicates() {
-        let (svc, sqlite) = service_with_governance().await;
+        let (svc, _sqlite) = service_with_governance().await;
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         let ent = overview.company_id;
 
@@ -1876,7 +1876,7 @@ mod tests {
 
     #[tokio::test]
     async fn revoke_invite_removes_it_and_rejects_unknown_id() {
-        let (svc, sqlite) = service_with_governance().await;
+        let (svc, _sqlite) = service_with_governance().await;
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         let ent = overview.company_id;
         let invite = svc
@@ -1900,7 +1900,7 @@ mod tests {
     /// locks down with a negative case.
     #[tokio::test]
     async fn sso_login_consumes_the_matching_invite() {
-        let (svc, sqlite) = service_with_governance().await;
+        let (svc, _sqlite) = service_with_governance().await;
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         let ent = overview.company_id;
         svc.create_invite(
@@ -1945,7 +1945,7 @@ mod tests {
         // Negative case for the product decision: a totally uninvited login
         // still auto-joins (unchanged existing behavior) — invites are
         // pre-registration, never a gate.
-        let (svc, sqlite) = service_with_governance().await;
+        let (svc, _sqlite) = service_with_governance().await;
         svc.setup_company("system_default_user", "Acme").await.unwrap();
 
         svc.sync_member(
