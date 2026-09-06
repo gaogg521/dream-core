@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use dream_domain_employee::{DEFAULT_TENANT, EmployeeService, TenantResolver};
 
+use crate::proxy_usage::ProxyUsageRecorder;
 use crate::service::DevopsService;
 
 #[derive(Clone)]
@@ -16,6 +17,11 @@ pub struct OneDevopsRouterState {
     /// team-shared employee owned by another same-tenant member. Absent →
     /// callers resolve to the `default` tenant (personal edition).
     pub tenant_resolver: Option<Arc<dyn TenantResolver>>,
+    /// Optional usage sink for the model proxy (P1-2): each proxied response
+    /// is teed through a usage parser and completed calls are handed here.
+    /// `None` in personal builds — the tap stays a pure pass-through, matching
+    /// the rest of the accounting plane.
+    pub usage_recorder: Option<Arc<dyn ProxyUsageRecorder>>,
 }
 
 impl OneDevopsRouterState {
@@ -24,6 +30,7 @@ impl OneDevopsRouterState {
             service,
             employee: None,
             tenant_resolver: None,
+            usage_recorder: None,
         }
     }
 
@@ -38,6 +45,13 @@ impl OneDevopsRouterState {
     /// employees.
     pub fn with_tenant_resolver(mut self, resolver: Arc<dyn TenantResolver>) -> Self {
         self.tenant_resolver = Some(resolver);
+        self
+    }
+
+    /// Wire the billing-plane usage sink so model-proxy calls are metered
+    /// (P1-2). Called by the app router under the `enterprise` feature only.
+    pub fn with_proxy_usage_recorder(mut self, recorder: Arc<dyn ProxyUsageRecorder>) -> Self {
+        self.usage_recorder = Some(recorder);
         self
     }
 
