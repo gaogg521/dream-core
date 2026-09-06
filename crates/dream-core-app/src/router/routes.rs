@@ -671,7 +671,7 @@ const ENTERPRISE_POLICY_GRACE_MS: i64 = 30 * 60 * 1000;
 /// rather than running ungoverned forever.
 #[cfg(feature = "enterprise")]
 #[derive(Debug)]
-pub(crate) struct PolicyGrace {
+pub struct PolicyGrace {
     last_answered_ms: std::sync::atomic::AtomicI64,
 }
 
@@ -1279,8 +1279,8 @@ impl dream_core_conversation::TurnMemoryExtractor for OneMemoryTurnExtractor {
             }
 
             // Zero-config fallback: explicit 「记住…」 requests always work.
-            if let Some(fact) = explicit_fact {
-                if let Err(e) = memory
+            if let Some(fact) = explicit_fact
+                && let Err(e) = memory
                     .add_item(
                         &actor.tenant_id,
                         &user_id,
@@ -1295,7 +1295,6 @@ impl dream_core_conversation::TurnMemoryExtractor for OneMemoryTurnExtractor {
                 {
                     tracing::debug!(error = %e, "memory extract: add_item failed (non-fatal)");
                 }
-            }
         });
     }
 }
@@ -1428,6 +1427,7 @@ pub(crate) struct PlatformToolCallSecurityGate {
 /// The task title carries a bounded slice of the command text: enough for an
 /// administrator skimming the queue to tell two terminal calls apart, short
 /// enough that a machine-generated blob cannot flood the list.
+#[cfg(feature = "enterprise")]
 const APPROVAL_TITLE_MAX_CHARS: usize = 120;
 
 #[async_trait::async_trait]
@@ -2126,6 +2126,10 @@ pub(crate) struct GovernancePlane {
     /// Handed back so the terminal-tool approval gate (`PlatformToolCallSecurityGate`)
     /// can create tasks and block on decisions without a second service over
     /// the same pool.
+    ///
+    /// Held rather than read: the router keeps the service alive for the
+    /// workflow routes built from this state elsewhere.
+    #[allow(dead_code)]
     pub workflow_service: std::sync::Arc<dream_domain_workflow::WorkflowService>,
     /// Handed back so `create_admin_router` can apply the same E4 module gate
     /// to `admin_devops_routes` (built outside this function, since it isn't
@@ -2146,7 +2150,11 @@ pub(crate) struct GovernancePlane {
 /// plus, in `create_admin_router`, the admin-only devops routes) IS that
 /// module: there is no finer-grained sub-route licensing here, so one
 /// constant covers every route [`license_module_gate_middleware`] guards.
+/// Module key the E4 gate matches admin routes against. Referenced by the
+/// gate's configuration rather than by code, so the compiler cannot see the
+/// use.
 #[cfg(feature = "enterprise")]
+#[allow(dead_code)]
 const ADMIN_MODULE: &str = "/admin/*";
 
 #[cfg(feature = "enterprise")]

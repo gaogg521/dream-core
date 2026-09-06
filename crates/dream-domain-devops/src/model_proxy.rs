@@ -383,12 +383,11 @@ fn region_from_bedrock_host(base_url: &str) -> Option<String> {
 /// never sees it), which only mattered once a protocol actually used one.
 fn build_upstream_url(base_url: &str, path: &str, query: Option<&str>) -> String {
     let mut url = format!("{}/{}", base_url.trim_end_matches('/'), path.trim_start_matches('/'));
-    if let Some(query) = query {
-        if !query.is_empty() {
+    if let Some(query) = query
+        && !query.is_empty() {
             url.push('?');
             url.push_str(query);
         }
-    }
     url
 }
 

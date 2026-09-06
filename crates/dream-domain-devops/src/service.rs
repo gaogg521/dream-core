@@ -1417,8 +1417,8 @@ impl DevopsService {
             "SELECT base_url, api_key, model, dimensions, updated_at FROM one_rag_config WHERE id = 'default'",
         &[])
         .await?;
-        if let Some((base_url, api_key, model, dimensions, updated_at)) = &row {
-            if !base_url.trim().is_empty() && !model.trim().is_empty() {
+        if let Some((base_url, api_key, model, dimensions, updated_at)) = &row
+            && !base_url.trim().is_empty() && !model.trim().is_empty() {
                 return Ok(RagConfigDto {
                     base_url: base_url.clone(),
                     model: model.clone(),
@@ -1427,7 +1427,6 @@ impl DevopsService {
                     updated_at: *updated_at,
                 });
             }
-        }
         // No admin-configured row → surface the bundled default (P3-2) so the
         // config UI shows the deployment's embedding endpoint instead of a
         // blank form. `updated_at: 0` marks it as never set by an admin.

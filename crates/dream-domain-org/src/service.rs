@@ -2347,11 +2347,10 @@ impl OrgService {
             pinned: None,
         };
         for member in &members {
-            if let Some(u) = user_filter {
-                if member != u {
+            if let Some(u) = user_filter
+                && member != u {
                     continue;
                 }
-            }
             // The repository has no cross-member "all tool calls" query, so
             // walk the member's conversations and page each one's messages.
             let Ok(convs) = self.message_repo.list_paginated(member, &conv_filters).await else {
@@ -2365,11 +2364,10 @@ impl OrgService {
                     if row.r#type != "tool_call" && row.r#type != "acp_tool_call" {
                         continue;
                     }
-                    if let Some(since) = since_ms {
-                        if row.created_at < since {
+                    if let Some(since) = since_ms
+                        && row.created_at < since {
                             continue;
                         }
-                    }
                     let content = serde_json::from_str::<serde_json::Value>(&row.content).unwrap_or_default();
                     let tool_name = content
                         .get("name")
@@ -2378,11 +2376,10 @@ impl OrgService {
                         .or_else(|| content.get("tool").and_then(|v| v.as_str()))
                         .unwrap_or("")
                         .to_owned();
-                    if let Some(tool) = tool_filter {
-                        if &tool_name != tool {
+                    if let Some(tool) = tool_filter
+                        && tool_name != tool {
                             continue;
                         }
-                    }
                     let detail = [
                         "args.command",
                         "args.path",
@@ -2420,7 +2417,7 @@ impl OrgService {
         // would silently drop a later member's newer activity in favor of
         // an earlier member's older rows — breaking "org-wide most recent
         // N" for any tenant where one member alone has >= `limit` entries.
-        entries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.created_at));
         entries.truncate(limit as usize);
         Ok(entries)
     }
@@ -2968,6 +2965,7 @@ impl OrgService {
     }
 
     /// Upsert a runtime node heartbeat by (tenant_id, machine_id).
+    #[allow(clippy::too_many_arguments)]
     pub async fn heartbeat_runtime_node(
         &self,
         tenant_id: &str,
@@ -3062,12 +3060,11 @@ impl OrgService {
             )
             .await?;
 
-        if require_approval {
-            if let Some(sink) = self.node_review_sink.read().ok().and_then(|g| g.clone()) {
+        if require_approval
+            && let Some(sink) = self.node_review_sink.read().ok().and_then(|g| g.clone()) {
                 sink.on_node_awaiting_approval(tenant_id, &id, machine_id, display_name, user_id)
                     .await;
             }
-        }
 
         Ok(HeartbeatOutcome {
             node_id: id,

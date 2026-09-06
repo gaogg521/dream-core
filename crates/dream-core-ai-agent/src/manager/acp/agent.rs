@@ -650,6 +650,10 @@ impl SessionIdPersistence {
 
     /// Claim the right to announce this id. Returns `true` exactly once per
     /// id; later calls (further turns on the same session) return `false`.
+    ///
+    /// Only caller is `announce_session_id_after_prompt`, which has none of
+    /// its own — see the note there.
+    #[allow(dead_code)]
     fn claim_announcement(&self) -> bool {
         !self.0.swap(true, Ordering::AcqRel)
     }
@@ -1315,6 +1319,17 @@ impl AcpAgentManager {
     /// Called after a prompt has actually reached the CLI: see
     /// [`SessionIdPersistence`] for why an unprompted session's id is worth
     /// less than nothing.
+    ///
+    /// ⚠️ Currently has NO callers anywhere in the workspace (verified
+    /// 2026-09-06). Kept rather than deleted because it is not obviously dead:
+    /// the only other `mark_session_id_durable()` call
+    /// (`agent_session_flow.rs:175`) fires when a RESUME replaces the session
+    /// id, which is a different case from "a fresh session's first prompt has
+    /// landed" — the case this function exists for. Either that case is
+    /// covered somewhere else and this is redundant, or a first-prompt session
+    /// id is never marked durable. Deleting it would erase the evidence for
+    /// whichever it is.
+    #[allow(dead_code)]
     pub(super) async fn announce_session_id_after_prompt(&self) {
         if !self.session_id_persisted.claim_announcement() {
             return;

@@ -20,7 +20,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use sqlx::SqlitePool;
 
 use dream_core_ai_agent::AgentRegistry;
 use dream_core_api_types::{
@@ -739,7 +738,7 @@ async fn list_tags_for_resources(
         return Ok(HashMap::new());
     }
     let placeholders = vec!["?"; resource_ids.len()].join(", ");
-    let sql = format!(
+    let _sql = format!(
         "SELECT t.*, l.resource_id AS link_resource_id FROM one_content_tags t \
          JOIN one_content_tag_links l ON l.tag_id = t.id \
          WHERE l.resource_type = ? AND l.resource_id IN ({placeholders})"
@@ -1500,7 +1499,7 @@ impl EmployeeService {
         let schedule_json = input
             .schedule
             .as_ref()
-            .map(|dto| serde_json::to_value(dto))
+            .map(serde_json::to_value)
             .transpose()
             .map_err(|e| EmployeeError::BadRequest(format!("invalid schedule: {e}")))?
             .map(|v| v.to_string());
@@ -1509,7 +1508,7 @@ impl EmployeeService {
         let next_run_at: Option<i64> = match &input.schedule {
             Some(dto) if enabled => {
                 let schedule = schedule_from_dto(dto);
-                compute_next_run(&schedule, now_ms()).map(|ts| ts as i64)
+                compute_next_run(&schedule, now_ms())
             }
             _ => None,
         };
@@ -1999,7 +1998,7 @@ impl EmployeeService {
             return;
         };
         let schedule = schedule_from_dto(&dto);
-        let next = compute_next_run(&schedule, now_ms()).map(|ts| ts as i64);
+        let next = compute_next_run(&schedule, now_ms());
         let _ = self
             .db
             .execute(

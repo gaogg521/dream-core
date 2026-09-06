@@ -39,6 +39,9 @@ struct WecomUserInfoResponse {
     errmsg: Option<String>,
     #[serde(alias = "UserId", alias = "userid")]
     user_id: Option<String>,
+    /// Parsed but unused: WeCom returns it for non-member visitors, and
+    /// keeping it documents why `user_id` can be absent.
+    #[allow(dead_code)]
     #[serde(alias = "OpenId", alias = "openid")]
     open_id: Option<String>,
 }

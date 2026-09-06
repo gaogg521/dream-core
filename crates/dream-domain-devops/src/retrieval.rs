@@ -26,7 +26,7 @@
 //! document can never occupy a top-k slot — the same guarantee the original
 //! join gave.
 
-use sqlx::{Row, SqlitePool};
+use sqlx::Row;
 
 use dream_core_db::{DbPool, db_params};
 use crate::error::DevopsError;

@@ -1105,13 +1105,12 @@ async fn qr_login_handler(
 
     // 登录二次认证闸：QR 扫码登录同样不得绕过第二步。该流程没有输动态码的
     // 界面，需要 MFA 的账号请改用账号密码或企业 SSO 登录（判定矩阵见 mfa.rs）。
-    if let Some(mfa) = state.mfa.as_ref() {
-        if let MfaDecision::Challenge(_) = mfa.decide(&user).await.map_err(|e| ApiError::BadRequest(e.message()))? {
+    if let Some(mfa) = state.mfa.as_ref()
+        && let MfaDecision::Challenge(_) = mfa.decide(&user).await.map_err(|e| ApiError::BadRequest(e.message()))? {
             return Err(ApiError::Forbidden(
                 "该账号已开启登录二次认证（MFA），扫码登录不支持第二步验证，请使用账号密码或企业 SSO 登录。".into(),
             ));
         }
-    }
 
     let token = state
         .jwt_service

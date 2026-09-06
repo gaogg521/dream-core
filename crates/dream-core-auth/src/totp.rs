@@ -50,7 +50,7 @@ pub fn base32_decode(encoded: &str) -> Option<Vec<u8>> {
     let mut acc = 0u32;
     let mut out = Vec::with_capacity(encoded.len() * 5 / 8);
     for ch in encoded.trim_end_matches('=').chars() {
-        let idx = ALPHABET.iter().position(|b| (*b as char).to_ascii_uppercase() == ch.to_ascii_uppercase())? as u32;
+        let idx = ALPHABET.iter().position(|b| (*b as char).eq_ignore_ascii_case(&ch))? as u32;
         acc = (acc << 5) | idx;
         bits += 5;
         if bits >= 8 {
@@ -103,11 +103,10 @@ pub fn verify_with_window(
 
     for delta in -WINDOW_STEPS..=WINDOW_STEPS {
         let step = now_step + delta;
-        if let Some(used) = last_used_step {
-            if step <= used {
+        if let Some(used) = last_used_step
+            && step <= used {
                 continue; // 防重放：已用过（或更早）的时间片直接跳过
             }
-        }
         let candidate = hotp_at(&secret, step as u64);
         if candidate.ct_eq(&supplied).into() {
             return Some(step);

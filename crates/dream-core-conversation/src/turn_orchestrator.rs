@@ -730,8 +730,8 @@ impl ConversationTurnOrchestrator {
         // reply. The extractor spawns its own work and reads the assistant
         // side from persistence; a failure here must never touch this turn's
         // result. Skipped for a synthetic (cron/dispatch) prompt.
-        if !final_failed {
-            if let Some(extractor) = self.service.turn_memory_extractor.read().ok().and_then(|g| g.clone()) {
+        if !final_failed
+            && let Some(extractor) = self.service.turn_memory_extractor.read().ok().and_then(|g| g.clone()) {
                 extractor.extract_from_turn(
                     input.user_id.clone(),
                     conv_id.clone(),
@@ -739,7 +739,6 @@ impl ConversationTurnOrchestrator {
                     input.synthetic_prompt,
                 );
             }
-        }
 
         ConversationTurnResult {
             status: if final_failed {

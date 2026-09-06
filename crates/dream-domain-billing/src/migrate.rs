@@ -9,7 +9,6 @@
 //! and hands them to the shared runner keyed by the pool's backend.
 
 use dream_core_db::{DbPool, MigrationSet, run_ledgered_migrations};
-use sqlx::SqlitePool;
 
 use crate::error::BillingError;
 
