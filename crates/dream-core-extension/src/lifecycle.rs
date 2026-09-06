@@ -114,7 +114,11 @@ fn build_hook_command(script: &Path) -> Result<CmdBuilder, String> {
 fn posix_shell() -> Option<std::path::PathBuf> {
     #[cfg(unix)]
     {
-        return Some(std::path::PathBuf::from("/bin/sh"));
+        // Tail expression, not `return`: on unix the `not(unix)` block below
+        // is cfg'd away, so this block IS the function's tail — matching how
+        // that block ends, and what clippy's `needless_return` asks for on
+        // the only platform that compiles this branch.
+        Some(std::path::PathBuf::from("/bin/sh"))
     }
     #[cfg(not(unix))]
     {
