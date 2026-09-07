@@ -267,6 +267,40 @@ async fn handle_proxy(
             None,
         )
     };
+    // The channel's model list is an access decision, enforced here.
+    //
+    // It used to be metadata only: the console let an administrator pick which
+    // models a channel offers, the client wrote those into its provider row,
+    // and the proxy forwarded whatever arrived — so a member holding a channel
+    // token could call anything the upstream exposed, including models the
+    // company had deliberately left off. `GET /v1/models` through the proxy
+    // returned the upstream's whole catalogue, which is how that was found.
+    //
+    // Only POST bodies name a model, and only a channel with a non-empty list
+    // is scoped at all; everything else forwards unchanged.
+    if let Some(requested) = request_model.as_deref()
+        && !channel.models.is_empty()
+        && !channel.models.iter().any(|allowed| allowed == requested)
+    {
+        warn!(
+            channel_id = %params.channel_id,
+            model = %requested,
+            "model_proxy: refused a model this channel does not offer"
+        );
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({
+                "error": {
+                    "message": format!(
+                        "model '{requested}' is not offered by this company channel;                          pick one of the models your administrator configured"
+                    ),
+                    "type": "invalid_request_error",
+                }
+            })),
+        )
+            .into_response();
+    }
+
     request = match forward_body {
         crate::proxy_usage::PreparedBody::Bytes(bytes) => request.body(reqwest::Body::from(bytes)),
         crate::proxy_usage::PreparedBody::Stream(stream) => request.body(reqwest::Body::wrap_stream(stream)),

@@ -52,6 +52,27 @@ pub fn generate_short_id() -> String {
     generate_id_with_length(Some(8))
 }
 
+/// Server-side key for a conversation snapshot a member's client uploaded.
+///
+/// A desktop conversation's id is minted locally by `generate_short_id` — eight
+/// hex characters, 32 bits, with no coordination between clients. The server's
+/// `conversations.id` and `one_conversation_shares.conversation_id` are both
+/// unique across the entire deployment, so storing an upload under the id its
+/// client chose makes two members' unrelated conversations fight over one row.
+/// That is not a remote possibility: at 32 bits, a few tens of thousands of
+/// conversations across a company make a collision more likely than not, and
+/// the member who loses simply cannot share, forever.
+///
+/// Binding the owner into the key removes the class. It stays deterministic, so
+/// re-sharing the same conversation still lands on the same row and replaces
+/// its snapshot rather than accumulating copies, and it stays readable, so an
+/// operator looking at the table can tell whose snapshot a row is.
+///
+/// The original id is not lost: callers keep it in `extra.originalConversationId`.
+pub fn snapshot_conversation_id(owner_user_id: &str, original_conversation_id: &str) -> String {
+    format!("snap_{owner_user_id}_{original_conversation_id}")
+}
+
 /// Generate a prefixed ID (e.g., "cron_01234...", "mcp_01234...").
 pub fn generate_prefixed_id(prefix: &str) -> String {
     format!("{prefix}_{}", Uuid::now_v7())

@@ -173,7 +173,10 @@ async fn the_company_credential_is_substituted_for_the_members_token() {
         .header("authorization", format!("Bearer {}", f.token))
         .header("content-type", "application/json")
         .header("x-dashscope-async", "enable")
-        .body(Body::from(r#"{"model":"x"}"#))
+        // A model the channel actually offers: this test is about the
+        // credential swap, and a model outside the channel's list is now
+        // refused before anything is forwarded (see the scoping test below).
+        .body(Body::from(r#"{"model":"gpt-image-2"}"#))
         .unwrap();
     f.app.clone().oneshot(request).await.unwrap();
 
@@ -185,7 +188,7 @@ async fn the_company_credential_is_substituted_for_the_members_token() {
     );
     // Everything the vendor genuinely needs still gets through.
     assert_eq!(seen.custom_header, "enable");
-    assert_eq!(seen.body, r#"{"model":"x"}"#);
+    assert_eq!(seen.body, r#"{"model":"gpt-image-2"}"#);
 }
 
 /// Anthropic's client-side transport never sends `Authorization: Bearer` — it
@@ -279,4 +282,79 @@ async fn a_revoked_token_stops_at_the_proxy() {
         f.seen.lock().unwrap().path.is_empty(),
         "a revoked member still reached the vendor"
     );
+}
+
+/// The channel's model list is enforced, not advertised.
+///
+/// An administrator picks which models a company channel offers; that list
+/// reached the client's provider row and stopped there. The proxy forwarded
+/// whatever model name arrived, so a member holding a channel token could call
+/// anything the upstream exposed — including models the company had
+/// deliberately left off the channel. `GET /v1/models` through the proxy
+/// returning the vendor's entire catalogue is how that surfaced.
+#[tokio::test]
+async fn a_model_the_channel_does_not_offer_never_reaches_the_vendor() {
+    let f = fixture().await;
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/one/model-proxy/{}/v1/chat/completions", f.channel_id))
+        .header("authorization", format!("Bearer {}", f.token))
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"model":"gpt-5-secret-preview"}"#))
+        .unwrap();
+    let response = f.app.clone().oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), 403);
+    // Refused at the proxy, not by the vendor: the upstream must not have been
+    // called at all, or the company has already paid for the call it meant to
+    // forbid.
+    assert!(
+        f.seen.lock().unwrap().body.is_empty(),
+        "a refused model still reached the vendor"
+    );
+}
+
+/// A channel with no configured list stays unscoped.
+///
+/// The column predates the enforcement, so rows that never set it must keep
+/// forwarding everything — turning "unset" into "nothing allowed" would take
+/// working channels offline on upgrade.
+#[tokio::test]
+async fn a_channel_with_no_model_list_still_forwards_anything() {
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let addr = spawn_upstream(seen.clone()).await;
+    let svc = service().await;
+    let channel = svc
+        .upsert_provider_channel(
+            None,
+            "unscoped-gateway",
+            "openai",
+            &format!("http://{addr}"),
+            Some(COMPANY_SECRET),
+            "[]",
+            None,
+            None,
+            true,
+            "org",
+            None,
+            "all",
+            "admin1",
+        )
+        .await
+        .unwrap();
+    let token = svc.issue_channel_token("admin1", &channel.id).await.unwrap().token;
+    let app = model_proxy_routes(OneDevopsRouterState::new(Arc::new(svc)));
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/one/model-proxy/{}/v1/chat/completions", channel.id))
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"model":"anything-at-all"}"#))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(seen.lock().unwrap().body, r#"{"model":"anything-at-all"}"#);
 }

@@ -84,6 +84,14 @@ pub struct ResolvedChannel {
     pub upstream_base_url: String,
     pub api_key: String,
     pub user_id: String,
+    /// The models an administrator listed on this channel, as stored.
+    ///
+    /// Empty means the channel was never scoped and everything upstream
+    /// offers is in play — the pre-existing behaviour, kept so adding this
+    /// column does not retire channels that predate it. A non-empty list is
+    /// an access decision, not a hint for the picker: the proxy refuses a
+    /// request naming anything outside it.
+    pub models: Vec<String>,
 }
 
 /// One-shot LLM call settings for the memory turn extractor (P2-2 followups
@@ -418,10 +426,10 @@ impl DevopsService {
         channel_id: &str,
         token: &str,
     ) -> Result<Option<ResolvedChannel>, DevopsError> {
-        let row: Option<(String, String, String, String)> = self
+        let row: Option<(String, String, String, String, Option<String>)> = self
             .db
-            .fetch_optional_as::<(String, String, String, String)>(
-                "SELECT t.user_id, r.platform, r.upstream_base_url, r.api_key_encrypted \
+            .fetch_optional_as::<(String, String, String, String, Option<String>)>(
+                "SELECT t.user_id, r.platform, r.upstream_base_url, r.api_key_encrypted, r.models \
              FROM one_provider_channel_tokens t \
              JOIN one_provider_registry r ON r.id = t.channel_id \
              WHERE t.token_hash = ? AND t.channel_id = ? AND t.revoked_at IS NULL AND r.enabled = 1",
@@ -429,9 +437,18 @@ impl DevopsService {
             )
             .await?;
 
-        let Some((user_id, platform, upstream_base_url, api_key_encrypted)) = row else {
+        let Some((user_id, platform, upstream_base_url, api_key_encrypted, models_json)) = row else {
             return Ok(None);
         };
+        // Stored as a JSON array by `upsert_provider_channel`. Anything else —
+        // legacy rows, hand-edited data — reads as "unscoped" rather than
+        // "nothing allowed": failing open matches the column's history, and
+        // failing closed would silently cut members off a channel that worked
+        // yesterday.
+        let models: Vec<String> = models_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
+            .unwrap_or_default();
         if api_key_encrypted.is_empty() {
             return Err(DevopsError::BadRequest(
                 "this model channel has no credential configured".into(),
@@ -456,6 +473,7 @@ impl DevopsService {
             upstream_base_url,
             api_key,
             user_id,
+            models,
         }))
     }
 }

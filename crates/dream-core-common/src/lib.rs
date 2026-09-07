@@ -41,7 +41,9 @@ pub use error::{
     ApiError, ApiErrorLogContext, ErrorChain, WorkspacePathValidationError, validate_workspace_path_availability,
 };
 pub use hooks::OnConversationDelete;
-pub use id::{fnv1a_hex8, generate_id, generate_id_with_length, generate_prefixed_id, generate_short_id};
+pub use id::{
+    fnv1a_hex8, generate_id, generate_id_with_length, generate_prefixed_id, generate_short_id, snapshot_conversation_id,
+};
 pub use legacy_env::{ADOPTED_ENV_SUFFIXES, adopt_legacy_env};
 pub use pagination::PaginatedResult;
 pub use timestamp::{TimestampMs, now_ms};

@@ -11,7 +11,9 @@
 use std::sync::Arc;
 
 use dream_core_common::constants::API_KEY_TOKEN_PREFIX;
-use dream_core_common::{decrypt_string, encrypt_string, generate_id_with_length, generate_prefixed_id, now_ms};
+use dream_core_common::{
+    decrypt_string, encrypt_string, generate_id_with_length, generate_prefixed_id, now_ms, snapshot_conversation_id,
+};
 use sha2::{Digest, Sha256};
 
 use crate::collaboration::{
@@ -3922,7 +3924,15 @@ impl PlatformService {
         let mut uploaded = false;
         let mut name = input.name.clone().unwrap_or_else(|| "Shared conversation".to_owned());
         if let Some(messages) = &input.messages {
-            let conversation_id = input.conversation_id.clone();
+            // Store the upload under an owner-bound key rather than the id the
+            // client chose for itself. `conversations.id` is unique across the
+            // deployment while a desktop conversation id is eight locally
+            // minted hex characters, so reusing it made two members' unrelated
+            // conversations compete for one row — and the loser could never
+            // share, at any point, with any retry. The original id stays in
+            // `extra.originalConversationId` below, and the derivation is
+            // deterministic so re-sharing still replaces this same row.
+            let conversation_id = snapshot_conversation_id(user_id, &input.conversation_id);
             let now = now_ms() as i64;
             let extra = serde_json::json!({
                 "sharedSnapshot": true,
@@ -3941,15 +3951,14 @@ impl PlatformService {
             // is removed: an id that happens to match one of their real
             // server-side conversations is refused instead of deleted.
             //
-            // The owner check has to come first, and it has to be
-            // owner-agnostic. `conversations.id` is unique across the whole
-            // table, while the ids arriving here are eight hex characters a
-            // client minted locally (`generate_short_id`, 32 bits) — so the
-            // row already holding this id can perfectly well belong to a
-            // different member. `repo.get(user_id, ..)` answers `None` for
-            // that case and the code below used to walk straight into
-            // `create`, reproducing the very 500 this block was written to
-            // prevent, just one owner over.
+            // Belt and braces. The derived key above makes a cross-owner
+            // collision impossible by construction, but this guard is what
+            // turns any residual one — a snapshot key that somehow matches a
+            // native server conversation, say — into a 4xx the member can read
+            // instead of a unique-constraint 500 carrying raw SQL. It has to
+            // be owner-agnostic: `repo.get(user_id, ..)` answers `None` for
+            // another member's row, which is exactly the case that used to
+            // fall through into `create`.
             let existing_owner = repo.owner_user_id(&conversation_id).await.map_err(Self::repo_err)?;
             if existing_owner.as_deref().is_some_and(|owner| owner != user_id) {
                 return Err(PlatformError::BadRequest(
@@ -4116,7 +4125,29 @@ impl PlatformService {
     /// Owner-side unshare. An uploaded snapshot exists only to back this
     /// share, so it goes too; a referenced native conversation obviously
     /// stays.
+    /// Revoke a share.
+    ///
+    /// `conversation_id` may be either key: the member's own client knows only
+    /// its LOCAL id, while anything read back from a listing carries the
+    /// server key. Uploaded snapshots live under `snapshot_conversation_id`,
+    /// so try that first and fall back to the raw id for shares that point at
+    /// a native server-side conversation. Both lookups stay scoped to
+    /// `owner_user_id`, so neither can reach another member's share.
     pub async fn unshare_conversation(&self, user_id: &str, conversation_id: &str) -> Result<(), PlatformError> {
+        let snapshot_key = snapshot_conversation_id(user_id, conversation_id);
+        let conversation_id: &str = if self
+            .db
+            .fetch_optional_as::<(i64,)>(
+                "SELECT uploaded FROM one_conversation_shares WHERE conversation_id = ? AND owner_user_id = ?",
+                &db_params![&snapshot_key, user_id],
+            )
+            .await?
+            .is_some()
+        {
+            &snapshot_key
+        } else {
+            conversation_id
+        };
         let row: Option<(i64,)> = self
             .db
             .fetch_optional_as(
@@ -4292,6 +4323,14 @@ mod tests {
         (db, service)
     }
 
+    /// The server key an uploaded snapshot for `member-1` lands under. Tests
+    /// that used to hard-code the client's own id go through this instead —
+    /// the whole point of the change is that the two are no longer the same
+    /// string, so spelling the raw id here would re-assert the bug.
+    fn snap(owner: &str, original: &str) -> String {
+        snapshot_conversation_id(owner, original)
+    }
+
     fn actor(tenant_id: &str) -> PlatformActor {
         PlatformActor {
             tenant_id: tenant_id.to_owned(),
@@ -4335,25 +4374,24 @@ mod tests {
         assert!(matches!(error, PlatformError::BadRequest(_)));
     }
 
-    /// A conversation id already held by SOMEBODY ELSE is refused with a
-    /// 4xx, not walked into the unique constraint.
+    /// Two members whose clients minted the same short id both share, and
+    /// neither can see or disturb the other's snapshot.
     ///
-    /// `conversations.id` is unique table-wide, but the ids arriving here are
-    /// eight hex characters minted on each client independently, so two
-    /// members colliding is ordinary, not exotic. The owner-scoped lookup this
-    /// block used to start with answered "not found" for another member's row
-    /// and fell through to `create`, and the member got
-    /// `UNIQUE constraint failed: conversations.id` as a 500 — the same raw
-    /// SQL leak the re-share fix above was written to remove, on the branch it
-    /// did not cover. Retrying could never help, because the row is not theirs
-    /// to replace.
+    /// `conversations.id` is unique across the deployment while these ids are
+    /// eight hex characters each client picked alone — at 32 bits a company
+    /// reaches even odds of a collision in the low tens of thousands of
+    /// conversations. Storing the upload under the client's own id made that
+    /// arithmetic into a permanent outage for whoever arrived second: their
+    /// share died on the unique constraint every single time. Binding the
+    /// owner into the stored key removes the contention instead of reporting
+    /// it more politely.
     #[tokio::test]
-    async fn sharing_an_id_another_member_already_owns_is_refused_not_a_unique_violation() {
+    async fn two_members_sharing_the_same_short_id_do_not_collide() {
         let (db, service) = share_setup().await;
-        for user in ["member-1", "member-2"] {
+        for (tenant, _user) in [("t1", "member-1"), ("t2", "member-2")] {
             service
                 .set_security_policy(
-                    if user == "member-1" { "t1" } else { "t2" },
+                    tenant,
                     false,
                     false,
                     &[],
@@ -4367,37 +4405,45 @@ mod tests {
                 .unwrap();
         }
 
-        // member-2 gets there first and takes the id.
-        service
+        let first = service
             .share_conversation(&actor("t2"), "member-2", snapshot("collide-1"))
             .await
             .unwrap();
-
         // member-1's own client happened to mint the same short id.
-        let error = service
+        let second = service
             .share_conversation(&actor("t1"), "member-1", snapshot("collide-1"))
             .await
-            .unwrap_err();
+            .expect("the second member must be able to share too");
 
-        match error {
-            PlatformError::BadRequest(message) => {
-                assert!(
-                    message.contains("already taken"),
-                    "expected the collision to be explained, got: {message}"
-                );
-                // The raw SQL text is what leaked before; it must not be back.
-                assert!(!message.contains("UNIQUE constraint"), "raw SQL leaked: {message}");
-            }
-            other => panic!("expected a 4xx for the id collision, got {other:?}"),
-        }
+        assert_ne!(
+            first.conversation_id, second.conversation_id,
+            "each member's snapshot needs its own row"
+        );
+        assert_eq!(first.conversation_id, snap("member-2", "collide-1"));
+        assert_eq!(second.conversation_id, snap("member-1", "collide-1"));
 
-        // member-2's snapshot is untouched — a refused share must not disturb
-        // the row it collided with.
-        let owner: (String,) = sqlx::query_as("SELECT user_id FROM conversations WHERE id = 'collide-1'")
-            .fetch_one(db.pool())
+        // Two rows, one per owner, each owned by the member who shared it.
+        let owners: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, user_id FROM conversations WHERE id LIKE 'snap_%' ORDER BY user_id")
+                .fetch_all(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            owners,
+            vec![
+                (snap("member-1", "collide-1"), "member-1".to_owned()),
+                (snap("member-2", "collide-1"), "member-2".to_owned()),
+            ]
+        );
+
+        // Revoking one leaves the other standing — the two are unrelated rows
+        // that merely used to share a name.
+        service.unshare_conversation("member-1", "collide-1").await.unwrap();
+        let survivors: Vec<(String,)> = sqlx::query_as("SELECT conversation_id FROM one_conversation_shares")
+            .fetch_all(db.pool())
             .await
             .unwrap();
-        assert_eq!(owner.0, "member-2");
+        assert_eq!(survivors, vec![(snap("member-2", "collide-1"),)]);
     }
 
     /// Mode `tenant` gates scope: enterprise scope refuses, tenant scope
@@ -4442,16 +4488,24 @@ mod tests {
             .await
             .unwrap();
         assert!(share.uploaded, "snapshot share is marked uploaded");
-        assert_eq!(share.conversation_id, "conv-1", "snapshot keeps the original id");
+        assert_eq!(
+            share.conversation_id,
+            snap("member-1", "conv-1"),
+            "the snapshot is stored under an owner-bound key, not the client's own id"
+        );
 
         // The snapshot is a real server-side conversation owned by the member.
         let repo = dream_core_db::SqliteConversationRepository::new(db.pool().clone());
-        let row = repo.get("member-1", "conv-1").await.unwrap().expect("snapshot stored");
+        let row = repo
+            .get("member-1", &snap("member-1", "conv-1"))
+            .await
+            .unwrap()
+            .expect("snapshot stored");
         assert_eq!(row.name, "Weekly ops");
         let page = repo
             .list_messages_page(
                 "member-1",
-                "conv-1",
+                &snap("member-1", "conv-1"),
                 &dream_core_db::MessagePageParams {
                     limit: 10,
                     direction: dream_core_db::MessagePageDirection::InitialLatest,
@@ -4472,15 +4526,15 @@ mod tests {
             .list_shared_conversations(&actor("t1"), "member-1")
             .await
             .unwrap();
-        assert!(inbox.iter().any(|s| s.conversation_id == "conv-1"));
+        assert!(inbox.iter().any(|s| s.conversation_id == snap("member-1", "conv-1")));
         let detail = service
-            .read_shared_conversation(&actor("t1"), "member-1", "conv-1")
+            .read_shared_conversation(&actor("t1"), "member-1", &snap("member-1", "conv-1"))
             .await
             .unwrap();
         assert_eq!(detail.messages.len(), 2);
         assert!(
             service
-                .read_shared_conversation(&actor("t2"), "member-2", "conv-1")
+                .read_shared_conversation(&actor("t2"), "member-2", &snap("member-1", "conv-1"))
                 .await
                 .is_err(),
             "cross-tenant read must refuse"
@@ -4491,7 +4545,7 @@ mod tests {
                 .await
                 .unwrap()
                 .iter()
-                .all(|s| s.conversation_id != "conv-1"),
+                .all(|s| s.conversation_id != snap("member-1", "conv-1")),
             "cross-tenant inbox must stay empty"
         );
     }
@@ -4547,7 +4601,7 @@ mod tests {
 
         let repo = dream_core_db::SqliteConversationRepository::new(db.pool().clone());
         let row = repo
-            .get("member-1", "conv-1")
+            .get("member-1", &snap("member-1", "conv-1"))
             .await
             .unwrap()
             .expect("snapshot still there");
@@ -4559,7 +4613,7 @@ mod tests {
         let page = repo
             .list_messages_page(
                 "member-1",
-                "conv-1",
+                &snap("member-1", "conv-1"),
                 &dream_core_db::MessagePageParams {
                     limit: 50,
                     direction: dream_core_db::MessagePageDirection::InitialLatest,
@@ -4613,7 +4667,7 @@ mod tests {
             .unwrap();
         assert!(
             service
-                .read_shared_conversation(&actor("t2"), "member-2", "conv-1")
+                .read_shared_conversation(&actor("t2"), "member-2", &snap("member-1", "conv-1"))
                 .await
                 .is_ok(),
             "same-enterprise member reads across tenants"
@@ -4660,7 +4714,10 @@ mod tests {
         );
         let repo = dream_core_db::SqliteConversationRepository::new(db.pool().clone());
         assert!(
-            repo.get("member-1", "conv-1").await.unwrap().is_none(),
+            repo.get("member-1", &snap("member-1", "conv-1"))
+                .await
+                .unwrap()
+                .is_none(),
             "snapshot deleted"
         );
 
