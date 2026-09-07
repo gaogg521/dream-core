@@ -79,6 +79,11 @@ pub struct AppServices {
     /// states need the *same* instance: the system router loads rules into it,
     /// the conversation router enforces them.
     pub content_inspection: Arc<dream_core_system::ContentInspectionService>,
+    /// The company's tool-call policy as this machine received it. Enforced
+    /// locally because the tool call happens locally — see the module.
+    pub tool_security: Arc<dream_core_system::ToolSecurityService>,
+    /// Company memory this member may read, synced down for local recall.
+    pub team_memory: Arc<dream_core_system::TeamMemoryService>,
     /// Billing plane (license tier / seats / usage / model allowlist).
     ///
     /// Constructed here rather than in `routes.rs` because the agent factory —
@@ -438,6 +443,14 @@ impl AppServices {
             None => dream_core_db::DbPool::Sqlite(database.pool().clone()),
         };
 
+        // Built here rather than in the struct literal below because the agent
+        // factory needs it too: the personal build's tool-call gate reads the
+        // same instance the `/api/tool-security/policy` route writes. Not
+        // feature-gated — the personal build is precisely the one that needs it.
+        let tool_security = Arc::new(dream_core_system::ToolSecurityService::new());
+        // Same reasoning as `tool_security`: the personal build's recall
+        // provider and the route that fills it must share one instance.
+        let team_memory = Arc::new(dream_core_system::TeamMemoryService::new());
         #[cfg(feature = "enterprise")]
         let policy_grace = Arc::new(crate::router::PolicyGrace::new());
         #[cfg(feature = "enterprise")]
@@ -500,16 +513,29 @@ impl AppServices {
             })),
             #[cfg(not(feature = "enterprise"))]
             model_allowlist: None,
-            // Personal edition has no security policy to enforce: `None`
-            // means every ACP permission request flows through unmodified,
-            // exactly as before this existed.
+            // The enterprise build reads the policy straight out of
+            // `one_security_policy` and can also block on an approval, so it
+            // keeps the platform gate.
             #[cfg(feature = "enterprise")]
             tool_call_security_gate: Some(Arc::new(crate::router::PlatformToolCallSecurityGate {
                 platform: platform_for_agent_factory,
                 workflow: Some(workflow_for_agent_factory),
             })),
+            // The personal build used to pass `None` here, which was correct
+            // for a standalone user and wrong for the population that actually
+            // runs it: an enterprise member's desktop client. Their turns run
+            // on this backend, so `None` meant the company's destructive-command
+            // block and network default-deny were configured, delivered, and
+            // then enforced by nobody.
+            //
+            // It now carries a gate over the policy the renderer syncs down.
+            // Unsynced — a standalone install, or a member who has never
+            // connected — the policy is empty and the gate allows everything,
+            // which is the behaviour `None` had.
             #[cfg(not(feature = "enterprise"))]
-            tool_call_security_gate: None,
+            tool_call_security_gate: Some(Arc::new(crate::router::LocalToolSecurityGate {
+                policy: tool_security.clone(),
+            })),
             // Enterprise memory recall (P2-2 §B.4 完整版): a per-turn ACP
             // prompt hook injects the caller's readable memory into every
             // prompt. `None` in personal builds — the hook is not registered.
@@ -517,8 +543,16 @@ impl AppServices {
             memory_recall: Some(Arc::new(crate::router::OneMemoryContextProvider {
                 memory: Arc::new(dream_domain_memory::MemoryService::new(db.clone())),
             }) as Arc<dyn dream_core_ai_agent::TurnMemoryRecall>),
+            // Personal build: recall over the memory the renderer synced down,
+            // rather than nothing at all. The client offered members a "recall
+            // my company memory in conversations" switch while the provider
+            // that would honour it was compiled out — the page described a
+            // behaviour the product did not have. Empty until synced, so a
+            // standalone user is unaffected.
             #[cfg(not(feature = "enterprise"))]
-            memory_recall: None,
+            memory_recall: Some(Arc::new(crate::router::LocalTeamMemoryRecall {
+                memory: team_memory.clone(),
+            }) as Arc<dyn dream_core_ai_agent::TurnMemoryRecall>),
         });
 
         // Agent factory is now wired. Future extension/custom agents
@@ -586,6 +620,8 @@ impl AppServices {
             skill_paths,
             skill_repo,
             content_inspection: Arc::new(dream_core_system::ContentInspectionService::new()),
+            tool_security: tool_security.clone(),
+            team_memory: team_memory.clone(),
             backend_binary_path,
             runtime_helper_bin,
             runtime_base_url,
