@@ -2839,7 +2839,11 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
             header::CONTENT_TYPE,
             header::AUTHORIZATION,
             HeaderName::from_static("x-csrf-token"),
-        ]);
+        ])
+        // Content-Disposition is not CORS-safelisted, so without this the
+        // browser hides it from the fetch that reads it — see the note on the
+        // other credentialed layer below.
+        .expose_headers([header::CONTENT_DISPOSITION]);
 
     Ok(router.layer(cors))
 }
@@ -3419,7 +3423,15 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
                 header::CONTENT_TYPE,
                 header::AUTHORIZATION,
                 HeaderName::from_static("x-csrf-token"),
-            ]);
+            ])
+            // Attachment downloads carry their real name in
+            // Content-Disposition, and that header is NOT on the CORS
+            // safelist: a cross-origin `fetch` reads `null` for it unless the
+            // response says otherwise. The desktop renderer is exactly such a
+            // caller, so the file vault's download fell back to the last URL
+            // segment — the object id — and members got files named
+            // `vf_01a07c7c-894d-…` with no extension.
+            .expose_headers([header::CONTENT_DISPOSITION]);
         router.layer(cors)
     }
 }
