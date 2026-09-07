@@ -2196,12 +2196,22 @@ impl BillingService {
             return Err(BillingError::BadRequest("no such pending request".into()));
         };
         let repo = self.conversation_repo()?;
-        let exists = repo
-            .get(user_id, &conversation_id)
-            .await
-            .map_err(Self::repo_err)?
-            .is_some();
-        if !exists {
+        // Owner-agnostic, because `conversations.id` is unique table-wide while
+        // the id here came from the member's own client (`generate_short_id`,
+        // eight hex characters). An id already held by a DIFFERENT member reads
+        // as "not mine, so create it" through an owner-scoped lookup, and the
+        // insert then dies on the unique constraint — a 500 carrying raw SQL
+        // that the client swallows, leaving the admin's request pending and
+        // retried every five minutes forever.
+        let owner = repo.owner_user_id(&conversation_id).await.map_err(Self::repo_err)?;
+        if owner.as_deref().is_some_and(|existing| existing != user_id) {
+            return Err(BillingError::BadRequest(
+                "this conversation id is already taken on the server by another member's \
+                 conversation; the snapshot cannot be stored under it"
+                    .into(),
+            ));
+        }
+        if owner.is_none() {
             let now = now_ms() as i64;
             let extra = serde_json::json!({
                 "auditSnapshot": true,
@@ -4665,5 +4675,60 @@ mod tests {
                 .await
                 .is_err(),
         );
+    }
+
+    /// The snapshot id already belongs to someone else: refuse with a 4xx
+    /// instead of walking into the table's unique constraint.
+    ///
+    /// `conversations.id` is unique across the whole table, and the id in an
+    /// audit request is the member's LOCAL conversation id — eight hex
+    /// characters their own client minted. When a row under that id already
+    /// exists for a different user, the owner-scoped existence check this
+    /// used to do read "absent, so create", and the insert died on the unique
+    /// constraint. That 500 carried raw SQL, and the client's fulfil loop
+    /// swallows failures by design ("leave it pending; the next cycle
+    /// retries") — so the admin's request never completed and the upload was
+    /// re-attempted every five minutes indefinitely, with nothing surfaced on
+    /// either end.
+    #[tokio::test]
+    async fn fulfilling_onto_an_id_another_user_owns_is_refused_not_a_unique_violation() {
+        let (svc, pool) = audit_service().await;
+
+        // Somebody else already holds this id on the server.
+        sqlx::query(
+            "INSERT INTO conversations (id, user_id, name, type, extra, created_at, updated_at)              VALUES ('collide-1', 'admin-1', 'admin own chat', 'dream', '{}', 1, 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        svc.request_conversation_upload("admin-1", "member-1", "collide-1")
+            .await
+            .unwrap();
+        let pending = svc.list_my_conversation_audit_requests("member-1").await.unwrap();
+        assert_eq!(pending.len(), 1);
+
+        let error = svc
+            .fulfil_conversation_audit_request("member-1", &pending[0].id, "Ops chat", &audit_messages())
+            .await
+            .unwrap_err();
+        match error {
+            BillingError::BadRequest(message) => {
+                assert!(
+                    message.contains("already taken"),
+                    "expected the collision to be explained, got: {message}"
+                );
+                assert!(!message.contains("UNIQUE constraint"), "raw SQL leaked: {message}");
+            }
+            other => panic!("expected a 4xx for the id collision, got {other:?}"),
+        }
+
+        // The other user's conversation is untouched by the refused upload.
+        let owner: (String, String) = sqlx::query_as("SELECT user_id, name FROM conversations WHERE id = 'collide-1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(owner.0, "admin-1");
+        assert_eq!(owner.1, "admin own chat");
     }
 }

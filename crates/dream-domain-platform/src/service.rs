@@ -3940,6 +3940,24 @@ impl PlatformService {
             // Only a row THIS member owns and that carries the snapshot marker
             // is removed: an id that happens to match one of their real
             // server-side conversations is refused instead of deleted.
+            //
+            // The owner check has to come first, and it has to be
+            // owner-agnostic. `conversations.id` is unique across the whole
+            // table, while the ids arriving here are eight hex characters a
+            // client minted locally (`generate_short_id`, 32 bits) — so the
+            // row already holding this id can perfectly well belong to a
+            // different member. `repo.get(user_id, ..)` answers `None` for
+            // that case and the code below used to walk straight into
+            // `create`, reproducing the very 500 this block was written to
+            // prevent, just one owner over.
+            let existing_owner = repo.owner_user_id(&conversation_id).await.map_err(Self::repo_err)?;
+            if existing_owner.as_deref().is_some_and(|owner| owner != user_id) {
+                return Err(PlatformError::BadRequest(
+                    "this conversation id is already taken on the server by another member's \
+                     conversation; rename or re-create the conversation and share again"
+                        .into(),
+                ));
+            }
             if let Some(existing) = repo.get(user_id, &conversation_id).await.map_err(Self::repo_err)? {
                 let is_snapshot = serde_json::from_str::<serde_json::Value>(&existing.extra)
                     .ok()
@@ -4315,6 +4333,71 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, PlatformError::BadRequest(_)));
+    }
+
+    /// A conversation id already held by SOMEBODY ELSE is refused with a
+    /// 4xx, not walked into the unique constraint.
+    ///
+    /// `conversations.id` is unique table-wide, but the ids arriving here are
+    /// eight hex characters minted on each client independently, so two
+    /// members colliding is ordinary, not exotic. The owner-scoped lookup this
+    /// block used to start with answered "not found" for another member's row
+    /// and fell through to `create`, and the member got
+    /// `UNIQUE constraint failed: conversations.id` as a 500 — the same raw
+    /// SQL leak the re-share fix above was written to remove, on the branch it
+    /// did not cover. Retrying could never help, because the row is not theirs
+    /// to replace.
+    #[tokio::test]
+    async fn sharing_an_id_another_member_already_owns_is_refused_not_a_unique_violation() {
+        let (db, service) = share_setup().await;
+        for user in ["member-1", "member-2"] {
+            service
+                .set_security_policy(
+                    if user == "member-1" { "t1" } else { "t2" },
+                    false,
+                    false,
+                    &[],
+                    false,
+                    false,
+                    false,
+                    None,
+                    crate::models::CONVERSATION_SHARE_TENANT,
+                )
+                .await
+                .unwrap();
+        }
+
+        // member-2 gets there first and takes the id.
+        service
+            .share_conversation(&actor("t2"), "member-2", snapshot("collide-1"))
+            .await
+            .unwrap();
+
+        // member-1's own client happened to mint the same short id.
+        let error = service
+            .share_conversation(&actor("t1"), "member-1", snapshot("collide-1"))
+            .await
+            .unwrap_err();
+
+        match error {
+            PlatformError::BadRequest(message) => {
+                assert!(
+                    message.contains("already taken"),
+                    "expected the collision to be explained, got: {message}"
+                );
+                // The raw SQL text is what leaked before; it must not be back.
+                assert!(!message.contains("UNIQUE constraint"), "raw SQL leaked: {message}");
+            }
+            other => panic!("expected a 4xx for the id collision, got {other:?}"),
+        }
+
+        // member-2's snapshot is untouched — a refused share must not disturb
+        // the row it collided with.
+        let owner: (String,) = sqlx::query_as("SELECT user_id FROM conversations WHERE id = 'collide-1'")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(owner.0, "member-2");
     }
 
     /// Mode `tenant` gates scope: enterprise scope refuses, tenant scope
