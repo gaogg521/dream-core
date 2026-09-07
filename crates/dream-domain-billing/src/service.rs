@@ -11,7 +11,7 @@ use std::sync::Arc;
 use dream_core_common::license::{
     Feature, Tier, estimate_cost_micros, estimate_media_cost_micros, tier_allows, tier_seat_limit,
 };
-use dream_core_common::{generate_prefixed_id, now_ms};
+use dream_core_common::{generate_prefixed_id, now_ms, snapshot_conversation_id};
 use dream_core_db::{DbPool, day_bucket_expr, db_params};
 
 use crate::error::BillingError;
@@ -2192,9 +2192,16 @@ impl BillingService {
                 &db_params![request_id, user_id],
             )
             .await?;
-        let Some((tenant_id, conversation_id)) = row else {
+        let Some((tenant_id, requested_conversation_id)) = row else {
             return Err(BillingError::BadRequest("no such pending request".into()));
         };
+        // Same reason as the share path: the requested id is the member's own
+        // LOCAL conversation id, and `conversations.id` is unique across the
+        // deployment. Store the snapshot under an owner-bound key so two
+        // members whose clients happened to mint the same eight hex characters
+        // do not fight over one row — the loser's upload used to fail on the
+        // unique constraint forever, silently, retried every five minutes.
+        let conversation_id = snapshot_conversation_id(user_id, &requested_conversation_id);
         let repo = self.conversation_repo()?;
         // Owner-agnostic, because `conversations.id` is unique table-wide while
         // the id here came from the member's own client (`generate_short_id`,
@@ -2215,7 +2222,11 @@ impl BillingService {
             let now = now_ms() as i64;
             let extra = serde_json::json!({
                 "auditSnapshot": true,
-                "conversationId": conversation_id,
+                // The member's own id for this conversation — what the admin
+                // asked for, and the only handle that means anything back on
+                // the member's machine.
+                "conversationId": requested_conversation_id,
+                "originalConversationId": requested_conversation_id,
             });
             repo.create(&dream_core_db::models::ConversationRow {
                 id: conversation_id.clone(),
@@ -2282,11 +2293,42 @@ impl BillingService {
             .await?
             .ok_or_else(|| BillingError::Forbidden("conversation audit is admin-only".into()))?;
         let repo = self.conversation_repo()?;
-        let owner_user_id = repo
-            .owner_user_id(conversation_id)
-            .await
-            .map_err(Self::repo_err)?
-            .ok_or_else(|| BillingError::BadRequest("conversation not found".into()))?;
+        // An admin asks by the id they saw — the member's LOCAL conversation
+        // id, which is what the request row records. Uploaded snapshots are
+        // stored under an owner-bound key, so the request row has to be
+        // consulted BEFORE the bare id, not after it.
+        //
+        // Order matters here in a way that is easy to get backwards. A bare id
+        // can perfectly well resolve to some *other* member's real server-side
+        // conversation — that is the whole reason the owner-bound key exists —
+        // and trying it first hands the admin that stranger's conversation
+        // under the name of the one they asked for. On an audit path that is
+        // the worst available outcome, so the explicit request wins and the
+        // bare id is only the fallback for a native server conversation nobody
+        // ever requested an upload of.
+        let requested_target: Option<(String,)> = self
+            .db
+            .fetch_optional_as(
+                "SELECT target_user_id FROM one_conversation_audit_requests                  WHERE conversation_id = ? ORDER BY requested_at DESC LIMIT 1",
+                &db_params![conversation_id],
+            )
+            .await?;
+        let mut resolved: Option<(String, String)> = None;
+        if let Some((target_user_id,)) = requested_target {
+            let key = snapshot_conversation_id(&target_user_id, conversation_id);
+            if let Some(owner) = repo.owner_user_id(&key).await.map_err(Self::repo_err)? {
+                resolved = Some((key, owner));
+            }
+        }
+        if resolved.is_none()
+            && let Some(owner) = repo.owner_user_id(conversation_id).await.map_err(Self::repo_err)?
+        {
+            resolved = Some((conversation_id.to_owned(), owner));
+        }
+        let Some((conversation_id, owner_user_id)) = resolved else {
+            return Err(BillingError::BadRequest("conversation not found".into()));
+        };
+        let conversation_id: &str = &conversation_id;
         if !self.user_in_audit_scope(&scope, &owner_user_id).await? {
             // Out of scope reads as "not found" — an admin learns nothing
             // about conversations beyond their reach, not even existence.
@@ -4677,24 +4719,23 @@ mod tests {
         );
     }
 
-    /// The snapshot id already belongs to someone else: refuse with a 4xx
-    /// instead of walking into the table's unique constraint.
+    /// Another user already holds the requested id: the upload succeeds anyway,
+    /// under a key of its own, and the admin still reads it back by the id
+    /// they asked for.
     ///
-    /// `conversations.id` is unique across the whole table, and the id in an
-    /// audit request is the member's LOCAL conversation id — eight hex
-    /// characters their own client minted. When a row under that id already
-    /// exists for a different user, the owner-scoped existence check this
-    /// used to do read "absent, so create", and the insert died on the unique
-    /// constraint. That 500 carried raw SQL, and the client's fulfil loop
-    /// swallows failures by design ("leave it pending; the next cycle
-    /// retries") — so the admin's request never completed and the upload was
-    /// re-attempted every five minutes indefinitely, with nothing surfaced on
-    /// either end.
+    /// `conversations.id` is unique across the deployment while the requested
+    /// id is the member's LOCAL one — eight hex characters their client minted
+    /// with no coordination. Storing the snapshot under that id made two
+    /// members compete for one row: the second upload died on the unique
+    /// constraint, the client swallowed it by design ("leave it pending, the
+    /// next cycle retries"), and the admin's request re-failed every five
+    /// minutes forever with nothing surfaced at either end. Binding the owner
+    /// into the stored key removes the contention instead of reporting it.
     #[tokio::test]
-    async fn fulfilling_onto_an_id_another_user_owns_is_refused_not_a_unique_violation() {
+    async fn a_requested_id_another_user_already_holds_still_uploads_and_reads_back() {
         let (svc, pool) = audit_service().await;
 
-        // Somebody else already holds this id on the server.
+        // Somebody else's real conversation already occupies the bare id.
         sqlx::query(
             "INSERT INTO conversations (id, user_id, name, type, extra, created_at, updated_at)              VALUES ('collide-1', 'admin-1', 'admin own chat', 'dream', '{}', 1, 1)",
         )
@@ -4708,27 +4749,35 @@ mod tests {
         let pending = svc.list_my_conversation_audit_requests("member-1").await.unwrap();
         assert_eq!(pending.len(), 1);
 
-        let error = svc
-            .fulfil_conversation_audit_request("member-1", &pending[0].id, "Ops chat", &audit_messages())
+        svc.fulfil_conversation_audit_request("member-1", &pending[0].id, "Ops chat", &audit_messages())
             .await
-            .unwrap_err();
-        match error {
-            BillingError::BadRequest(message) => {
-                assert!(
-                    message.contains("already taken"),
-                    "expected the collision to be explained, got: {message}"
-                );
-                assert!(!message.contains("UNIQUE constraint"), "raw SQL leaked: {message}");
-            }
-            other => panic!("expected a 4xx for the id collision, got {other:?}"),
-        }
+            .expect("the collision must not block the upload");
 
-        // The other user's conversation is untouched by the refused upload.
-        let owner: (String, String) = sqlx::query_as("SELECT user_id, name FROM conversations WHERE id = 'collide-1'")
+        // The other user's conversation is untouched.
+        let intruded: (String, String) =
+            sqlx::query_as("SELECT user_id, name FROM conversations WHERE id = 'collide-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(intruded.0, "admin-1");
+        assert_eq!(intruded.1, "admin own chat");
+
+        // The snapshot lives under the owner-bound key…
+        let stored: (String, String) = sqlx::query_as("SELECT user_id, name FROM conversations WHERE id = ?")
+            .bind(dream_core_common::snapshot_conversation_id("member-1", "collide-1"))
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(owner.0, "admin-1");
-        assert_eq!(owner.1, "admin own chat");
+        assert_eq!(stored.0, "member-1");
+        assert_eq!(stored.1, "Ops chat");
+
+        // …and the admin still asks by the id they requested. Without the
+        // fallback that resolves it through the request row, this read would
+        // land on the other user's conversation instead — the worst possible
+        // outcome for an audit path.
+        let view = svc.audit_read_conversation("admin-1", "collide-1").await.unwrap();
+        assert_eq!(view.owner_user_id, "member-1");
+        assert_eq!(view.name, "Ops chat");
+        assert_eq!(view.messages.len(), 2);
     }
 }
