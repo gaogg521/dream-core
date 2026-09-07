@@ -18,6 +18,8 @@ pub mod routes;
 pub mod runtime_prepare;
 pub mod settings;
 pub mod sysinfo;
+pub mod team_memory;
+pub mod tool_security;
 pub mod trial_key;
 pub mod version;
 
@@ -34,5 +36,7 @@ pub use provider::ProviderService;
 pub use routes::{SystemRouterState, settings_routes, system_routes};
 pub use runtime_prepare::RuntimePrepareService;
 pub use settings::SettingsService;
+pub use team_memory::{TeamMemoryItem, TeamMemoryService, TeamMemorySnapshot};
+pub use tool_security::{ToolSecurityPolicy, ToolSecurityService};
 pub use trial_key::TrialKeyService;
 pub use version::VersionCheckService;

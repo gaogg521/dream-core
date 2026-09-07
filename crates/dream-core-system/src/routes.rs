@@ -56,6 +56,14 @@ pub struct SystemRouterState {
     /// findings they produce on this machine (T4). Always present — with no
     /// rules distributed it costs a read lock and a length check per send.
     pub content_inspection: std::sync::Arc<crate::content_inspection::ContentInspectionService>,
+    /// Holds the company's tool-call policy for local enforcement. Same
+    /// direction of travel as `content_inspection`: the renderer fetches from
+    /// whichever backend is authoritative for governance and pushes it here,
+    /// because the tool call is made on this machine.
+    pub tool_security: std::sync::Arc<crate::tool_security::ToolSecurityService>,
+    /// The company memory this member may read, synced down so recall can
+    /// happen without the prompt leaving the machine.
+    pub team_memory: std::sync::Arc<crate::team_memory::TeamMemoryService>,
 }
 
 impl From<SystemError> for ApiError {
@@ -134,6 +142,8 @@ pub fn system_routes(state: SystemRouterState) -> Router {
         // Content inspection (T4). Rules come down from the governance backend
         // via the renderer; findings go back up the same way.
         .route("/api/content-inspection/rules", post(set_inspection_rules))
+        .route("/api/tool-security/policy", post(set_tool_security_policy))
+        .route("/api/one/team-memory/items", post(set_team_memory))
         .route("/api/content-inspection/findings", post(drain_inspection_findings))
         .route("/api/system/info", get(get_system_info))
         .route("/api/system/check-update", post(check_update))
@@ -443,6 +453,36 @@ struct SetInspectionRulesReport {
 /// Authoritative on purpose: an admin deleting a rule has to actually stop it
 /// being enforced, and a merge would keep deleted rules alive on every machine
 /// that ever saw them.
+/// Load the member's readable company memory into this machine.
+///
+/// Local-only and whole-set: an empty body is how leaving an enterprise, or
+/// switching recall off, stops recall immediately rather than at the next
+/// purge.
+async fn set_team_memory(
+    State(state): State<SystemRouterState>,
+    body: Result<Json<crate::team_memory::TeamMemorySnapshot>, JsonRejection>,
+) -> Result<Json<ApiResponse<usize>>, ApiError> {
+    let Json(snapshot) = body.map_err(ApiError::from)?;
+    state.team_memory.set_snapshot(snapshot);
+    Ok(Json(ApiResponse::ok(state.team_memory.item_count())))
+}
+
+/// Distribute the company's tool-call policy to this machine.
+///
+/// Local-only, like the content-inspection sibling: it configures this
+/// process, and the renderer is the only caller. An empty/default body is a
+/// legitimate instruction meaning "no enforcement" — that is how a member
+/// leaving an enterprise, or an administrator relaxing the tier, turns the
+/// gate back off.
+async fn set_tool_security_policy(
+    State(state): State<SystemRouterState>,
+    body: Result<Json<crate::tool_security::ToolSecurityPolicy>, JsonRejection>,
+) -> Result<Json<ApiResponse<crate::tool_security::ToolSecurityPolicy>>, ApiError> {
+    let Json(policy) = body.map_err(ApiError::from)?;
+    state.tool_security.set_policy(policy);
+    Ok(Json(ApiResponse::ok(state.tool_security.policy())))
+}
+
 async fn set_inspection_rules(
     State(state): State<SystemRouterState>,
     body: Result<Json<SetInspectionRulesBody>, JsonRejection>,

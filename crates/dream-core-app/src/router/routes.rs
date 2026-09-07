@@ -1391,6 +1391,62 @@ impl dream_core_conversation::MemoryContextProvider for OneMemoryContextProvider
     }
 }
 
+/// The personal edition's memory recall, over items pushed down from the
+/// company server.
+///
+/// Counterpart to [`LocalToolSecurityGate`], and there for the same reason: a
+/// desktop member's turns run on this build, so the enterprise recall provider
+/// never sees them. Matching happens against the synced copy so the prompt
+/// itself never leaves the machine — see `dream_core_system::team_memory` for
+/// why that mattered enough to shape the design.
+pub(crate) struct LocalTeamMemoryRecall {
+    pub(crate) memory: std::sync::Arc<dream_core_system::TeamMemoryService>,
+}
+
+#[async_trait::async_trait]
+impl dream_core_ai_agent::TurnMemoryRecall for LocalTeamMemoryRecall {
+    async fn recall(&self, _user_id: &str, query: &str) -> Vec<String> {
+        self.memory.recall(query)
+    }
+}
+
+/// The personal edition's tool-call gate, over a policy pushed down from the
+/// company server.
+///
+/// Not an enterprise type, on purpose. An enterprise member's desktop client
+/// runs its turns on the co-located backend, and that backend is a personal
+/// build — every `#[cfg(feature = "enterprise")]` gate, including
+/// [`PlatformToolCallSecurityGate`] below, is absent from it. So the whole
+/// destructive-command and network-denial half of the policy was configured,
+/// delivered to the member, and then enforced by nobody. This is the gate that
+/// enforces it, reading the copy the renderer syncs into
+/// `POST /api/tool-security/policy` — exactly the route content inspection
+/// already takes for the same reason.
+///
+/// It never fails closed on its own: an install that has not synced holds an
+/// empty policy and allows everything, which is what a standalone user needs
+/// and what `None` used to do here.
+///
+/// Terminal-tool approval is not implemented here and is not faked; see
+/// `dream_core_system::tool_security` for why a local approximation would be
+/// worse than the honest gap.
+pub(crate) struct LocalToolSecurityGate {
+    pub(crate) policy: std::sync::Arc<dream_core_system::ToolSecurityService>,
+}
+
+#[async_trait::async_trait]
+impl dream_core_ai_agent::ToolCallSecurityGate for LocalToolSecurityGate {
+    async fn check(
+        &self,
+        _user_id: &str,
+        command_text: &str,
+        is_network_fetch: bool,
+        _is_terminal_tool: bool,
+    ) -> Result<Option<String>, String> {
+        Ok(self.policy.check(command_text, is_network_fetch))
+    }
+}
+
 /// Adapts `one_security_policy`'s `destructive_commands_blocked` +
 /// `blocked_command_patterns`, `external_network_denied_by_default`, and
 /// `terminal_tools_require_approval` to `dream-core-ai-agent`'s

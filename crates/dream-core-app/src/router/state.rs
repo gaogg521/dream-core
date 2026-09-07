@@ -478,6 +478,8 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
             SqliteFeedbackDiagnosticsRepository::new(pool),
         )),
         content_inspection: services.content_inspection.clone(),
+        tool_security: services.tool_security.clone(),
+        team_memory: services.team_memory.clone(),
     }
 }
 
