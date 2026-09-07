@@ -2984,6 +2984,32 @@ impl OrgService {
         let ip_str = ip_addresses.to_string();
         let agents_str = installed_agents.to_string();
 
+        // Refuse a blocked machine BEFORE touching its row.
+        //
+        // This check used to sit after the UPDATE, which meant the very
+        // heartbeat that earned the 403 had already refreshed `last_seen_at`.
+        // The roster then showed a blocked machine as seen seconds ago —
+        // measured at 0.7 minutes while the block was in force — so the one
+        // column an administrator would read to confirm the machine had gone
+        // quiet said the opposite, and said it on a five-minute cadence for as
+        // long as the client kept running.
+        let existing: Option<(String, String)> = self
+            .db
+            .fetch_optional_as(
+                "SELECT id, status FROM one_runtime_nodes WHERE tenant_id = ? AND machine_id = ?",
+                &db_params![tenant_id, machine_id],
+            )
+            .await?;
+        if let Some((_, status)) = existing.as_ref()
+            && status == "blocked"
+        {
+            // The row stays — it is the administrator's record of the block.
+            // Only the refresh is refused.
+            return Err(OrgError::Forbidden(
+                "this machine has been blocked by an administrator".into(),
+            ));
+        }
+
         // Try UPDATE first; if no row affected, INSERT.
         let updated = self
             .db
@@ -3006,22 +3032,12 @@ impl OrgService {
             .await?;
 
         if updated > 0 {
-            let (id, status): (String, String) = self
-                .db
-                .fetch_one_as(
-                    "SELECT id, status FROM one_runtime_nodes WHERE tenant_id = ? AND machine_id = ?",
-                    &db_params![tenant_id, machine_id],
-                )
-                .await?;
-            if status == "blocked" {
-                // The one real enforcement point in the control plane: a
-                // blocked machine cannot keep itself on the roster by
-                // heartbeating. Its row stays (the admin's record of the
-                // block survives), the machine just gets refused.
-                return Err(OrgError::Forbidden(
-                    "this machine has been blocked by an administrator".into(),
-                ));
-            }
+            // `existing` is Some here by construction: the UPDATE matched the
+            // same (tenant_id, machine_id) the SELECT above read, and the
+            // blocked case already returned. Re-reading only to learn the
+            // status this function is about to echo back would be a second
+            // round trip for an answer we hold.
+            let (id, status) = existing.expect("UPDATE matched a row the status probe had just read");
             // A pending node keeps heartbeating: the machine is healthy and
             // its row should stay fresh — the review is organizational, and
             // the review task was raised once, at registration.
@@ -5448,6 +5464,11 @@ mod tests {
             .set_runtime_node_status("t1", &node_id, "blocked")
             .await
             .unwrap();
+        let seen_when_blocked = service.list_runtime_nodes("t1").await.unwrap()[0].last_seen_at;
+
+        // A heartbeat has to be able to carry a NEWER timestamp than the one
+        // already stored, or "the row did not move" proves nothing.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         let err = service
             .heartbeat_runtime_node("t1", &alice, "m1", "My Machine", &empty, &empty, &empty)
             .await
@@ -5458,6 +5479,14 @@ mod tests {
         let roster = service.list_runtime_nodes("t1").await.unwrap();
         assert_eq!(roster.len(), 1);
         assert_eq!(roster[0].status, "blocked");
+        // …and it must go STALE. This is the assertion this test was named for
+        // and did not make: the refusal used to happen after the UPDATE, so the
+        // rejected heartbeat still refreshed `last_seen_at` and the roster
+        // showed a blocked machine as seen moments ago — on repeat, forever.
+        assert_eq!(
+            roster[0].last_seen_at, seen_when_blocked,
+            "a refused heartbeat must not refresh last_seen_at"
+        );
 
         // Approving lets it back in; unknown statuses and nodes are rejected.
         service
