@@ -661,6 +661,33 @@ impl dream_domain_devops::ProxyUsageRecorder for BillingProxyUsageRecorder {
             {
                 tracing::debug!(error = %e, "model proxy usage record failed (non-fatal)");
             }
+            // The same call also belongs in the per-call trace. Only
+            // `BillingLlmCallTrace` wrote that table, and it sits on the
+            // enterprise `ConversationService` — which a desktop member's
+            // conversation never touches, because their turns run on the
+            // co-located personal backend. So the admin console's LLM Trace tab
+            // was permanently empty for exactly the traffic an enterprise
+            // deployment consists of, while the usage totals right next to it
+            // were populated from these same events.
+            //
+            // `conversation_id` stays `None`: the proxy sees an HTTP request,
+            // and the conversation it belongs to is a fact only the client
+            // holds. Attribution needs a channel the two ends share, which is
+            // its own change.
+            let call = dream_domain_billing::NewLlmCall {
+                user_id: event.user_id,
+                conversation_id: None,
+                model: event.model,
+                provider: Some("model_proxy".to_owned()),
+                tool_name: None,
+                input_tokens: event.input_tokens.unwrap_or(0),
+                output_tokens: event.output_tokens.unwrap_or(0),
+                duration_ms: event.duration_ms,
+                error: None,
+            };
+            if let Err(e) = service.record_llm_call(call).await {
+                tracing::debug!(error = %e, "model proxy llm-call trace failed (non-fatal)");
+            }
         });
     }
 }

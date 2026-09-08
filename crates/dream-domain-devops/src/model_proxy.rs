@@ -752,6 +752,9 @@ mod tests {
             upstream_base_url: upstream_base_url.into(),
             api_key: api_key.into(),
             user_id: "admin1".into(),
+            // Unscoped: these cases are about SigV4 re-signing, not about the
+            // model allowlist, and an empty list is the "no restriction" value.
+            models: Vec::new(),
         }
     }
 

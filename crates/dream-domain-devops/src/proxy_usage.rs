@@ -34,6 +34,7 @@
 
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Instant;
 
 use axum::body::{Body, Bytes};
 // StreamExt only, deliberately: importing TryStreamExt as well would make
@@ -68,6 +69,13 @@ pub struct ProxyUsageEvent {
     pub model: Option<String>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
+    /// Wall time from the moment the tap was built to the end of the upstream
+    /// stream. It is the whole point of the per-call trace — without it the
+    /// admin console's latency percentiles have nothing to compute over for
+    /// proxied traffic, which on an enterprise deployment is most of it.
+    ///
+    /// Measured, not estimated: `None` only if the clock went backwards.
+    pub duration_ms: Option<i64>,
 }
 
 /// Sink for model-proxy usage (P1-2). Fire-and-forget by contract — same rule
@@ -216,6 +224,10 @@ struct TapContext {
     request_model: Option<String>,
     /// Only a 2xx upstream response may produce a row.
     success: bool,
+    /// When the tap was built — as close to "the call started" as this layer
+    /// gets, which is after the request body probe and before the upstream
+    /// request is sent.
+    started_at: Instant,
 }
 
 /// Byte-side usage parser for one proxied response. Constructed per request;
@@ -247,6 +259,7 @@ impl UsageTap {
             channel_id,
             request_model,
             success: upstream_success,
+            started_at: Instant::now(),
         });
         let mode = if content_type.contains("text/event-stream") {
             TapMode::Sse
@@ -317,6 +330,7 @@ impl UsageTap {
             model,
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
+            duration_ms: i64::try_from(context.started_at.elapsed().as_millis()).ok(),
         });
     }
 
@@ -512,6 +526,24 @@ mod tests {
 
     fn recorded(recorder: &RecordingSink) -> Vec<ProxyUsageEvent> {
         recorder.0.lock().unwrap().clone()
+    }
+
+    /// The trace's whole reason for existing is latency, so a recorded call
+    /// has to carry a measured one. `None` here would leave the admin console's
+    /// percentiles with nothing to compute over for proxied traffic.
+    #[test]
+    fn a_recorded_call_carries_a_measured_duration() {
+        let sink = sink();
+        let mut tap = make_tap(&sink, "application/json", true);
+        tap.absorb(br#"{"model":"gpt-4o","usage":{"prompt_tokens":10,"completion_tokens":2}}"#);
+        tap.finish();
+
+        let events = sink.0.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(
+            events[0].duration_ms.is_some(),
+            "a recorded call must report how long it took"
+        );
     }
 
     #[test]
