@@ -2806,7 +2806,9 @@ mod tests {
             .unwrap();
         seed_unified_resource_grants(db.pool()).await;
         let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
-        let skill_cat = create_category(&pool, "t1", "skill", None, "数据分析", 0).await.unwrap();
+        let skill_cat = create_category(&pool, "t1", "skill", None, "数据分析", 0)
+            .await
+            .unwrap();
         let mcp_cat = create_category(&pool, "t1", "mcp", None, "工具分类", 0).await.unwrap();
 
         // Ids of other resource types and unknown ids resolve to nothing.
@@ -2819,7 +2821,9 @@ mod tests {
         let empty = list_category_names_for_ids(&pool, "skill", &[]).await.unwrap();
         assert!(empty.is_empty());
 
-        let missing = list_category_names_for_ids(&pool, "skill", &["nope".to_string()]).await.unwrap();
+        let missing = list_category_names_for_ids(&pool, "skill", &["nope".to_string()])
+            .await
+            .unwrap();
         assert!(missing.is_empty());
     }
 
