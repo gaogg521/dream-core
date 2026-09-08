@@ -398,7 +398,11 @@ mod tests {
         assert_eq!(json["category"], "数据分析");
         assert_eq!(json["tags"], json!(["SQL", "报表"]));
 
-        let no_category = SkillListItemResponse { category: None, tags: Vec::new(), ..item };
+        let no_category = SkillListItemResponse {
+            category: None,
+            tags: Vec::new(),
+            ..item
+        };
         let json = serde_json::to_value(&no_category).unwrap();
         assert!(json.get("category").is_none());
         assert!(json.get("tags").is_none());

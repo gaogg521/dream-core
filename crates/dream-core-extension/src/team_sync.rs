@@ -74,7 +74,10 @@ fn sanitize_id(id: &str) -> String {
 fn inject_category_tags(mapping: &mut serde_yaml::Mapping, payload: &TeamSkillPayload) -> usize {
     let mut added = 0;
     if let Some(category) = payload.category.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
-        mapping.insert(serde_yaml::Value::String("category".into()), serde_yaml::Value::String(category.into()));
+        mapping.insert(
+            serde_yaml::Value::String("category".into()),
+            serde_yaml::Value::String(category.into()),
+        );
         added += 1;
     }
     if !payload.tags.is_empty() {
@@ -85,7 +88,10 @@ fn inject_category_tags(mapping: &mut serde_yaml::Mapping, payload: &TeamSkillPa
             .filter(|t| !matches!(t, serde_yaml::Value::String(s) if s.is_empty()))
             .collect();
         if !tags.is_empty() {
-            mapping.insert(serde_yaml::Value::String("tags".into()), serde_yaml::Value::Sequence(tags));
+            mapping.insert(
+                serde_yaml::Value::String("tags".into()),
+                serde_yaml::Value::Sequence(tags),
+            );
             added += 1;
         }
     }
@@ -97,7 +103,9 @@ fn inject_category_tags(mapping: &mut serde_yaml::Mapping, payload: &TeamSkillPa
 /// [`crate::skill_service::extract_frontmatter_text`]; `None` when there is
 /// no closing fence.
 fn split_skill_document(content: &str) -> Option<(&str, &str)> {
-    let after_open = content.strip_prefix("---\n").or_else(|| content.strip_prefix("---\r\n"))?;
+    let after_open = content
+        .strip_prefix("---\n")
+        .or_else(|| content.strip_prefix("---\r\n"))?;
     let mut pos = 0;
     for line in after_open.lines() {
         let raw = &after_open[pos..];
@@ -111,7 +119,10 @@ fn split_skill_document(content: &str) -> Option<(&str, &str)> {
         };
         if line == "---" {
             let yaml = &after_open[..pos];
-            let yaml = yaml.strip_suffix("\r\n").or_else(|| yaml.strip_suffix('\n')).unwrap_or(yaml);
+            let yaml = yaml
+                .strip_suffix("\r\n")
+                .or_else(|| yaml.strip_suffix('\n'))
+                .unwrap_or(yaml);
             return Some((yaml, &after_open[pos + line_with_ending_len..]));
         }
         pos += line_with_ending_len;
@@ -146,13 +157,17 @@ fn build_skill_md(payload: &TeamSkillPayload) -> String {
         }
         // `serde_yaml::to_string` ends with a newline, so `---\n{merged}---`
         // re-fences cleanly and `{body}` keeps its original leading newline.
-        let merged = serde_yaml::to_string(&serde_yaml::Value::Mapping(mapping)).unwrap_or_else(|_| format!("{frontmatter}\n"));
+        let merged =
+            serde_yaml::to_string(&serde_yaml::Value::Mapping(mapping)).unwrap_or_else(|_| format!("{frontmatter}\n"));
         return format!("---\n{merged}---\n{body}");
     }
     let name = payload.name.trim();
     let description = payload.description.trim().replace(['\r', '\n'], " ");
     let mut mapping = serde_yaml::Mapping::new();
-    mapping.insert(serde_yaml::Value::String("name".into()), serde_yaml::Value::String(name.into()));
+    mapping.insert(
+        serde_yaml::Value::String("name".into()),
+        serde_yaml::Value::String(name.into()),
+    );
     mapping.insert(
         serde_yaml::Value::String("description".into()),
         serde_yaml::Value::String(description.into()),
@@ -334,7 +349,10 @@ mod tests {
         let (_, _, category, tags) = crate::skill_service::test_parse_frontmatter(&md).unwrap();
         assert_eq!(category.as_deref(), Some("new-cat"));
         assert_eq!(tags, vec!["t2".to_string()]);
-        assert!(!md.contains("old-cat") && !md.contains("t1"), "stale metadata must be gone: {md}");
+        assert!(
+            !md.contains("old-cat") && !md.contains("t1"),
+            "stale metadata must be gone: {md}"
+        );
     }
 
     #[tokio::test]

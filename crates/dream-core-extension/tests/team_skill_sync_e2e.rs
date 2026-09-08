@@ -82,7 +82,9 @@ async fn distributed_team_skill_surfaces_in_listing() {
     );
     categorized.category = Some("数据分析".into());
     categorized.tags = vec!["SQL".into()];
-    let report = sync_team_skills(&paths.team_skills_dir(), &[categorized], true).await.unwrap();
+    let report = sync_team_skills(&paths.team_skills_dir(), &[categorized], true)
+        .await
+        .unwrap();
     assert_eq!(report.written, vec!["oskill_report".to_string()]);
     assert_eq!(report.kept, 1);
 
@@ -98,7 +100,11 @@ async fn distributed_team_skill_surfaces_in_listing() {
         "description carried from the registry: {}",
         team.description
     );
-    assert_eq!(team.category.as_deref(), Some("数据分析"), "category must surface in the listing");
+    assert_eq!(
+        team.category.as_deref(),
+        Some("数据分析"),
+        "category must surface in the listing"
+    );
     assert_eq!(team.tags, vec!["SQL".to_string()], "tags must surface in the listing");
 }
 

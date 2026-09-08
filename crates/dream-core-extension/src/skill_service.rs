@@ -2286,7 +2286,9 @@ fn parse_frontmatter_fields(content: &str) -> Option<ParsedFrontmatter> {
                     Ok(out)
                 }
             }
-            deserializer.deserialize_any(Visitor(Vec::new())).map(FrontmatterTagList)
+            deserializer
+                .deserialize_any(Visitor(Vec::new()))
+                .map(FrontmatterTagList)
         }
     }
 
