@@ -53,6 +53,7 @@ fn build_state(db: &dream_core_db::Database, version_check_service: VersionCheck
         content_inspection: std::sync::Arc::new(dream_core_system::ContentInspectionService::new()),
         tool_security: std::sync::Arc::new(dream_core_system::ToolSecurityService::new()),
         team_memory: std::sync::Arc::new(dream_core_system::TeamMemoryService::new()),
+        enterprise_upstream: std::sync::Arc::new(dream_core_system::EnterpriseUpstreamService::new()),
         send_policy: std::sync::Arc::new(dream_core_system::SendPolicyService::new()),
         model_fetch_service: ModelFetchService::new(provider_repo, TEST_KEY, http_client.clone()),
         protocol_detection_service: ProtocolDetectionService::new(http_client),

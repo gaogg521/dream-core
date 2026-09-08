@@ -67,6 +67,11 @@ pub struct SystemRouterState {
     /// The send-rate limit and model allowlist, for the same reason: the send
     /// happens on this machine.
     pub send_policy: std::sync::Arc<crate::send_policy::SendPolicyService>,
+    /// The client's channel to the company server (C0-1 plan A): the renderer
+    /// pushes the address and the member's token, and the tool-call gate uses
+    /// it for approval round trips. Memory-only by contract — see the module
+    /// doc.
+    pub enterprise_upstream: std::sync::Arc<crate::enterprise_upstream::EnterpriseUpstreamService>,
 }
 
 impl From<SystemError> for ApiError {
@@ -146,6 +151,10 @@ pub fn system_routes(state: SystemRouterState) -> Router {
         // via the renderer; findings go back up the same way.
         .route("/api/content-inspection/rules", post(set_inspection_rules))
         .route("/api/tool-security/policy", post(set_tool_security_policy))
+        .route(
+            "/api/enterprise/upstream",
+            post(set_enterprise_upstream).delete(clear_enterprise_upstream),
+        )
         .route("/api/one/team-memory/items", post(set_team_memory))
         .route("/api/send-policy", post(set_send_policy))
         .route("/api/content-inspection/findings", post(drain_inspection_findings))
@@ -485,6 +494,36 @@ async fn set_tool_security_policy(
     let Json(policy) = body.map_err(ApiError::from)?;
     state.tool_security.set_policy(policy);
     Ok(Json(ApiResponse::ok(state.tool_security.policy())))
+}
+
+/// The renderer's push of the company-server channel (C0-1 plan A): the
+/// terminal-approval gate on this machine needs the server address and the
+/// member's token, and only the renderer holds both. Local-only, like the
+/// policy sibling. The credential is held in memory only — never persisted,
+/// never logged — and the renderer clears it on revocation.
+async fn set_enterprise_upstream(
+    State(state): State<SystemRouterState>,
+    body: Result<Json<crate::enterprise_upstream::EnterpriseUpstream>, JsonRejection>,
+) -> Result<Json<ApiResponse<bool>>, ApiError> {
+    let Json(upstream) = body.map_err(ApiError::from)?;
+    if upstream.base_url.trim().is_empty() || upstream.token.trim().is_empty() {
+        return Err(ApiError::BadRequest("baseUrl and token must not be empty".into()));
+    }
+    state
+        .enterprise_upstream
+        .set(crate::enterprise_upstream::EnterpriseUpstream {
+            base_url: upstream.base_url.trim().trim_end_matches('/').to_owned(),
+            token: upstream.token,
+        });
+    Ok(Json(ApiResponse::ok(true)))
+}
+
+/// Revocation / disconnect half of the push above. An empty state is the
+/// honest answer to "you no longer belong here": the approval gate fails
+/// closed instead of presenting a dead credential.
+async fn clear_enterprise_upstream(State(state): State<SystemRouterState>) -> Json<ApiResponse<bool>> {
+    state.enterprise_upstream.clear();
+    Json(ApiResponse::ok(true))
 }
 
 /// Distribute the send-rate limit and model allowlist to this machine.

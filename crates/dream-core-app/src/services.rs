@@ -82,6 +82,9 @@ pub struct AppServices {
     /// The company's tool-call policy as this machine received it. Enforced
     /// locally because the tool call happens locally — see the module.
     pub tool_security: Arc<dream_core_system::ToolSecurityService>,
+    /// The client's channel to the company server (C0-1 plan A). Memory-only;
+    /// empty until the renderer pushes it.
+    pub enterprise_upstream: Arc<dream_core_system::EnterpriseUpstreamService>,
     /// Company memory this member may read, synced down for local recall.
     pub team_memory: Arc<dream_core_system::TeamMemoryService>,
     /// The send-rate limit and model allowlist, likewise enforced where the
@@ -451,6 +454,10 @@ impl AppServices {
         // same instance the `/api/tool-security/policy` route writes. Not
         // feature-gated — the personal build is precisely the one that needs it.
         let tool_security = Arc::new(dream_core_system::ToolSecurityService::new());
+        // The client's channel to the company server (C0-1 plan A): pushed by
+        // the renderer, read by the tool-call approval gate. Memory-only —
+        // see the module doc.
+        let enterprise_upstream = Arc::new(dream_core_system::EnterpriseUpstreamService::new());
         // Same reasoning as `tool_security`: the personal build's recall
         // provider and the route that fills it must share one instance.
         let team_memory = Arc::new(dream_core_system::TeamMemoryService::new());
@@ -541,6 +548,7 @@ impl AppServices {
             #[cfg(not(feature = "enterprise"))]
             tool_call_security_gate: Some(Arc::new(crate::router::LocalToolSecurityGate {
                 policy: tool_security.clone(),
+                upstream: enterprise_upstream.clone(),
             })),
             // Enterprise memory recall (P2-2 §B.4 完整版): a per-turn ACP
             // prompt hook injects the caller's readable memory into every
@@ -627,6 +635,7 @@ impl AppServices {
             skill_repo,
             content_inspection: Arc::new(dream_core_system::ContentInspectionService::new()),
             tool_security: tool_security.clone(),
+            enterprise_upstream: enterprise_upstream.clone(),
             team_memory: team_memory.clone(),
             send_policy: send_policy.clone(),
             backend_binary_path,

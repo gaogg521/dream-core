@@ -22,13 +22,17 @@
 //! are enforced here: the destructive-command block and the default-deny on
 //! external network access.
 //!
-//! Terminal-tool **approval** is not, and deliberately is not faked. Approval
-//! means "block until a human on the admin console decides", which needs the
-//! shared workflow ledger on the company server; a local approximation would
-//! either auto-approve (silently weaker than what the administrator asked
-//! for) or auto-deny (breaking terminal tools outright). Until the client has
-//! a real approval round trip, `terminal_tools_require_approval` stays a
-//! server-side gate and the member's client says so rather than guessing.
+//! Terminal-tool **approval** is the third. It cannot be decided from a local
+//! copy alone — it means "block until a human on the admin console decides",
+//! which needs a round trip to the company server. What makes it enforceable
+//! on a client is the enterprise upstream channel (`dream-core-app`'s
+//! `enterprise_upstream`): the renderer pushes the server address and the
+//! member's token here, and the gate holds the tool call while it drives the
+//! company's own `/api/workflow/tasks` over that channel. The flag travels in
+//! this policy so the gate knows the dimension is demanded; the *mechanism*
+//! lives where the HTTP client lives. When the channel has not been synced
+//! yet, the gate fails closed — the company asked for approval, so a silent
+//! allow would be weaker than what the administrator configured.
 //!
 //! # What this is not
 //!
@@ -62,15 +66,22 @@ pub struct ToolSecurityPolicy {
     /// Refuse tool calls that reach the network.
     #[serde(default)]
     pub external_network_denied_by_default: bool,
+    /// Terminal tool calls must be approved by an administrator before they
+    /// run (C0-1). Enforced by the gate through the enterprise upstream
+    /// channel — a company server round trip, not a local decision.
+    #[serde(default)]
+    pub terminal_tools_require_approval: bool,
 }
 
 impl ToolSecurityPolicy {
-    /// Whether this policy would refuse anything at all.
+    /// Whether this policy would demand anything at all.
     ///
     /// The default — every flag off — is the personal-edition posture, and the
     /// gate short-circuits on it so a standalone user pays nothing.
     pub fn is_permissive(&self) -> bool {
-        !self.destructive_commands_blocked && !self.external_network_denied_by_default
+        !self.destructive_commands_blocked
+            && !self.external_network_denied_by_default
+            && !self.terminal_tools_require_approval
     }
 }
 
@@ -143,6 +154,7 @@ mod tests {
     fn strict() -> ToolSecurityPolicy {
         ToolSecurityPolicy {
             destructive_commands_blocked: true,
+            terminal_tools_require_approval: false,
             blocked_command_patterns: vec!["rm -rf".into(), "shutdown".into()],
             external_network_denied_by_default: true,
         }
@@ -171,6 +183,7 @@ mod tests {
         let svc = ToolSecurityService::new();
         svc.set_policy(ToolSecurityPolicy {
             destructive_commands_blocked: true,
+            terminal_tools_require_approval: false,
             // An empty entry would otherwise match every command ever run.
             blocked_command_patterns: vec![String::new(), "MKFS".into()],
             external_network_denied_by_default: false,

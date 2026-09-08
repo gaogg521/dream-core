@@ -1294,6 +1294,7 @@ impl dream_core_conversation::TurnMemoryExtractor for OneMemoryTurnExtractor {
                             mcp: Default::default(),
                             logging: Default::default(),
                             vision: None,
+                            extra_headers: None,
                         };
                         match dream_core_ai_agent::extract_facts_via_llm(
                             &engine_config,
@@ -1425,7 +1426,7 @@ impl dream_core_conversation::MemoryContextProvider for OneMemoryContextProvider
 /// never sees them. Matching happens against the synced copy so the prompt
 /// itself never leaves the machine — see `dream_core_system::team_memory` for
 /// why that mattered enough to shape the design.
-pub(crate) struct LocalTeamMemoryRecall {
+pub struct LocalTeamMemoryRecall {
     pub(crate) memory: std::sync::Arc<dream_core_system::TeamMemoryService>,
 }
 
@@ -1508,20 +1509,158 @@ impl dream_core_conversation::SendGate for LocalSendGate {
     }
 }
 
-pub(crate) struct LocalToolSecurityGate {
-    pub(crate) policy: std::sync::Arc<dream_core_system::ToolSecurityService>,
+pub struct LocalToolSecurityGate {
+    pub policy: std::sync::Arc<dream_core_system::ToolSecurityService>,
+    /// The client's channel to the company server (C0-1 plan A): carries the
+    /// address and member token the renderer pushed. Approval is the one
+    /// policy dimension that cannot be decided locally — the block must last
+    /// until an administrator on the console decides — so it rides this
+    /// channel to the company's own workflow API instead of a local copy.
+    pub upstream: std::sync::Arc<dream_core_system::EnterpriseUpstreamService>,
 }
+
+/// Mirrors `dream_domain_workflow::TERMINAL_APPROVAL_TIMEOUT_MS` (not
+/// referenced directly: that crate is an enterprise-optional dependency and
+/// the desktop member's backend is a personal build). The two MUST stay in
+/// sync — the expiry the client stamps on the task and the deadline it
+/// enforces locally are the same contract the server-side gate runs on.
+const TERMINAL_APPROVAL_TIMEOUT_MS: i64 = 10 * 60 * 1000;
+/// Same cadence as the server-side wait loop
+/// (`dream_domain_workflow::APPROVAL_POLL_INTERVAL_MS`).
+const APPROVAL_POLL_INTERVAL_MS: u64 = 1000;
 
 #[async_trait::async_trait]
 impl dream_core_ai_agent::ToolCallSecurityGate for LocalToolSecurityGate {
     async fn check(
         &self,
-        _user_id: &str,
+        user_id: &str,
         command_text: &str,
         is_network_fetch: bool,
-        _is_terminal_tool: bool,
+        is_terminal_tool: bool,
     ) -> Result<Option<String>, String> {
-        Ok(self.policy.check(command_text, is_network_fetch))
+        if let Some(reason) = self.policy.check(command_text, is_network_fetch) {
+            return Ok(Some(reason));
+        }
+        if is_terminal_tool && self.policy.policy().terminal_tools_require_approval {
+            return self.run_remote_terminal_approval(user_id, command_text).await;
+        }
+        Ok(None)
+    }
+}
+
+impl LocalToolSecurityGate {
+    /// Hold the call until an administrator on the company console decides
+    /// (C0-1 plan A). The task is created on the company's own workflow API
+    /// over the upstream channel, with an expiry so the server-side queue
+    /// reports the truth after the deadline; this side polls the same task
+    /// and enforces the same deadline locally, so a vanished server cannot
+    /// hold a tool call forever.
+    ///
+    /// Fail-closed, same convention as the enterprise gate: a channel that
+    /// was never synced, an unreachable server, or an unreadable answer all
+    /// refuse this ONE call — never a silent allow of something the company
+    /// asked to gate.
+    async fn run_remote_terminal_approval(&self, user_id: &str, command_text: &str) -> Result<Option<String>, String> {
+        let Some(upstream) = self.upstream.get() else {
+            return Err(
+                "terminal tools require approval but the client has not received the company server connection"
+                    .to_owned(),
+            );
+        };
+        let client = reqwest::Client::new();
+        let title: String = command_text.chars().take(APPROVAL_TITLE_MAX_CHARS).collect();
+        let created = client
+            .post(format!("{}/api/workflow/tasks", upstream.base_url))
+            .bearer_auth(&upstream.token)
+            .json(&serde_json::json!({
+                "kind": "tool",
+                "title": title,
+                "detail": "terminal tool call awaiting administrator approval (security policy)",
+                "payload": { "commandText": command_text },
+                "expiresAtMs": dream_core_common::now_ms() + TERMINAL_APPROVAL_TIMEOUT_MS,
+            }))
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| format!("approval request failed to reach the company server: {e}"))?;
+        if !created.status().is_success() {
+            return Err(format!(
+                "approval request was refused by the company server (HTTP {})",
+                created.status()
+            ));
+        }
+        let body: serde_json::Value = created
+            .json()
+            .await
+            .map_err(|e| format!("unreadable approval response: {e}"))?;
+        let task_id = body
+            .get("data")
+            .and_then(|data| data.get("id"))
+            .and_then(|id| id.as_str())
+            .ok_or_else(|| "approval response carried no task id".to_owned())?
+            .to_owned();
+        tracing::info!(
+            task_id = %task_id,
+            user_id,
+            "terminal tool call held for administrator approval (company server)"
+        );
+
+        // Poll the task until it leaves `pending`. The server expires
+        // deadline-passed tasks lazily on read, and this client's deadline is
+        // the task's expiry, so the loop below always terminates: past the
+        // deadline the answer is `expired`, same as the server-side wait.
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(TERMINAL_APPROVAL_TIMEOUT_MS as u64);
+        loop {
+            let read = client
+                .get(format!("{}/api/workflow/tasks/{}", upstream.base_url, task_id))
+                .bearer_auth(&upstream.token)
+                .timeout(std::time::Duration::from_secs(15))
+                .send()
+                .await
+                .map_err(|e| format!("approval status check failed: {e}"))?;
+            if !read.status().is_success() {
+                return Err(format!("approval status check was refused (HTTP {})", read.status()));
+            }
+            let body: serde_json::Value = read
+                .json()
+                .await
+                .map_err(|e| format!("unreadable approval status: {e}"))?;
+            match body
+                .get("data")
+                .and_then(|data| data.get("status"))
+                .and_then(|status| status.as_str())
+                .unwrap_or("pending")
+            {
+                "approved" => {
+                    tracing::info!(task_id = %task_id, "terminal tool call approved");
+                    return Ok(None);
+                }
+                "rejected" => {
+                    let reason = body
+                        .get("data")
+                        .and_then(|data| data.get("note"))
+                        .and_then(|note| note.as_str())
+                        .map(|note| format!("rejected by an administrator: {note}"))
+                        .unwrap_or_else(|| "rejected by an administrator".to_owned());
+                    return Ok(Some(format!("blocked by company security policy ({reason})")));
+                }
+                "expired" => {
+                    return Ok(Some(
+                        "blocked by company security policy (approval timed out — denied by default)".to_owned(),
+                    ));
+                }
+                _ => {}
+            }
+            if std::time::Instant::now() >= deadline {
+                // The server will expire it on its own next read; do not wait
+                // for that to answer the member.
+                return Ok(Some(
+                    "blocked by company security policy (approval timed out — denied by default)".to_owned(),
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(APPROVAL_POLL_INTERVAL_MS)).await;
+        }
     }
 }
 
@@ -1598,7 +1737,6 @@ pub(crate) struct PlatformToolCallSecurityGate {
 /// The task title carries a bounded slice of the command text: enough for an
 /// administrator skimming the queue to tell two terminal calls apart, short
 /// enough that a machine-generated blob cannot flood the list.
-#[cfg(feature = "enterprise")]
 const APPROVAL_TITLE_MAX_CHARS: usize = 120;
 
 #[async_trait::async_trait]

@@ -26,7 +26,7 @@ pub(crate) use routes::{
 /// Not under the enterprise cfg above: this gate exists precisely so the
 /// PERSONAL build — the one an enterprise member's desktop client runs — can
 /// enforce the company's tool-call policy.
-pub(crate) use routes::{LocalTeamMemoryRecall, LocalToolSecurityGate};
+pub use routes::{LocalTeamMemoryRecall, LocalToolSecurityGate};
 pub use routes::{
     RouterRuntime, create_router, create_router_with_all_state, create_router_with_runtime, create_router_with_states,
 };
