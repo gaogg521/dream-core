@@ -206,6 +206,12 @@ pub struct DreamEngineResolvedConfig {
     pub runtime_env: Vec<(String, String)>,
     /// Prompt dump directory when development prompt dumps are enabled.
     pub prompt_dump_dir: Option<PathBuf>,
+    /// Headers sent with every LLM request of this session (C1-4 cost
+    /// attribution). Set only for company channels (`prov_chan_` prefix):
+    /// the model proxy reads `x-dream-conversation-id` and stamps the usage
+    /// rows with the conversation the member actually ran. `None` for every
+    /// personal provider — nothing goes on the wire that did not before.
+    pub extra_headers: Option<std::collections::HashMap<String, String>>,
 }
 
 #[cfg(test)]

@@ -44,6 +44,7 @@ fn make_test_config() -> DreamEngineResolvedConfig {
         bedrock_config: None,
         runtime_env: Vec::new(),
         prompt_dump_dir: None,
+        extra_headers: None,
     }
 }
 

@@ -196,6 +196,7 @@ pub(super) async fn build(
         bedrock_config,
         runtime_env: ctx.runtime_env,
         prompt_dump_dir: crate::dev_prompt_dump::dump_dir_for_data_dir(&deps.data_dir, deps.dump_prompts),
+        extra_headers: resolve_extra_headers(provider_id, &ctx.conversation_id),
     };
 
     if let Some(system_prompt) = config.system_prompt.as_deref()
@@ -403,6 +404,25 @@ fn resolve_dream_engine_url_and_compat(
     is_full_url: bool,
 ) -> (Option<String>, DreamEngineCompatOverrides) {
     resolve_dream_engine_url_and_compat_with_mode(platform, raw_base_url, mapped_provider, model_id, is_full_url, None)
+}
+
+/// C1-4 cost attribution: a company channel (`prov_chan_` prefix — the
+/// managed-provider form of `dream-core-system::managed_provider`) reaches the
+/// vendor only through the enterprise model proxy, which reads
+/// `x-dream-conversation-id` to stamp the usage rows with the conversation the
+/// member actually ran. The proxy forwards nothing in the `x-dream-*`
+/// namespace upstream, and a personal provider gets no headers at all.
+fn resolve_extra_headers(
+    provider_id: &str,
+    conversation_id: &str,
+) -> Option<std::collections::HashMap<String, String>> {
+    if !provider_id.starts_with("prov_chan_") {
+        return None;
+    }
+    Some(std::collections::HashMap::from([(
+        "x-dream-conversation-id".to_owned(),
+        conversation_id.to_owned(),
+    )]))
 }
 
 pub(crate) fn resolve_dream_engine_url_and_compat_with_mode(
@@ -1039,6 +1059,33 @@ pub async fn resolve_provider_config_for_bridge(
 #[cfg(test)]
 #[path = "dream_engine_model_settings_test.rs"]
 mod model_settings_test;
+
+#[cfg(test)]
+mod extra_headers_tests {
+    use super::*;
+
+    /// C1-4: company channels are the only providers that carry the
+    /// conversation-attribution header — personal providers must send nothing,
+    /// and the header must name the session's own conversation.
+    #[test]
+    fn only_company_channels_carry_the_conversation_header() {
+        let headers = resolve_extra_headers("prov_chan_ochan_1", "conv-42");
+        assert_eq!(
+            headers,
+            Some(std::collections::HashMap::from([(
+                "x-dream-conversation-id".to_owned(),
+                "conv-42".to_owned()
+            )]))
+        );
+
+        assert_eq!(
+            resolve_extra_headers("openai", "conv-42"),
+            None,
+            "personal providers must not carry internal headers"
+        );
+        assert_eq!(resolve_extra_headers("prov_chan_fake", "conv-42").is_some(), true,);
+    }
+}
 
 #[cfg(test)]
 mod tests {

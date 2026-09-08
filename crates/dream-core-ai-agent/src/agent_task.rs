@@ -669,6 +669,7 @@ mod dream_engine_config_option_tests {
             bedrock_config: None,
             runtime_env: Vec::new(),
             prompt_dump_dir: None,
+            extra_headers: None,
         }
     }
 

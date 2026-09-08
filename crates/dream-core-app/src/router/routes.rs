@@ -651,7 +651,11 @@ impl dream_domain_devops::ProxyUsageRecorder for BillingProxyUsageRecorder {
             if let Err(e) = service
                 .record_turn(
                     &event.user_id,
-                    None,
+                    // C1-4: the client stamped `x-dream-conversation-id` on the
+                    // proxied request; this is what lands the spend on the
+                    // conversation the member actually ran. None = unattributed
+                    // (an old client or a non-conversation call), never a guess.
+                    event.conversation_id.as_deref(),
                     event.model.as_deref(),
                     Some(&channel_id),
                     event.input_tokens,
@@ -669,14 +673,9 @@ impl dream_domain_devops::ProxyUsageRecorder for BillingProxyUsageRecorder {
             // was permanently empty for exactly the traffic an enterprise
             // deployment consists of, while the usage totals right next to it
             // were populated from these same events.
-            //
-            // `conversation_id` stays `None`: the proxy sees an HTTP request,
-            // and the conversation it belongs to is a fact only the client
-            // holds. Attribution needs a channel the two ends share, which is
-            // its own change.
             let call = dream_domain_billing::NewLlmCall {
                 user_id: event.user_id,
-                conversation_id: None,
+                conversation_id: event.conversation_id.clone(),
                 model: event.model,
                 provider: Some("model_proxy".to_owned()),
                 tool_name: None,
