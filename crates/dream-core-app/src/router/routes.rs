@@ -1430,6 +1430,58 @@ impl dream_core_ai_agent::TurnMemoryRecall for LocalTeamMemoryRecall {
 /// Terminal-tool approval is not implemented here and is not faked; see
 /// `dream_core_system::tool_security` for why a local approximation would be
 /// worse than the honest gap.
+/// The personal edition's send gate, over the limits pushed down from the
+/// company server.
+///
+/// `ConversationRouterState` has one `SendGate` slot and the enterprise build
+/// fills it with `EnterpriseSendGate`; this is the same slot in the build a
+/// desktop member's client actually runs. Two of the three dimensions travel:
+/// the send-rate limit and the model allowlist, both pure functions of state
+/// the member is already entitled to read.
+///
+/// The spend cap does not, and `dream_core_system::send_policy` says why — a
+/// budget shared across a licence cannot be enforced from one machine's view
+/// of it.
+///
+/// Never fails closed: an install that has not synced holds an empty policy
+/// and allows everything, which is what `None` used to do here.
+struct LocalSendGate {
+    policy: std::sync::Arc<dream_core_system::SendPolicyService>,
+}
+
+#[async_trait::async_trait]
+impl dream_core_conversation::SendGate for LocalSendGate {
+    async fn check_send(
+        &self,
+        user_id: &str,
+        model: Option<&str>,
+    ) -> Result<(), dream_core_conversation::PolicyDenial> {
+        // Allowlist first: refusing a model the member may not use should say
+        // so, not spend one of their rate-limited sends to find out.
+        if let Some(model) = model {
+            self.check_model(user_id, model).await?;
+        }
+        match self.policy.check_send(user_id) {
+            None => Ok(()),
+            Some(_) => Err(dream_core_conversation::PolicyDenial::new(
+                "SEND_RATE_LIMITED",
+                "You're sending messages faster than your organization's policy allows; please slow down",
+            )),
+        }
+    }
+
+    async fn check_model(&self, _user_id: &str, model: &str) -> Result<(), dream_core_conversation::PolicyDenial> {
+        match self.policy.check_model(model) {
+            None => Ok(()),
+            Some(_) => Err(dream_core_conversation::PolicyDenial::new(
+                "MODEL_NOT_ALLOWED",
+                format!("Model '{model}' is not allowed by the team's policy"),
+            )
+            .with_details(serde_json::json!({ "model": model }))),
+        }
+    }
+}
+
 pub(crate) struct LocalToolSecurityGate {
     pub(crate) policy: std::sync::Arc<dream_core_system::ToolSecurityService>,
 }
@@ -3115,6 +3167,16 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // local variable chains through. No gate in the personal edition — `None`
     // skips the check entirely (see `ConversationService::send_message`),
     // which is the pre-billing path.
+    // The personal build is what a desktop member's client runs, so the slot
+    // has to be filled there too or the two limits are configured and enforced
+    // by nobody — the same gap `LocalToolSecurityGate` closes for tool calls.
+    #[cfg(not(feature = "enterprise"))]
+    states
+        .conversation
+        .service
+        .with_send_gate(std::sync::Arc::new(LocalSendGate {
+            policy: services.send_policy.clone(),
+        }));
     #[cfg(feature = "enterprise")]
     states
         .conversation
@@ -3141,6 +3203,10 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // The ops router hosts set-config-option (model switch) — gate it too so
     // the P1-2 model allowlist is enforced at model selection.
     let conversation_ops_state = states.conversation;
+    #[cfg(not(feature = "enterprise"))]
+    let conversation_ops_state = conversation_ops_state.with_send_gate(std::sync::Arc::new(LocalSendGate {
+        policy: services.send_policy.clone(),
+    }));
     #[cfg(feature = "enterprise")]
     let conversation_ops_state = conversation_ops_state.with_send_gate(std::sync::Arc::new(BillingSendGate {
         billing: one_billing_service.clone(),

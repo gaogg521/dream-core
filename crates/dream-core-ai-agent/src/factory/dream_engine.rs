@@ -15,6 +15,7 @@ use dream_core_runtime::ensure_runtime_command_with_reporter;
 use dream_engine_agent::session::{ForkBoundary, Session, SessionManager};
 use dream_engine_config::compat::OpenAiApiMode;
 use dream_engine_config::config::{McpServerConfig, TransportType};
+use dream_engine_protocol::ToolCallGuard;
 use dream_engine_types::message::ImageInputCapability;
 use serde_json::{Map, Value};
 use tracing::{debug, info, warn};
@@ -25,7 +26,9 @@ use crate::error::AgentError;
 use crate::factory::AgentFactoryDeps;
 use crate::factory::context::FactoryContext;
 use crate::factory::session_mcp::load_session_mcp_rows;
-use crate::manager::dream_engine::{DreamEngineAgentManager, sanitize_session_messages};
+use crate::manager::dream_engine::{
+    DreamEngineAgentManager, SecurityPolicyCallGuard, TurnMemory, sanitize_session_messages,
+};
 use crate::runtime_status::conversation_runtime_reporter;
 use crate::session_context::DreamEngineSessionBuildContext;
 use crate::types::{DreamEngineCompatOverrides, DreamEngineResolvedConfig};
@@ -227,7 +230,29 @@ pub(super) async fn build(
         }
     }
 
-    let agent = DreamEngineAgentManager::new(ctx.conversation_id, ctx.workspace, config, resume_session).await?;
+    // The company policy has to reach this path too: the engine runs the
+    // product's default conversation type, and in full-auto it never asks for
+    // permission, so the ACP router's copy of this check is never consulted.
+    let call_guard = deps
+        .tool_call_security_gate
+        .clone()
+        .map(|gate| Arc::new(SecurityPolicyCallGuard::new(gate, ctx.user_id.clone())) as Arc<dyn ToolCallGuard>);
+    // Same reason as the call guard: the recall port was only ever consulted by
+    // the ACP prompt pipeline, so the member's company memory never reached the
+    // conversation type they actually use.
+    let memory = deps.memory_recall.clone().map(|recall| TurnMemory {
+        recall,
+        user_id: ctx.user_id.clone(),
+    });
+    let agent = DreamEngineAgentManager::new(
+        ctx.conversation_id,
+        ctx.workspace,
+        config,
+        resume_session,
+        call_guard,
+        memory,
+    )
+    .await?;
     Ok(AgentInstance::DreamEngine(Arc::new(agent)))
 }
 

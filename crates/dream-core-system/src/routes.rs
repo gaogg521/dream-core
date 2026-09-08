@@ -64,6 +64,9 @@ pub struct SystemRouterState {
     /// The company memory this member may read, synced down so recall can
     /// happen without the prompt leaving the machine.
     pub team_memory: std::sync::Arc<crate::team_memory::TeamMemoryService>,
+    /// The send-rate limit and model allowlist, for the same reason: the send
+    /// happens on this machine.
+    pub send_policy: std::sync::Arc<crate::send_policy::SendPolicyService>,
 }
 
 impl From<SystemError> for ApiError {
@@ -144,6 +147,7 @@ pub fn system_routes(state: SystemRouterState) -> Router {
         .route("/api/content-inspection/rules", post(set_inspection_rules))
         .route("/api/tool-security/policy", post(set_tool_security_policy))
         .route("/api/one/team-memory/items", post(set_team_memory))
+        .route("/api/send-policy", post(set_send_policy))
         .route("/api/content-inspection/findings", post(drain_inspection_findings))
         .route("/api/system/info", get(get_system_info))
         .route("/api/system/check-update", post(check_update))
@@ -481,6 +485,19 @@ async fn set_tool_security_policy(
     let Json(policy) = body.map_err(ApiError::from)?;
     state.tool_security.set_policy(policy);
     Ok(Json(ApiResponse::ok(state.tool_security.policy())))
+}
+
+/// Distribute the send-rate limit and model allowlist to this machine.
+///
+/// Same contract as its tool-policy sibling: local-only, renderer-driven, and
+/// an empty body means "no enforcement".
+async fn set_send_policy(
+    State(state): State<SystemRouterState>,
+    body: Result<Json<crate::send_policy::SendPolicy>, JsonRejection>,
+) -> Result<Json<ApiResponse<crate::send_policy::SendPolicy>>, ApiError> {
+    let Json(policy) = body.map_err(ApiError::from)?;
+    state.send_policy.set_policy(policy);
+    Ok(Json(ApiResponse::ok(state.send_policy.policy())))
 }
 
 async fn set_inspection_rules(
