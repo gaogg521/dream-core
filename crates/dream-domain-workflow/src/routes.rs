@@ -90,6 +90,13 @@ struct CreateTaskBody {
     detail: Option<String>,
     #[serde(default)]
     payload: Option<serde_json::Value>,
+    /// Absolute epoch-ms deadline for the `pending` state. Absent → the task
+    /// never expires (the member-submission default). The one caller that
+    /// sets it is the desktop client's terminal-tool approval (C0-1 plan A):
+    /// its task must read as `expired` on the console once the member's
+    /// local deadline has passed, instead of pending forever.
+    #[serde(default)]
+    expires_at_ms: Option<i64>,
 }
 
 async fn create_task(
@@ -107,8 +114,7 @@ async fn create_task(
             &body.title,
             body.detail.as_deref().unwrap_or(""),
             body.payload.as_ref().unwrap_or(&serde_json::Value::Null),
-            // Member-submitted tasks never time out — they wait for a human.
-            None,
+            body.expires_at_ms,
         )
         .await?;
     Ok(Json(ApiResponse::ok(dto)))
