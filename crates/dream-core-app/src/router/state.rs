@@ -480,6 +480,7 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
         content_inspection: services.content_inspection.clone(),
         tool_security: services.tool_security.clone(),
         team_memory: services.team_memory.clone(),
+        send_policy: services.send_policy.clone(),
     }
 }
 

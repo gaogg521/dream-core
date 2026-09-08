@@ -115,7 +115,7 @@ fn make_engine_config() -> DreamEngineResolvedConfig {
 
 #[tokio::test]
 async fn aionrs_agent_kill_succeeds() {
-    let agent = DreamEngineAgentManager::new("conv-1".into(), "/proj".into(), make_engine_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/proj".into(), make_engine_config(), None, None, None)
         .await
         .unwrap();
     assert!(agent.kill(None).is_ok());
@@ -124,7 +124,7 @@ async fn aionrs_agent_kill_succeeds() {
 
 #[tokio::test]
 async fn aionrs_agent_confirm_succeeds() {
-    let agent = DreamEngineAgentManager::new("conv-1".into(), "/proj".into(), make_engine_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/proj".into(), make_engine_config(), None, None, None)
         .await
         .unwrap();
     // `confirm` is an inherent method on `DreamEngineAgentManager` (reached via
@@ -136,9 +136,16 @@ async fn aionrs_agent_confirm_succeeds() {
 
 #[tokio::test]
 async fn aionrs_agent_metadata() {
-    let agent = DreamEngineAgentManager::new("conv-abc".into(), "/work".into(), make_engine_config(), None)
-        .await
-        .unwrap();
+    let agent = DreamEngineAgentManager::new(
+        "conv-abc".into(),
+        "/work".into(),
+        make_engine_config(),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(agent.agent_type(), AgentType::DreamEngine);
     assert_eq!(agent.workspace(), "/work");
     assert_eq!(agent.conversation_id(), "conv-abc");

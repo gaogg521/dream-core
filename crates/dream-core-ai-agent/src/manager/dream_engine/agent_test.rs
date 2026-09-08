@@ -187,7 +187,7 @@ fn dream_engine_final_input_dump_value_contains_raw_split_input_and_context() {
 
 #[tokio::test]
 async fn aionrs_agent_returns_correct_type() {
-    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
     assert_eq!(agent.agent_type(), AgentType::DreamEngine);
@@ -197,7 +197,7 @@ async fn aionrs_agent_returns_correct_type() {
 
 #[tokio::test]
 async fn aionrs_agent_initial_status_is_pending() {
-    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
     assert_eq!(agent.status(), Some(ConversationStatus::Pending));
@@ -205,7 +205,7 @@ async fn aionrs_agent_initial_status_is_pending() {
 
 #[tokio::test]
 async fn aionrs_agent_subscribe_returns_receiver() {
-    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
     let _rx = agent.subscribe();
@@ -213,7 +213,7 @@ async fn aionrs_agent_subscribe_returns_receiver() {
 
 #[tokio::test]
 async fn aionrs_agent_kill_succeeds() {
-    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
     assert!(agent.kill(None).is_ok());
@@ -223,7 +223,7 @@ async fn aionrs_agent_kill_succeeds() {
 
 #[tokio::test]
 async fn aionrs_agent_kill_with_reason_succeeds() {
-    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
     assert!(agent.kill(Some(AgentKillReason::IdleTimeout)).is_ok());
@@ -231,7 +231,7 @@ async fn aionrs_agent_kill_with_reason_succeeds() {
 
 #[tokio::test]
 async fn aionrs_agent_kill_running_turn_sends_stop_signal() {
-    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
     agent.runtime.reset_for_new_turn(ConversationStatus::Running);
@@ -251,7 +251,7 @@ async fn aionrs_agent_kill_running_turn_sends_stop_signal() {
 
 #[tokio::test]
 async fn aionrs_agent_kill_and_wait_waits_for_running_turn_terminal() {
-    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
     agent.runtime.reset_for_new_turn(ConversationStatus::Running);
@@ -273,7 +273,7 @@ async fn aionrs_agent_kill_and_wait_waits_for_running_turn_terminal() {
 
 #[tokio::test]
 async fn aionrs_agent_kill_idle_turn_does_not_leave_stale_stop_signal() {
-    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
 
@@ -286,7 +286,7 @@ async fn aionrs_agent_kill_idle_turn_does_not_leave_stale_stop_signal() {
 
 #[tokio::test]
 async fn aionrs_agent_confirmations_initially_empty() {
-    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
     assert!(agent.get_confirmations().is_empty());
@@ -294,7 +294,7 @@ async fn aionrs_agent_confirmations_initially_empty() {
 
 #[tokio::test]
 async fn aionrs_agent_get_slash_commands_does_not_wait_for_engine_lock() {
-    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
 
@@ -309,7 +309,7 @@ async fn aionrs_agent_get_slash_commands_does_not_wait_for_engine_lock() {
 
 #[tokio::test]
 async fn aionrs_agent_check_approval_returns_false_by_default() {
-    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
     assert!(!agent.check_approval("any_action", None));
@@ -317,9 +317,16 @@ async fn aionrs_agent_check_approval_returns_false_by_default() {
 
 #[tokio::test]
 async fn stop_only_signals_in_flight_run() {
-    let agent = DreamEngineAgentManager::new("conv-stop".into(), "/project".into(), make_test_config(), None)
-        .await
-        .unwrap();
+    let agent = DreamEngineAgentManager::new(
+        "conv-stop".into(),
+        "/project".into(),
+        make_test_config(),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let mut rx = agent.subscribe();
 
     agent.cancel().await.unwrap();
@@ -331,9 +338,16 @@ async fn stop_only_signals_in_flight_run() {
 
 #[tokio::test]
 async fn runtime_can_emit_error_and_finish() {
-    let agent = DreamEngineAgentManager::new("conv-err".into(), "/project".into(), make_test_config(), None)
-        .await
-        .unwrap();
+    let agent = DreamEngineAgentManager::new(
+        "conv-err".into(),
+        "/project".into(),
+        make_test_config(),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let mut rx = agent.subscribe();
 
     agent.runtime.emit_error("test error");
@@ -609,4 +623,78 @@ fn a_self_imposed_stop_is_a_localizable_structured_error() {
         data.detail.as_deref().is_some_and(|d| d.contains("150")),
         "the detail has to say which limit was hit"
     );
+}
+
+// -- company memory on the engine path ---------------------------------------
+
+struct StubRecall(Vec<String>);
+
+#[async_trait::async_trait]
+impl TurnMemoryRecall for StubRecall {
+    async fn recall(&self, _user_id: &str, _query: &str) -> Vec<String> {
+        self.0.clone()
+    }
+}
+
+fn memory(hits: &[&str]) -> Option<TurnMemory> {
+    Some(TurnMemory {
+        recall: Arc::new(StubRecall(hits.iter().map(|h| (*h).to_string()).collect())),
+        user_id: "u1".into(),
+    })
+}
+
+/// The gap real-machine testing found: the recall port existed, the member's
+/// switch was on, and the default conversation type never asked.
+#[tokio::test]
+async fn company_memory_is_prepended_to_an_engine_turn() {
+    let agent = DreamEngineAgentManager::new(
+        "conv-mem".into(),
+        "/project".into(),
+        make_test_config(),
+        None,
+        None,
+        memory(&["Project Zephyr is led by Zhou Mingyuan."]),
+    )
+    .await
+    .unwrap();
+
+    let sent = agent.with_recalled_memory("who leads project zephyr?").await;
+
+    assert!(sent.starts_with("[Relevant Memory]"), "{sent}");
+    assert!(sent.contains("Zhou Mingyuan"));
+    // The member's own words must survive intact and come last.
+    assert!(sent.ends_with("who leads project zephyr?"), "{sent}");
+}
+
+#[tokio::test]
+async fn nothing_recalled_leaves_the_turn_untouched() {
+    let agent = DreamEngineAgentManager::new(
+        "conv-mem".into(),
+        "/project".into(),
+        make_test_config(),
+        None,
+        None,
+        memory(&[]),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(agent.with_recalled_memory("hello").await, "hello");
+}
+
+/// A standalone install has no company memory and must not pay for one.
+#[tokio::test]
+async fn a_personal_install_sends_exactly_what_was_typed() {
+    let agent = DreamEngineAgentManager::new(
+        "conv-mem".into(),
+        "/project".into(),
+        make_test_config(),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(agent.with_recalled_memory("hello").await, "hello");
 }

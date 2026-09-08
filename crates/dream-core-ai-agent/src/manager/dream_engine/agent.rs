@@ -21,7 +21,9 @@ use dream_engine_config::compat::ProviderCompat;
 use dream_engine_config::config::{CliArgs, Config, McpServerConfig, ProviderType};
 use dream_engine_mcp::manager::McpManager;
 use dream_engine_protocol::commands::{ApprovalScope, SessionMode};
-use dream_engine_protocol::{ToolApprovalManager, ToolApprovalResult};
+use dream_engine_protocol::{ToolApprovalManager, ToolApprovalResult, ToolCallGuard};
+
+use crate::capability::memory_recall::{MemoryPrefix, TurnMemoryRecall, recall_prefix};
 use dream_engine_types::message::{StopReason, TokenUsage};
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify, broadcast};
@@ -233,6 +235,9 @@ pub struct DreamEngineAgentManager {
     #[allow(dead_code)] // intentional: lifetime-extension only; see Drop impl
     mcp_managers: Vec<Arc<McpManager>>,
     approval_manager: Arc<ToolApprovalManager>,
+    /// Company memory to prepend to each outgoing prompt, and whose it is.
+    /// `None` outside an enterprise deployment.
+    memory: Option<TurnMemory>,
     confirmations: Arc<RwLock<Vec<Confirmation>>>,
     final_input_dump: Option<DreamEngineFinalInputDumpContext>,
     /// Signalled by `cancel()` to abort an in-flight `engine.run()` via
@@ -252,12 +257,49 @@ impl Drop for DreamEngineAgentManager {
     }
 }
 
+/// The company memory a conversation can recall, bound to the member it
+/// belongs to.
+///
+/// Carried as a pair because recall is per-user and the engine manager has no
+/// other reason to know who is talking.
+#[derive(Clone)]
+pub struct TurnMemory {
+    pub recall: Arc<dyn TurnMemoryRecall>,
+    pub user_id: String,
+}
+
 impl DreamEngineAgentManager {
+    /// Prepend the member's readable company memory to this turn's text.
+    ///
+    /// The engine has no prompt-hook pipeline of its own, so the injection
+    /// happens here — the last point before the content becomes engine blocks.
+    /// Without it the "recall my company memory in conversations" switch was
+    /// true on the settings page and false in the product: the recall port was
+    /// only ever consulted on the ACP path, and this is the default one.
+    async fn with_recalled_memory(&self, content: &str) -> String {
+        let Some(memory) = self.memory.as_ref() else {
+            return content.to_owned();
+        };
+        match recall_prefix(memory.recall.as_ref(), &memory.user_id, content).await {
+            MemoryPrefix::Text(prefix) => format!("{prefix}{content}"),
+            MemoryPrefix::None => content.to_owned(),
+            MemoryPrefix::TimedOut => {
+                warn!(
+                    conversation_id = %self.runtime.conversation_id(),
+                    "memory recall timed out; sending the turn without company memory"
+                );
+                content.to_owned()
+            }
+        }
+    }
+
     pub async fn new(
         conversation_id: String,
         workspace: String,
         config_extra: DreamEngineResolvedConfig,
         resume_session: Option<Session>,
+        call_guard: Option<Arc<dyn ToolCallGuard>>,
+        memory: Option<TurnMemory>,
     ) -> Result<Self, AgentError> {
         let runtime = AgentRuntime::new(conversation_id.clone(), workspace.clone(), 128);
         let sink: Arc<dyn OutputSink> = Arc::new(BackendOutputSink::new(
@@ -408,6 +450,11 @@ impl DreamEngineAgentManager {
 
         let confirmations = Arc::new(RwLock::new(Vec::new()));
         let protocol_sink = BackendProtocolSink::new(runtime.event_sender(), confirmations.clone());
+        // Before the approval manager, because it is the thing approval cannot
+        // override: see `manager::dream_engine::call_guard`.
+        if let Some(guard) = call_guard {
+            engine.set_tool_call_guard(guard);
+        }
         engine.set_approval_manager(approval_manager.clone());
         engine.set_protocol_writer(Arc::new(protocol_sink));
         let slash_commands = engine
@@ -430,6 +477,7 @@ impl DreamEngineAgentManager {
             slash_commands,
             mcp_managers: result.mcp_managers,
             approval_manager,
+            memory,
             confirmations,
             final_input_dump,
             cancel_notify: Arc::new(Notify::new()),
@@ -600,7 +648,11 @@ impl IAgentTask for DreamEngineAgentManager {
             attachment_count = data.files.len(),
             "Building structured DreamEngine content blocks"
         );
-        let content_blocks = build_content_blocks(&data.content, &data.files);
+        // Company memory is prepended to what the engine sees, not to what was
+        // persisted as the member's message — same contract as the ACP hook, so
+        // the transcript still shows what they actually typed.
+        let content = self.with_recalled_memory(&data.content).await;
+        let content_blocks = build_content_blocks(&content, &data.files);
         debug!(
             block_count = content_blocks.len(),
             "Built structured DreamEngine content blocks"

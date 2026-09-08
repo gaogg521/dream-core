@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 dream-core-auth.workspace = true
 dream-core-common.workspace = true
+dashmap.workspace = true
 dream-core-db.workspace = true
 dream-core-api-types.workspace = true
 dream-core-realtime.workspace = true

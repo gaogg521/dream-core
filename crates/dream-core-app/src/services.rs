@@ -84,6 +84,9 @@ pub struct AppServices {
     pub tool_security: Arc<dream_core_system::ToolSecurityService>,
     /// Company memory this member may read, synced down for local recall.
     pub team_memory: Arc<dream_core_system::TeamMemoryService>,
+    /// The send-rate limit and model allowlist, likewise enforced where the
+    /// send happens.
+    pub send_policy: Arc<dream_core_system::SendPolicyService>,
     /// Billing plane (license tier / seats / usage / model allowlist).
     ///
     /// Constructed here rather than in `routes.rs` because the agent factory —
@@ -451,6 +454,9 @@ impl AppServices {
         // Same reasoning as `tool_security`: the personal build's recall
         // provider and the route that fills it must share one instance.
         let team_memory = Arc::new(dream_core_system::TeamMemoryService::new());
+        // Ditto: the system route that receives the policy and the conversation
+        // router's send gate have to be looking at the same instance.
+        let send_policy = Arc::new(dream_core_system::SendPolicyService::new());
         #[cfg(feature = "enterprise")]
         let policy_grace = Arc::new(crate::router::PolicyGrace::new());
         #[cfg(feature = "enterprise")]
@@ -622,6 +628,7 @@ impl AppServices {
             content_inspection: Arc::new(dream_core_system::ContentInspectionService::new()),
             tool_security: tool_security.clone(),
             team_memory: team_memory.clone(),
+            send_policy: send_policy.clone(),
             backend_binary_path,
             runtime_helper_bin,
             runtime_base_url,
