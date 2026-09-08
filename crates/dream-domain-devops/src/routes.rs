@@ -6,9 +6,11 @@ use axum::extract::{Path, Query, State};
 use axum::routing::{get, patch};
 use axum::{Extension, Json, Router};
 use serde::Deserialize;
+use std::collections::HashMap;
 
 use dream_core_api_types::ApiResponse;
 use dream_core_auth::CurrentUser;
+use dream_domain_employee::models::ContentTagRow;
 
 use crate::api_assets::{ApiAssetDetailDto, ApiAssetDto};
 use crate::dlp_service::{DlpEventDto, DlpEventInput, DlpRuleDto, DlpSummaryDto};
@@ -682,7 +684,49 @@ async fn list_skills(
     State(state): State<OneDevopsRouterState>,
     Extension(user): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<Vec<SkillRegistryDto>>>, DevopsError> {
-    Ok(Json(ApiResponse::ok(state.service.list_skills(&user.id).await?)))
+    let mut skills = state.service.list_skills(&user.id).await?;
+    attach_skill_category_and_tags(&state, &mut skills).await;
+    Ok(Json(ApiResponse::ok(skills)))
+}
+
+/// Inline the category name and tag names (C2-2) into each registry DTO.
+/// Best-effort, same "skip when the employee runtime isn't wired" idiom as
+/// `set_resource_tags_if_wired`: without it the fields stay `None`/empty and
+/// the list still returns. A failed lookup also degrades to the same shape —
+/// an id the server cannot resolve to a name must not fail the whole listing.
+async fn attach_skill_category_and_tags(state: &OneDevopsRouterState, skills: &mut [SkillRegistryDto]) {
+    let Some(employee) = &state.employee else {
+        return;
+    };
+    let category_ids: Vec<String> = skills.iter().filter_map(|s| s.category_id.clone()).collect();
+    let Ok(category_names) = employee.list_category_names_for_ids("skill", &category_ids).await else {
+        tracing::warn!("category name lookup failed; listing without category names");
+        return;
+    };
+    let resource_ids: Vec<String> = skills.iter().map(|s| s.id.clone()).collect();
+    let Ok(tags_by_resource) = employee.list_tags_for_resources("skill", &resource_ids).await else {
+        tracing::warn!("tag lookup failed; listing without tags");
+        return;
+    };
+    apply_category_and_tags(skills, &category_names, &tags_by_resource);
+}
+
+/// Pure mapping half of [`attach_skill_category_and_tags`] — category names
+/// keyed by `category_id`, tag rows keyed by registry id.
+fn apply_category_and_tags(
+    skills: &mut [SkillRegistryDto],
+    category_names: &HashMap<String, String>,
+    tags_by_resource: &HashMap<String, Vec<ContentTagRow>>,
+) {
+    for skill in skills.iter_mut() {
+        if let Some(category_id) = &skill.category_id {
+            skill.category_name = category_names.get(category_id).cloned();
+        }
+        skill.tags = tags_by_resource
+            .get(&skill.id)
+            .map(|rows| rows.iter().map(|row| row.name.clone()).collect())
+            .unwrap_or_default();
+    }
 }
 
 #[derive(Deserialize)]
@@ -754,6 +798,8 @@ async fn upsert_skill(
     if let Some(tag_ids) = &body.tag_ids {
         set_resource_tags_if_wired(&state, "skill", &dto.id, tag_ids).await?;
     }
+    let mut dto = dto;
+    attach_skill_category_and_tags(&state, std::slice::from_mut(&mut dto)).await;
     audit(&state, &user.id, "devops.skill.upsert", Some(&dto.id)).await;
     Ok(Json(ApiResponse::ok(dto)))
 }
@@ -1995,6 +2041,72 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["data"]["totalEvents"], 0);
         assert_eq!(json["data"]["totalBlocked"], 0);
+    }
+
+    /// C2-2: the DTO fill maps category names by `category_id` and tag names
+    /// by registry id; a skill with neither stays None/empty, not an error.
+    #[test]
+    fn apply_category_and_tags_maps_both_lookups() {
+        let mut skills = vec![
+            SkillRegistryDto {
+                id: "oskill_1".into(),
+                name: "sql-helper".into(),
+                description: "d".into(),
+                content: "c".into(),
+                enabled: true,
+                auto_active: false,
+                scope: "org".into(),
+                team_id: None,
+                visibility: "all".into(),
+                origin: "self_built".into(),
+                category_id: Some("cat_1".into()),
+                category_name: None,
+                tags: Vec::new(),
+                published: true,
+                created_by: "admin1".into(),
+                created_at: 0,
+                updated_at: 0,
+            },
+            SkillRegistryDto {
+                id: "oskill_2".into(),
+                name: "plain".into(),
+                description: "d".into(),
+                content: "c".into(),
+                enabled: true,
+                auto_active: false,
+                scope: "org".into(),
+                team_id: None,
+                visibility: "all".into(),
+                origin: "self_built".into(),
+                category_id: None,
+                category_name: None,
+                tags: Vec::new(),
+                published: true,
+                created_by: "admin1".into(),
+                created_at: 0,
+                updated_at: 0,
+            },
+        ];
+        let mut category_names = HashMap::new();
+        category_names.insert("cat_1".to_string(), "数据分析".to_string());
+        let mut tags_by_resource: HashMap<String, Vec<ContentTagRow>> = HashMap::new();
+        tags_by_resource.insert(
+            "oskill_1".to_string(),
+            vec![ContentTagRow {
+                id: "tag_1".into(),
+                tenant_id: "t1".into(),
+                resource_type: "skill".into(),
+                name: "SQL".into(),
+                created_at: 0,
+            }],
+        );
+
+        apply_category_and_tags(&mut skills, &category_names, &tags_by_resource);
+
+        assert_eq!(skills[0].category_name.as_deref(), Some("数据分析"));
+        assert_eq!(skills[0].tags, vec!["SQL".to_string()]);
+        assert_eq!(skills[1].category_name, None, "no category_id → stays None");
+        assert!(skills[1].tags.is_empty(), "no tag links → stays empty");
     }
 }
 

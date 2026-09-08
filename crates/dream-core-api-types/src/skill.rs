@@ -41,6 +41,13 @@ pub struct SkillListItemResponse {
     pub is_auto_inject: bool,
     pub is_custom: bool,
     pub source: SkillSourceResponse,
+    /// Enterprise category/tag metadata (C2-2) from the SKILL.md frontmatter
+    /// of team-distributed skills. Absent/empty for every other skill, and
+    /// skipped on the wire so hand-authored skills serialize exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 /// Request body for `POST /api/skills/info`.
@@ -298,6 +305,8 @@ mod tests {
             is_auto_inject: false,
             is_custom: true,
             source: SkillSourceResponse::Custom,
+            category: None,
+            tags: Vec::new(),
         };
         let json = serde_json::to_value(&item).unwrap();
         assert_eq!(json["name"], "my-skill");
@@ -322,6 +331,8 @@ mod tests {
             is_auto_inject: true,
             is_custom: false,
             source: SkillSourceResponse::Builtin,
+            category: None,
+            tags: Vec::new(),
         };
         let json = serde_json::to_value(&item).unwrap();
         // Project-wide wire contract: relative_location stays snake_case.
@@ -363,6 +374,34 @@ mod tests {
         });
         let item: SkillListItemResponse = serde_json::from_value(raw).unwrap();
         assert!(!item.is_auto_inject);
+        // C2-2 fields default when absent (old payloads stay decodable).
+        assert_eq!(item.category, None);
+        assert!(item.tags.is_empty());
+    }
+
+    #[test]
+    fn test_skill_list_item_category_tags_roundtrip() {
+        // Team-distributed skill: category + tags serialize and an empty set
+        // is skipped entirely so non-team skills keep their old wire shape.
+        let item = SkillListItemResponse {
+            name: "sql-helper".into(),
+            description: "Query helper".into(),
+            location: "/tmp/team-skills/1/SKILL.md".into(),
+            relative_location: None,
+            is_auto_inject: false,
+            is_custom: false,
+            source: SkillSourceResponse::Team,
+            category: Some("数据分析".into()),
+            tags: vec!["SQL".into(), "报表".into()],
+        };
+        let json = serde_json::to_value(&item).unwrap();
+        assert_eq!(json["category"], "数据分析");
+        assert_eq!(json["tags"], json!(["SQL", "报表"]));
+
+        let no_category = SkillListItemResponse { category: None, tags: Vec::new(), ..item };
+        let json = serde_json::to_value(&no_category).unwrap();
+        assert!(json.get("category").is_none());
+        assert!(json.get("tags").is_none());
     }
 
     #[test]

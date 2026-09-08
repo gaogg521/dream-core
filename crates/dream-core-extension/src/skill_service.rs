@@ -302,6 +302,11 @@ pub struct SkillListItem {
     /// other sources (builtin auto-inject is signaled via
     /// `relative_location` instead).
     pub auto_active: bool,
+    /// Enterprise category/tag metadata (C2-2), read from the SKILL.md
+    /// frontmatter of team-distributed skills. Always `None`/empty for
+    /// builtin and user-custom skills.
+    pub category: Option<String>,
+    pub tags: Vec<String>,
 }
 
 /// List all available skills (built-in + user custom), deduplicated.
@@ -418,6 +423,8 @@ async fn list_builtin_skills_from_disk(dir: &Path) -> Vec<SkillListItem> {
                 is_custom: false,
                 source: SkillSource::Builtin,
                 auto_active: false,
+                category: None,
+                tags: Vec::new(),
             });
         }
     }
@@ -445,6 +452,8 @@ async fn list_builtin_skills_from_disk(dir: &Path) -> Vec<SkillListItem> {
                 is_custom: false,
                 source: SkillSource::Builtin,
                 auto_active: false,
+                category: None,
+                tags: Vec::new(),
             });
         }
     }
@@ -458,6 +467,10 @@ pub struct ScannedSkill {
     pub name: String,
     pub description: String,
     pub path: String,
+    /// Enterprise distribution metadata (C2-2) read from frontmatter; always
+    /// `None`/empty for hand-authored skills.
+    pub category: Option<String>,
+    pub tags: Vec<String>,
 }
 
 /// An auto-injected built-in skill.
@@ -519,20 +532,20 @@ pub async fn read_skill_info(skill_path: &Path) -> Result<(String, String), Exte
         .await
         .map_err(|_| ExtensionError::SkillNotFound(skill_path.display().to_string()))?;
 
-    let (name, description) = parse_frontmatter_fields(&content)
+    let parsed = parse_frontmatter_fields(&content)
         .ok_or_else(|| ExtensionError::SkillInvalidFrontmatter(skill_file.display().to_string()))?;
 
     // Fallback: use directory name if name is empty
-    let final_name = if name.is_empty() {
+    let final_name = if parsed.name.is_empty() {
         skill_path
             .file_name()
             .map(|f| f.to_string_lossy().into_owned())
             .unwrap_or_default()
     } else {
-        name
+        parsed.name
     };
 
-    Ok((final_name, description))
+    Ok((final_name, parsed.description))
 }
 
 // ---------------------------------------------------------------------------
@@ -1880,6 +1893,10 @@ fn skill_row_to_list_item(paths: &SkillPaths, row: SkillRow, description: String
         is_custom: source == SkillSource::Custom,
         source,
         auto_active: false,
+        // Repo rows are user-custom/builtin/cron skills; enterprise category
+        // metadata only exists on team-distributed skills (read from disk).
+        category: None,
+        tags: Vec::new(),
     }
 }
 
@@ -1924,6 +1941,8 @@ async fn list_user_skills_from_disk(paths: &SkillPaths) -> Result<Vec<SkillListI
             is_custom: true,
             source: SkillSource::Custom,
             auto_active: false,
+            category: skill.category,
+            tags: skill.tags,
         })
         .collect())
 }
@@ -1948,6 +1967,8 @@ async fn list_team_skills_from_disk(paths: &SkillPaths) -> Result<Vec<SkillListI
                 is_custom: false,
                 source: SkillSource::Team,
                 auto_active,
+                category: skill.category,
+                tags: skill.tags,
             }
         })
         .collect())
@@ -2083,19 +2104,21 @@ async fn scan_skill_dirs(dir: &Path) -> Result<Vec<ScannedSkill>, ExtensionError
         let skill_file = entry_path.join(SKILL_MANIFEST_FILE);
         match tokio::fs::read_to_string(&skill_file).await {
             Ok(content) => {
-                if let Some((name, description)) = parse_frontmatter_fields(&content) {
-                    let final_name = if name.is_empty() {
+                if let Some(parsed) = parse_frontmatter_fields(&content) {
+                    let final_name = if parsed.name.is_empty() {
                         entry_path
                             .file_name()
                             .map(|f| f.to_string_lossy().into_owned())
                             .unwrap_or_default()
                     } else {
-                        name
+                        parsed.name
                     };
                     result.push(ScannedSkill {
                         name: final_name,
-                        description,
+                        description: parsed.description,
                         path: entry_path.to_string_lossy().into_owned(),
+                        category: parsed.category,
+                        tags: parsed.tags,
                     });
                 }
             }
@@ -2208,15 +2231,63 @@ fn zip_error(err: zip::result::ZipError) -> ExtensionError {
 /// ---
 /// name: skill-name
 /// description: One line description
+/// category: Optional category name (C2-2, team-distributed skills)
+/// tags: [Optional, Tag, List]
 /// ---
 /// Body content here...
 /// ```
-fn parse_frontmatter_fields(content: &str) -> Option<(String, String)> {
+///
+/// `category`/`tags` are enterprise distribution metadata (C2-2) written by
+/// the team-sync materializer; hand-authored skills simply omit them and the
+/// defaults keep the parse backward compatible.
+pub(crate) struct ParsedFrontmatter {
+    pub name: String,
+    pub description: String,
+    pub category: Option<String>,
+    pub tags: Vec<String>,
+}
+
+fn parse_frontmatter_fields(content: &str) -> Option<ParsedFrontmatter> {
     #[derive(serde::Deserialize)]
     struct SkillFrontmatter {
         #[serde(default)]
         name: String,
         description: String,
+        #[serde(default)]
+        category: Option<String>,
+        /// Tolerate both `tags: [a, b]` and a bare `tags: a` scalar.
+        #[serde(default)]
+        tags: FrontmatterTagList,
+    }
+
+    #[derive(Default)]
+    struct FrontmatterTagList(Vec<String>);
+
+    impl<'de> serde::Deserialize<'de> for FrontmatterTagList {
+        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            struct Visitor(Vec<String>);
+            impl<'de> serde::de::Visitor<'de> for Visitor {
+                type Value = Vec<String>;
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("a string or a list of strings")
+                }
+                fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                    Ok(vec![v.to_owned()])
+                }
+                fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                    let mut out = Vec::new();
+                    while let Some(item) = seq.next_element::<serde_yaml::Value>()? {
+                        match item {
+                            serde_yaml::Value::String(s) => out.push(s),
+                            serde_yaml::Value::Null => {}
+                            other => out.push(serde_yaml::to_string(&other).map_err(serde::de::Error::custom)?),
+                        }
+                    }
+                    Ok(out)
+                }
+            }
+            deserializer.deserialize_any(Visitor(Vec::new())).map(FrontmatterTagList)
+        }
     }
 
     let frontmatter = extract_frontmatter_text(content)?;
@@ -2227,7 +2298,20 @@ fn parse_frontmatter_fields(content: &str) -> Option<(String, String)> {
         return None;
     }
 
-    Some((parsed.name.trim().to_string(), description))
+    Some(ParsedFrontmatter {
+        name: parsed.name.trim().to_string(),
+        description,
+        category: parsed.category.map(|c| c.trim().to_string()).filter(|c| !c.is_empty()),
+        tags: parsed.tags.0,
+    })
+}
+
+/// Test-only accessor so sibling modules' unit tests can assert on the
+/// category/tags a SKILL.md frontmatter parses into without going through
+/// the filesystem listing.
+#[cfg(test)]
+pub(crate) fn test_parse_frontmatter(content: &str) -> Option<(String, String, Option<String>, Vec<String>)> {
+    parse_frontmatter_fields(content).map(|p| (p.name, p.description, p.category, p.tags))
 }
 
 fn extract_frontmatter_text(content: &str) -> Option<&str> {
@@ -2465,7 +2549,8 @@ mod tests {
     #[test]
     fn parse_frontmatter_valid() {
         let content = "---\nname: my-skill\ndescription: A useful skill\n---\nBody content here.";
-        let (name, desc) = parse_frontmatter_fields(content).unwrap();
+        let parsed = parse_frontmatter_fields(content).unwrap();
+        let (name, desc) = (parsed.name, parsed.description);
         assert_eq!(name, "my-skill");
         assert_eq!(desc, "A useful skill");
     }
@@ -2479,7 +2564,8 @@ mod tests {
     #[test]
     fn parse_frontmatter_accepts_quoted_yaml_description() {
         let content = "---\nname: video-skill\ndescription: \"Download video: supports batch URLs\"\n---\nBody";
-        let (name, desc) = parse_frontmatter_fields(content).unwrap();
+        let parsed = parse_frontmatter_fields(content).unwrap();
+        let (name, desc) = (parsed.name, parsed.description);
         assert_eq!(name, "video-skill");
         assert_eq!(desc, "Download video: supports batch URLs");
     }
@@ -2487,7 +2573,8 @@ mod tests {
     #[test]
     fn parse_frontmatter_accepts_block_scalar_description() {
         let content = "---\nname: douyin-downloader\ndescription: |\n  Download Douyin videos without watermark.\n  Supports batch downloads.\n---\nBody";
-        let (name, desc) = parse_frontmatter_fields(content).unwrap();
+        let parsed = parse_frontmatter_fields(content).unwrap();
+        let (name, desc) = (parsed.name, parsed.description);
         assert_eq!(name, "douyin-downloader");
         assert_eq!(
             desc,
@@ -2510,7 +2597,8 @@ mod tests {
     #[test]
     fn parse_frontmatter_empty_name() {
         let content = "---\nname: \ndescription: Has description\n---\nBody";
-        let (name, desc) = parse_frontmatter_fields(content).unwrap();
+        let parsed = parse_frontmatter_fields(content).unwrap();
+        let (name, desc) = (parsed.name, parsed.description);
         assert!(name.is_empty());
         assert_eq!(desc, "Has description");
     }

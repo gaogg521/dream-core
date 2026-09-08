@@ -55,6 +55,13 @@ struct TeamSyncSkillItem {
     /// opting in per assistant.
     #[serde(default)]
     auto_active: bool,
+    /// Enterprise category/tag metadata (C2-2), written into the SKILL.md
+    /// frontmatter so the category survives offline and shows in the skill
+    /// list. Optional so old renderers (which omit both) keep working.
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,6 +101,8 @@ async fn sync_team_skills_handler(
             description: s.description,
             content: s.content,
             auto_active: s.auto_active,
+            category: s.category,
+            tags: s.tags,
         })
         .collect();
     let report = crate::team_sync::sync_team_skills(&state.skill_paths.team_skills_dir(), &payloads, req.authoritative)
@@ -205,6 +214,8 @@ async fn list_skills(
             relative_location: s.relative_location,
             is_custom: s.is_custom,
             source: to_source_response(s.source),
+            category: s.category,
+            tags: s.tags,
         })
         .collect();
     Ok(Json(ApiResponse::ok(resp)))
