@@ -110,6 +110,7 @@ impl ProviderHealthCheckService {
             bedrock_config,
             runtime_env: Vec::new(),
             prompt_dump_dir: None,
+            extra_headers: None,
         })
     }
 }

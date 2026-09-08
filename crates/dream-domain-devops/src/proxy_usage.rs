@@ -66,6 +66,9 @@ const REQUEST_PROBE_LIMIT: usize = 8 * 1024 * 1024;
 pub struct ProxyUsageEvent {
     pub user_id: String,
     pub channel_id: String,
+    /// Conversation the client attributed this call to (C1-4), from the
+    /// `x-dream-conversation-id` request header. `None` = unattributed.
+    pub conversation_id: Option<String>,
     pub model: Option<String>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
@@ -224,6 +227,11 @@ struct TapContext {
     request_model: Option<String>,
     /// Only a 2xx upstream response may produce a row.
     success: bool,
+    /// Conversation the client attributed this call to (C1-4), read from the
+    /// `x-dream-conversation-id` request header. `None` = the caller did not
+    /// say (an old client, or a non-conversation call) — the row stays
+    /// unattributed rather than guessing.
+    conversation_id: Option<String>,
     /// When the tap was built — as close to "the call started" as this layer
     /// gets, which is after the request body probe and before the upstream
     /// request is sent.
@@ -252,12 +260,14 @@ impl UsageTap {
         content_type: &str,
         upstream_success: bool,
         request_model: Option<String>,
+        conversation_id: Option<String>,
     ) -> Self {
         let context = recorder.map(|recorder| TapContext {
             recorder,
             user_id,
             channel_id,
             request_model,
+            conversation_id,
             success: upstream_success,
             started_at: Instant::now(),
         });
@@ -327,6 +337,7 @@ impl UsageTap {
         context.recorder.record_proxy_usage(ProxyUsageEvent {
             user_id: context.user_id,
             channel_id: context.channel_id,
+            conversation_id: context.conversation_id,
             model,
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
@@ -521,6 +532,7 @@ mod tests {
             content_type,
             success,
             None,
+            Some("conv-1".into()),
         )
     }
 
@@ -546,9 +558,28 @@ mod tests {
         );
     }
 
+    /// C1-4: the conversation id the client stamped on the request must reach
+    /// the usage event verbatim — this is what lands the spend on the right
+    /// conversation in the billing plane.
+    #[test]
+    fn a_recorded_call_carries_the_client_conversation_id() {
+        let sink = sink();
+        let mut tap = make_tap(&sink, "application/json", true);
+        tap.absorb(br#"{"model":"gpt-4o","usage":{"prompt_tokens":10,"completion_tokens":2}}"#);
+        tap.finish();
+
+        let events = sink.0.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].conversation_id.as_deref(),
+            Some("conv-1"),
+            "the client's conversation attribution must survive the tap"
+        );
+    }
+
     #[test]
     fn inert_tap_buffers_nothing_and_records_nothing() {
-        let mut tap = UsageTap::new(None, "u".into(), "c".into(), "text/event-stream", true, None);
+        let mut tap = UsageTap::new(None, "u".into(), "c".into(), "text/event-stream", true, None, None);
         tap.absorb(b"data: {\"model\":\"m\"}\n\n");
         tap.finish();
         // No recorder behind the tap: it must not have retained the bytes.
@@ -739,6 +770,7 @@ mod tests {
             "application/json",
             true,
             Some("gpt-4o".into()),
+            None,
         );
         tap.absorb(br#"{"usage":{"prompt_tokens":5,"completion_tokens":6}}"#);
         tap.finish();

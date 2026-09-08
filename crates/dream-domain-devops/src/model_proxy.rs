@@ -110,6 +110,25 @@ fn is_hop_by_hop(name: &str) -> bool {
     HOP_BY_HOP.iter().any(|h| name.eq_ignore_ascii_case(h))
 }
 
+/// Headers in the `x-dream-*` namespace are internal to this deployment
+/// (C1-4: `x-dream-conversation-id` cost attribution). They are read here and
+/// never forwarded upstream — the namespace is reserved exactly so the strip
+/// can be blanket: no vendor or gateway has a reason to see an internal
+/// header, and some reject unknown `x-` headers outright. The Bedrock signing
+/// loop applies the same filter, so what is signed is byte-identical to what
+/// goes on the wire.
+fn is_internal_header(name: &str) -> bool {
+    name.len() >= "x-dream-".len() && name[..8].eq_ignore_ascii_case("x-dream-")
+}
+
+/// The conversation a client attributes this request to (C1-4). Absent or
+/// empty means "unattributed" — an old client or a non-conversation call.
+fn conversation_id_header(headers: &HeaderMap) -> Option<String> {
+    let raw = headers.get("x-dream-conversation-id")?.to_str().ok()?;
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
 pub fn model_proxy_routes(state: OneDevopsRouterState) -> Router {
     Router::new()
         .route("/api/one/model-proxy/{channel_id}/{*path}", any(handle_proxy))
@@ -238,13 +257,17 @@ async fn handle_proxy(
 
     let url = build_upstream_url(&channel.upstream_base_url, &params.path, uri.query());
 
+    // C1-4: the conversation this call belongs to — the one fact only the
+    // client knows. Read before anything consumes the headers.
+    let conversation_id = conversation_id_header(&headers);
+
     // Compared before `method` is moved into the reqwest builder.
     let is_post = method == Method::POST;
 
     let client = reqwest::Client::new();
     let mut request = client.request(method, &url);
     for (name, value) in headers.iter() {
-        if !is_hop_by_hop(name.as_str()) {
+        if !is_hop_by_hop(name.as_str()) && !is_internal_header(name.as_str()) {
             request = request.header(name.as_str(), value.as_bytes());
         }
     }
@@ -358,6 +381,7 @@ async fn handle_proxy(
         response_content_type,
         status.is_success(),
         request_model,
+        conversation_id,
     );
     let stream = crate::proxy_usage::UsageTapStream::new(upstream.bytes_stream().map_err(std::io::Error::other), tap);
     builder
@@ -521,7 +545,7 @@ fn sign_bedrock_request(
     // was already safe.
     let mut signable_headers = HeaderMap::new();
     for (name, value) in headers.iter() {
-        if !is_hop_by_hop(name.as_str()) {
+        if !is_hop_by_hop(name.as_str()) && !is_internal_header(name.as_str()) {
             signable_headers.insert(name.clone(), value.clone());
         }
     }
@@ -645,6 +669,7 @@ async fn handle_bedrock_proxy(
         response_content_type,
         status.is_success(),
         None,
+        conversation_id_header(&headers),
     );
     let stream = crate::proxy_usage::UsageTapStream::new(upstream.bytes_stream().map_err(std::io::Error::other), tap);
     builder

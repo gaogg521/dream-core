@@ -28,6 +28,9 @@ struct Seen {
     x_api_key: String,
     body: String,
     custom_header: String,
+    /// Whether any `x-dream-*` internal header reached the upstream (C1-4:
+    /// the answer must always be no).
+    saw_x_dream_header: bool,
 }
 
 /// A stand-in for a model vendor: records the request and echoes something back.
@@ -55,6 +58,10 @@ async fn spawn_upstream(seen: Arc<Mutex<Seen>>) -> SocketAddr {
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default()
             .to_owned();
+        slot.saw_x_dream_header = headers.contains_key("x-dream-conversation-id")
+            || headers
+                .keys()
+                .any(|k| k.as_str().to_ascii_lowercase().starts_with("x-dream-"));
         slot.body = body;
         "{\"ok\":true}".to_owned()
     }
@@ -173,6 +180,8 @@ async fn the_company_credential_is_substituted_for_the_members_token() {
         .header("authorization", format!("Bearer {}", f.token))
         .header("content-type", "application/json")
         .header("x-dashscope-async", "enable")
+        // C1-4: the client stamps the conversation on every proxied call.
+        .header("x-dream-conversation-id", "conv-abc")
         // A model the channel actually offers: this test is about the
         // credential swap, and a model outside the channel's list is now
         // refused before anything is forwarded (see the scoping test below).
@@ -186,6 +195,9 @@ async fn the_company_credential_is_substituted_for_the_members_token() {
         !seen.authorization.contains(&f.token),
         "the member's channel token leaked upstream"
     );
+    // Internal headers are the proxy's own business: the client's
+    // conversation attribution must never reach the vendor.
+    assert!(!seen.saw_x_dream_header, "an x-dream-* internal header leaked upstream");
     // Everything the vendor genuinely needs still gets through.
     assert_eq!(seen.custom_header, "enable");
     assert_eq!(seen.body, r#"{"model":"gpt-image-2"}"#);

@@ -366,6 +366,12 @@ impl DreamEngineAgentManager {
 
         let mut config = resolve_engine_config(&cli_args)?;
 
+        // C1-4 cost attribution: company-channel sessions carry
+        // `x-dream-conversation-id` on every LLM request so the model proxy
+        // can stamp usage rows with this conversation. None for personal
+        // providers.
+        config.extra_headers = config_extra.extra_headers.clone();
+
         // User-declared context window: compaction must trigger inside the
         // real window (a local Ollama model's 8k, not the 200k default), and
         // the Ollama native transport sends it as `options.num_ctx` so the

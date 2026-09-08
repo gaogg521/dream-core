@@ -134,6 +134,9 @@ fn provider_config_from_delegate(vision: &VisionModelConfig) -> Config {
         mcp: McpConfig::default(),
         logging: LoggingConfig::default(),
         vision: None,
+        // One-shot vision delegate: never carries session headers (the
+        // delegate may be a personal provider even when the session is not).
+        extra_headers: None,
     }
 }
 
