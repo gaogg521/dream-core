@@ -108,6 +108,17 @@ pub struct SkillRegistryDto {
     /// not-yet-built remote-sync round).
     pub origin: String,
     pub category_id: Option<String>,
+    /// Name behind `category_id`, inlined at list time (C2-2) so members can
+    /// read it without an admin-only categories endpoint. Never decoded from
+    /// a row — there is no such column; the routes layer fills it after the
+    /// query (`#[sqlx(skip)]` keeps it out of the FromRow bounds, which a
+    /// `Vec<String>` field could not satisfy).
+    #[sqlx(skip)]
+    pub category_name: Option<String>,
+    /// Tag names linked through `one_content_tag_links`, same treatment as
+    /// `category_name`. Empty when untagged.
+    #[sqlx(skip)]
+    pub tags: Vec<String>,
     /// Whether this shows up in a non-admin member's listing at all — an
     /// unpublished row exists but is a draft (P1-1 round 1).
     pub published: bool,

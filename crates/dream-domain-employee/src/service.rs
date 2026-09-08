@@ -725,6 +725,30 @@ async fn list_resource_tags(
     Ok(rows)
 }
 
+/// Category names for a batch of ids, keyed by category id — what the devops
+/// registry lists use to inline `categoryName` into their DTOs (C2-2) so a
+/// member can read what the id means without an admin-only categories
+/// endpoint. Lookup by id is tenant-agnostic on purpose: a registry row's
+/// `category_id` was assigned by an admin of the same tenant that owns the
+/// category.
+async fn list_category_names_for_ids(
+    pool: &DbPool,
+    resource_type: &str,
+    ids: &[String],
+) -> Result<HashMap<String, String>, EmployeeError> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = vec!["?"; ids.len()].join(", ");
+    let sql = format!("SELECT id, name FROM one_content_categories WHERE resource_type = ? AND id IN ({placeholders})");
+    let mut params = Vec::from(db_params![resource_type]);
+    for id in ids {
+        params.push(id.as_str().into());
+    }
+    let rows: Vec<(String, String)> = pool.fetch_all_as(&sql, &params).await?;
+    Ok(rows.into_iter().collect())
+}
+
 /// Tags for a whole page of resources in one query, keyed by `resource_id`
 /// — what a list/table view uses to show tag chips per row without an N+1
 /// query per item.
@@ -1265,6 +1289,19 @@ impl EmployeeService {
 
     pub async fn delete_category(&self, id: &str) -> Result<(), EmployeeError> {
         delete_category(&self.db, id).await
+    }
+
+    /// Category names for a batch of ids (devops registry lists inline
+    /// `categoryName` into their DTOs so members can read what an id means
+    /// without an admin-only categories endpoint). Lookup by id is
+    /// tenant-agnostic on purpose: a registry row's `category_id` was
+    /// assigned by an admin of the same tenant that owns the category.
+    pub async fn list_category_names_for_ids(
+        &self,
+        resource_type: &str,
+        ids: &[String],
+    ) -> Result<HashMap<String, String>, EmployeeError> {
+        list_category_names_for_ids(&self.db, resource_type, ids).await
     }
 
     pub async fn list_tags(&self, tenant_id: &str, resource_type: &str) -> Result<Vec<ContentTagRow>, EmployeeError> {
@@ -2759,6 +2796,31 @@ mod tests {
         delete_tag(&pool, &tag1.id).await.unwrap();
         assert!(list_resource_tags(&pool, "skill", "sk_1").await.unwrap().is_empty());
         assert!(list_tags(&pool, "t1", "skill").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn category_names_for_ids_resolves_only_matching_type_and_stays_tenant_agnostic() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        run_one_employee_migrations(&dream_core_db::DbPool::Sqlite(db.pool().clone()))
+            .await
+            .unwrap();
+        seed_unified_resource_grants(db.pool()).await;
+        let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
+        let skill_cat = create_category(&pool, "t1", "skill", None, "数据分析", 0).await.unwrap();
+        let mcp_cat = create_category(&pool, "t1", "mcp", None, "工具分类", 0).await.unwrap();
+
+        // Ids of other resource types and unknown ids resolve to nothing.
+        let names = list_category_names_for_ids(&pool, "skill", &[skill_cat.id.clone(), mcp_cat.id.clone()])
+            .await
+            .unwrap();
+        assert_eq!(names.len(), 1);
+        assert_eq!(names.get(&skill_cat.id).map(String::as_str), Some("数据分析"));
+
+        let empty = list_category_names_for_ids(&pool, "skill", &[]).await.unwrap();
+        assert!(empty.is_empty());
+
+        let missing = list_category_names_for_ids(&pool, "skill", &["nope".to_string()]).await.unwrap();
+        assert!(missing.is_empty());
     }
 
     #[tokio::test]

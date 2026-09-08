@@ -31,6 +31,8 @@ fn payload(id: &str, name: &str, desc: &str, body: &str) -> TeamSkillPayload {
         description: desc.to_string(),
         content: body.to_string(),
         auto_active: false,
+        category: None,
+        tags: Vec::new(),
     }
 }
 
@@ -70,19 +72,17 @@ async fn distributed_team_skill_surfaces_in_listing() {
     let tmp = TempDir::new().unwrap();
     let paths = make_paths(tmp.path());
 
-    // Test data: one team skill the admin "pushed".
-    let report = sync_team_skills(
-        &paths.team_skills_dir(),
-        &[payload(
-            "oskill_report",
-            "weekly-report",
-            "Draft the weekly report",
-            "Write a concise weekly summary.",
-        )],
-        true,
-    )
-    .await
-    .unwrap();
+    // Test data: one team skill the admin "pushed", with enterprise
+    // category/tag metadata attached (C2-2).
+    let mut categorized = payload(
+        "oskill_report",
+        "weekly-report",
+        "Draft the weekly report",
+        "Write a concise weekly summary.",
+    );
+    categorized.category = Some("数据分析".into());
+    categorized.tags = vec!["SQL".into()];
+    let report = sync_team_skills(&paths.team_skills_dir(), &[categorized], true).await.unwrap();
     assert_eq!(report.written, vec!["oskill_report".to_string()]);
     assert_eq!(report.kept, 1);
 
@@ -98,6 +98,8 @@ async fn distributed_team_skill_surfaces_in_listing() {
         "description carried from the registry: {}",
         team.description
     );
+    assert_eq!(team.category.as_deref(), Some("数据分析"), "category must surface in the listing");
+    assert_eq!(team.tags, vec!["SQL".to_string()], "tags must surface in the listing");
 }
 
 /// Standalone-safety: no team skills → listing contains none, and never errors.
