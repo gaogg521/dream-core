@@ -2,7 +2,6 @@ use std::process::ExitCode;
 
 use crate::cli::PrepareManagedResourcesArgs;
 use crate::commands::error::{CliBoundaryCode, CliBoundaryError};
-use dream_core_runtime::managed_cli::{managed_cli_contract_for_export, prepare_managed_cli_to_root};
 use dream_core_runtime::managed_resources::export_node_runtime_to_root;
 use dream_core_runtime::managed_resources_contract::{
     MANAGED_RESOURCES_CONTRACT_SCHEMA_VERSION, ManagedResourcesContract, validate_contract, write_contract,
@@ -12,11 +11,17 @@ use dream_core_runtime::{
     ManagedAcpToolId, ensure_node_runtime, managed_acp_tool_contract_for_export, prepare_managed_acp_tool_to_root,
 };
 
-const MANAGED_CLI_NAMES: [&str; 2] = ["claude", "codex"];
-/// The ACP wrapper packages `factory/acp.rs` actually spawns. These are separate
-/// from `MANAGED_CLI_NAMES` above: those are upstream's native binaries, which
-/// this fork does not route sessions through. Dropping either list from the
-/// bundle breaks a different thing, so both are prepared unconditionally.
+/// The ACP wrapper packages `factory/acp.rs` actually spawns — the only agent
+/// runtime this bundle ships.
+///
+/// Upstream's native `claude` + `codex` binaries used to be prepared alongside
+/// these under `cli/`, on the reasoning that "dropping either list breaks a
+/// different thing". That held for `acp/` and not for `cli/`: nothing in this
+/// fork spawns the native binaries (`managed_cli` has been dormant since the
+/// 2026-07-29 sync, with zero non-test callers of `resolve_bundled_cli`), and
+/// the only thing that demanded them — `validate_contract` — runs at packaging
+/// time, not at runtime. They cost 696 MB installed on win32-x64, 376 MB of it
+/// byte-identical to binaries already inside `acp/codex-acp/`.
 const MANAGED_ACP_TOOLS: [ManagedAcpToolId; 2] = [ManagedAcpToolId::ClaudeAgentAcp, ManagedAcpToolId::CodexAcp];
 
 const SUBCOMMAND: &str = "prepare-managed-resources";
@@ -39,15 +44,6 @@ pub async fn run_prepare_managed_resources(args: PrepareManagedResourcesArgs) ->
     println!("Prepared managed resources under {}", output_root.display());
     println!("  node   -> {}", exported_node.display());
 
-    let mut prepared_clis = Vec::new();
-    for name in MANAGED_CLI_NAMES {
-        let prepared = prepare_managed_cli_to_root(name, &output_root)
-            .await
-            .map_err(|error| prepare_managed_resources_error_with_detail("cli.prepare", error))?;
-        println!("  {:<6} -> {}", name, prepared.root.display());
-        prepared_clis.push(prepared);
-    }
-
     let mut prepared_acp_tools = Vec::new();
     for tool in MANAGED_ACP_TOOLS {
         let prepared = prepare_managed_acp_tool_to_root(tool, &output_root)
@@ -59,13 +55,9 @@ pub async fn run_prepare_managed_resources(args: PrepareManagedResourcesArgs) ->
 
     let node = managed_node_contract_for_export(&output_root, &exported_node)
         .map_err(|error| prepare_managed_resources_error_with_detail("contract.write", error))?;
-    let mut clis = Vec::new();
-    for prepared in &prepared_clis {
-        clis.push(
-            managed_cli_contract_for_export(&output_root, prepared)
-                .map_err(|error| prepare_managed_resources_error_with_detail("contract.write", error))?,
-        );
-    }
+    // No `cli/` subtree is produced any more; the field stays in the contract so
+    // a manifest from an older bundle still deserializes (see REQUIRED_CLI_NAMES).
+    let clis = Vec::new();
     let mut acp_tools = Vec::new();
     for (tool, prepared) in &prepared_acp_tools {
         acp_tools.push(
@@ -73,9 +65,13 @@ pub async fn run_prepare_managed_resources(args: PrepareManagedResourcesArgs) ->
                 .map_err(|error| prepare_managed_resources_error_with_detail("contract.write", error))?,
         );
     }
-    let runtime_key = clis
+    // `acpTools[].platformDirectory` carries the same invariant `clis[]` used to
+    // (validate_acp_tools_schema rejects any entry that disagrees with runtimeKey),
+    // so the key still comes from what was actually prepared rather than from the
+    // build host's own platform — cross-arch packaging keeps working.
+    let runtime_key = acp_tools
         .first()
-        .map(|cli| cli.platform_directory.clone())
+        .map(|tool| tool.platform_directory.clone())
         .ok_or_else(|| prepare_managed_resources_error("contract.write"))?;
     let contract = ManagedResourcesContract {
         schema_version: MANAGED_RESOURCES_CONTRACT_SCHEMA_VERSION,

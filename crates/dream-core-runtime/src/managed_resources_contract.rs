@@ -13,7 +13,18 @@ const SUPPORTED_RUNTIME_KEYS: [&str; 6] = [
     "linux-x64",
     "linux-arm64",
 ];
-const REQUIRED_CLI_NAMES: [&str; 2] = ["claude", "codex"];
+/// Deliberately empty. `cli/` held upstream's native `claude` + `codex`
+/// binaries, which this fork never spawns: sessions resolve through
+/// `acp_tool_runtime` (`REQUIRED_ACP_TOOL_SLUGS` below), and
+/// `managed_cli::resolve_bundled_cli` has had zero non-test call sites since
+/// the 2026-07-29 sync left that module dormant. Preparing them anyway cost
+/// 696 MB installed on win32-x64, including a byte-identical second copy of
+/// `codex.exe` (325 MB) already shipped under `acp/codex-acp/`.
+///
+/// The `clis` field and its per-entry validation stay: a manifest that still
+/// carries entries is validated exactly as before, so an older bundle sitting
+/// in a user-data cache keeps parsing. Only the "must be present" floor is gone.
+const REQUIRED_CLI_NAMES: [&str; 0] = [];
 /// The ACP wrapper layers this fork spawns for Claude / Codex sessions. They are
 /// npm packages materialized under `acp/` at packaging time, and are NOT
 /// interchangeable with the native `cli/claude` + `cli/codex` binaries above:
@@ -43,6 +54,10 @@ pub struct ManagedResourcesContract {
     pub schema_version: u8,
     pub runtime_key: String,
     pub node: ManagedNodeResourceContract,
+    /// Defaulted since the `cli/` subtree stopped being bundled: a manifest
+    /// written without the key deserializes to an empty list, and one written
+    /// with it (an older bundle in a user-data cache) is validated unchanged.
+    #[serde(default)]
     pub clis: Vec<ManagedCliResourceContract>,
     /// Defaulted so a pre-`acpTools` manifest still deserializes — it is then
     /// rejected by `validate_contract` with a field-specific message rather than
@@ -561,14 +576,15 @@ mod tests {
     }
 
     #[test]
-    fn validate_contract_rejects_missing_required_cli_name() {
-        let temp = tempfile::tempdir().expect("tempdir");
+    fn validate_contract_accepts_a_bundle_with_no_clis() {
+        // `cli/` is no longer produced (see REQUIRED_CLI_NAMES): an empty list has
+        // to clear the schema floor, or every package build would fail here. The
+        // per-entry rules still apply when entries are present — that is covered by
+        // validate_contract_rejects_duplicate_cli_names.
         let mut contract = example_contract("win32-x64");
-        contract.clis.retain(|cli| cli.name != "codex");
+        contract.clis.clear();
 
-        let error = validate_contract(temp.path(), &contract).expect_err("missing required name should fail");
-
-        assert!(error.to_string().contains("missing required clis name codex"));
+        validate_clis_schema(&contract).expect("an empty clis list must be accepted");
     }
 
     #[test]
