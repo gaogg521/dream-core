@@ -337,7 +337,9 @@ When using `--after` or `--before`, `--to` can be omitted — the target contain
 
 ### batch — multiple operations in one save cycle
 
-Continues on error by default (returns exit 1 if any item fails). Use `--stop-on-error` to abort on the first failure. `--force` is the docx-protection bypass.
+For any multi-op build, prefer writing the JSON array to a file and running `officecli batch <file> --input cmds.json`: one process spawn for the whole set (each single command costs ~1s of startup on Windows), and no shell ever touches the JSON — `$`, `!`, `\n`, Unicode all pass through verbatim, identically on every OS.
+
+Continues on error by default (returns exit 1 if any item fails); a run with any failure applies no changes — fix the JSON and re-run the same file. Use `--stop-on-error` to abort on the first failure. `--force` is the docx-protection bypass.
 
 `officecli dump <file> [<path>]` emits a replayable batch JSON for round-trip — `.docx` (full coverage) and `.pptx` (text/tables/pictures/charts/notes/theme + OLE/3D/video/audio/SmartArt/morph/p15 transitions via raw-set passthrough). Path defaults to `/` (whole document); pass a subtree path (`/body`, `/body/p[N]`, `/body/tbl[N]`, `/theme`, `/settings`, `/numbering`, `/styles`) to scope the dump. `officecli refresh <file.docx>` recalculates TOC page numbers / PAGE / cross-references after replay (Word backend on Windows; headless-HTML fallback elsewhere). `officecli plugins list` extends support to `.doc`, `.hwpx`, `.pdf` export.
 
