@@ -3111,6 +3111,14 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
             header::CONTENT_TYPE,
             header::AUTHORIZATION,
             HeaderName::from_static("x-csrf-token"),
+            // C1-2: the desktop client self-reports its machine id on every
+            // remote governance request so a blocked runtime node can
+            // actually be enforced. Custom headers are not CORS-safelisted,
+            // so omitting it here would fail every credentialed cross-origin
+            // request that carries it at the preflight, not just the check
+            // itself — this bit the client-mode desktop app precisely that
+            // way until caught on a real machine.
+            HeaderName::from_static("x-dream-machine-id"),
         ])
         // Content-Disposition is not CORS-safelisted, so without this the
         // browser hides it from the fetch that reads it — see the note on the
@@ -3709,6 +3717,9 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
                 header::CONTENT_TYPE,
                 header::AUTHORIZATION,
                 HeaderName::from_static("x-csrf-token"),
+                // C1-2: see the identical addition on the admin-plane CORS
+                // layer above for why this must be enumerated here too.
+                HeaderName::from_static("x-dream-machine-id"),
             ])
             // Attachment downloads carry their real name in
             // Content-Disposition, and that header is NOT on the CORS

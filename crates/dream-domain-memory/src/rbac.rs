@@ -46,6 +46,19 @@ impl FromRequestParts<OneMemoryRouterState> for RequireMemoryMember {
             .cloned()
             .ok_or_else(|| MemoryError::Forbidden("Authentication required".into()))?;
         let actor = state.service.require_member(&user.id).await?;
+        // C1-2 fix: a blocked machine must stop reading company memory. See
+        // `dream_domain_platform::rbac::RequirePlatformMember` for the full
+        // reasoning (deliberately not on `RequireMemoryAdmin`, same as there).
+        if let Some(machine_id) = parts.headers.get("x-dream-machine-id").and_then(|v| v.to_str().ok())
+            && state
+                .service
+                .machine_blocked(&actor.tenant_id, &user.id, machine_id)
+                .await?
+        {
+            return Err(MemoryError::MachineBlocked(
+                "this machine has been blocked by an administrator".into(),
+            ));
+        }
         Ok(Self(actor))
     }
 }

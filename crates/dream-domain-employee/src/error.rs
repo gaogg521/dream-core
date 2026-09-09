@@ -20,6 +20,12 @@ pub enum EmployeeError {
     #[error("{0}")]
     Forbidden(String),
 
+    /// C1-2 fix: this machine (self-reported `x-dream-machine-id`) has been
+    /// blocked in the runtime-node roster. Distinct from `Forbidden` so the
+    /// client can tell "this device was blocked" apart from other refusals.
+    #[error("Machine blocked: {0}")]
+    MachineBlocked(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -31,6 +37,7 @@ impl EmployeeError {
             Self::RunNotFound => "RUN_NOT_FOUND",
             Self::BadRequest(_) => "BAD_REQUEST",
             Self::Forbidden(_) => "FORBIDDEN",
+            Self::MachineBlocked(_) => "MACHINE_BLOCKED",
             Self::Internal(_) => "INTERNAL_ERROR",
         }
     }
@@ -40,6 +47,7 @@ impl EmployeeError {
             Self::NotFound | Self::RunNotFound => StatusCode::NOT_FOUND,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
+            Self::MachineBlocked(_) => StatusCode::FORBIDDEN,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

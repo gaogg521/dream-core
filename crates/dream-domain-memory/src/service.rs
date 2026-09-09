@@ -312,6 +312,21 @@ impl MemoryService {
         }
     }
 
+    /// Whether `machine_id` (as self-reported by the client in the
+    /// `x-dream-machine-id` header) has been blocked by an administrator for
+    /// `tenant_id` (C1-2 fix). See `dream_domain_platform::PlatformService::machine_blocked`
+    /// for the full contract — same query, same crate-boundary reasoning.
+    pub async fn machine_blocked(&self, tenant_id: &str, user_id: &str, machine_id: &str) -> Result<bool, MemoryError> {
+        let status = self
+            .db
+            .fetch_optional_scalar::<String>(
+                "SELECT status FROM one_runtime_nodes WHERE tenant_id = ? AND user_id = ? AND machine_id = ? LIMIT 1",
+                &dream_core_db::db_params![tenant_id, user_id, machine_id],
+            )
+            .await?;
+        Ok(status.as_deref() == Some("blocked"))
+    }
+
     /// The caller's department within the tenant, if any — the department
     /// tier's readability hinge.
     async fn member_department(&self, tenant_id: &str, user_id: &str) -> Result<Option<String>, MemoryError> {
@@ -1313,6 +1328,51 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
+    }
+
+    /// C1-2: the roster row this machine-block check reads.
+    async fn seed_runtime_node(
+        pool: &sqlx::SqlitePool,
+        tenant_id: &str,
+        user_id: &str,
+        machine_id: &str,
+        status: &str,
+    ) {
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS one_runtime_nodes (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, \
+                 user_id TEXT NOT NULL, machine_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'approved');",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO one_runtime_nodes (id, tenant_id, user_id, machine_id, status) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(format!("n_{machine_id}"))
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(machine_id)
+        .bind(status)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn machine_blocked_reads_the_roster_status() {
+        let (db, service) = setup().await;
+        seed_runtime_node(db.pool(), "t1", "member1", "blocked-laptop", "blocked").await;
+        seed_runtime_node(db.pool(), "t1", "member1", "ok-laptop", "approved").await;
+
+        assert!(
+            service
+                .machine_blocked("t1", "member1", "blocked-laptop")
+                .await
+                .unwrap()
+        );
+        assert!(!service.machine_blocked("t1", "member1", "ok-laptop").await.unwrap());
+        // Never heartbeat -> false, not an error.
+        assert!(!service.machine_blocked("t1", "member1", "never-seen").await.unwrap());
     }
 
     async fn seed_department(pool: &sqlx::SqlitePool, user_id: &str, tenant_id: &str, department_id: &str) {

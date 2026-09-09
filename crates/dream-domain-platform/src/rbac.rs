@@ -48,6 +48,25 @@ impl FromRequestParts<OnePlatformRouterState> for RequirePlatformMember {
             .cloned()
             .ok_or_else(|| PlatformError::Forbidden("Authentication required".into()))?;
         let actor = state.service.require_member(&user.id).await?;
+        // C1-2 fix: a blocked machine must stop receiving governance data
+        // (security policy, memory, DLP, ...) it polls as "a member in good
+        // standing". The client self-reports its machine id in
+        // `x-dream-machine-id`; no header means the check is skipped, which
+        // also keeps this extractor's other caller — the admin console,
+        // reached over a browser session that never sends this header —
+        // unaffected. Deliberately not on `RequirePlatformAdmin`: blocking a
+        // runtime node must never be able to lock an admin out of the
+        // console they would need to undo it from.
+        if let Some(machine_id) = parts.headers.get("x-dream-machine-id").and_then(|v| v.to_str().ok())
+            && state
+                .service
+                .machine_blocked(&actor.tenant_id, &user.id, machine_id)
+                .await?
+        {
+            return Err(PlatformError::MachineBlocked(
+                "this machine has been blocked by an administrator".into(),
+            ));
+        }
         Ok(Self(actor))
     }
 }

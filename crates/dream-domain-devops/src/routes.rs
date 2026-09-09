@@ -3,6 +3,7 @@
 //! read and write (matching the 1one superAssistant behavior).
 
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::routing::{get, patch};
 use axum::{Extension, Json, Router};
 use serde::Deserialize;
@@ -680,10 +681,35 @@ async fn require_registry_admin(state: &OneDevopsRouterState, user_id: &str) -> 
     }
 }
 
+/// C1-2 fix: reject the request when the caller's machine has been blocked
+/// in the runtime-node roster. The client self-reports its machine id in
+/// `x-dream-machine-id` (added alongside the Bearer token on every remote
+/// governance request); a request with no such header — an older client, or
+/// one that never resolved its identity — is let through unchanged, the same
+/// fail-open posture every other machine-agnostic check in this crate takes
+/// when it cannot read the signal it needs.
+async fn reject_if_machine_blocked(
+    state: &OneDevopsRouterState,
+    headers: &HeaderMap,
+    user_id: &str,
+) -> Result<(), DevopsError> {
+    let Some(machine_id) = headers.get("x-dream-machine-id").and_then(|v| v.to_str().ok()) else {
+        return Ok(());
+    };
+    if state.service.machine_blocked(user_id, machine_id).await? {
+        return Err(DevopsError::MachineBlocked(
+            "this machine has been blocked by an administrator".into(),
+        ));
+    }
+    Ok(())
+}
+
 async fn list_skills(
     State(state): State<OneDevopsRouterState>,
     Extension(user): Extension<CurrentUser>,
+    headers: HeaderMap,
 ) -> Result<Json<ApiResponse<Vec<SkillRegistryDto>>>, DevopsError> {
+    reject_if_machine_blocked(&state, &headers, &user.id).await?;
     let mut skills = state.service.list_skills(&user.id).await?;
     attach_skill_category_and_tags(&state, &mut skills).await;
     Ok(Json(ApiResponse::ok(skills)))
@@ -1010,7 +1036,9 @@ async fn publish_api_asset(
 async fn list_mcp(
     State(state): State<OneDevopsRouterState>,
     Extension(user): Extension<CurrentUser>,
+    headers: HeaderMap,
 ) -> Result<Json<ApiResponse<Vec<McpRegistryDto>>>, DevopsError> {
+    reject_if_machine_blocked(&state, &headers, &user.id).await?;
     Ok(Json(ApiResponse::ok(state.service.list_mcp_registry(&user.id).await?)))
 }
 
@@ -1107,7 +1135,9 @@ async fn publish_mcp(
 async fn list_model_channels(
     State(state): State<OneDevopsRouterState>,
     Extension(user): Extension<CurrentUser>,
+    headers: HeaderMap,
 ) -> Result<Json<ApiResponse<Vec<ProviderChannelDto>>>, DevopsError> {
+    reject_if_machine_blocked(&state, &headers, &user.id).await?;
     Ok(Json(ApiResponse::ok(
         state.service.list_provider_channels(&user.id).await?,
     )))
@@ -1209,7 +1239,9 @@ async fn issue_model_channel_token(
     State(state): State<OneDevopsRouterState>,
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<ApiResponse<IssuedChannelTokenDto>>, DevopsError> {
+    reject_if_machine_blocked(&state, &headers, &user.id).await?;
     let issued = state.service.issue_channel_token(&user.id, &id).await?;
     Ok(Json(ApiResponse::ok(IssuedChannelTokenDto {
         channel_id: issued.channel_id,
@@ -1237,7 +1269,9 @@ async fn list_dlp_rules(
 async fn list_my_dlp_rules(
     State(state): State<OneDevopsRouterState>,
     Extension(user): Extension<CurrentUser>,
+    headers: HeaderMap,
 ) -> Result<Json<ApiResponse<Vec<DlpRuleDto>>>, DevopsError> {
+    reject_if_machine_blocked(&state, &headers, &user.id).await?;
     Ok(Json(ApiResponse::ok(
         state.service.list_dlp_rules_for_member(&user.id).await?,
     )))
@@ -1982,6 +2016,7 @@ mod tests {
         sqlx::raw_sql(
             "CREATE TABLE one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, tenant_id));
              CREATE TABLE one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE one_runtime_nodes (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, machine_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'approved');
              INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('admin1', 'tA', 'org_admin'), ('memberA', 'tA', 'member');
              INSERT INTO one_active_tenant (user_id, tenant_id) VALUES ('admin1', 'tA'), ('memberA', 'tA');",
         )
@@ -2041,6 +2076,72 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["data"]["totalEvents"], 0);
         assert_eq!(json["data"]["totalBlocked"], 0);
+    }
+
+    async fn get_skills(
+        router: axum::Router,
+        who: CurrentUser,
+        machine_id: Option<&str>,
+    ) -> axum::http::Response<Body> {
+        let mut builder = Request::builder().uri("/api/one/devops/skills");
+        if let Some(mid) = machine_id {
+            builder = builder.header("x-dream-machine-id", mid);
+        }
+        let mut request = builder.body(Body::empty()).unwrap();
+        request.extensions_mut().insert(who);
+        router.oneshot(request).await.unwrap()
+    }
+
+    /// C1-2: a machine blocked in the runtime-node roster must be refused
+    /// with the distinguishable `MACHINE_BLOCKED` code — the whole point of
+    /// this fix — while every other combination (no header, unblocked
+    /// machine, blocked-but-different-machine) is unaffected.
+    #[tokio::test]
+    async fn list_skills_machine_block_matrix() {
+        // Built directly (not via the shared `router()` fixture) so this test
+        // keeps a handle to the pool and can seed `one_runtime_nodes` rows
+        // before issuing requests.
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::migrate::run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone()))
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, tenant_id));
+             CREATE TABLE one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE one_runtime_nodes (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, machine_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'approved');
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('memberA', 'tA', 'member');
+             INSERT INTO one_active_tenant (user_id, tenant_id) VALUES ('memberA', 'tA');
+             INSERT INTO one_runtime_nodes (id, tenant_id, user_id, machine_id, status) VALUES \
+                ('n1', 'tA', 'memberA', 'blocked-laptop', 'blocked'), \
+                ('n2', 'tA', 'memberA', 'ok-laptop', 'approved');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let router = one_devops_routes(OneDevopsRouterState::new(Arc::new(DevopsService::new(
+            dream_core_db::DbPool::Sqlite(pool),
+        ))));
+
+        // Blocked machine, header present -> refused with the distinct code.
+        let response = get_skills(router.clone(), user("memberA"), Some("blocked-laptop")).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], "MACHINE_BLOCKED");
+
+        // Same member, an unblocked machine -> passes.
+        let response = get_skills(router.clone(), user("memberA"), Some("ok-laptop")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Blocked machine, but no header at all (older client) -> the check
+        // cannot run, and it must fail open rather than refuse a request it
+        // has no signal for.
+        let response = get_skills(router, user("memberA"), None).await;
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     /// C2-2: the DTO fill maps category names by `category_id` and tag names

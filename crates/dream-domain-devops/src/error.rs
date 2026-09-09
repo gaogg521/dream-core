@@ -17,6 +17,14 @@ pub enum DevopsError {
     #[error("Forbidden: {0}")]
     Forbidden(String),
 
+    /// This machine (identified by the client-reported `x-dream-machine-id`
+    /// header) has been blocked by an administrator in the runtime-node
+    /// roster. Distinct from `Forbidden` so the client can tell "this device
+    /// was blocked" apart from other refusals and react accordingly (purge
+    /// local team resources) rather than treating it as a generic error.
+    #[error("Machine blocked: {0}")]
+    MachineBlocked(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -27,6 +35,7 @@ impl DevopsError {
             Self::NotFound(_) => "NOT_FOUND",
             Self::BadRequest(_) => "BAD_REQUEST",
             Self::Forbidden(_) => "FORBIDDEN",
+            Self::MachineBlocked(_) => "MACHINE_BLOCKED",
             Self::Internal(_) => "INTERNAL_ERROR",
         }
     }
@@ -36,6 +45,7 @@ impl DevopsError {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
+            Self::MachineBlocked(_) => StatusCode::FORBIDDEN,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

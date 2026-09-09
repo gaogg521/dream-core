@@ -682,6 +682,31 @@ impl DevopsService {
         }
     }
 
+    /// Whether `machine_id` (as self-reported by the client in the
+    /// `x-dream-machine-id` header) has been blocked by an administrator for
+    /// `user_id`'s active tenant (C1-2 fix). `Ok(false)` for a standalone
+    /// deployment, a machine that has never heartbeat into the roster, or one
+    /// still `approved`/`pending` — only an explicit `'blocked'` status trips
+    /// this. Same missing-table fallback as `user_org_role`: one-org crate not
+    /// initialized means there is no roster to be blocked from.
+    pub async fn machine_blocked(&self, user_id: &str, machine_id: &str) -> Result<bool, DevopsError> {
+        let Some(tenant_id) = self.active_tenant_id(user_id).await? else {
+            return Ok(false);
+        };
+        let result = self
+            .db
+            .fetch_optional_scalar::<String>(
+                "SELECT status FROM one_runtime_nodes WHERE tenant_id = ? AND user_id = ? AND machine_id = ? LIMIT 1",
+                &db_params![tenant_id, user_id, machine_id],
+            )
+            .await;
+        match result {
+            Ok(status) => Ok(status.as_deref() == Some("blocked")),
+            Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// `user_id`'s currently active project group, or `None` for a standalone
     /// deployment (no `one_user_org` row) or one where one-org's migrations
     /// never ran. Same missing-table fallback as `user_org_role`.
@@ -3386,6 +3411,32 @@ mod tests {
         assert_eq!(svc.user_org_role("member1").await.unwrap().as_deref(), Some("member"));
         assert_eq!(svc.user_org_role("admin1").await.unwrap().as_deref(), Some("org_admin"));
         assert_eq!(svc.user_org_role("stranger").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn machine_blocked_standalone_no_row_and_blocked() {
+        let svc = service().await;
+
+        // Standalone: one_runtime_nodes (and one_active_tenant) never created
+        // -> false, never an error (C1-2).
+        assert!(!svc.machine_blocked("u1", "m1").await.unwrap());
+
+        sqlx::raw_sql(
+            "CREATE TABLE one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE one_runtime_nodes (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, machine_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'approved');
+             INSERT INTO one_active_tenant (user_id, tenant_id) VALUES ('member1', 't1');
+             INSERT INTO one_runtime_nodes (id, tenant_id, user_id, machine_id, status) VALUES \
+                ('n1', 't1', 'member1', 'blocked-machine', 'blocked'), \
+                ('n2', 't1', 'member1', 'approved-machine', 'approved');",
+        )
+        .execute(svc.db.sqlite())
+        .await
+        .unwrap();
+
+        assert!(svc.machine_blocked("member1", "blocked-machine").await.unwrap());
+        assert!(!svc.machine_blocked("member1", "approved-machine").await.unwrap());
+        // Never heartbeat -> false, not an error.
+        assert!(!svc.machine_blocked("member1", "never-seen-machine").await.unwrap());
     }
 
     /// Seed a two-group enterprise: memberA∈Group A, memberB∈Group B, admin1 is

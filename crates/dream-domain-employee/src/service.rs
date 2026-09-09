@@ -282,6 +282,37 @@ pub(crate) fn is_missing_table_error(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if dream_core_db::message_indicates_missing_table(db.message()))
 }
 
+/// Whether `machine_id` has been blocked by an administrator for `tenant_id`
+/// (C1-2 fix). `Ok(false)` for a standalone deployment, a machine that has
+/// never heartbeat into the roster, or one still `approved`/`pending` — only
+/// an explicit `'blocked'` status trips this. Same missing-table fallback as
+/// `EmployeeService::user_org_role`: one-org crate not initialized means
+/// there is no roster to be blocked from.
+///
+/// A free function (not an `EmployeeService` method) so it is testable
+/// against a bare pool without constructing the full service and its
+/// `ConversationService`/`AgentRegistry` dependencies — `EmployeeService`
+/// itself is never unit-constructed anywhere in this crate for exactly that
+/// reason. `EmployeeService::machine_blocked` is a thin wrapper over this.
+pub(crate) async fn machine_blocked_query(
+    db: &DbPool,
+    tenant_id: &str,
+    user_id: &str,
+    machine_id: &str,
+) -> Result<bool, EmployeeError> {
+    let result = db
+        .fetch_optional_scalar::<String>(
+            "SELECT status FROM one_runtime_nodes WHERE tenant_id = ? AND user_id = ? AND machine_id = ? LIMIT 1",
+            &db_params![tenant_id, user_id, machine_id],
+        )
+        .await;
+    match result {
+        Ok(status) => Ok(status.as_deref() == Some("blocked")),
+        Err(e) if is_missing_table_error(&e) => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Same query shape as `dream_domain_platform::PlatformService::department_ancestry`
 /// (walks `one_departments.parent_id` starting from the caller's own
 /// department in `one_user_org`), duplicated here rather than depended on —
@@ -928,6 +959,20 @@ impl EmployeeService {
         self.team_session_service
             .as_ref()
             .ok_or_else(|| EmployeeError::Internal("team session service not configured".into()))
+    }
+
+    /// Whether `machine_id` (as self-reported by the client in the
+    /// `x-dream-machine-id` header) has been blocked by an administrator for
+    /// `tenant_id` (C1-2 fix). See [`machine_blocked_query`] for the contract
+    /// — this is a thin `self.db`-bound wrapper so route handlers can call it
+    /// off `state.service` without reaching past it for the pool.
+    pub async fn machine_blocked(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        machine_id: &str,
+    ) -> Result<bool, EmployeeError> {
+        machine_blocked_query(&self.db, tenant_id, user_id, machine_id).await
     }
 
     /// Reject `(agent_type, model)` combinations the conversation layer would
@@ -2202,6 +2247,55 @@ impl EmployeeService {
 mod tests {
     use super::*;
     use crate::migrate::run_one_employee_migrations;
+
+    async fn seed_runtime_node(pool: &DbPool, tenant_id: &str, user_id: &str, machine_id: &str, status: &str) {
+        pool.execute(
+            "CREATE TABLE IF NOT EXISTS one_runtime_nodes (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, \
+                 user_id TEXT NOT NULL, machine_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'approved')",
+            &[],
+        )
+        .await
+        .unwrap();
+        pool.execute(
+            "INSERT INTO one_runtime_nodes (id, tenant_id, user_id, machine_id, status) VALUES (?, ?, ?, ?, ?)",
+            &db_params![format!("n_{machine_id}"), tenant_id, user_id, machine_id, status],
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn machine_blocked_query_reads_the_roster_status() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        let pool = DbPool::Sqlite(db.pool().clone());
+        run_one_employee_migrations(&pool).await.unwrap();
+
+        // Standalone: table not yet created by this seed -> false, not an error.
+        assert!(
+            !machine_blocked_query(&pool, "t1", "member1", "blocked-laptop")
+                .await
+                .unwrap()
+        );
+
+        seed_runtime_node(&pool, "t1", "member1", "blocked-laptop", "blocked").await;
+        seed_runtime_node(&pool, "t1", "member1", "ok-laptop", "approved").await;
+
+        assert!(
+            machine_blocked_query(&pool, "t1", "member1", "blocked-laptop")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !machine_blocked_query(&pool, "t1", "member1", "ok-laptop")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !machine_blocked_query(&pool, "t1", "member1", "never-seen")
+                .await
+                .unwrap()
+        );
+    }
 
     #[test]
     fn append_task_context_appends_and_noops() {

@@ -291,6 +291,42 @@ impl BillingService {
         Ok(row)
     }
 
+    /// `user_id`'s currently active project-group tenant, or `None`. Distinct
+    /// from `resolve_enterprise_id` above — that is the company-wide id the
+    /// plan itself is scoped to, while runtime nodes (and this crate's C1-2
+    /// machine-block check) are registered per project-group tenant, same as
+    /// `dream_domain_devops::DevopsService::active_tenant_id`.
+    async fn active_tenant_id(&self, user_id: &str) -> Result<Option<String>, BillingError> {
+        let row: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT tenant_id FROM one_active_tenant WHERE user_id = ?",
+                &db_params![user_id],
+            )
+            .await
+            .unwrap_or(None);
+        Ok(row)
+    }
+
+    /// Whether `machine_id` (as self-reported by the client in the
+    /// `x-dream-machine-id` header) has been blocked by an administrator in
+    /// the caller's active tenant (C1-2 fix). `Ok(false)` when the caller has
+    /// no active tenant, or the roster has no matching row.
+    pub async fn machine_blocked(&self, user_id: &str, machine_id: &str) -> Result<bool, BillingError> {
+        let Some(tenant_id) = self.active_tenant_id(user_id).await? else {
+            return Ok(false);
+        };
+        let status: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT status FROM one_runtime_nodes WHERE tenant_id = ? AND user_id = ? AND machine_id = ? LIMIT 1",
+                &db_params![tenant_id, user_id, machine_id],
+            )
+            .await
+            .unwrap_or(None);
+        Ok(status.as_deref() == Some("blocked"))
+    }
+
     /// Whether the caller holds an ACTIVE (governed, billable) seat, as
     /// opposed to no company row at all, or a `pending` row created when they
     /// logged in while the plan's seat cap was already full (T6-4).
@@ -2402,6 +2438,58 @@ mod tests {
             Arc::new(ManualBillingProvider),
         );
         (svc, pool)
+    }
+
+    /// C1-2: the roster row this machine-block check reads, plus the
+    /// `one_active_tenant` row `machine_blocked` resolves through — distinct
+    /// from `resolve_enterprise_id`'s `one_enterprise_members` (see the
+    /// `active_tenant_id` doc comment for why these are different scopes).
+    async fn seed_runtime_node(
+        pool: &sqlx::SqlitePool,
+        tenant_id: &str,
+        user_id: &str,
+        machine_id: &str,
+        status: &str,
+    ) {
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE IF NOT EXISTS one_runtime_nodes (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, machine_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'approved');",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT OR REPLACE INTO one_active_tenant (user_id, tenant_id) VALUES (?, ?)")
+            .bind(user_id)
+            .bind(tenant_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO one_runtime_nodes (id, tenant_id, user_id, machine_id, status) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(format!("n_{machine_id}"))
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(machine_id)
+        .bind(status)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn machine_blocked_reads_the_roster_status_for_the_active_tenant() {
+        let (svc, pool) = service().await;
+
+        // No active tenant at all -> false, not an error.
+        assert!(!svc.machine_blocked("member1", "blocked-laptop").await.unwrap());
+
+        seed_runtime_node(&pool, "t1", "member1", "blocked-laptop", "blocked").await;
+        seed_runtime_node(&pool, "t1", "member1", "ok-laptop", "approved").await;
+
+        assert!(svc.machine_blocked("member1", "blocked-laptop").await.unwrap());
+        assert!(!svc.machine_blocked("member1", "ok-laptop").await.unwrap());
+        assert!(!svc.machine_blocked("member1", "never-seen").await.unwrap());
     }
 
     /// A company admin's scope: the whole company, no group restriction.
