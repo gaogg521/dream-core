@@ -249,6 +249,28 @@ impl PlatformService {
         }
     }
 
+    /// Whether `machine_id` (as self-reported by the client in the
+    /// `x-dream-machine-id` header) has been blocked by an administrator for
+    /// `tenant_id` (C1-2 fix). `Ok(false)` when the roster has no row for
+    /// this (tenant, user, machine) — a machine that never heartbeat, or one
+    /// still `approved`/`pending` — only an explicit `'blocked'` status trips
+    /// this.
+    pub async fn machine_blocked(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        machine_id: &str,
+    ) -> Result<bool, PlatformError> {
+        let status = self
+            .db
+            .fetch_optional_scalar::<String>(
+                "SELECT status FROM one_runtime_nodes WHERE tenant_id = ? AND user_id = ? AND machine_id = ? LIMIT 1",
+                &dream_core_db::db_params![tenant_id, user_id, machine_id],
+            )
+            .await?;
+        Ok(status.as_deref() == Some("blocked"))
+    }
+
     // --- Container runtime config (P1-3) ---
 
     pub async fn get_container_config(&self, tenant_id: &str) -> Result<ContainerConfigDto, PlatformError> {
@@ -4736,6 +4758,50 @@ mod tests {
             .unwrap();
         let service = PlatformService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()), [7u8; 32]);
         (db, service)
+    }
+
+    /// C1-2: the roster row this machine-block check reads.
+    async fn seed_runtime_node(
+        pool: &sqlx::SqlitePool,
+        tenant_id: &str,
+        user_id: &str,
+        machine_id: &str,
+        status: &str,
+    ) {
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS one_runtime_nodes (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, \
+                 user_id TEXT NOT NULL, machine_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'approved');",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO one_runtime_nodes (id, tenant_id, user_id, machine_id, status) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(format!("n_{machine_id}"))
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(machine_id)
+        .bind(status)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn machine_blocked_reads_the_roster_status() {
+        let (db, service) = setup().await;
+        seed_runtime_node(db.pool(), "t1", "member1", "blocked-laptop", "blocked").await;
+        seed_runtime_node(db.pool(), "t1", "member1", "ok-laptop", "approved").await;
+
+        assert!(
+            service
+                .machine_blocked("t1", "member1", "blocked-laptop")
+                .await
+                .unwrap()
+        );
+        assert!(!service.machine_blocked("t1", "member1", "ok-laptop").await.unwrap());
+        assert!(!service.machine_blocked("t1", "member1", "never-seen").await.unwrap());
     }
 
     /// Personal edition (no one_user_org table/row): resolve → None, admin gate

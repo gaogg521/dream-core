@@ -3,6 +3,7 @@
 //! strictly owner-scoped in M3a).
 
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
 use serde::{Deserialize, Serialize};
@@ -105,9 +106,21 @@ fn role_is_registry_admin(role: Option<&str>) -> bool {
 async fn list_agents(
     State(state): State<OneEmployeeRouterState>,
     Extension(user): Extension<CurrentUser>,
+    headers: HeaderMap,
 ) -> Result<Json<ApiResponse<Vec<PersonalAgentDto>>>, EmployeeError> {
     // Own employees plus any shared within the caller's tenant (A1 L3).
     let tenant = state.tenant_of(&user.id).await;
+    // C1-2 fix: a blocked machine must stop receiving team-distributed
+    // employees. The client self-reports its machine id; no header (older
+    // client) means the check is skipped, same fail-open posture as every
+    // other machine-agnostic check here.
+    if let Some(machine_id) = headers.get("x-dream-machine-id").and_then(|v| v.to_str().ok())
+        && state.service.machine_blocked(&tenant, &user.id, machine_id).await?
+    {
+        return Err(EmployeeError::MachineBlocked(
+            "this machine has been blocked by an administrator".into(),
+        ));
+    }
     Ok(Json(ApiResponse::ok(
         state.service.list_available(&user.id, &tenant).await?,
     )))

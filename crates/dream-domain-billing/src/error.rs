@@ -12,6 +12,11 @@ pub enum BillingError {
     Internal(String),
     #[error("{0}")]
     Forbidden(String),
+    /// C1-2 fix: this machine (self-reported `x-dream-machine-id`) has been
+    /// blocked in the runtime-node roster. Distinct from `Forbidden` so the
+    /// client can tell "this device was blocked" apart from other refusals.
+    #[error("Machine blocked: {0}")]
+    MachineBlocked(String),
     #[error("{0}")]
     BadRequest(String),
     #[error("No company has been set up on this server")]
@@ -41,6 +46,7 @@ impl BillingError {
         match self {
             Self::Internal(_) => "INTERNAL_ERROR",
             Self::Forbidden(_) => "FORBIDDEN",
+            Self::MachineBlocked(_) => "MACHINE_BLOCKED",
             Self::BadRequest(_) => "BAD_REQUEST",
             Self::EnterpriseNotFound => "ENTERPRISE_NOT_FOUND",
             Self::SeatLimitExceeded => "SEAT_LIMIT_EXCEEDED",
@@ -55,7 +61,7 @@ impl BillingError {
     fn status(&self) -> StatusCode {
         match self {
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Self::Forbidden(_) => StatusCode::FORBIDDEN,
+            Self::Forbidden(_) | Self::MachineBlocked(_) => StatusCode::FORBIDDEN,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::EnterpriseNotFound => StatusCode::NOT_FOUND,
             Self::SeatLimitExceeded

@@ -15,6 +15,12 @@ pub enum MemoryError {
     #[error("{0}")]
     Forbidden(String),
 
+    /// C1-2 fix: this machine (self-reported `x-dream-machine-id`) has been
+    /// blocked in the runtime-node roster. Distinct from `Forbidden` so the
+    /// client can tell "this device was blocked" apart from other refusals.
+    #[error("Machine blocked: {0}")]
+    MachineBlocked(String),
+
     #[error("Bad request: {0}")]
     BadRequest(String),
 
@@ -30,6 +36,7 @@ impl MemoryError {
         match self {
             Self::NotInEnterprise => "NOT_IN_ENTERPRISE",
             Self::Forbidden(_) => "FORBIDDEN",
+            Self::MachineBlocked(_) => "MACHINE_BLOCKED",
             Self::BadRequest(_) => "BAD_REQUEST",
             Self::NotFound(_) => "NOT_FOUND",
             Self::Internal(_) => "INTERNAL_ERROR",
@@ -38,7 +45,7 @@ impl MemoryError {
 
     fn status(&self) -> StatusCode {
         match self {
-            Self::Forbidden(_) => StatusCode::FORBIDDEN,
+            Self::Forbidden(_) | Self::MachineBlocked(_) => StatusCode::FORBIDDEN,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             _ => StatusCode::BAD_REQUEST,

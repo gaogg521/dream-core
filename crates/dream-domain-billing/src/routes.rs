@@ -4,6 +4,7 @@
 //! users); `usage` and `tier` require a billing admin.
 
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
 use serde::Deserialize;
@@ -274,7 +275,19 @@ async fn billing_activate_license(
 async fn billing_plan(
     State(state): State<OneBillingRouterState>,
     Extension(user): Extension<CurrentUser>,
+    headers: HeaderMap,
 ) -> Result<Json<ApiResponse<Option<PlanDto>>>, BillingError> {
+    // C1-2 fix: a blocked machine must stop reading the model allowlist it
+    // would otherwise enforce against itself. No header (older client) skips
+    // the check, same fail-open posture as every other machine-agnostic
+    // check in this codebase.
+    if let Some(machine_id) = headers.get("x-dream-machine-id").and_then(|v| v.to_str().ok())
+        && state.service.machine_blocked(&user.id, machine_id).await?
+    {
+        return Err(BillingError::MachineBlocked(
+            "this machine has been blocked by an administrator".into(),
+        ));
+    }
     let Some(eid) = state.service.resolve_enterprise_id(&user.id).await? else {
         return Ok(Json(ApiResponse::ok(None)));
     };
