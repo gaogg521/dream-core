@@ -18,6 +18,8 @@ description: "Use this skill any time a .pptx file is involved -- as input, outp
 > | `cp` / `mkdir -p` / `rm -rf` | `Copy-Item` / `New-Item -ItemType Directory -Force` / `Remove-Item -Recurse -Force` |
 >
 > If a command has no obvious Windows equivalent, prefer the built-in file/HTTP tools over raw shell.
+>
+> The batch-first pattern below mostly sidesteps this table: commands travel in a JSON file passed via `--input`, so there is no shell syntax to translate on Windows at all.
 
 # OfficeCLI PPTX Skill
 
@@ -45,15 +47,24 @@ Help reflects the installed CLI version. When skill and help disagree, **help is
 
 ## Shell & Execution Discipline
 
-**Shell quoting (zsh / bash).** ALWAYS quote element paths (`"/slide[1]/..."`) — zsh globs unquoted `[1]` to `no matches found`. Escaping happens at three layers — keep them separate (the CLI handles the second for you):
+**Batch-first execution.** Build with `batch` files, not one command per shape. A single `officecli add` costs a process spawn (~1s on Windows) plus one agent round-trip; a 10-slide deck built one shape at a time is 100+ round-trips. The same deck as batch files is one spawn per slide-section — measured: a 60-command batch file runs in under a second.
 
-1. **Shell.** `$` in a value still belongs to the shell — single-quote the whole value: `--prop text='$15M'`. Double-quoted `"$15M"` gets expanded to `M`. The CLI does NOT unescape `\$` for you.
-2. **CLI (`text=`).** The two-char escapes `\n` and `\t` ARE interpreted, consistently across pptx / docx / xlsx — `\n` is a line / paragraph break, `\t` is a tab. To produce a literal backslash-n in text, double it (`\\n`); this is rarely what you want.
-3. **JSON (batch).** Real newlines / tabs can also be passed as `"\n"` / `"\t"` inside a `<<'EOF'` heredoc; both forms produce the same result.
+- **Write the batch JSON to a file with the file-write tool, then `officecli batch "$FILE" --input cmds.json`.** This is the canonical invocation on EVERY OS — no heredoc, no shell quoting, nothing to translate for Windows.
+- **One file per slide or per section** (cover+agenda, section 1, …), named in run order (`01-cover.json`, `02-s1.json`, …). Replay in order on a fresh `create` reproduces the deck — the ordered files ARE the build script.
+- **Batches are atomic.** One failing item applies nothing, and the output names it: `[3] ERROR: Slide 9 not found` → `Batch complete: 2 succeeded, 1 failed (atomic: no changes were applied)`, exit code 1. Fix the JSON, re-run the same file — safe, because nothing was applied.
+- The per-item `[N]` result lines are your success log. `get` is for debugging a failed batch or pinning down one shape — not a toll paid after every step.
+
+**Escaping inside a batch file — one layer only.** There is no shell in a `--input` file; write JSON, nothing else:
+
+- `"\n"` in a JSON string → paragraph break; `"\t"` → tab (same semantics as on the command line). A real Unicode `µ`, `₃`, `⁻`, `中文` goes in verbatim — the file is UTF-8.
+- A literal backslash-n as visible text: `"\\n"`.
+
+**Shell layer — applies only to the single commands you still run by hand** (`open` / `close` / `screenshot` / a one-off `set` fix):
+
+1. ALWAYS quote element paths (`"/slide[1]/..."`) — zsh globs unquoted `[1]` to `no matches found`.
+2. `$` in a value still belongs to the shell — single-quote the whole value: `--prop text='$15M'`. Double-quoted `"$15M"` gets expanded to `M`. The CLI does NOT unescape `\$` for you.
 
 If in doubt, `view text` after writing and compare character-for-character.
-
-**Incremental execution.** One command → check exit code → continue. A 50-command script that fails at command 3 cascades silently. After any structural op (new slide, chart, animation, connector) run `get` before stacking more.
 
 ## Requirements for Outputs
 
@@ -129,6 +140,20 @@ Pair by document register, not by novelty. "Best For" is a prompt, not a decree;
 | Consolas | Calibri | Developer tools, technical / engineering |
 
 Set both fonts explicitly on every shape (`--prop font=Georgia` on titles, `--prop font=Calibri` on body), not via theme inheritance.
+
+#### CJK decks (中文 / 日本語 / 한국어)
+
+The pairings above are Latin-only. Setting Georgia or Calibri on a Chinese run does nothing — the viewer silently falls back to whatever it picks, and the deck reads as unstyled. For CJK decks set a CJK font explicitly on every shape:
+
+| Role | zh-CN | Notes |
+|---|---|---|
+| Heading | `Microsoft YaHei` 微软雅黑, bold | Present on every Windows PowerPoint; the safe default |
+| Body | `Microsoft YaHei` or `DengXian` 等线 | DengXian is lighter and pairs with YaHei headings |
+| Numerals inside CJK text | keep the CJK font on the whole run | Per-run Latin fonts inside a Chinese sentence read as broken |
+
+A CJK heading font + its CJK body partner counts as the "two fonts max" pairing. Mixing one Latin pairing for numeral-only shapes (KPI numbers, axis labels) alongside the CJK pair is fine — that is the display-face exception, not a third body font.
+
+CJK text runs ~2× denser than English: the ≥18pt body floor still applies, but a line that fits in English overflows in Chinese — target ≤ 28–30 characters per line in body shapes. (The `locale 'zh-CN' inferred from OS user culture` note on `create` is expected, not an error.)
 
 ### Color and contrast
 
@@ -216,45 +241,43 @@ Copy-level tells live in "Copy reads human".
 
 ## Common Workflow
 
-1. **Open/close mode.** Always `officecli open <file>` at start + `officecli close <file>` at end. Resident is the default, not an optimization. Use `batch` for repetitive shape grids.
+1. **Open/close mode.** Always `officecli open <file>` at start + `officecli close <file>` at end. Resident is the default, not an optimization. Build content through per-slide/per-section `batch` files (`--input`), not one `add` per shape.
 2. **Orient.** New deck: `officecli create "$FILE"`. Existing: `officecli view "$FILE" outline` first. Never edit blind.
 3. **Title sequence first (plan, don't build yet).** Before creating any slide or shape, write out the full ordered list of slide titles. If someone reading ONLY the titles can't follow the argument, fix the arc now — cheaper in a list than after 14 slides. Pick ONE title grammar — all topic noun-phrases or all action statements, never a mix — and hold it throughout (see "Copy reads human").
 4. **Build in display order.** Add slides in audience-view order: cover → agenda → section-1 divider → section-1 content → section-2 divider → … → closing. `--index` on slide add works, but linear append keeps the build script readable and avoids index-arithmetic bugs. **Before final delivery, confirm slide count + narrative arc match your build plan.** Gate 3's order-sanity check catches cases where the cover ends up as slide 11 of 14 instead of slide 1.
-5. **Incremental per slide.** Create slide + background, then title, then supporting shapes / charts / connectors. Always `layout=blank` for custom designs. After each structural op, `get /slide[N] --depth 1` to confirm shape IDs.
+5. **One batch file per slide (or per section), then LOOK at it.** Each slide's full content — background, title, supporting shapes / charts / connectors / notes — goes into one `--input` batch file; run it, read the per-item `[N]` lines, move to the next. Always `layout=blank` for custom designs. Every 3–5 slides, screenshot what you just built and judge it: `officecli view "$FILE" screenshot --page 4-6 -o sec2.png` (ranges work: `2-5`, `1,3,5`; `--grid 3` tiles the whole deck into one contact sheet). A grid or theme mistake caught here costs one section; caught in final QA it has already compounded across every remaining slide.
 6. **Format to spec.** Per the Requirements table; formatting is deliverable, not polish.
 7. **Close + verify.** `officecli close` writes the ZIP. Always open in the target presentation viewer before shipping — chart colors, animations, fonts, and zoom are runtime features `view html` can't render. Full verification in QA below.
 8. **QA — assume there are problems.** Fix-and-verify until a cycle finds zero new issues.
 
 ## Quick Start
 
-Minimal viable deck: cover + one content slide + notes. `$FILE` stands in for your filename.
+Minimal viable deck: cover + one content slide + notes. `$FILE` stands in for your filename. Note the shape of it: **one JSON file, one `batch` call** — not six separate commands.
+
+Write `cmds.json` (file-write tool):
+
+```json
+[
+  {"command":"add","parent":"/","type":"slide","props":{"layout":"blank","background":"1E2761"}},
+  {"command":"add","parent":"/slide[1]","type":"shape","props":{"name":"CoverTitle","text":"FY26 Strategic Review","x":"2cm","y":"7cm","width":"29.87cm","height":"3cm","font":"Georgia","size":"44","bold":"true","color":"FFFFFF","align":"center"}},
+  {"command":"add","parent":"/","type":"slide","props":{"layout":"blank","background":"FFFFFF"}},
+  {"command":"add","parent":"/slide[2]","type":"shape","props":{"name":"Title","text":"Revenue grew 18% YoY","x":"1.5cm","y":"1.2cm","width":"30cm","height":"2cm","font":"Georgia","size":"36","bold":"true","color":"1E2761"}},
+  {"command":"add","parent":"/slide[2]","type":"shape","props":{"text":"Enterprise renewals + new EMEA region drove the beat; NRR held at 118%.","x":"1.5cm","y":"4cm","width":"30cm","height":"3cm","font":"Calibri","size":"20","color":"333333"}},
+  {"command":"add","parent":"/slide[2]","type":"notes","props":{"text":"Lead with the 18% beat, preview EMEA."}}
+]
+```
+
+Then run:
 
 ```bash
 FILE="deck.pptx"
-officecli create "$FILE"
-officecli open "$FILE"
-
-# Cover — dark fill, centered title
-officecli add "$FILE" / --type slide --prop layout=blank --prop background=1E2761
-officecli add "$FILE" /slide[1] --type shape --prop text="FY26 Strategic Review" \
-  --prop x=2cm --prop y=7cm --prop width=29.87cm --prop height=3cm \
-  --prop font=Georgia --prop size=44 --prop bold=true --prop color=FFFFFF --prop align=center
-
-# Content — white fill, title + body + notes
-officecli add "$FILE" / --type slide --prop layout=blank --prop background=FFFFFF
-officecli add "$FILE" /slide[2] --type shape --prop text="Revenue grew 18% YoY" \
-  --prop x=1.5cm --prop y=1.2cm --prop width=30cm --prop height=2cm \
-  --prop font=Georgia --prop size=36 --prop bold=true --prop color=1E2761
-officecli add "$FILE" /slide[2] --type shape --prop text="Enterprise renewals + new EMEA region drove the beat; NRR held at 118%." \
-  --prop x=1.5cm --prop y=4cm --prop width=30cm --prop height=3cm \
-  --prop font=Calibri --prop size=20 --prop color=333333
-officecli add "$FILE" /slide[2] --type notes --prop text="Lead with the 18% beat, preview EMEA."
-
+officecli create "$FILE"          # also opens the resident
+officecli batch "$FILE" --input cmds.json
 officecli close "$FILE"
 officecli validate "$FILE"
 ```
 
-Shape of every build: open → slide+background → title → body → notes → close → validate.
+Shape of every build: create → per-slide batch files → per-section screenshot check → close → validate → QA gates.
 
 ## Reading & Analysis
 
@@ -398,6 +421,8 @@ officecli set "$FILE" "/slide[2]/shape[@name=HeroCard]" --prop animation=none   
 
 Patterns not obvious from the primitives. Each gives the **visual outcome** first, then a runnable block. `$FILE` = your filename. Use `/slide[last()]` to address the slide you just added. The recipes demonstrate **structure and coordinate math** — swap in the palette / fonts you chose for this topic; the navy `1E2761` + Georgia is just the example's theme, not a house style to copy verbatim.
 
+Recipe arrays are batch payloads: write the JSON array to a file and run `officecli batch "$FILE" --input <file>` (the heredoc form shown below is the macOS/Linux shorthand — on Windows, or whenever in doubt, use the file).
+
 **Z-order.** Later-added shapes are on top. Add background decoration FIRST, titles LAST. To fix after the fact: `--prop zorder=back/front` (renumbers siblings — re-`get --depth 1` before stacking more).
 
 #### (a) Cover (and section divider)
@@ -449,7 +474,7 @@ officecli add "$FILE" "/slide[last()]" --type shape --prop text="EMEA launch + N
 
 Grid math (4 boxes, 33.87cm slide, 1.5cm margins): `gap = (33.87 − 3 − 24) / 3 = 2.29cm`. x-positions: `1.5, 9.79, 18.08, 26.37`.
 
-Each box carries its own label via `valign=middle` (no separate overlay shape needed). Use `batch` heredoc for portable coordinate arithmetic — no `bc`, no bash arrays.
+Each box carries its own label via `valign=middle` (no separate overlay shape needed). Use a `batch` file for portable coordinate arithmetic — no `bc`, no bash arrays.
 
 ```bash
 cat <<EOF | officecli batch "$FILE"

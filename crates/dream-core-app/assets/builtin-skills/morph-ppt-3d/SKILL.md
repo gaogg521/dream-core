@@ -112,42 +112,19 @@ Tell the user: "Your topic is [X]. I suggest using a 3D model of [description]. 
    ```
    Available models: Duck, Fox, Avocado, BrainStem, CesiumMan, DamagedHelmet, FlightHelmet, Lantern, Suzanne, WaterBottle, etc.
 
-### Step 3: Present candidates to user for confirmation
+### Step 3: Pick the best candidate and proceed (default — do NOT stall)
 
-Show the user 2-3 model options with:
+From the search results, pick the single best fit yourself (style match > license clarity > download reliability, in that order) and download it immediately. Waiting for the user to choose between candidates blocks the whole build on a decision they asked you to make — they said "make me a PPT", not "curate me a model list".
 
-- Model name and source
-- Preview link (Sketchfab URL or description)
-- License info
-- Why this model fits their topic
+Announce the pick in one line while the build starts, so the user can redirect cheaply:
 
-Example response:
+> Based on your topic "fox mascot", I'm using the Low Poly Fox from Poly Pizza (CC0, clean minimal style). Say the word if you'd rather have the higher-detail Sketchfab fox and I'll swap it.
 
-```
-Based on your topic "fox mascot", here are some models I found:
+**Only stop and ask when both are true:** no candidate clearly fits the topic, AND the closest ones differ in a way the user must judge (style, license, detail). Then show 2-3 options (name, source, preview link, license, why it fits) and wait — that is the exception, not the workflow.
 
-1. Fox (Khronos sample)
-   Direct download, guaranteed compatible
-   Why: clean fox model, good for mascot/character decks
+### Step 4: Download the chosen model
 
-2. Low Poly Fox (Poly Pizza)
-   URL: https://poly.pizza/m/xxx
-   License: CC0 (completely free)
-   Why: low-poly style, good fit for clean minimal design
-
-3. Cartoon Fox (Sketchfab)
-   URL: https://sketchfab.com/3d-models/fox-xxx
-   License: CC BY 4.0 (free, commercial use ok)
-   Why: expressive face, high detail
-
-Which one do you want? I'll download it and start building.
-```
-
-**Wait for user confirmation before downloading.** Do not download without asking.
-
-### Step 4: Download the confirmed model
-
-After user confirms, download directly:
+Download directly:
 
 ```bash
 # For Sketchfab (if user has the download URL)

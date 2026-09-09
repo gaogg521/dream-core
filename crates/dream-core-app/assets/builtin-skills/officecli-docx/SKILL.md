@@ -49,17 +49,13 @@ A `.docx` is a ZIP of XML parts (`document.xml`, `styles.xml`, `numbering.xml`, 
 
 ## Shell & Execution Discipline
 
-docx paths contain `[]`; some prop values contain `$`. Both are shell metacharacters. Escaping happens at three layers — keep them separate.
+**Batch-first execution.** Build through `batch` files, not one command per paragraph. Each `officecli` call is a process spawn (~1s on Windows) plus one agent round-trip; a document built paragraph-by-paragraph burns hundreds of both. Write the batch JSON to a file (file-write tool) and run `officecli batch "$FILE" --input cmds.json` — identical on every OS, and no shell ever touches the content. Batches are atomic: one failing item applies nothing, the output names it (`[N] ERROR: …`, exit code 1) — fix the JSON, re-run the same file. `get` is for debugging or pinning down one element, not a per-step toll.
 
-1. **Shell.** ALWAYS quote element paths: `"/body/p[1]"`, not `/body/p[1]` (zsh/bash glob `[N]`). Single-quote any value containing `$`: `--prop text='$50M'` — at any length, the whole value inside one pair of single quotes. Unquoted `$50M` is stripped to `M`; mixing `'…$var…'` and `"…$50…"` on one long string is where the `$50` silently vanishes.
-2. **CLI (`text=`).** The two-char escapes `\n` and `\t` ARE interpreted in `--prop text=` — `\n` becomes a `<w:br/>` soft line break, `\t` a `<w:tab/>` — consistently across docx / pptx / xlsx. Double them (`\\n`) for a literal backslash-n (rarely wanted). This applies to row-level table `c1…cN` shortcuts too (`\n` → `<w:br/>` within the cell).
-3. **JSON (batch).** A real newline can also be passed as `"\n"` in the JSON string of a `batch` heredoc; same result.
+**Escaping inside a batch file — one layer only.** `"\n"` in a JSON string → `<w:br/>` soft line break, `"\t"` → `<w:tab/>` (same semantics as on the command line; applies to row-level table `c1…cN` shortcuts too). A literal backslash-n as visible text: `"\\n"`. Real Unicode (curly quotes, dashes, µ, 中文) goes in verbatim — the file is UTF-8.
 
-If in doubt, `view text` after writing and compare character-for-character.
+**Shell layer — applies only to the single commands you still run by hand** (`open` / `close` / `view` / a one-off `set`): ALWAYS quote element paths (`"/body/p[1]"` — zsh/bash glob `[N]`), and single-quote any value containing `$` (`--prop text='$50M'`); unquoted `$50M` is stripped to `M`. If in doubt, `view text` after writing and compare character-for-character.
 
-**Incremental execution.** `officecli` mutates the file on every call. Run commands one at a time and check each exit code — a 50-command script that fails at command 3 cascades silently. After any structural op (new style, table, TOC, section break) run `get` on it before stacking more.
-
-**Resident mode is the default**, not an optimization: `officecli open <file>` at the start, `officecli close <file>` at the end — it avoids re-parsing the XML every call. For many paragraphs of one style, use `batch` (one open/save cycle for the whole array).
+**Resident mode is the default**, not an optimization: `officecli create`/`open <file>` at the start, `officecli close <file>` at the end — it avoids re-parsing the XML every call, and batch items apply in memory through it.
 
 **`$FILE` convention.** All commands use `"$FILE"` — set it once (`FILE="your-doc.docx"`). Never copy a literal `doc.docx` / `review.docx` into output — always substitute your actual target.
 
@@ -99,25 +95,34 @@ Six steps. Every non-trivial build follows this shape.
 
 1. **Open the file.** `officecli open "$FILE"` (resident default). New file: `officecli create "$FILE"` first.
 2. **Orient.** Existing file: `officecli view "$FILE" outline` — heading tree, section count, whether a TOC / watermark / tracked changes already exist. Never edit blind.
-3. **Build incrementally.** Structural first, content next, formatting last: styles & numbering defs → sections / page setup → headings & body → tables / images / fields / TOC → headers / footers → comments. After each structural op, `get` it back before stacking on top.
+3. **Build in batch phases.** Structural first, content next, formatting last: styles & numbering defs → sections / page setup → headings & body → tables / images / fields / TOC → headers / footers → comments. Deliver each phase as one `--input` batch file, read the per-item `[N]` result lines, and after a structural phase `get` the new element once before stacking the next phase on top.
 4. **Format to spec.** Explicit heading sizes, spacing, widths, alignment, tabs, list indents — formatting is part of the deliverable, not optional polish.
 5. **Close, then trust structure over cached text.** `officecli close "$FILE"` writes the XML. TOC / PAGE / NUMPAGES / SEQ / PAGEREF fields carry **cached values** that may be stale or empty until a human recalculates (F9 in Word). Confirm fields *exist* (`get --depth 3` finds `<w:fldChar>`) rather than trusting the visible text.
 6. **QA — assume there are problems.** You are done after one fix-and-verify cycle finds zero new issues, not when your last command exited 0. See QA.
 
 ## Quick Start
 
-Minimal viable docx: a heading, a body paragraph, a subheading, and a footer with a live page-number field. Adapt, don't copy-paste — your file, your content.
+Minimal viable docx: a heading, a body paragraph, a subheading, and a footer with a live page-number field. Adapt, don't copy-paste — your file, your content. Note the shape: **one JSON file, one `batch` call**.
+
+Write `cmds.json` (file-write tool):
+
+```json
+[
+  {"command":"add","parent":"/body","type":"paragraph","props":{"text":"Q4 2026 Review","style":"Heading1","size":"20pt","bold":"true","spaceAfter":"12pt"}},
+  {"command":"add","parent":"/body","type":"paragraph","props":{"text":"Revenue grew 18% year-over-year, ahead of plan.","size":"11pt","spaceAfter":"8pt"}},
+  {"command":"add","parent":"/body","type":"paragraph","props":{"text":"Key Drivers","style":"Heading2","size":"14pt","bold":"true","spaceBefore":"12pt","spaceAfter":"6pt"}},
+  {"command":"add","parent":"/body","type":"paragraph","props":{"text":"Enterprise renewals, upsell, and a new EMEA region.","size":"11pt"}},
+  {"command":"add","parent":"/","type":"footer","props":{"type":"default","size":"9pt","text":"Page ","field":"page"}},
+  {"command":"set","path":"/footer[1]/p[1]","props":{"align":"center"}}
+]
+```
+
+Then run:
 
 ```bash
 FILE="review.docx"
-officecli create "$FILE"
-officecli open "$FILE"
-officecli add "$FILE" /body --type paragraph --prop text="Q4 2026 Review" --prop style=Heading1 --prop size=20pt --prop bold=true --prop spaceAfter=12pt
-officecli add "$FILE" /body --type paragraph --prop text="Revenue grew 18% year-over-year, ahead of plan." --prop size=11pt --prop spaceAfter=8pt
-officecli add "$FILE" /body --type paragraph --prop text="Key Drivers" --prop style=Heading2 --prop size=14pt --prop bold=true --prop spaceBefore=12pt --prop spaceAfter=6pt
-officecli add "$FILE" /body --type paragraph --prop text="Enterprise renewals, upsell, and a new EMEA region." --prop size=11pt
-officecli add "$FILE" / --type footer --prop type=default --prop size=9pt --prop text="Page " --prop field=page
-officecli set "$FILE" "/footer[1]/p[1]" --prop align=center
+officecli create "$FILE"          # also opens the resident
+officecli batch "$FILE" --input cmds.json
 officecli close "$FILE"
 officecli validate "$FILE"
 ```

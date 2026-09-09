@@ -48,11 +48,11 @@ Help reflects the installed CLI version. When this skill and help disagree, **he
 
 ## Mental Model & Inheritance
 
-**Inherits pptx v2.** You should have read `skills/officecli-pptx/SKILL.md` first. This skill assumes you know how to: add slides + shapes + charts + connectors; address by `@name=` / `@id=`; quote paths; use `batch` heredocs; write `--prop tailEnd=triangle` on every flow connector; and run the 5-gate Delivery Gate. If any of those are unfamiliar, open a pptx v2 session before continuing.
+**Inherits pptx v2.** You should have read `skills/officecli-pptx/SKILL.md` first. This skill assumes you know how to: add slides + shapes + charts + connectors; address by `@name=` / `@id=`; quote paths; build through `batch` files; write `--prop tailEnd=triangle` on every flow connector; and run the 5-gate Delivery Gate. If any of those are unfamiliar, open a pptx v2 session before continuing.
 
 ## Shell & Execution Discipline
 
-**Shell quoting, incremental execution, `$FILE` convention** → see pptx v2 §Shell & Execution Discipline. Same rules verbatim — quote `[N]` paths, single-quote values containing `$` (including `$35M`, `$1.2B TAM` in a cover or ask slide), never hand-write `\$ \t \n` in executable examples, one command at a time. Examples below use `$FILE` (`FILE="deck.pptx"`).
+**Shell quoting, batch-first execution, `$FILE` convention** → see pptx v2 §Shell & Execution Discipline. Same rules verbatim — build through per-slide/per-section `--input` batch files; quote `[N]` paths on single commands; single-quote values containing `$` (including `$35M`, `$1.2B TAM` in a cover or ask slide); never hand-write `\$ \t \n` in executable examples. Examples below use `$FILE` (`FILE="deck.pptx"`).
 
 **Single-quote every shape text containing `$`.** `--prop text="Series B · $35M"` (double quotes) is WRONG — zsh expands `$35M` → empty, deck renders `Series B · M` silently. `--prop text='Series B · $35M'` (single quotes) is right. This is the #1 pitch-deck shell-escape failure mode (`$35M`, `$18M ARR`, `$1.2B TAM` appear on cover/ask/financials/milestones). Gate 2 cannot detect a stripped `$35M` — no residue. Gate 2b catches common strip patterns; single-quoting PREVENTS them.
 

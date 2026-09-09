@@ -63,7 +63,7 @@ A Word form is a `.docx` plus four OpenXML payload layers plain-docx skills do n
 
 ## Shell & Execution Discipline
 
-**One command at a time. Read output before the next.** OfficeCLI is incremental — every `add` / `set` / `remove` immediately mutates the file. All recipes below use `FILE=form.docx` as a shell variable.
+**Batch-first execution.** Build through `--input` batch files — one file per form section, read the per-item `[N]` result lines (batches are atomic: a failing item applies nothing). Every `add` / `set` / `remove` in a single command is a process spawn plus a round-trip; save those for one-off fixes. All recipes below use `FILE=form.docx` as a shell variable.
 
 **Three shell-escape layers:**
 
