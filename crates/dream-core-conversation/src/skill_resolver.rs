@@ -22,6 +22,22 @@ pub trait SkillResolver: Send + Sync {
     /// available on this installation.
     async fn auto_inject_names(&self) -> Vec<String>;
 
+    /// The skill set every NEW conversation for `user_id` starts with:
+    /// auto-inject builtins **plus that user's imported (custom) skills**.
+    ///
+    /// Customs are part of the "always on" set because regular users have no
+    /// concept of a skill toggle — they import a skill and expect it to work
+    /// the next time they describe the need ("scan list → match triggers →
+    /// auto-load", the same loop the auto-inject corpus already runs). The
+    /// per-assistant exclude list (`exclude_auto_inject_skills` /
+    /// `disabled_builtin_skill_ids`) and the per-skill `enabled` flag remain
+    /// the opt-out paths. Per-user because skills are user-scoped rows —
+    /// user B's conversation must never pick up user A's imports.
+    async fn auto_inject_names_for_user(&self, user_id: &str) -> Vec<String> {
+        let _ = user_id;
+        self.auto_inject_names().await
+    }
+
     /// Resolve each skill name to its on-disk source directory, using the
     /// same search order as `materialize_skills_for_agent`.
     async fn resolve_skills(&self, names: &[String]) -> Vec<ResolvedAgentSkill>;
@@ -123,6 +139,42 @@ impl SkillResolver for ExtensionSkillResolver {
                 tracing::warn!(
                     error = %e,
                     "auto_inject_names: skill catalog lookup failed, falling back to empty"
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    async fn auto_inject_names_for_user(&self, user_id: &str) -> Vec<String> {
+        match dream_core_extension::list_available_skills_with_repo_for_user(
+            &self.paths,
+            self.skill_repo.as_ref(),
+            user_id,
+        )
+        .await
+        {
+            Ok(items) => {
+                let mut names: Vec<String> = items
+                    .into_iter()
+                    .filter(|item| {
+                        (item.source == dream_core_extension::SkillSource::Builtin
+                            && item
+                                .relative_location
+                                .as_deref()
+                                .is_some_and(|location| location.starts_with("auto-inject/")))
+                            || item.source == dream_core_extension::SkillSource::Custom
+                    })
+                    .map(|item| item.name)
+                    .collect();
+                names.sort();
+                names.dedup();
+                names
+            }
+            Err(e) => {
+                tracing::warn!(
+                    user_id,
+                    error = %e,
+                    "auto_inject_names_for_user: skill catalog lookup failed, falling back to empty"
                 );
                 Vec::new()
             }
@@ -252,6 +304,89 @@ mod tests {
 
         let resolver = ExtensionSkillResolver::new(paths, repo);
 
+        assert_eq!(resolver.auto_inject_names().await, vec!["auto-cron".to_string()]);
+    }
+
+    /// The always-on set for a conversation is auto-inject builtins PLUS that
+    /// user's imported skills — regular users never toggle skills on, they
+    /// import one and expect it to answer the next matching request. The
+    /// legacy non-user `auto_inject_names` must stay builtin-only, and cron /
+    /// opt-in builtins must stay out of both.
+    #[tokio::test]
+    async fn extension_resolver_auto_set_for_user_includes_their_custom_skills_only() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = Arc::new(dream_core_extension::SkillPaths {
+            data_dir: tmp.path().to_path_buf(),
+            user_skills_dir: tmp.path().join("skills"),
+            cron_skills_dir: tmp.path().join("cron").join("skills"),
+            builtin_skills_dir: tmp.path().join("builtin-skills"),
+            builtin_rules_dir: tmp.path().join("builtin-rules"),
+            assistant_rules_dir: tmp.path().join("assistant-rules"),
+            assistant_skills_dir: tmp.path().join("assistant-skills"),
+        });
+        write_skill(
+            &paths.builtin_skills_dir.join("auto-inject"),
+            "auto-cron",
+            "Auto-injected builtin",
+        );
+        write_skill(&paths.builtin_skills_dir, "review", "Opt-in builtin");
+        write_skill(&paths.cron_skills_dir, "scheduled-task", "Cron source skill");
+
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        sqlx::query(
+            "INSERT INTO users (id, user_type, username, password_hash, status, session_generation, created_at, updated_at) \
+             VALUES ('user_b', 'local', 'user_b', 'hash', 'active', 0, 1, 1)",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let repo: Arc<dyn ISkillRepository> = Arc::new(SqliteSkillRepository::new(db.pool().clone()));
+
+        let user_a_skill = tmp.path().join("user-a-skill").join("stock-picker");
+        let user_b_skill = tmp.path().join("user-b-skill").join("fund-analysis");
+        write_skill(user_a_skill.parent().unwrap(), "stock-picker", "User A skill");
+        write_skill(user_b_skill.parent().unwrap(), "fund-analysis", "User B skill");
+        repo.upsert_for_user(
+            "system_default_user",
+            UpsertSkillParams {
+                name: "stock-picker",
+                description: Some("User A skill"),
+                path: &user_a_skill.to_string_lossy(),
+                source: "user",
+                enabled: true,
+            },
+        )
+        .await
+        .unwrap();
+        repo.upsert_for_user(
+            "user_b",
+            UpsertSkillParams {
+                name: "fund-analysis",
+                description: Some("User B skill"),
+                path: &user_b_skill.to_string_lossy(),
+                source: "user",
+                enabled: true,
+            },
+        )
+        .await
+        .unwrap();
+        // Builtins reach the repo through the same startup sync production
+        // runs; without it the auto-inject corpus is invisible to listings.
+        dream_core_extension::sync_skill_catalog_into_repo(paths.as_ref(), repo.as_ref())
+            .await
+            .unwrap();
+
+        let resolver = ExtensionSkillResolver::new(paths, repo);
+
+        // Per-user: builtins auto set + that user's customs only.
+        let user_b_set = resolver.auto_inject_names_for_user("user_b").await;
+        assert_eq!(user_b_set, vec!["auto-cron".to_string(), "fund-analysis".to_string()]);
+
+        // Another user's import must not leak in.
+        let user_a_set = resolver.auto_inject_names_for_user("system_default_user").await;
+        assert_eq!(user_a_set, vec!["auto-cron".to_string(), "stock-picker".to_string()]);
+
+        // The legacy builtin-only variant is unchanged.
         assert_eq!(resolver.auto_inject_names().await, vec!["auto-cron".to_string()]);
     }
 

@@ -1,9 +1,44 @@
 use super::{SkillDefinition, SkillIndex};
 
+/// Hard cap for one skill's index line (description part), in characters.
+///
+/// Imported skills carry long contract descriptions — trigger words, negative
+/// boundaries, preconditions, several hundred characters each. With the
+/// always-on custom-skill set a catalog can hold 100+ skills, and this index
+/// rides along in the FIRST MESSAGE of every prompt-protocol conversation.
+/// The index only owes the model enough to decide "this skill might match";
+/// the full description is inside SKILL.md, which loads on demand.
+const INDEX_DESCRIPTION_CAP: usize = 120;
+
+/// One-line digest of a skill description for the conversation index.
+///
+/// Keeps the leading function sentence (everything up to the first sentence
+/// break — CJK `。` or Latin `. `), then hard-caps at [`INDEX_DESCRIPTION_CAP`]
+/// characters with an ellipsis. The trigger vocabulary and boundaries that
+/// follow live in SKILL.md and are read when the skill is actually loaded.
+fn index_description_digest(description: &str) -> String {
+    let trimmed = description.trim();
+    let sentence = match trimmed.find('。') {
+        Some(idx) if idx > 0 => &trimmed[..idx],
+        _ => trimmed,
+    };
+    let sentence = match sentence.find(". ") {
+        Some(idx) if idx > 0 => &sentence[..idx],
+        _ => sentence,
+    };
+    if sentence.chars().count() <= INDEX_DESCRIPTION_CAP {
+        sentence.to_string()
+    } else {
+        let cut: String = sentence.chars().take(INDEX_DESCRIPTION_CAP).collect();
+        format!("{cut}…")
+    }
+}
+
 /// Build a formatted text block listing available skills for injection.
 ///
-/// The output includes skill names with descriptions and instructions
-/// on how to request loading via `[LOAD_SKILL: name]`.
+/// The output includes skill names with one-line description digests (see
+/// [`index_description_digest`]) and instructions on how to request loading
+/// via `[LOAD_SKILL: name]`.
 pub fn build_skills_index_text(skills: &[SkillIndex]) -> String {
     if skills.is_empty() {
         return String::new();
@@ -16,7 +51,11 @@ pub fn build_skills_index_text(skills: &[SkillIndex]) -> String {
     lines.push(String::new());
 
     for skill in skills {
-        lines.push(format!("- **{}**: {}", skill.name, skill.description));
+        lines.push(format!(
+            "- **{}**: {}",
+            skill.name,
+            index_description_digest(&skill.description)
+        ));
     }
 
     lines.join("\n")
@@ -148,6 +187,46 @@ mod tests {
         assert!(text.contains("[LOAD_SKILL: skill-name]"));
         assert!(text.contains("- **review**: Code review"));
         assert!(text.contains("- **debug**: Debugging helper"));
+    }
+
+    /// The contract descriptions imported skills carry run to several hundred
+    /// characters; the index must carry only the function sentence so a
+    /// 100-skill catalog stays affordable in every first message.
+    #[test]
+    fn build_skills_index_text_digests_long_contract_descriptions() {
+        let skills = vec![SkillIndex {
+            name: "fund-analysis".into(),
+            description: "基金组合诊断与单基评估。触发：用户说“基金分析/帮我看看持仓/fund analysis”时使用；不要用于生成 Excel 文件（改用 officecli-xlsx）。需要用户提供：持仓明细。".into(),
+        }];
+        let text = build_skills_index_text(&skills);
+        assert!(text.contains("- **fund-analysis**: 基金组合诊断与单基评估"));
+        assert!(!text.contains("触发"), "index must drop the trigger tail");
+        assert!(!text.contains("officecli-xlsx"), "index must drop the negative boundary");
+    }
+
+    #[test]
+    fn build_skills_index_text_caps_sentenceless_descriptions() {
+        let long = "A very long function description without any sentence break ".repeat(10);
+        let skills = vec![SkillIndex {
+            name: "long".into(),
+            description: long.clone(),
+        }];
+        let text = build_skills_index_text(&skills);
+        let line = text.lines().find(|l| l.starts_with("- **long**")).unwrap();
+        let digest = line.trim_start_matches("- **long**: ");
+        assert!(digest.chars().count() <= 121, "cap + ellipsis");
+        assert!(digest.ends_with('…'));
+    }
+
+    #[test]
+    fn build_skills_index_text_keeps_latin_first_sentence() {
+        let skills = vec![SkillIndex {
+            name: "scan".into(),
+            description: "Security review for code and dependencies. Triggers: audit. Do not use for reports.".into(),
+        }];
+        let text = build_skills_index_text(&skills);
+        assert!(text.contains("- **scan**: Security review for code and dependencies"));
+        assert!(!text.contains("Triggers"));
     }
 
     // -----------------------------------------------------------------------

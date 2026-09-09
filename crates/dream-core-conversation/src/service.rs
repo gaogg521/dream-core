@@ -1361,7 +1361,10 @@ impl ConversationService {
             None => (Vec::new(), Vec::new()),
         };
 
-        let auto_inject_names = self.skill_resolver.auto_inject_names().await;
+        // Per-user: customs (the user's imported skills) are part of the
+        // always-on set, so a marketplace persona with no enabled_skills
+        // still gets them — see `SkillResolver::auto_inject_names_for_user`.
+        let auto_inject_names = self.skill_resolver.auto_inject_names_for_user(user_id).await;
         let initial_skills = compute_initial_skills(&auto_inject_names, &preset_enabled, &exclude_auto_inject);
 
         // Wire skill links into the runtime workspace so the agent CLI picks
@@ -5101,7 +5104,7 @@ impl ConversationService {
     /// swallowed so a read path never 500s because of a backfill write
     /// failure.
     async fn backfill_extra_inplace(&self, user_id: &str, conversation_id: &str, extra: &mut serde_json::Value) {
-        let auto_inject = self.skill_resolver.auto_inject_names().await;
+        let auto_inject = self.skill_resolver.auto_inject_names_for_user(user_id).await;
         let mut mutated = backfill_skills_if_missing(extra, &auto_inject);
         mutated |= backfill_cron_job_id_alias(extra);
         if !mutated {
