@@ -106,6 +106,7 @@ fn make_engine_config() -> DreamEngineResolvedConfig {
         session_directory: std::env::temp_dir().join("aionrs-test-sessions"),
         session_mode: None,
         skills: Vec::new(),
+        extra_headers: None,
         extra_mcp_servers: Default::default(),
         bedrock_config: None,
         runtime_env: Vec::new(),
