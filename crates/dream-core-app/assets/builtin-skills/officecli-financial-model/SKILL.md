@@ -21,7 +21,7 @@ description: "Use this skill when the user wants to build a financial model — 
 
 # OfficeCLI Financial-Model Skill
 
-**This skill is a scene layer on top of `officecli-xlsx`.** Every xlsx hard rule — shell quoting, incremental execution, Help-First Rule, visual delivery floor, CFO 4-color code (blue input / black formula / green cross-sheet / yellow-fill assumption), number-format standards (years as text, zero as `-`, `%` one decimal, negatives in parens), assumption-cell discipline, CSV batch import, chart data-feed forms (a/b/c), the 5-gate Delivery cycle, cache-drift guidance, Known Issues (the cross-sheet `!` trap, batch + resident for formulas, renderer caveats) — is **inherited, not re-taught**. This file adds only what a **financial model** requires on top: three-zone architecture, 3 model-type recipes (3-statement / DCF / LBO), sensitivity + scenario protocols, financial-function patterns, circular-reference discipline, and model-specific Delivery Gates 4–6.
+**This skill is a scene layer on top of `officecli-xlsx`.** Every xlsx hard rule — shell quoting, batch-first execution, Help-First Rule, visual delivery floor, CFO 4-color code (blue input / black formula / green cross-sheet / yellow-fill assumption), number-format standards (years as text, zero as `-`, `%` one decimal, negatives in parens), assumption-cell discipline, CSV batch import, chart data-feed forms (a/b/c), the 5-gate Delivery cycle, cache-drift guidance, Known Issues (the cross-sheet `!` trap, batch + resident for formulas, renderer caveats) — is **inherited, not re-taught**. This file adds only what a **financial model** requires on top: three-zone architecture, 3 model-type recipes (3-statement / DCF / LBO), sensitivity + scenario protocols, financial-function patterns, circular-reference discipline, and model-specific Delivery Gates 4–6.
 
 When the xlsx base rules cover it, the text here says `→ see xlsx v2 §X`. Read `skills/officecli-xlsx/SKILL.md` first if you have not.
 
@@ -44,7 +44,7 @@ This skill teaches what a financial model requires, not every CLI flag. When a p
 
 ## Shell & Execution Discipline
 
-Shell quoting, incremental execution, `$FILE` convention → see xlsx v2 §Shell & Execution Discipline. Same rules: quote every `[N]` path, single-quote any prop containing `$` (every number format here — `$#,##0;($#,##0);"-"` — needs single quotes), no hand-written `\$`/`\t`/`\n`, one command at a time. Examples below use `$FILE` (`FILE="model.xlsx"`).
+Shell quoting, batch-first execution, `$FILE` convention → see xlsx v2 §Shell & Execution Discipline. Same rules: build through `--input` batch files (a `$#,##0;($#,##0);"-"` number format is safest in a file, where no shell touches it); on single commands, quote every `[N]` path and single-quote any prop containing `$`; no hand-written `\$`/`\t`/`\n`. Examples below use `$FILE` (`FILE="model.xlsx"`).
 
 ## Core Principles (identity)
 

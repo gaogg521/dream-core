@@ -59,7 +59,7 @@ This skill only accepts: "a Dashboard sheet the user opens first, multiple KPI c
 
 ## Shell & Execution Discipline
 
-→ see officecli-xlsx §Shell & Execution Discipline for the baseline (quoting, heredoc for `!`, incremental execution).
+→ see officecli-xlsx §Shell & Execution Discipline for the baseline (quoting, batch files — `!` and `$` in formulas never touch a shell inside a `--input` file, batch-first execution).
 
 Two increments specific to dashboards:
 

@@ -49,10 +49,10 @@ Help reflects the installed CLI version. When this skill and help disagree, **he
 
 - ALWAYS quote element paths: `"/Sheet1/row[1]"`, not `/Sheet1/row[1]`.
 - Use **single quotes** for any prop value containing `$`: `numFmt='$#,##0'`.
-- For formulas with cross-sheet `!` references, use `batch` with a `<<'EOF'` heredoc (see Known Issues).
+- For formulas with cross-sheet `!` references, deliver them in a `batch` file (`--input`) — no shell ever touches the `!` or `$` (see Known Issues).
 - `\n` and `\t` in a prop value ARE interpreted by the CLI — `\n` is a real in-cell line break (pair with `--prop wrapText=true`), `\t` a tab — consistent across xlsx / docx / pptx. Double them (`\\n`) for a literal backslash-n (rarely wanted). (`$` is the shell layer above — single-quote it.)
 
-**Incremental execution.** Run commands one at a time and read each exit code. `officecli` mutates the file on every call; a 50-command script that fails at command 3 will cascade silently. One command → check output → continue.
+**Batch-first execution.** Build through `batch` files, not one command per cell. Each `officecli` call is a process spawn (~1s on Windows) plus one agent round-trip; a workbook built cell-by-cell burns hundreds of both. Write the batch JSON to a file (file-write tool) and run `officecli batch "$FILE" --input cmds.json` — identical on every OS, and no shell quoting for `$#,##0` formats or `Lookups!$A$2` refs. Batches are atomic: one failing item applies nothing, the output names it (`[N] ERROR: …`, exit code 1) — fix the JSON, re-run the same file. `get` is for debugging a failure or pinning down one cell, not a toll paid after every step.
 
 ## Requirements for Outputs
 
@@ -129,9 +129,9 @@ Any hardcoded number without a source is an undocumented assumption — a review
 
 Six steps. Every non-trivial build follows this shape.
 
-1. **Choose the mode.** Always use `officecli open <file>` at the start and `officecli close <file>` at the end. Resident mode is the default, not an optimization — it avoids re-parsing the file on every command. For many cells, use `batch`: **≤ 50 ops/block recommended; tested up to 80+ ops per block on pure value-set payloads with zero failures. Cross-sheet formula batches are the exception — run those non-resident, single heredoc (see Known Issues)**.
+1. **Choose the mode.** Always use `officecli open <file>` at the start and `officecli close <file>` at the end. Resident mode is the default, not an optimization — it avoids re-parsing the file on every command. Build through `batch` files: **≤ 50 ops/block recommended; tested up to 80+ ops per block on pure value-set payloads with zero failures. Cross-sheet formula batches are the exception — run those non-resident, one file (see Known Issues)**.
 2. **Create or load.** `officecli create "$FILE"` (new) or `officecli view "$FILE" outline` (existing — get the lay of the land first).
-3. **Build incrementally.** One command, read the output, continue. After any structural op (new sheet, chart, named range, pivot), run `get` on it to confirm shape before stacking more on top.
+3. **Build in batch phases.** One `--input` file per phase — sheets + structure, then values/formulas, then formatting. Read the per-item `[N]` result lines after each file; after a structural phase (new sheet, chart, named range, pivot), `get` the new element once to confirm shape before stacking the next phase on top.
 4. **Format.** Column widths, number formats, freeze panes, tab colors, header fills. Formatting is not optional polish — per "Requirements for Outputs" it is part of the deliverable.
 5. **Close, then reckon with the cache.** `officecli close <file>` writes to disk. Newly-added formulas ship without cached values; when a human opens the file in a spreadsheet app, the app recalculates and populates them. **But your downstream `INDEX/MATCH`, `SUMPRODUCT`, or any formula that references an upstream formula will cache whatever the upstream cached at write-time — often `0` or a stale value — and that cached lie survives into non-recalculating readers.** After any multi-formula build involving array formulas (`SUMPRODUCT`, `SUMIFS` with dynamic criteria) or cross-sheet chains, **re-touch every downstream cell** (run `set` again with the same formula) so the engine recomputes its cache from the freshly-cached upstream. ⚠️ Re-touch on cross-sheet chains via resident is unreliable (see Batch / resident caveats) — prefer non-resident `set` for the re-touch pass. Then `officecli get` a few downstream cells and eyeball that their `cachedValue=` is plausible. Do NOT run `validate` while a resident is open — it reports spurious drawing errors.
 6. **QA — assume there are problems.** See the QA section. You are not done when your last command exited 0; you are done after one fix-and-verify cycle finds zero new issues.
@@ -140,26 +140,35 @@ Six steps. Every non-trivial build follows this shape.
 
 Minimal viable xlsx: 3 months of revenue + a total formula + column widths + a currency format. Adapt, don't copy-paste — your file, your data.
 
+Write `cmds.json` (file-write tool):
+
+```json
+[
+  {"command":"set","path":"/Sheet1/A1","props":{"value":"Month","bold":"true"}},
+  {"command":"set","path":"/Sheet1/B1","props":{"value":"Revenue","bold":"true"}},
+  {"command":"set","path":"/Sheet1/A2","props":{"value":"Jan"}},
+  {"command":"set","path":"/Sheet1/A3","props":{"value":"Feb"}},
+  {"command":"set","path":"/Sheet1/A4","props":{"value":"Mar"}},
+  {"command":"set","path":"/Sheet1/B2","props":{"value":"42000","numFmt":"$#,##0"}},
+  {"command":"set","path":"/Sheet1/B3","props":{"value":"45000","numFmt":"$#,##0"}},
+  {"command":"set","path":"/Sheet1/B4","props":{"value":"48000","numFmt":"$#,##0"}},
+  {"command":"set","path":"/Sheet1/A5","props":{"value":"Total","bold":"true"}},
+  {"command":"set","path":"/Sheet1/B5","props":{"formula":"SUM(B2:B4)","bold":"true","numFmt":"$#,##0"}},
+  {"command":"set","path":"/Sheet1/col[A]","props":{"width":"12"}},
+  {"command":"set","path":"/Sheet1/col[B]","props":{"width":"15"}}
+]
+```
+
+Then run:
+
 ```bash
-officecli create "$FILE"
-officecli open "$FILE"
-officecli set "$FILE" /Sheet1/A1 --prop value=Month --prop bold=true
-officecli set "$FILE" /Sheet1/B1 --prop value=Revenue --prop bold=true
-officecli set "$FILE" /Sheet1/A2 --prop value=Jan
-officecli set "$FILE" /Sheet1/A3 --prop value=Feb
-officecli set "$FILE" /Sheet1/A4 --prop value=Mar
-officecli set "$FILE" /Sheet1/B2 --prop value=42000 --prop numFmt='$#,##0'
-officecli set "$FILE" /Sheet1/B3 --prop value=45000 --prop numFmt='$#,##0'
-officecli set "$FILE" /Sheet1/B4 --prop value=48000 --prop numFmt='$#,##0'
-officecli set "$FILE" /Sheet1/A5 --prop value=Total --prop bold=true
-officecli set "$FILE" /Sheet1/B5 --prop formula="SUM(B2:B4)" --prop bold=true --prop numFmt='$#,##0'
-officecli set "$FILE" "/Sheet1/col[A]" --prop width=12
-officecli set "$FILE" "/Sheet1/col[B]" --prop width=15
+officecli create "$FILE"          # also opens the resident
+officecli batch "$FILE" --input cmds.json
 officecli close "$FILE"
 officecli validate "$FILE"
 ```
 
-Verified: `validate` returns `no errors found`, `B5` resolves to `135000`. This is the shape of every build: open → set cells/formulas → format → close → validate.
+Verified: `validate` returns `no errors found`, `B5` resolves to `135000`. This is the shape of every build: create → batch phases (structure → values/formulas → format) → close → validate.
 
 ## CSV / bulk import
 

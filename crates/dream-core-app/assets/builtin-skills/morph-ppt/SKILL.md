@@ -59,8 +59,8 @@ Help reflects the installed CLI version. When skill and help disagree, **help wi
 - Four canonical palettes (Executive navy / Forest & moss / Warm terracotta / Charcoal minimal) — morph decks may pick a different mood from `reference/styles/`, but contrast rules still apply.
 - Chart-choice table — column vs bar vs line vs pie vs scatter vs large-text KPI; `> 3 series + > 8 categories` = split.
 - Connector canon — `shape=straight|elbow|curve`, `@id=` for from/to (C-P-6), `tailEnd=triangle` on every flow.
-- Shell escape 3-layer — `$` single-quoted, heredocs for batch, `<a:br/>` for real newlines.
-- Resident mode + batch ≤ 12 ops, `<<'EOF'` single-quoted delimiter.
+- Shell escape — `$` single-quoted on single commands; batch files for everything else (`<a:br/>` for real newlines).
+- Resident mode + batch-file execution — one file per slide/section, no size cap (60+ ops run in a single call).
 - Delivery Gate 1-5a (schema, token grep, hyperlink rPr, slide-order, dark-on-dark) — every gate prints OK before declaring done.
 - Known Issues C-P-1..7 (hyperlink rPr, chart spPr warning, animation duration readback, animation remove, connector enum, connector `@name=`, chart color renderer normalization).
 - Attribution triage — `[AGENT-ERROR]` vs `[RENDERER-BUG]` vs `[SKILL gap]`.
@@ -80,14 +80,14 @@ Stay in **pptx v2 base** for any deck without cross-slide motion (board reviews,
 
 ## Shell & Execution Discipline
 
-**Shell quoting, incremental execution, `$FILE` convention** → see pptx v2 §Shell & Execution Discipline. Same rules verbatim.
+**Shell quoting, batch-first execution, `$FILE` convention** → see pptx v2 §Shell & Execution Discipline. Same rules verbatim — build through per-slide/per-section `--input` batch files; single commands only for `open` / `close` / screenshots / one-off fixes.
 
 **Morph-specific additions:**
 
 - **`!!` in shell values — single-quote.** Bash / zsh history expansion eats unquoted `!!foo`. Always use `--prop 'name=!!scene-ring'` (single quotes). In Python `subprocess.run([...])` lists, no quoting needed — pass `"name=!!scene-ring"` as a plain string.
 - **`$` in prop text — single-quote (price tokens).** `--prop text='$9/mo'` and `--prop text='$199/yr'` — NEVER `--prop text="$9/mo"` (zsh/bash eat `$9` as empty var → text rendered as `.` / stray period). Same for `${VAR}`, `$USER`, `\n`, `\r`, `\t` inside a double-quoted prop. Gate 2 morph addendum below greps for the leak signature.
 - **`#` in shell values — safe, but quote anyway.** `#` is a comment leader only at the start of a shell word. `--prop name=#s1-title` works, but `--prop 'name=#s1-title'` is the habit that stops you guessing.
-- **Batch heredoc is the cleanest path for multi-shape slides.** `<<'EOF' | officecli batch $FILE` disables all shell expansion — safe for `$`, `!!`, `#`, `'` inside the JSON body.
+- **Batch files are the canonical path for multi-shape slides.** Write the JSON array to a file, then `officecli batch "$FILE" --input cmds.json` — no shell expansion at all, so `$`, `!!`, `#`, `'` inside the JSON body are all safe, and the invocation is identical on every OS. (A `<<'EOF'` heredoc is the macOS/Linux shorthand for the same thing.)
 - **`--json` responses wrap the payload in `.data.results[]`.** Both `query` and `get` return a `.data.results[]` array. A single node's `format` sits at `.data.results[0].format.X`; that node's children sit at `.data.results[0].children[]` (each child's format at `.data.results[0].children[].format.X`). Always go through `.data.results[0]` — bare `.data.children[]` or `.data.format` returns null silently.
 - **Variable:** `FILE="deck.pptx"` at the top of every build script; every example below uses `$FILE`.
 - **Gate shell pattern — COUNT, then if/else.** Never write `grep … && echo LEAK || echo OK` — when grep exits 1 (0 matches), the `||` branch fires with empty stdout and prints "OK" confusingly (or prints "LEAK" from prior pipes). Canonical form: `COUNT=$(cmd | wc -l); if [ "$COUNT" -gt 0 ]; then echo "LEAK: …"; else echo "OK"; fi`.
@@ -529,7 +529,7 @@ Readback: `officecli query "$FILE" slide --json | jq '.data.results[].format | s
 Every morph deck ships with three artifacts, each as a standalone file:
 
 1. `<topic>.pptx` — the deck, closed + `officecli validate` clean (Delivery Gate 1 OK).
-2. `build.sh` or `build.py` — the re-runnable script (bash for shell-native builds; Python for multi-slide arcs using `morph-helpers.py`). Must recreate the deck from a fresh `officecli create` call.
+2. The ordered batch files (`01-cover.json`, `02-s1.json`, …) the deck was built from — they ARE the re-runnable build: replaying them in order on a fresh `officecli create` recreates the deck, which satisfies the rebuild requirement without a second implementation. Only if the build needed procedural logic beyond a straight command list (loops, computed geometry, generated sequences) ship a `build.py` instead, using `reference/morph-helpers.py`.
 3. `brief.md` — **standalone file, NOT embedded in anything else.** Contains:
    - Section 1: topic / audience / purpose / narrative / style direction (1 named style from `reference/styles/INDEX.md`)
    - Section 2: slide-by-slide outline (page type + one-sentence argument per slide)

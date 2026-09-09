@@ -52,7 +52,7 @@ Help is pinned to the installed CLI version. **When this skill and help disagree
 
 ## Shell & Execution Discipline
 
-**Shell quoting, incremental execution, `$FILE` convention** → see docx v2 §Shell & Execution Discipline. The same rules apply here verbatim — quote `[N]` paths, single-quote any value containing `$` (including `$2.8B` in a body paragraph or `@` DOIs), never hand-write `\$ \t \n` in executable examples, one command at a time. Academic-paper examples below use `$FILE` as a shell variable (`FILE="thesis.docx"`).
+**Shell quoting, batch-first execution, `$FILE` convention** → see docx v2 §Shell & Execution Discipline. The same rules apply here verbatim — build through `--input` batch files; on single commands, quote `[N]` paths and single-quote any value containing `$` (including `$2.8B` in a body paragraph or `@` DOIs); never hand-write `\$ \t \n` in executable examples. Academic-paper examples below use `$FILE` as a shell variable (`FILE="thesis.docx"`).
 
 ## What "academic" means here (identity)
 
