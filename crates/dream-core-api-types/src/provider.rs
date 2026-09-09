@@ -37,6 +37,20 @@ pub enum ModelOpenAiApiMode {
     Responses,
 }
 
+/// Explicit OpenAI max-tokens request field override for one model.
+///
+/// `ProviderCompat` defaults to the legacy `max_tokens` field for any host
+/// that isn't the official OpenAI endpoint (`api.openai.com`). Some
+/// third-party gateways proxy to a backend model that already requires the
+/// newer `max_completion_tokens` field, so this lets a user pin the field
+/// name per model instead of waiting on the engine's automatic retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelMaxTokensField {
+    MaxTokens,
+    MaxCompletionTokens,
+}
+
 /// Explicit image-input support configured for one model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -75,6 +89,8 @@ pub struct ModelSettings {
     pub image_input: Option<ModelImageInputCapability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_api_mode: Option<ModelOpenAiApiMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens_field: Option<ModelMaxTokensField>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_kind: Option<ModelKind>,
     /// Which media API this model speaks, when the built-in catalog does not
@@ -1278,6 +1294,27 @@ mod tests {
         assert!(json.get("model_kind").is_none());
         assert!(json.get("media_endpoint").is_none());
         assert!(json.get("media_unit_price_usd").is_none());
+    }
+
+    #[test]
+    fn model_settings_round_trip_preserves_max_tokens_field_override() {
+        let json = serde_json::json!({
+            "max_tokens_field": "max_completion_tokens",
+        });
+
+        let parsed: ModelSettings = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(parsed.max_tokens_field, Some(ModelMaxTokensField::MaxCompletionTokens));
+
+        // Re-serializing must reproduce the key the client sent.
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), json);
+    }
+
+    #[test]
+    fn model_settings_omit_absent_max_tokens_field_override() {
+        let parsed: ModelSettings = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(parsed.max_tokens_field, None);
+        let json = serde_json::to_value(&parsed).unwrap();
+        assert!(json.get("max_tokens_field").is_none());
     }
 
     #[test]

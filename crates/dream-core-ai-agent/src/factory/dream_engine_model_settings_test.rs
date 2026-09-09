@@ -23,6 +23,39 @@ fn model_settings_resolve_explicit_vision_and_api_overrides() {
 }
 
 #[test]
+fn model_settings_resolve_explicit_max_tokens_field_override() {
+    let overrides = resolve_model_compat_overrides(
+        "gpt-6-astra",
+        r#"{
+            "gpt-6-astra": {
+                "max_tokens_field": "max_completion_tokens"
+            }
+        }"#,
+    )
+    .unwrap();
+
+    assert_eq!(overrides.max_tokens_field.as_deref(), Some("max_completion_tokens"));
+}
+
+#[test]
+fn model_settings_max_tokens_field_can_be_pinned_back_to_legacy() {
+    // A gateway that DOES speak the legacy field for a specific model can be
+    // pinned there too, in case a future default ever flips the other way.
+    let overrides =
+        resolve_model_compat_overrides("gpt-6-astra", r#"{"gpt-6-astra": {"max_tokens_field": "max_tokens"}}"#)
+            .unwrap();
+
+    assert_eq!(overrides.max_tokens_field.as_deref(), Some("max_tokens"));
+}
+
+#[test]
+fn missing_max_tokens_field_override_keeps_automatic_detection() {
+    let overrides = resolve_model_compat_overrides("gpt-6-astra", r#"{"gpt-6-astra": {}}"#).unwrap();
+
+    assert_eq!(overrides.max_tokens_field, None);
+}
+
+#[test]
 fn missing_model_settings_keep_vision_and_api_automatic() {
     let overrides = resolve_model_compat_overrides("gpt-5.6-sol", r#"{"gpt-4o":{"image_input":"supported"}}"#).unwrap();
 

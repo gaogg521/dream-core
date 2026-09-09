@@ -3,8 +3,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use dream_core_api_types::{
-    DreamEngineBuildExtra, ForkSpec, ModelImageInputCapability, ModelOpenAiApiMode, ModelSettings, SessionMcpServer,
-    SessionMcpTransport, TEAM_MCP_SERVER_NAME, TeamMcpStdioConfig,
+    DreamEngineBuildExtra, ForkSpec, ModelImageInputCapability, ModelMaxTokensField, ModelOpenAiApiMode, ModelSettings,
+    SessionMcpServer, SessionMcpTransport, TEAM_MCP_SERVER_NAME, TeamMcpStdioConfig,
 };
 use dream_core_common::ProviderWithModel;
 use dream_core_db::IMcpServerRepository;
@@ -124,6 +124,14 @@ pub(super) async fn build(
         model_overrides.openai_api_mode,
     );
     compat_overrides.image_input = model_overrides.image_input;
+    let max_tokens_field_source = if model_overrides.max_tokens_field.is_some() {
+        "user"
+    } else {
+        "automatic"
+    };
+    if let Some(field) = model_overrides.max_tokens_field {
+        compat_overrides.max_tokens_field = Some(field);
+    }
 
     if provider == "openai" {
         info!(
@@ -134,6 +142,8 @@ pub(super) async fn build(
             is_full_url = row.is_full_url,
             api_mode = ?compat_overrides.openai_api_mode.unwrap_or_default(),
             api_mode_source = if model_overrides.openai_api_mode.is_some() { "user" } else { "automatic" },
+            max_tokens_field = compat_overrides.max_tokens_field.as_deref().unwrap_or("max_tokens"),
+            max_tokens_field_source,
             "Resolved DreamEngine OpenAI transport"
         );
     }
@@ -539,11 +549,12 @@ fn rewrite_openai_api_url(url: &str, mode: OpenAiApiMode) -> Option<String> {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ModelCompatOverrides {
     pub(crate) image_input: Option<ImageInputCapability>,
     pub(crate) openai_api_mode: Option<OpenAiApiMode>,
     pub(crate) context_window: Option<u32>,
+    pub(crate) max_tokens_field: Option<String>,
 }
 
 pub(crate) fn resolve_model_compat_overrides(
@@ -567,6 +578,10 @@ pub(crate) fn resolve_model_compat_overrides(
             ModelOpenAiApiMode::Responses => OpenAiApiMode::Responses,
         }),
         context_window: settings.context_window,
+        max_tokens_field: settings.max_tokens_field.map(|value| match value {
+            ModelMaxTokensField::MaxTokens => "max_tokens".to_owned(),
+            ModelMaxTokensField::MaxCompletionTokens => "max_completion_tokens".to_owned(),
+        }),
     })
 }
 
@@ -1030,6 +1045,9 @@ pub async fn resolve_provider_config_for_bridge(
         model_overrides.openai_api_mode,
     );
     compat_overrides.image_input = model_overrides.image_input;
+    if let Some(field) = model_overrides.max_tokens_field {
+        compat_overrides.max_tokens_field = Some(field);
+    }
     let bedrock = if row.platform == "bedrock" {
         resolve_bedrock_config(row.bedrock_config.as_deref())
     } else {
