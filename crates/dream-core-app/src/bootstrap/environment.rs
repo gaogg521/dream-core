@@ -119,7 +119,7 @@ fn validate_identity_environment(
 /// Never fails the boot. A rename that does not happen leaves the legacy name
 /// exactly where it was, which `resolve_with_legacy` still finds — the same
 /// behaviour that shipped before this ran at all.
-fn adopt_current_data_names(data_dir: &std::path::Path) {
+pub(crate) fn adopt_current_data_names(data_dir: &std::path::Path) {
     use dream_core_common::{
         AGENT_SESSIONS_DIR, AdoptOutcome, BACKEND_DB_NAME, LEGACY_AGENT_SESSIONS_DIR, LEGACY_BACKEND_DB_NAME,
         LEGACY_PROCESS_REGISTRY_DIR, PROCESS_REGISTRY_DIR, adopt_current_name,

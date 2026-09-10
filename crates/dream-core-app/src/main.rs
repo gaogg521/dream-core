@@ -122,6 +122,13 @@ async fn async_main(merged_path: String, cli: Cli) -> Result<ExitCode, MainError
             // (Sentry 135525166). Held (via `_instance_guard`, not a bare `_`,
             // which would drop and release it immediately) for the whole server
             // lifetime; the kernel releases the flock on process exit.
+            // Before the guard, not after: the lock is named after the
+            // catalog it protects, so migrating the pre-rebrand names first
+            // means the lock is `one-backend.db.instance.lock` rather than a
+            // stale `aionui-` one left beside a file that no longer exists.
+            // Idempotent — `init_data_layer` calls it again for the entry
+            // points that never reach this code.
+            bootstrap::adopt_current_data_names(&env.config.data_dir);
             let db_path = env.config.database_path();
             let _instance_guard = match dream_core_db::DataDirInstanceGuard::try_acquire(&db_path) {
                 Ok(Some(guard)) => {
