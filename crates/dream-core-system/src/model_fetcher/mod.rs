@@ -120,7 +120,13 @@ fn validate_anonymous_request(req: &FetchModelsAnonymousRequest) -> Result<(), S
     if req.platform.trim().is_empty() {
         return Err(SystemError::BadRequest("platform is required".into()));
     }
-    if req.base_url.trim().is_empty() {
+    // Bedrock is the exception: the AWS SDK derives its endpoint from the
+    // region, so the dialog sends no base URL and `fetch_bedrock` never reads
+    // one. Requiring it here failed the Bedrock model list outright.
+    // Bedrock is the exception: the AWS SDK derives its endpoint from the
+    // region, so the dialog sends no base URL and `fetch_bedrock` never reads
+    // one. Requiring it here failed the Bedrock model list outright.
+    if !crate::platform_has_no_base_url(&req.platform) && req.base_url.trim().is_empty() {
         return Err(SystemError::BadRequest("baseUrl is required".into()));
     }
     // Bedrock uses bedrock_config for credentials; a local Ollama daemon has
@@ -316,6 +322,12 @@ mod tests {
         // Bedrock uses bedrock_config for credentials, not api_key.
         // With no bedrock_config attached the fetcher itself will fail,
         // but validate_anonymous_request must not reject up-front.
+        //
+        // The base URL below is invented — see
+        // `the_bedrock_dialogs_actual_payload_is_accepted` for the body the
+        // client really sends, which carries none. Keeping a fabricated value
+        // here is what let this test agree with itself while the real request
+        // was refused.
         let (_svc, _db) = setup().await;
         let req = FetchModelsAnonymousRequest {
             platform: "bedrock".into(),
@@ -325,6 +337,58 @@ mod tests {
             try_fix: false,
         };
         assert!(validate_anonymous_request(&req).is_ok());
+    }
+
+    /// The exact JSON the settings dialog posts when the user opens the model
+    /// dropdown for Bedrock (`EditModeModal`'s onFocus handler): a platform,
+    /// an empty key, a `bedrock_config` — and no `base_url` key at all.
+    ///
+    /// This body used to be rejected twice over: serde had no default for
+    /// `base_url`, so it never deserialized, and the validator required the
+    /// field even though `fetch_bedrock` builds its endpoint from the region
+    /// and never reads it. The user saw "Failed to fetch models" with an empty
+    /// dropdown and no way forward.
+    #[tokio::test]
+    async fn the_bedrock_dialogs_actual_payload_is_accepted() {
+        let body = serde_json::json!({
+            "platform": "bedrock",
+            "api_key": "",
+            "bedrock_config": {
+                "auth_method": "accessKey",
+                "region": "us-east-1",
+                "access_key_id": "AKIAEXAMPLE",
+                "secret_access_key": "secret",
+            },
+        });
+        let req: FetchModelsAnonymousRequest =
+            serde_json::from_value(body).expect("the client's Bedrock body must deserialize");
+        assert!(req.base_url.is_empty());
+        assert!(validate_anonymous_request(&req).is_ok());
+    }
+
+    /// The exemption is Bedrock's alone. Every other platform is reached at an
+    /// address the user supplies, so an absent one is still a 400 — otherwise
+    /// this would just be deleting the check.
+    #[test]
+    fn a_platform_reached_over_http_still_needs_a_base_url() {
+        let req = FetchModelsAnonymousRequest {
+            platform: "openai".into(),
+            base_url: String::new(),
+            api_key: "sk-test".into(),
+            bedrock_config: None,
+            try_fix: false,
+        };
+        assert!(validate_anonymous_request(&req).is_err());
+    }
+
+    /// `platform` crosses the wire as free text; a capitalised value must not
+    /// quietly reinstate the rejection.
+    #[test]
+    fn the_base_url_exemption_does_not_depend_on_casing() {
+        assert!(crate::platform_has_no_base_url("Bedrock"));
+        assert!(crate::platform_has_no_base_url("  BEDROCK "));
+        assert!(!crate::platform_has_no_base_url("ollama"));
+        assert!(!crate::platform_has_no_base_url(""));
     }
 
     // ── extract_first_key ─────────────────────────────────────────────
