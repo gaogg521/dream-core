@@ -1,5 +1,4 @@
 use axum::http::HeaderMap;
-use axum::http::header::AUTHORIZATION;
 
 use super::{GovernanceCaller, MACHINE_ID_HEADER, classify_governance_caller};
 
