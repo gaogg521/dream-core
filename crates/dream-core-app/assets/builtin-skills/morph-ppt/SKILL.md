@@ -19,6 +19,15 @@ description: "Use this skill when the user wants a .pptx with smooth cross-slide
 >
 > If a command has no obvious Windows equivalent, prefer the built-in file/HTTP tools over raw shell.
 
+> **⚠️ Geometry values carry a unit — a bare number is EMU.** `x` / `y` /
+> `width` / `height` with no unit are read as EMU, and 1cm is 360,000 of them,
+> so `height=60` is 0.00017cm. The shape is still added and `add` still prints
+> success; the damage only surfaces later as a flood of text-overflow issues,
+> one per shape, which then costs a whole turn to repair. Always write `"3cm"`
+> / `"36pt"`, never `3`, and use the full names `width` / `height` — never the
+> `w` / `h` shorthand, which is accepted and is where bare numbers creep in.
+> Verified on officecli 1.0.148.
+
 # OfficeCLI Morph-PPT Skill
 
 **This skill is a scene layer on top of `officecli-pptx`.** Every pptx hard rule — visual delivery floor (title ≥ 36pt / body ≥ 18pt / title ≥ 2× body), 12-column grid on 33.87×19.05cm, canonical palettes, chart-choice decision table, connector canon, shell escape, resident + batch, Delivery Gate 1–5a — is inherited, not re-taught. This file adds only what **Morph** needs on top: cross-slide shape-name binding, Scene Actors vs content prefixing, ghost discipline, `transition=morph` CLI quirks, 52-style visual library lookup, and a morph-specific fresh-eyes Gate 5b extension.

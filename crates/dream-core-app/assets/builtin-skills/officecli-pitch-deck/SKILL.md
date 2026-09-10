@@ -19,6 +19,15 @@ description: "Use this skill when the user is building a fundraising / investor 
 >
 > If a command has no obvious Windows equivalent, prefer the built-in file/HTTP tools over raw shell.
 
+> **⚠️ Geometry values carry a unit — a bare number is EMU.** `x` / `y` /
+> `width` / `height` with no unit are read as EMU, and 1cm is 360,000 of them,
+> so `height=60` is 0.00017cm. The shape is still added and `add` still prints
+> success; the damage only surfaces later as a flood of text-overflow issues,
+> one per shape, which then costs a whole turn to repair. Always write `"3cm"`
+> / `"36pt"`, never `3`, and use the full names `width` / `height` — never the
+> `w` / `h` shorthand, which is accepted and is where bare numbers creep in.
+> Verified on officecli 1.0.148.
+
 # OfficeCLI Pitch Deck Skill
 
 **This skill is a scene layer on top of `officecli-pptx`.** Every pptx hard rule — visual delivery floor (title ≥ 36pt / body ≥ 18pt / title ≥ 2× body), 12-column grid on 33.87×19.05cm, 4 canonical palettes, chart-choice decision table, connector canon (`shape` / `from` / `to` / `tailEnd=triangle`), shell escape, resident + batch, Delivery Gate 1–5a — is inherited, not re-taught. This file adds only what **fundraising** needs on top: stage diagnosis (A / B / C), 5 赛道 arc templates, 10 key-slide recipes (cover / problem / solution / market / product / model / traction / team / financials / ask), pitch-specific numbers convention, a VC ship-check, and a pitch-specific fresh-eyes Gate 6.
