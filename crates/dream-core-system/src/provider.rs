@@ -283,8 +283,15 @@ fn validate_create_request(req: &CreateProviderRequest) -> Result<(), SystemErro
             validate_base_url(&req.base_url)?;
         }
     } else {
+        // Every remaining platform is reached over HTTP, so the URL is always
+        // required — including for Ollama, unlike bedrock above.
         validate_base_url(&req.base_url)?;
-        if req.api_key.trim().is_empty() {
+        // The key is not. A local Ollama daemon has no credentials, and the
+        // settings dialog does not offer a field for one, so demanding it here
+        // made the platform unusable: the model list loaded, the user picked a
+        // model, and saving failed with a generic toast over `apiKey is
+        // required`. `model_fetcher` already knew this; only this path did not.
+        if !crate::platform_authenticates_without_api_key(&req.platform) && req.api_key.trim().is_empty() {
             return Err(SystemError::BadRequest("apiKey is required".into()));
         }
     }
@@ -390,6 +397,67 @@ mod tests {
             bedrock_config: None,
             is_full_url: false,
         }
+    }
+
+    // -- keyless platform tests --
+
+    /// The request the settings dialog sends for a local Ollama daemon: an
+    /// address, a model, and no key — because the dialog offers no field for
+    /// one.
+    fn ollama_create_request() -> CreateProviderRequest {
+        CreateProviderRequest {
+            platform: "ollama".into(),
+            name: "Ollama".into(),
+            base_url: "http://localhost:11434".into(),
+            api_key: String::new(),
+            models: vec!["qwen3:8b".into()],
+            ..sample_create_request()
+        }
+    }
+
+    /// The reported bug: the model list loaded from the daemon, the user picked
+    /// `qwen3:8b`, and saving failed behind a generic "failed to save" toast
+    /// that was `apiKey is required` underneath. `model_fetcher` had already
+    /// exempted Ollama — which is exactly why the list worked and only the save
+    /// did not.
+    #[test]
+    fn ollama_saves_without_an_api_key() {
+        assert!(validate_create_request(&ollama_create_request()).is_ok());
+    }
+
+    /// The exemption is about a daemon with no credentials, not about skipping
+    /// validation. Ollama is still reached over HTTP, so it still needs an
+    /// address; bedrock is the one that may omit both.
+    #[test]
+    fn ollama_still_needs_a_base_url() {
+        let req = CreateProviderRequest {
+            base_url: String::new(),
+            ..ollama_create_request()
+        };
+        assert!(validate_create_request(&req).is_err());
+    }
+
+    /// Guards the guard: an exemption that leaked to every platform would make
+    /// the key optional everywhere and this check pointless.
+    #[test]
+    fn an_ordinary_platform_still_requires_an_api_key() {
+        let req = CreateProviderRequest {
+            api_key: String::new(),
+            ..sample_create_request()
+        };
+        assert!(validate_create_request(&req).is_err());
+    }
+
+    /// The client sends the lowercase `platform` field, but nothing enforces
+    /// that end to end, and a capitalised value would silently reintroduce the
+    /// bug.
+    #[test]
+    fn the_exemption_does_not_depend_on_casing() {
+        assert!(crate::platform_authenticates_without_api_key("Ollama"));
+        assert!(crate::platform_authenticates_without_api_key("  ollama  "));
+        assert!(crate::platform_authenticates_without_api_key("BEDROCK"));
+        assert!(!crate::platform_authenticates_without_api_key("openai"));
+        assert!(!crate::platform_authenticates_without_api_key(""));
     }
 
     // -- id validation tests --
