@@ -19,6 +19,15 @@ description: 3D Morph PPT — extends morph-ppt with GLB model insertion, cinema
 >
 > If a command has no obvious Windows equivalent, prefer the built-in file/HTTP tools over raw shell.
 
+> **⚠️ Geometry values carry a unit — a bare number is EMU.** `x` / `y` /
+> `width` / `height` with no unit are read as EMU, and 1cm is 360,000 of them,
+> so `height=60` is 0.00017cm. The shape is still added and `add` still prints
+> success; the damage only surfaces later as a flood of text-overflow issues,
+> one per shape, which then costs a whole turn to repair. Always write `"3cm"`
+> / `"36pt"`, never `3`, and use the full names `width` / `height` — never the
+> `w` / `h` shorthand, which is accepted and is where bare numbers creep in.
+> Verified on officecli 1.0.148.
+
 # Morph PPT — 3D Extension
 
 This skill **extends** `morph-ppt`. All morph-ppt rules (naming, ghosting, design, verification) apply in full.

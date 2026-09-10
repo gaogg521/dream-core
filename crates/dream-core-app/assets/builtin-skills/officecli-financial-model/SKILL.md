@@ -19,6 +19,15 @@ description: "Use this skill when the user wants to build a financial model — 
 >
 > If a command has no obvious Windows equivalent, prefer the built-in file/HTTP tools over raw shell.
 
+> **⚠️ Geometry values carry a unit — a bare number is EMU.** `x` / `y` /
+> `width` / `height` with no unit are read as EMU, and 1cm is 360,000 of them,
+> so `height=60` is 0.00017cm. The shape is still added and `add` still prints
+> success; the damage only surfaces later as a flood of text-overflow issues,
+> one per shape, which then costs a whole turn to repair. Always write `"3cm"`
+> / `"36pt"`, never `3`, and use the full names `width` / `height` — never the
+> `w` / `h` shorthand, which is accepted and is where bare numbers creep in.
+> Verified on officecli 1.0.148.
+
 # OfficeCLI Financial-Model Skill
 
 **This skill is a scene layer on top of `officecli-xlsx`.** Every xlsx hard rule — shell quoting, batch-first execution, Help-First Rule, visual delivery floor, CFO 4-color code (blue input / black formula / green cross-sheet / yellow-fill assumption), number-format standards (years as text, zero as `-`, `%` one decimal, negatives in parens), assumption-cell discipline, CSV batch import, chart data-feed forms (a/b/c), the 5-gate Delivery cycle, cache-drift guidance, Known Issues (the cross-sheet `!` trap, batch + resident for formulas, renderer caveats) — is **inherited, not re-taught**. This file adds only what a **financial model** requires on top: three-zone architecture, 3 model-type recipes (3-statement / DCF / LBO), sensitivity + scenario protocols, financial-function patterns, circular-reference discipline, and model-specific Delivery Gates 4–6.

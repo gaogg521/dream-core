@@ -74,6 +74,33 @@ These are the deliverable standards every deck MUST meet. Violating any one = no
 
 **One idea per slide.** If a slide needs a second title to explain what it covers, split it. Dense "everything about X" slides lose the audience inside 3 seconds. Use a section divider to group related one-idea slides, not a mega-slide.
 
+### ⚠️ Every geometry value carries a unit. A bare number means EMU.
+
+`x`, `y`, `width`, `height` with no unit are read as **EMU**, and 1cm is
+360,000 of them — so `height=60` is 0.00017cm, not 60 of anything you meant.
+The shape is still added, and `add` still prints success. Verified on
+officecli 1.0.148:
+
+```
+--prop x=80  --prop y=50  --prop w=800    --prop h=60      ->  x=80emu y=50emu width=800emu height=60emu
+--prop x=2cm --prop y=8cm --prop width=10cm --prop height=3cm ->  x=2cm  y=8cm  width=10cm  height=3cm
+```
+
+Always write `"3cm"` / `"36pt"`, never `3`. Use the full names `width` /
+`height`; **never the `w` / `h` shorthand** — it is accepted, so nothing stops
+you, and it is where bare numbers get written by habit.
+
+This is the single most expensive mistake in this skill. Zero-sized shapes do
+not look wrong, they look *empty*, and the damage surfaces one step later as a
+flood of text-overflow issues — one per shape — which then costs an entire
+turn to chase down and repair one at a time. Observed on a real 10-slide deck:
+72 overflow issues, all from this, and the turn spent its whole budget fixing
+them instead of building.
+
+**Check it once, on slide 1, before building the rest**:
+`officecli get "$FILE" "/slide[1]" --depth 1` — if any value reads `…emu`,
+stop and fix the batch file's units now. Every later slide would repeat it.
+
 **Explicit type hierarchy — do NOT rely on theme defaults.** Theme defaults drift between masters. Set sizes explicitly on every text shape.
 
 | Element | Minimum | Typical | Min shape height |
