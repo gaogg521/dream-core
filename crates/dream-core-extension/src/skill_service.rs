@@ -1936,8 +1936,7 @@ fn skill_row_to_list_item(paths: &SkillPaths, row: SkillRow, description: String
     // authority and sits right there — read the missing half from it.
     let mut display_name = row.display_name.filter(|d| !d.is_empty());
     let mut icon_file = row.icon_file.filter(|f| !f.is_empty());
-    if (display_name.is_none() || icon_file.is_none()) && matches!(source, SkillSource::Builtin | SkillSource::Cron)
-    {
+    if (display_name.is_none() || icon_file.is_none()) && matches!(source, SkillSource::Builtin | SkillSource::Cron) {
         let (disk_display, disk_icon) = read_presentation_meta(Path::new(&row.path));
         if display_name.is_none() {
             display_name = disk_display;
@@ -2342,7 +2341,7 @@ fn parse_frontmatter_fields(content: &str) -> Option<ParsedFrontmatter> {
 
     impl<'de> serde::Deserialize<'de> for FrontmatterTagList {
         fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-            struct Visitor(Vec<String>);
+            struct Visitor;
             impl<'de> serde::de::Visitor<'de> for Visitor {
                 type Value = Vec<String>;
                 fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2363,9 +2362,7 @@ fn parse_frontmatter_fields(content: &str) -> Option<ParsedFrontmatter> {
                     Ok(out)
                 }
             }
-            deserializer
-                .deserialize_any(Visitor(Vec::new()))
-                .map(FrontmatterTagList)
+            deserializer.deserialize_any(Visitor).map(FrontmatterTagList)
         }
     }
 
@@ -2380,7 +2377,10 @@ fn parse_frontmatter_fields(content: &str) -> Option<ParsedFrontmatter> {
     Some(ParsedFrontmatter {
         name: parsed.name.trim().to_string(),
         description,
-        display_name: parsed.display_name.map(|d| d.trim().to_string()).filter(|d| !d.is_empty()),
+        display_name: parsed
+            .display_name
+            .map(|d| d.trim().to_string())
+            .filter(|d| !d.is_empty()),
         category: parsed.category.map(|c| c.trim().to_string()).filter(|c| !c.is_empty()),
         tags: parsed.tags.0,
     })
