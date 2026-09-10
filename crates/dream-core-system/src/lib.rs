@@ -1,6 +1,24 @@
 #![warn(clippy::disallowed_types)]
 
 //! System services: provider management, model fetching, settings, and version checks.
+/// Platforms that carry no bearer key, and why.
+///
+/// `bedrock` authenticates through `bedrock_config` (IAM profile or static
+/// keys), not an HTTP endpoint plus a bearer token. `ollama` is a daemon on
+/// localhost with no authentication at all — there is no key for a user to
+/// enter, and the settings dialog correctly does not ask for one.
+///
+/// This lives here, shared, because the same question is asked in two places
+/// that drifted apart: the model-list fetch already exempted both, while
+/// provider creation still demanded a key from everyone. The result was a
+/// dialog that let you browse an Ollama daemon's models and then refused to
+/// save the one you picked, with `apiKey is required` behind a generic
+/// "failed to save" toast. Adding a third keyless platform must not require
+/// remembering two files.
+pub fn platform_authenticates_without_api_key(platform: &str) -> bool {
+    matches!(platform.trim().to_ascii_lowercase().as_str(), "bedrock" | "ollama")
+}
+
 pub mod bedrock_probe;
 pub mod client_pref;
 pub mod content_inspection;

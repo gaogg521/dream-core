@@ -124,8 +124,10 @@ fn validate_anonymous_request(req: &FetchModelsAnonymousRequest) -> Result<(), S
         return Err(SystemError::BadRequest("baseUrl is required".into()));
     }
     // Bedrock uses bedrock_config for credentials; a local Ollama daemon has
-    // no credentials at all. Empty api_key is allowed for both.
-    if req.platform != "bedrock" && req.platform != "ollama" && req.api_key.trim().is_empty() {
+    // no credentials at all. Empty api_key is allowed for both — see
+    // `platform_authenticates_without_api_key`, which provider creation now
+    // shares rather than keeping its own, stricter copy of this rule.
+    if !crate::platform_authenticates_without_api_key(&req.platform) && req.api_key.trim().is_empty() {
         return Err(SystemError::BadRequest("apiKey is required".into()));
     }
     Ok(())
