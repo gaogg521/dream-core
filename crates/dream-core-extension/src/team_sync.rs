@@ -170,7 +170,7 @@ fn build_skill_md(payload: &TeamSkillPayload) -> String {
     );
     mapping.insert(
         serde_yaml::Value::String("description".into()),
-        serde_yaml::Value::String(description.into()),
+        serde_yaml::Value::String(description),
     );
     inject_category_tags(&mut mapping, payload);
     let yaml = serde_yaml::to_string(&serde_yaml::Value::Mapping(mapping)).unwrap_or_default();

@@ -1426,10 +1426,12 @@ impl dream_core_conversation::MemoryContextProvider for OneMemoryContextProvider
 /// never sees them. Matching happens against the synced copy so the prompt
 /// itself never leaves the machine — see `dream_core_system::team_memory` for
 /// why that mattered enough to shape the design.
+#[cfg(not(feature = "enterprise"))]
 pub struct LocalTeamMemoryRecall {
     pub(crate) memory: std::sync::Arc<dream_core_system::TeamMemoryService>,
 }
 
+#[cfg(not(feature = "enterprise"))]
 #[async_trait::async_trait]
 impl dream_core_ai_agent::TurnMemoryRecall for LocalTeamMemoryRecall {
     async fn recall(&self, _user_id: &str, query: &str) -> Vec<String> {
@@ -1472,10 +1474,12 @@ impl dream_core_ai_agent::TurnMemoryRecall for LocalTeamMemoryRecall {
 ///
 /// Never fails closed: an install that has not synced holds an empty policy
 /// and allows everything, which is what `None` used to do here.
+#[cfg(not(feature = "enterprise"))]
 struct LocalSendGate {
     policy: std::sync::Arc<dream_core_system::SendPolicyService>,
 }
 
+#[cfg(not(feature = "enterprise"))]
 #[async_trait::async_trait]
 impl dream_core_conversation::SendGate for LocalSendGate {
     async fn check_send(
