@@ -576,7 +576,7 @@ impl DreamEngineAgentManager {
 /// answers "how much of the window is gone", and a per-turn sum would reset with
 /// every message. `size` of 0 is the renderer's own encoding for "window
 /// unknown", which is exactly what a configuration without one resolves to.
-fn build_turn_usage_frame(context_usage: u64, context_window: u64, usage: Option<&TokenUsage>) -> Value {
+pub(crate) fn build_turn_usage_frame(context_usage: u64, context_window: u64, usage: Option<&TokenUsage>) -> Value {
     let Some(usage) = usage else {
         // No per-turn figures to report: a cancelled or failed turn produced no
         // `AgentResult`, and a between-turns snapshot has none either. Occupancy
