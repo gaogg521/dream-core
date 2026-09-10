@@ -162,6 +162,27 @@ impl OutputSink for BackendOutputSink {
             }));
     }
 
+    /// The live context meter, fed while the turn is still running.
+    ///
+    /// The end-of-turn report in `DreamEngineAgentManager::emit_turn_usage` is
+    /// the same frame, and both go through `build_turn_usage_frame` so the
+    /// renderer sees one shape either way. What it did not have was anything
+    /// to show BEFORE that point: an agentic turn runs for as long as it needs
+    /// — measured at over twelve minutes on a deck build — and the indicator
+    /// stayed blank for all of it, then jumped at the end. A turn the user
+    /// cancelled reported its cost nowhere at all.
+    ///
+    /// `cumulative` is the session total, matching what the end-of-turn frame
+    /// carries, so the number does not jump backwards when the turn lands.
+    fn emit_usage_progress(&self, context_usage: u64, context_window: u64, cumulative: &TokenUsage) {
+        let frame = crate::manager::dream_engine::agent::build_turn_usage_frame(
+            context_usage,
+            context_window,
+            Some(cumulative),
+        );
+        let _ = self.event_tx.send(AgentStreamEvent::AcpContextUsage(frame));
+    }
+
     fn emit_error(&self, msg: &str) {
         let _ = self
             .event_tx
@@ -186,6 +207,42 @@ mod tests {
     fn make_sink() -> (BackendOutputSink, broadcast::Receiver<AgentStreamEvent>) {
         let (tx, rx) = broadcast::channel(16);
         (BackendOutputSink::new(tx, "claude-opus-4-8".to_string()), rx)
+    }
+
+    /// The live meter's frame, emitted mid-turn.
+    ///
+    /// Before this, usage reached the renderer only from
+    /// `DreamEngineAgentManager::emit_turn_usage`, which runs after the turn
+    /// has converged — so the indicator was blank for the whole of a long
+    /// agentic turn, and a cancelled turn reported nothing at all.
+    #[test]
+    fn emit_usage_progress_sends_a_context_usage_frame() {
+        let (sink, mut rx) = make_sink();
+        sink.emit_usage_progress(
+            57_600,
+            200_000,
+            &TokenUsage {
+                input_tokens: 50_000,
+                output_tokens: 1_200,
+                cache_read_tokens: 45_000,
+                cache_creation_tokens: 0,
+            },
+        );
+
+        match rx.try_recv().unwrap() {
+            AgentStreamEvent::AcpContextUsage(frame) => {
+                // Same shape the end-of-turn frame uses: the renderer reads
+                // `used` / `size` for the bar and `_meta` for the breakdown,
+                // so a differently-shaped live frame would render as nothing.
+                assert_eq!(frame["used"], 57_600);
+                assert_eq!(frame["size"], 200_000);
+                assert_eq!(frame["_meta"]["output_tokens"], 1_200);
+                assert_eq!(frame["_meta"]["cached_read_tokens"], 45_000);
+                // Fresh input is what the cache did NOT cover.
+                assert_eq!(frame["_meta"]["input_tokens"], 5_000);
+            }
+            other => panic!("Expected AcpContextUsage, got {other:?}"),
+        }
     }
 
     #[test]
