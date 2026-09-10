@@ -1930,6 +1930,23 @@ fn skill_row_to_list_item(paths: &SkillPaths, row: SkillRow, description: String
         SkillSource::Custom | SkillSource::Extension | SkillSource::Team => row.path.clone(),
     };
 
+    // Display metadata backfill: builtin rows sync into the repo at startup,
+    // before icon files land (a corpus refresh adds _icon.svg between
+    // restarts), so the DB columns can be stale. The skill directory is the
+    // authority and sits right there — read the missing half from it.
+    let mut display_name = row.display_name.filter(|d| !d.is_empty());
+    let mut icon_file = row.icon_file.filter(|f| !f.is_empty());
+    if (display_name.is_none() || icon_file.is_none()) && matches!(source, SkillSource::Builtin | SkillSource::Cron)
+    {
+        let (disk_display, disk_icon) = read_presentation_meta(Path::new(&row.path));
+        if display_name.is_none() {
+            display_name = disk_display;
+        }
+        if icon_file.is_none() {
+            icon_file = disk_icon;
+        }
+    }
+
     SkillListItem {
         name: row.name,
         description,
@@ -1942,8 +1959,8 @@ fn skill_row_to_list_item(paths: &SkillPaths, row: SkillRow, description: String
         // metadata only exists on team-distributed skills (read from disk).
         category: None,
         tags: Vec::new(),
-        display_name: row.display_name.filter(|d| !d.is_empty()),
-        icon_file: row.icon_file.filter(|f| !f.is_empty()),
+        display_name,
+        icon_file,
     }
 }
 

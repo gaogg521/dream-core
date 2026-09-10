@@ -361,8 +361,18 @@ async fn skill_icon(
         .icon_file
         .as_deref()
         .filter(|f| !f.is_empty())
+        // DB rows can predate the icon (a corpus refresh adds _icon.svg
+        // between restarts) — the skill directory is the authority.
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            let dir = std::path::Path::new(&row.path);
+            ["_icon.svg", "_icon.png", "_icon.jpg", "_icon.webp"]
+                .iter()
+                .find(|f| dir.join(f).is_file())
+                .map(|f| f.to_string())
+        })
         .ok_or_else(|| ApiError::NotFound(format!("skill '{name}' has no icon")))?;
-    let path = std::path::Path::new(&row.path).join(icon_file);
+    let path = std::path::Path::new(&row.path).join(&icon_file);
     let bytes = tokio::fs::read(&path)
         .await
         .map_err(|_| ApiError::NotFound(format!("icon file for skill '{name}' not found")))?;
