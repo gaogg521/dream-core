@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 use common::{body_json, get_with_token, json_with_token, setup_and_login};
-use dream_core_ai_agent::{AgentInstance, IAgentTask, IMockAgent, WorkerTaskManagerImpl};
+use dream_core_ai_agent::{AgentInstance, IAgentTask, IMockAgent, IWorkerTaskManager, WorkerTaskManagerImpl};
 use dream_core_app::{AppConfig, AppServices};
 
 /// A mock agent whose event channel stays OPEN (the sender is held), so the
@@ -85,6 +85,39 @@ struct MidturnRig {
     app: axum::Router,
     services: AppServices,
     delivered: Arc<Mutex<Vec<String>>>,
+    /// Same manager the router holds, so a test can observe when the spawned
+    /// turn has actually registered its agent — see `wait_for_agent`.
+    task_manager: Arc<dyn IWorkerTaskManager>,
+}
+
+/// Block until the turn spawned by a send has registered its agent.
+///
+/// `POST /messages` answers 202 as soon as the turn is CLAIMED and the work is
+/// spawned; the agent itself is built inside that spawned task
+/// (`ConversationTurnOrchestrator::spawn_user_turn` → `run_attempt` →
+/// `IWorkerTaskManager::get_or_build_task`), so it is not registered yet when
+/// the 202 is written. Mid-turn
+/// delivery needs both — an active turn AND a registered agent to steer (see
+/// `ConversationService::send_message`) — so a second send that lands in the
+/// gap between them finds no agent, falls through to the ordinary claim, and is
+/// correctly refused with 409.
+///
+/// A real client cannot hit that gap: a human takes seconds to type the second
+/// message. These tests fired it in the same breath as the first, so they were
+/// racing the spawn and only passed when they won. On a loaded CI runner they
+/// lost — which is what made this file red while passing locally every time.
+///
+/// This waits for the precondition instead of assuming it, so a failure now
+/// means mid-turn delivery is broken rather than merely slow.
+async fn wait_for_agent(task_manager: &Arc<dyn IWorkerTaskManager>, conv_id: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while task_manager.get_task(conv_id).is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the turn spawned by the first send never registered an agent for {conv_id}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 }
 
 async fn build_midturn_app(supports_midturn: bool) -> MidturnRig {
@@ -116,12 +149,13 @@ async fn build_midturn_app(supports_midturn: bool) -> MidturnRig {
     let services = AppServices::from_config(db, &AppConfig::default())
         .await
         .unwrap()
-        .with_worker_task_manager(wtm);
+        .with_worker_task_manager(Arc::clone(&wtm));
     let app = dream_core_app::create_router(&services).await.expect("build router");
     MidturnRig {
         app,
         services,
         delivered,
+        task_manager: wtm,
     }
 }
 
@@ -167,6 +201,7 @@ async fn midturn_send_returns_200_with_the_active_turn_id() {
         mut app,
         services,
         delivered,
+        task_manager,
     } = build_midturn_app(true).await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "pw").await;
     let conv_id = create_conversation(&mut app, &token, &csrf).await;
@@ -175,6 +210,7 @@ async fn midturn_send_returns_200_with_the_active_turn_id() {
     let (status1, body1) = send_message(&mut app, &conv_id, "first message", &token, &csrf).await;
     assert_eq!(status1, StatusCode::ACCEPTED, "first send scheduled a turn: {body1}");
     let turn1 = body1["data"]["turn_id"].as_str().unwrap().to_owned();
+    wait_for_agent(&task_manager, &conv_id).await;
 
     // Mid-turn second message: 200, folded into the SAME turn.
     let (status2, body2) = send_message(&mut app, &conv_id, "midturn interjection", &token, &csrf).await;
@@ -232,12 +268,22 @@ async fn midturn_send_returns_200_with_the_active_turn_id() {
 /// during an active turn is 409 CONFLICT with the running-conversation error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn midturn_send_to_non_supporting_backend_stays_409() {
-    let MidturnRig { mut app, services, .. } = build_midturn_app(false).await;
+    let MidturnRig {
+        mut app,
+        services,
+        task_manager,
+        ..
+    } = build_midturn_app(false).await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "pw").await;
     let conv_id = create_conversation(&mut app, &token, &csrf).await;
 
     let (status1, _) = send_message(&mut app, &conv_id, "first message", &token, &csrf).await;
     assert_eq!(status1, StatusCode::ACCEPTED);
+    // Without this the 409 below is unfalsifiable: a second send that beats the
+    // spawn is refused for want of a registered agent, which looks exactly like
+    // the refusal this test claims to pin. Waiting makes the assertion actually
+    // about `supports_midturn_delivery == false`.
+    wait_for_agent(&task_manager, &conv_id).await;
 
     let (status2, body2) = send_message(&mut app, &conv_id, "second message", &token, &csrf).await;
     assert_eq!(
