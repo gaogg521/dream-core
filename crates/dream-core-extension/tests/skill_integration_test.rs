@@ -296,8 +296,8 @@ async fn user_skill_override_wins_over_builtin_during_materialization() {
     repo.upsert_global(UpsertSkillParams {
         name: "shared",
         description: Some("Builtin skill"),
-display_name: None,
-icon_file: None,
+        display_name: None,
+        icon_file: None,
         path: builtin_path.to_string_lossy().as_ref(),
         source: "builtin",
         enabled: true,

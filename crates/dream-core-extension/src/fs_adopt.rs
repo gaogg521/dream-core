@@ -276,8 +276,8 @@ mod tests {
             UpsertSkillParams {
                 name: "mine",
                 description: None,
-display_name: None,
-icon_file: None,
+                display_name: None,
+                icon_file: None,
                 path: &old_skill.to_string_lossy(),
                 source: "user",
                 enabled: true,
