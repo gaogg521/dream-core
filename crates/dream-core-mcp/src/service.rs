@@ -1431,6 +1431,16 @@ mod tests {
         assert_eq!(args, vec![r"D:\1one-command\out\main\builtin-mcp-web-tools.js"]);
     }
 
+    /// Windows-only by construction, like the behaviour it pins.
+    ///
+    /// `shell_split` treats `\` as a path separator on Windows and as POSIX
+    /// escaping everywhere else — a deliberate split documented on the function
+    /// itself, because these commands are spawned on the local OS rather than
+    /// handed to a POSIX shell. An ungated assertion of the Windows half
+    /// therefore passed on the author's machine and failed the Linux CI job
+    /// with the backslashes eaten, which is the very symptom the test is named
+    /// after. The Unix half is asserted separately below.
+    #[cfg(windows)]
     #[tokio::test]
     async fn add_server_normalizes_windows_node_path_without_losing_backslashes() {
         // End-to-end through the public API: this is the shape a manually
@@ -1458,6 +1468,40 @@ mod tests {
             McpTransport::Stdio { command, args, .. } => {
                 assert_eq!(command, "node");
                 assert_eq!(args, vec![r"D:\1one-command\out\main\builtin-mcp-web-tools.js"]);
+            }
+            _ => panic!("expected stdio transport"),
+        }
+    }
+
+    /// The other half of the same split: on Unix `\` is an escape, so a command
+    /// written with escaped spaces has to survive as ONE argument. Asserting
+    /// only the Windows behaviour left this side of the `cfg` untested.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn add_server_keeps_posix_escapes_as_one_argument() {
+        let svc = make_service();
+        let created = svc
+            .add_server(
+                TEST_USER_ID,
+                CreateMcpServerRequest {
+                    name: "one-web-tools".into(),
+                    description: None,
+                    transport: McpTransport::Stdio {
+                        command: r"node /opt/one\ command/main.js".into(),
+                        args: vec![],
+                        env: HashMap::new(),
+                    },
+                    original_json: None,
+                    builtin: false,
+                },
+            )
+            .await
+            .unwrap();
+
+        match created.transport {
+            McpTransport::Stdio { command, args, .. } => {
+                assert_eq!(command, "node");
+                assert_eq!(args, vec!["/opt/one command/main.js"]);
             }
             _ => panic!("expected stdio transport"),
         }
