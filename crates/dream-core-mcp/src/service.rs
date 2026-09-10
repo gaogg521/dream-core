@@ -1419,16 +1419,36 @@ mod tests {
     fn shell_split_still_honors_quoted_spaces_on_every_platform() {
         // Quoting behavior (not backslash-specific) must be unaffected by
         // the platform-dependent branch.
-        let tokens = shell_split(r#"node "C:\Program Files\App\app.js" --flag"#).unwrap();
-        assert_eq!(tokens, vec!["node", r"C:\Program Files\App\app.js", "--flag"]);
+        //
+        // The path deliberately carries no backslash. It used to, which made
+        // a test whose whole point is platform-INdependence assert the one
+        // thing that is platform-dependent — so it passed on Windows and
+        // failed on Linux with the backslashes eaten. Quoted spaces are what
+        // this pins; the backslash halves are pinned by the four cfg-gated
+        // tests above.
+        let tokens = shell_split(r#"node "/opt/Program Files/App/app.js" --flag"#).unwrap();
+        assert_eq!(tokens, vec!["node", "/opt/Program Files/App/app.js", "--flag"]);
     }
 
+    /// Windows-only, like the behaviour it pins — see `shell_split`.
     #[test]
+    #[cfg(windows)]
     fn split_stdio_command_recovers_windows_node_path() {
         let result = split_stdio_command(r"node D:\1one-command\out\main\builtin-mcp-web-tools.js").unwrap();
         let (command, args) = result.expect("expected a split result for a whitelisted launcher");
         assert_eq!(command, "node");
         assert_eq!(args, vec![r"D:\1one-command\out\main\builtin-mcp-web-tools.js"]);
+    }
+
+    /// The same recovery on Unix, where the launcher split has to survive a
+    /// POSIX-escaped space rather than a drive path.
+    #[test]
+    #[cfg(not(windows))]
+    fn split_stdio_command_recovers_unix_node_path() {
+        let result = split_stdio_command(r"node /opt/1one\ command/out/main/builtin-mcp-web-tools.js").unwrap();
+        let (command, args) = result.expect("expected a split result for a whitelisted launcher");
+        assert_eq!(command, "node");
+        assert_eq!(args, vec!["/opt/1one command/out/main/builtin-mcp-web-tools.js"]);
     }
 
     /// Windows-only by construction, like the behaviour it pins.
