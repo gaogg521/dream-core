@@ -201,7 +201,10 @@ mod tests {
         let text = build_skills_index_text(&skills);
         assert!(text.contains("- **fund-analysis**: 基金组合诊断与单基评估"));
         assert!(!text.contains("触发"), "index must drop the trigger tail");
-        assert!(!text.contains("officecli-xlsx"), "index must drop the negative boundary");
+        assert!(
+            !text.contains("officecli-xlsx"),
+            "index must drop the negative boundary"
+        );
     }
 
     #[test]

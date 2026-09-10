@@ -376,7 +376,13 @@ async fn skill_icon(
     let bytes = tokio::fs::read(&path)
         .await
         .map_err(|_| ApiError::NotFound(format!("icon file for skill '{name}' not found")))?;
-    let content_type = match icon_file.rsplit('.').next().unwrap_or_default().to_ascii_lowercase().as_str() {
+    let content_type = match icon_file
+        .rsplit('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "svg" => "image/svg+xml",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
