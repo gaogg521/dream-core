@@ -134,7 +134,7 @@ Six steps. Every non-trivial build follows this shape.
 3. **Build in batch phases.** One `--input` file per phase — sheets + structure, then values/formulas, then formatting. Read the per-item `[N]` result lines after each file; after a structural phase (new sheet, chart, named range, pivot), `get` the new element once to confirm shape before stacking the next phase on top.
 4. **Format.** Column widths, number formats, freeze panes, tab colors, header fills. Formatting is not optional polish — per "Requirements for Outputs" it is part of the deliverable.
 5. **Close, then reckon with the cache.** `officecli close <file>` writes to disk. Newly-added formulas ship without cached values; when a human opens the file in a spreadsheet app, the app recalculates and populates them. **But your downstream `INDEX/MATCH`, `SUMPRODUCT`, or any formula that references an upstream formula will cache whatever the upstream cached at write-time — often `0` or a stale value — and that cached lie survives into non-recalculating readers.** After any multi-formula build involving array formulas (`SUMPRODUCT`, `SUMIFS` with dynamic criteria) or cross-sheet chains, **re-touch every downstream cell** (run `set` again with the same formula) so the engine recomputes its cache from the freshly-cached upstream. ⚠️ Re-touch on cross-sheet chains via resident is unreliable (see Batch / resident caveats) — prefer non-resident `set` for the re-touch pass. Then `officecli get` a few downstream cells and eyeball that their `cachedValue=` is plausible. Do NOT run `validate` while a resident is open — it reports spurious drawing errors.
-6. **QA — assume there are problems.** See the QA section. You are not done when your last command exited 0; you are done after one fix-and-verify cycle finds zero new issues.
+6. **QA — check for problems, then report what you found.** See the QA section. You are not done when your last command exited 0; you are done after one fix-and-verify cycle finds zero new issues. If three cycles in a row keep surfacing new issues, stop and report them rather than looping — that pattern means a structural cause, not something the next round will fix.
 
 ## Quick Start
 
@@ -390,7 +390,16 @@ Safe props: `title`, `min`, `max`, `majorGridlines`, `visible`, `labelRotation`.
 
 **Assume there are problems. Your job is to find them.**
 
-Your first workbook is almost never correct. Treat QA as a bug hunt, not a confirmation step. If you found zero issues on first inspection, you were not looking hard enough. The formulas look fine **until** you check two of them against source cells.
+Your first workbook is almost never correct. Treat QA as a bug hunt, not a
+confirmation step: run every check below instead of trusting the last command's
+exit code. The formulas look fine **until** you check two of them against source
+cells.
+
+Then report what the checks found, including nothing. A workbook that passes
+every check is done. (This used to read "if you found zero issues on first
+inspection, you were not looking hard enough" — which contradicts the exit
+condition, since that exit *is* a cycle finding zero. An instruction never to
+report zero is an instruction never to finish.)
 
 ### Minimum cycle before "done"
 

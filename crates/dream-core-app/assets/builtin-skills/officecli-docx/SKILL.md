@@ -98,7 +98,7 @@ Six steps. Every non-trivial build follows this shape.
 3. **Build in batch phases.** Structural first, content next, formatting last: styles & numbering defs → sections / page setup → headings & body → tables / images / fields / TOC → headers / footers → comments. Deliver each phase as one `--input` batch file, read the per-item `[N]` result lines, and after a structural phase `get` the new element once before stacking the next phase on top.
 4. **Format to spec.** Explicit heading sizes, spacing, widths, alignment, tabs, list indents — formatting is part of the deliverable, not optional polish.
 5. **Close, then trust structure over cached text.** `officecli close "$FILE"` writes the XML. TOC / PAGE / NUMPAGES / SEQ / PAGEREF fields carry **cached values** that may be stale or empty until a human recalculates (F9 in Word). Confirm fields *exist* (`get --depth 3` finds `<w:fldChar>`) rather than trusting the visible text.
-6. **QA — assume there are problems.** You are done after one fix-and-verify cycle finds zero new issues, not when your last command exited 0. See QA.
+6. **QA — check for problems, then report what you found.** You are done after one fix-and-verify cycle finds zero new issues, not when your last command exited 0. If three cycles in a row keep surfacing new issues, stop and report them rather than looping — that pattern means a template-level cause, not something the next round will fix. See QA.
 
 ## Quick Start
 
@@ -458,7 +458,14 @@ Borders use the format `style;size;color;space`: `single;4;FF0000;1`. Hex colors
 
 ## QA (Required)
 
-**Assume there are problems — QA is a bug hunt, not a confirmation step.** Your first document is almost never correct; zero issues on first inspection means you weren't looking hard enough. Headings look fine until `view outline` shows an H3 directly under an H1; the footer shows "Page 1" until `get --depth 3` reveals a static run, not a field.
+**Assume there are problems — QA is a bug hunt, not a confirmation step.** Your
+first document is almost never correct, so run every check below rather than
+eyeballing the result. Then report what the checks found, including nothing: a
+document that passes every check is done, and saying so is the right answer.
+(This used to read "zero issues on first inspection means you weren't looking
+hard enough" — which contradicts the exit condition two paragraphs up, since
+that exit *is* a cycle that finds zero. An instruction never to report zero is
+an instruction never to finish.) Headings look fine until `view outline` shows an H3 directly under an H1; the footer shows "Page 1" until `get --depth 3` reveals a static run, not a field.
 
 ### Minimum cycle before "done"
 

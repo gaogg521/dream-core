@@ -248,7 +248,7 @@ Copy-level tells live in "Copy reads human".
 5. **One batch file per slide (or per section), then LOOK at it.** Each slide's full content — background, title, supporting shapes / charts / connectors / notes — goes into one `--input` batch file; run it, read the per-item `[N]` lines, move to the next. Always `layout=blank` for custom designs. Every 3–5 slides, screenshot what you just built and judge it: `officecli view "$FILE" screenshot --page 4-6 -o sec2.png` (ranges work: `2-5`, `1,3,5`; `--grid 3` tiles the whole deck into one contact sheet). A grid or theme mistake caught here costs one section; caught in final QA it has already compounded across every remaining slide.
 6. **Format to spec.** Per the Requirements table; formatting is deliverable, not polish.
 7. **Close + verify.** `officecli close` writes the ZIP. Always open in the target presentation viewer before shipping — chart colors, animations, fonts, and zoom are runtime features `view html` can't render. Full verification in QA below.
-8. **QA — assume there are problems.** Fix-and-verify until a cycle finds zero new issues.
+8. **QA.** Check for problems item by item, fix what you find, re-check. Stop when a cycle finds nothing new — or at the round cap in Gate 3, whichever comes first.
 
 ## Quick Start
 
@@ -550,7 +550,17 @@ Then 4 connectors (`Decide→YesBox`, `Decide→NoBox`, `YesBox→Done`, `NoBox�
 
 ## QA (Required)
 
-**Assume there are problems.** First render is almost never correct. If you found zero issues, you were not looking hard enough.
+**Assume there are problems until you have checked for them.** A first render is
+rarely perfect, so go through the checklist item by item rather than glancing at
+the slide and calling it fine.
+
+Then report what you found — including nothing. A checked slide with no defects
+is a PASS, and saying so is the correct output, not a confession that you were
+lazy. This paragraph used to end "if you found zero issues, you were not looking
+hard enough", which sounds like rigour and is actually a deadlock: the only exit
+from the fix-verify loop below is a cycle that finds zero issues, so an
+instruction never to report zero is an instruction never to finish. Decks that
+were already correct sat in audit for half an hour.
 
 ### Delivery Gate (any failure = REJECT, do NOT deliver)
 
@@ -568,11 +578,23 @@ Pick **one** path:
 
 **Screenshot (default)** — needs image-Read + a headless browser. Screenshot each slide in turn — `officecli view "<file>" screenshot --page 1 -o slide1.png`, then `--page 2`, … — until the page index runs past the deck (one screenshot = one slide). If it errors on page 1, there's no headless backend → use the fallback below.
 
-**Judge every PNG against the checklist, adversarially** — "assume problems exist; finding none means you didn't look hard enough." Report one `slide N: <issue>` line per problem, or `PASS`. This step is required however you run it. **If** your harness can spawn a subagent, delegate the judging to a *fresh, independent* one — the agent that built the deck is biased toward "looks fine", a separate pair of eyes is more critical — handing it the screenshots + this checklist and the same adversarial framing. No subagent? Do exactly the same yourself.
+**Judge every PNG against the checklist, adversarially** — walk the twelve items
+for each slide instead of forming an overall impression; a defect you did not
+look for is one you will not see. Having walked them, report what is there: one
+`slide N: <issue>` line per problem, or `PASS` if the slide is clean. `PASS` is a
+real and common result once the obvious defects are fixed. This step is required however you run it. **If** your harness can spawn a subagent, delegate the judging to a *fresh, independent* one — the agent that built the deck is biased toward "looks fine", a separate pair of eyes is more critical — handing it the screenshots + this checklist and the same adversarial framing. No subagent? Do exactly the same yourself.
 
 **Fallback — HTML-text** (no image-Read or no browser): read `view "$FILE" html` as text. DOM cannot prove **dark-on-dark / fine overlap / arrowheads / gap-margin metrics / column alignment** — flag these as "not visually verified" rather than PASS.
 
 **Optional `--grid N`** — only on user request for layout-rhythm, or when `view outline` shows anomalous layout distribution: `officecli view "<file>" screenshot --grid 3 -o grid.png`.
+
+**One screenshot per slide, then judge it.** Do not re-shoot a region at higher
+zoom to "confirm" a defect you have already flagged — flag it, fix it, and let
+the next round's screenshot be the confirmation. Cropping into suspected problem
+areas is an unbounded sub-loop with no exit condition (each crop invites another,
+closer one), it is not part of this gate, and in practice it is what turns a
+five-minute audit into a thirty-minute one. If a defect is not visible in the
+full-slide screenshot, it is below the threshold this gate is for.
 
 **Per-slide checklist (assume issues exist):**
 
@@ -592,6 +614,19 @@ Pick **one** path:
 REJECT with `slide N: <issue>` lines, else "Gate 3 PASS" (HTML-text fallback adds "<unverified-items> not visually verified").
 
 **Fix-verify (mandatory, max 3 cycles).** Fix → re-run Gate 3 → repeat until zero new issues; one fix often surfaces another. After 3 rounds without convergence, **stop** — likely seesaw, template-level cause, or agent misread. Report `slide N: <issue> — attempted: <fixes> — likely root: <template|design-conflict|ambiguous>` and let the user decide.
+
+**Keep the round count in a file, not in your head.** Before each round, append
+one line to `<deckdir>/.audit-rounds` (`round N: <slides flagged>`); read the
+file first and let the number of lines already there decide whether you have
+rounds left.
+
+This is not bookkeeping for its own sake. Gate 3 on a ten-slide deck is ten
+screenshots and ten image reads, which is large enough to trigger the harness's
+context compaction — and compaction summarizes away exactly the sort of running
+tally the "max 3 cycles" cap depends on. Observed: a deck finished building,
+then audited for half an hour, because every compaction returned the agent to
+what felt like round one. A file survives compaction; a memory of counting does
+not.
 
 ## Common Pitfalls
 
