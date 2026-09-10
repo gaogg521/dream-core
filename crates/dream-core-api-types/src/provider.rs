@@ -83,6 +83,15 @@ pub enum ModelKind {
 /// is dropped on the round trip through `PUT /api/providers/:id`, silently and
 /// with no error anywhere. That is exactly how `model_kind` and the two media
 /// fields below came to be written by the settings page and never read back.
+///
+/// It has now happened three times. `media_unit_prices_usd` was written by the
+/// client from the day per-resolution pricing shipped and silently discarded on
+/// every save until it was added here; `max_tokens_field` the same, one release
+/// later. The failure is invisible from either side — the client sees its own
+/// PUT succeed, the user sees the control snap back to its default on reopen,
+/// and nothing logs anything. `model_settings_carries_every_field_the_client_sends`
+/// in dream-ui's test suite is the guard that turns the next omission into a
+/// failing test; keep this struct and the TS `ModelSettings` type in step.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ModelSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -101,6 +110,22 @@ pub struct ModelSettings {
     /// entered — a gateway's price is the user's contract with their vendor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media_unit_price_usd: Option<f64>,
+    /// Per-resolution prices, keyed by the exact value the model's spec offers
+    /// (`"480p"` / `"1080p"` from `params.resolutions`, `"1280x720"` from
+    /// `params.sizes`) — the same string that travels in `params.resolution` /
+    /// `params.size` when the generation runs.
+    ///
+    /// Vendors price resolution tiers several-fold apart, so the scalar above
+    /// cannot express what the user is actually charged. A model with no entry
+    /// here keeps using `media_unit_price_usd`, and so does a resolution with
+    /// no entry, which is why this is purely additive.
+    ///
+    /// Storage only on this side: the client resolves it (`resolveUserUnitPriceUsd`
+    /// in `common/media/pricing.ts`, shared by the cost display and the usage
+    /// report). All this struct has to do is not lose it — which it did, from
+    /// the day the client started sending it until now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_unit_prices_usd: Option<HashMap<String, f64>>,
     /// The model's context window in tokens. Drives the engine's compaction
     /// thresholds and, for Ollama, the server-side `num_ctx`. Absent = the
     /// provider-level `context_limit` applies, then the engine default.
@@ -1294,6 +1319,32 @@ mod tests {
         assert!(json.get("model_kind").is_none());
         assert!(json.get("media_endpoint").is_none());
         assert!(json.get("media_unit_price_usd").is_none());
+    }
+
+    #[test]
+    fn model_settings_round_trip_preserves_per_resolution_media_prices() {
+        let json = serde_json::json!({
+            "media_unit_price_usd": 0.25,
+            "media_unit_prices_usd": { "480p": 0.1, "1080p": 0.4 },
+        });
+
+        let parsed: ModelSettings = serde_json::from_value(json.clone()).unwrap();
+        let tiers = parsed.media_unit_prices_usd.as_ref().unwrap();
+        assert_eq!(tiers.get("480p"), Some(&0.1));
+        assert_eq!(tiers.get("1080p"), Some(&0.4));
+        // The flat rate is the fallback for a tier with no entry, so both must
+        // survive together — dropping either one silently re-prices the user.
+        assert_eq!(parsed.media_unit_price_usd, Some(0.25));
+
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), json);
+    }
+
+    #[test]
+    fn model_settings_omit_absent_per_resolution_media_prices() {
+        let parsed: ModelSettings = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(parsed.media_unit_prices_usd, None);
+        let json = serde_json::to_value(&parsed).unwrap();
+        assert!(json.get("media_unit_prices_usd").is_none());
     }
 
     #[test]
