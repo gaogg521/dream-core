@@ -1879,9 +1879,14 @@ mod tests {
         build_acp_final_input_dump_value, emit_kill_terminal, exit_status_parts, normalize_config_option_request_value,
         user_facing_message,
     };
-    // Both are only touched by the unix-gated process tests below.
+    // Only touched by the unix-gated process tests below. `SessionIdPersistence`
+    // used to be imported here too, on a comment claiming the same — it was
+    // never referenced in this module (`session_id_persistence_tests` imports
+    // its own). Behind `#[cfg(unix)]` the dead import does not exist on
+    // Windows, so it warned nowhere a developer here would see it and failed
+    // the Linux CI job under `-D warnings`.
     #[cfg(unix)]
-    use super::{SessionIdPersistence, register_spawned_process};
+    use super::register_spawned_process;
     use crate::agent_runtime::AgentRuntime;
     use crate::error::AgentError;
     use crate::manager::acp::config_options::ConfigSnapshot;
