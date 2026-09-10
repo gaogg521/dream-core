@@ -76,10 +76,25 @@ These are the deliverable standards every deck MUST meet. Violating any one = no
 
 ### ⚠️ Every geometry value carries a unit. A bare number means EMU.
 
-`x`, `y`, `width`, `height` with no unit are read as **EMU**, and 1cm is
-360,000 of them — so `height=60` is 0.00017cm, not 60 of anything you meant.
-The shape is still added, and `add` still prints success. Verified on
-officecli 1.0.148:
+`x`, `y`, `width`, `height` and `margin` with no unit are read as **EMU**, and
+1cm is 360,000 of them — so `height=60` is 0.00017cm, not 60 of anything you
+meant. The shape is still added, and `add` still prints success.
+
+It is not every length property, which is what makes it easy to get wrong:
+`size`, `lineWidth` and `spaceBefore` read a bare number as points, so
+`size=44` is the 44pt you wanted and the habit carries straight into
+`height=3`, where it is not. Measured on officecli 1.0.148 — bare vs.
+unit-qualified, read back with `get`:
+
+| property | `--prop p=5` | `--prop p=5pt` |
+|---|---|---|
+| `x` / `y` / `width` / `height` | `5emu` | `5pt` |
+| `margin` | `5emu` | `5pt` |
+| `size` | `5pt` | `5pt` |
+| `lineWidth` | `5pt` | `5pt` |
+| `spaceBefore` | `5pt` | `5pt` |
+
+The geometry case, in full:
 
 ```
 --prop x=80  --prop y=50  --prop w=800    --prop h=60      ->  x=80emu y=50emu width=800emu height=60emu
