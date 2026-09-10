@@ -32,7 +32,19 @@ pub fn platform_authenticates_without_api_key(platform: &str) -> bool {
 /// this rule was applied on the provider-create path and not on the
 /// model-list path, and the two silently disagreed.
 pub fn platform_has_no_base_url(platform: &str) -> bool {
-    platform.trim().eq_ignore_ascii_case("bedrock")
+    matches!(
+        platform.trim().to_ascii_lowercase().as_str(),
+        // AWS, addressed by region through `aws_sdk_bedrock`.
+        "bedrock"
+        // Google Vertex, addressed by project/region rather than a URL. Three
+        // places already agree it has none: `model_platforms` gives it no
+        // preset, the engine mapping expects an empty `base_url`, and its
+        // model list is a built-in catalogue that fetches nothing. Only
+        // provider creation disagreed, so saving one failed on a field the
+        // form itself marks optional. `vertex-ai` is the legacy spelling.
+            | "gemini-vertex-ai"
+            | "vertex-ai"
+    )
 }
 
 pub mod bedrock_probe;

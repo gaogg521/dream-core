@@ -271,29 +271,39 @@ fn validate_create_request(req: &CreateProviderRequest) -> Result<(), SystemErro
     if req.name.trim().is_empty() {
         return Err(SystemError::BadRequest("name is required".into()));
     }
-    // Bedrock auths via bedrock_config (IAM profile / static keys) rather than
-    // an HTTP endpoint + bearer key, so baseUrl and apiKey may be empty.
+    // Three independent questions, asked separately. They used to be one
+    // if/else keyed on "is this bedrock", which forced every platform to be
+    // bedrock-like in all three respects or in none — Vertex, which has no
+    // endpoint but also no bedrock_config, fit neither branch.
+
+    // 1. Bedrock, and only Bedrock, keeps its credentials in `bedrock_config`.
+    if req.platform.trim().eq_ignore_ascii_case("bedrock") && req.bedrock_config.is_none() {
+        return Err(SystemError::BadRequest(
+            "bedrockConfig is required for bedrock platform".into(),
+        ));
+    }
+
+    // 2. An endpoint is required only for platforms actually reached at one.
+    //    Vertex is addressed by project/region through the SDK and has no
+    //    preset URL to fall back on, so the form leaves the field optional —
+    //    and this required it anyway, which meant a Vertex provider could not
+    //    be saved at all without inventing an address for it.
     if crate::platform_has_no_base_url(&req.platform) {
-        if req.bedrock_config.is_none() {
-            return Err(SystemError::BadRequest(
-                "bedrockConfig is required for bedrock platform".into(),
-            ));
-        }
         if !req.base_url.trim().is_empty() {
             validate_base_url(&req.base_url)?;
         }
     } else {
-        // Every remaining platform is reached over HTTP, so the URL is always
-        // required — including for Ollama, unlike bedrock above.
         validate_base_url(&req.base_url)?;
-        // The key is not. A local Ollama daemon has no credentials, and the
-        // settings dialog does not offer a field for one, so demanding it here
-        // made the platform unusable: the model list loaded, the user picked a
-        // model, and saving failed with a generic toast over `apiKey is
-        // required`. `model_fetcher` already knew this; only this path did not.
-        if !crate::platform_authenticates_without_api_key(&req.platform) && req.api_key.trim().is_empty() {
-            return Err(SystemError::BadRequest("apiKey is required".into()));
-        }
+    }
+
+    // 3. A bearer key is required unless the platform authenticates some other
+    //    way. A local Ollama daemon has no credentials at all, and the
+    //    settings dialog offers no field for one, so demanding it here made
+    //    the platform unusable: the model list loaded, the user picked a
+    //    model, and saving failed with a generic toast over `apiKey is
+    //    required`. `model_fetcher` already knew this; only this path did not.
+    if !crate::platform_authenticates_without_api_key(&req.platform) && req.api_key.trim().is_empty() {
+        return Err(SystemError::BadRequest("apiKey is required".into()));
     }
     Ok(())
 }
@@ -446,6 +456,74 @@ mod tests {
             ..sample_create_request()
         };
         assert!(validate_create_request(&req).is_err());
+    }
+
+    /// A Vertex provider carries no endpoint: `model_platforms` gives it no
+    /// preset, the form marks the field optional, and the engine mapping
+    /// expects it empty. Creation required one regardless, so the platform
+    /// could not be saved without the user inventing an address.
+    #[test]
+    fn vertex_saves_without_a_base_url() {
+        for platform in ["gemini-vertex-ai", "vertex-ai"] {
+            let req = CreateProviderRequest {
+                platform: platform.into(),
+                name: "Gemini (Vertex AI)".into(),
+                base_url: String::new(),
+                api_key: "ya29.token".into(),
+                ..sample_create_request()
+            };
+            assert!(
+                validate_create_request(&req).is_ok(),
+                "{platform} must save without an endpoint"
+            );
+        }
+    }
+
+    /// Splitting the three checks apart must not have made `bedrock_config`
+    /// optional for the one platform that needs it.
+    #[test]
+    fn bedrock_still_requires_its_config() {
+        let req = CreateProviderRequest {
+            platform: "bedrock".into(),
+            name: "Bedrock".into(),
+            base_url: String::new(),
+            api_key: String::new(),
+            bedrock_config: None,
+            ..sample_create_request()
+        };
+        let err = validate_create_request(&req).unwrap_err().to_string();
+        assert!(err.contains("bedrockConfig"), "got: {err}");
+    }
+
+    /// ...nor made the endpoint optional for platforms that are reached at one.
+    #[test]
+    fn vertexs_exemption_did_not_leak_to_other_platforms() {
+        for platform in ["openai", "ollama", "gemini", "custom"] {
+            let req = CreateProviderRequest {
+                platform: platform.into(),
+                base_url: String::new(),
+                api_key: "sk-test".into(),
+                ..sample_create_request()
+            };
+            assert!(
+                validate_create_request(&req).is_err(),
+                "{platform} is reached at a URL and must still require one"
+            );
+        }
+    }
+
+    /// Vertex is exempt from the endpoint, not from authentication — it was
+    /// never added to `platform_authenticates_without_api_key`.
+    #[test]
+    fn vertex_still_requires_an_api_key() {
+        let req = CreateProviderRequest {
+            platform: "gemini-vertex-ai".into(),
+            base_url: String::new(),
+            api_key: String::new(),
+            ..sample_create_request()
+        };
+        let err = validate_create_request(&req).unwrap_err().to_string();
+        assert!(err.contains("apiKey"), "got: {err}");
     }
 
     /// The client sends the lowercase `platform` field, but nothing enforces
