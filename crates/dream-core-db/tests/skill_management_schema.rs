@@ -23,6 +23,10 @@ async fn migration_creates_skill_management_tables() {
             "deleted_at",
             "created_at",
             "updated_at",
+            // Added by the imported-skill display-name/icon migration. Appended,
+            // so they sort last by `cid`.
+            "display_name",
+            "icon_file",
         ]
     );
 
