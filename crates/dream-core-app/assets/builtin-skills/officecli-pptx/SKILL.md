@@ -90,6 +90,19 @@ Always write `"3cm"` / `"36pt"`, never `3`. Use the full names `width` /
 `height`; **never the `w` / `h` shorthand** — it is accepted, so nothing stops
 you, and it is where bare numbers get written by habit.
 
+**`officecli help pptx shape` will tell you otherwise. It is wrong.** It lists
+`h` as an alias for `height`, calls the value "EMU/length form (e.g. 2cm)",
+and then offers this as a worked example:
+
+```
+example: --prop height=3
+example: --prop height=3cm
+```
+
+The first of those two is the bug. `height=3` is three EMU. Copy the second
+form and nothing else, on every one of `x` / `y` / `width` / `height`,
+whatever the help prints.
+
 This is the single most expensive mistake in this skill. Zero-sized shapes do
 not look wrong, they look *empty*, and the damage surfaces one step later as a
 flood of text-overflow issues — one per shape — which then costs an entire

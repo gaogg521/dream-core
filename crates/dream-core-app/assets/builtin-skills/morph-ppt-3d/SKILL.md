@@ -27,6 +27,10 @@ description: 3D Morph PPT — extends morph-ppt with GLB model insertion, cinema
 > / `"36pt"`, never `3`, and use the full names `width` / `height` — never the
 > `w` / `h` shorthand, which is accepted and is where bare numbers creep in.
 > Verified on officecli 1.0.148.
+>
+> Note that `officecli help pptx shape` documents `h` as an alias and prints
+> `--prop height=3` as a worked example. That example is the bug: it is three
+> EMU. Copy only the unit-qualified form.
 
 # Morph PPT — 3D Extension
 
