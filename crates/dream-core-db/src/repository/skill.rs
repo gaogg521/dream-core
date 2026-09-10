@@ -68,6 +68,8 @@ pub trait ISkillRepository: Send + Sync {
 pub struct UpsertSkillParams<'a> {
     pub name: &'a str,
     pub description: Option<&'a str>,
+    pub display_name: Option<&'a str>,
+    pub icon_file: Option<&'a str>,
     pub path: &'a str,
     pub source: &'a str,
     pub enabled: bool,

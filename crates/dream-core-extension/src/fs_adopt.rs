@@ -212,6 +212,8 @@ async fn rewrite_adopted_skill_paths(
         let params = dream_core_db::UpsertSkillParams {
             name: &row.name,
             description: row.description.as_deref(),
+            display_name: row.display_name.as_deref(),
+            icon_file: row.icon_file.as_deref(),
             path: &new_path.to_string_lossy(),
             source: &row.source,
             enabled: row.enabled,
@@ -274,6 +276,8 @@ mod tests {
             UpsertSkillParams {
                 name: "mine",
                 description: None,
+display_name: None,
+icon_file: None,
                 path: &old_skill.to_string_lossy(),
                 source: "user",
                 enabled: true,

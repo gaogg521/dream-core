@@ -48,6 +48,14 @@ pub struct SkillListItemResponse {
     pub category: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Human-facing display name from the SKILL.md frontmatter (often CJK,
+    /// e.g. "12306 订票助手"). `name` stays the ASCII identity; display-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Icon file shipped beside SKILL.md (e.g. `_icon.svg`), served at
+    /// `GET /api/skills/{name}/icon`. Display-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_file: Option<String>,
 }
 
 /// Request body for `POST /api/skills/info`.
@@ -300,6 +308,8 @@ mod tests {
         let item = SkillListItemResponse {
             name: "my-skill".into(),
             description: "Does things".into(),
+            display_name: None,
+            icon_file: None,
             location: "/home/user/.aionui/skills/my-skill".into(),
             relative_location: None,
             is_auto_inject: false,
@@ -326,6 +336,8 @@ mod tests {
         let item = SkillListItemResponse {
             name: "cron".into(),
             description: "Schedule recurring tasks".into(),
+            display_name: None,
+            icon_file: None,
             location: "/home/user/.aionui/builtin-skills-view/cron/SKILL.md".into(),
             relative_location: Some("auto-inject/cron/SKILL.md".into()),
             is_auto_inject: true,
@@ -386,6 +398,8 @@ mod tests {
         let item = SkillListItemResponse {
             name: "sql-helper".into(),
             description: "Query helper".into(),
+            display_name: None,
+            icon_file: None,
             location: "/tmp/team-skills/1/SKILL.md".into(),
             relative_location: None,
             is_auto_inject: false,

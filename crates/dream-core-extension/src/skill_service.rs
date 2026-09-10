@@ -307,6 +307,13 @@ pub struct SkillListItem {
     /// builtin and user-custom skills.
     pub category: Option<String>,
     pub tags: Vec<String>,
+    /// Human-facing display name from the SKILL.md frontmatter (often CJK,
+    /// e.g. "12306 订票助手"). `name` stays the ASCII kebab-case identity;
+    /// this is display-only, surfaced by the Skills Hub.
+    pub display_name: Option<String>,
+    /// Icon file shipped beside SKILL.md (e.g. `_icon.svg`), served by
+    /// `GET /api/skills/{name}/icon`. Display-only.
+    pub icon_file: Option<String>,
 }
 
 /// List all available skills (built-in + user custom), deduplicated.
@@ -423,8 +430,10 @@ async fn list_builtin_skills_from_disk(dir: &Path) -> Vec<SkillListItem> {
                 is_custom: false,
                 source: SkillSource::Builtin,
                 auto_active: false,
-                category: None,
-                tags: Vec::new(),
+                category: s.category,
+                tags: s.tags,
+                display_name: s.display_name,
+                icon_file: s.icon_file,
             });
         }
     }
@@ -452,8 +461,10 @@ async fn list_builtin_skills_from_disk(dir: &Path) -> Vec<SkillListItem> {
                 is_custom: false,
                 source: SkillSource::Builtin,
                 auto_active: false,
-                category: None,
-                tags: Vec::new(),
+                category: s.category,
+                tags: s.tags,
+                display_name: s.display_name,
+                icon_file: s.icon_file,
             });
         }
     }
@@ -471,6 +482,10 @@ pub struct ScannedSkill {
     /// `None`/empty for hand-authored skills.
     pub category: Option<String>,
     pub tags: Vec<String>,
+    /// Display-only human name from frontmatter (often CJK).
+    pub display_name: Option<String>,
+    /// Icon file beside SKILL.md (e.g. `_icon.svg`), if shipped.
+    pub icon_file: Option<String>,
 }
 
 /// An auto-injected built-in skill.
@@ -591,6 +606,8 @@ pub async fn import_skill_with_repo_for_user(
             UpsertSkillParams {
                 name: &copied.name,
                 description: Some(&copied.description),
+                display_name: copied.display_name.as_deref(),
+                icon_file: copied.icon_file.as_deref(),
                 path: copied.target_dir.to_string_lossy().as_ref(),
                 source: "user",
                 enabled: true,
@@ -615,8 +632,29 @@ pub async fn import_skill_with_repo_for_user(
 struct CopiedSkill {
     name: String,
     description: String,
+    display_name: Option<String>,
+    icon_file: Option<String>,
     target_dir: PathBuf,
     copied_bytes: u64,
+}
+
+/// Icon files a skill directory may ship beside SKILL.md, in preference
+/// order. Vector formats win for crispness at card sizes.
+const SKILL_ICON_FILES: [&str; 4] = ["_icon.svg", "_icon.png", "_icon.jpg", "_icon.webp"];
+
+/// Presentation metadata for the Skills Hub: the frontmatter `display_name`
+/// and the icon file shipped in the skill directory. Both display-only —
+/// `name` remains the identity used for matching and paths.
+fn read_presentation_meta(skill_dir: &Path) -> (Option<String>, Option<String>) {
+    let display_name = std::fs::read_to_string(skill_dir.join(SKILL_MANIFEST_FILE))
+        .ok()
+        .and_then(|content| parse_frontmatter_fields(&content))
+        .and_then(|parsed| parsed.display_name);
+    let icon_file = SKILL_ICON_FILES
+        .iter()
+        .find(|f| skill_dir.join(f).is_file())
+        .map(|f| f.to_string());
+    (display_name, icon_file)
 }
 
 async fn copy_skill_into_user_dir(paths: &SkillPaths, skill_path: &Path) -> Result<CopiedSkill, ExtensionError> {
@@ -651,9 +689,12 @@ async fn copy_skill_into_user_dir_for_user(
     replace_existing_path(&target_dir).await?;
     tokio::fs::rename(&staging_dir, &target_dir).await?;
 
+    let (display_name, icon_file) = read_presentation_meta(&target_dir);
     Ok(CopiedSkill {
         name,
         description,
+        display_name,
+        icon_file,
         target_dir,
         copied_bytes: budget.total_bytes,
     })
@@ -1805,6 +1846,8 @@ async fn sync_global_skill_into_repo(
     repo.upsert_global(UpsertSkillParams {
         name: &skill.name,
         description: Some(&skill.description),
+        display_name: skill.display_name.as_deref(),
+        icon_file: skill.icon_file.as_deref(),
         path: &skill.path,
         source,
         enabled: true,
@@ -1846,6 +1889,8 @@ async fn sync_disk_user_skills_into_repo_for_user(
             UpsertSkillParams {
                 name: &skill.name,
                 description: Some(&skill.description),
+                display_name: skill.display_name.as_deref(),
+                icon_file: skill.icon_file.as_deref(),
                 path: &skill.path,
                 source: "user",
                 enabled: true,
@@ -1897,6 +1942,8 @@ fn skill_row_to_list_item(paths: &SkillPaths, row: SkillRow, description: String
         // metadata only exists on team-distributed skills (read from disk).
         category: None,
         tags: Vec::new(),
+        display_name: row.display_name.filter(|d| !d.is_empty()),
+        icon_file: row.icon_file.filter(|f| !f.is_empty()),
     }
 }
 
@@ -1943,6 +1990,8 @@ async fn list_user_skills_from_disk(paths: &SkillPaths) -> Result<Vec<SkillListI
             auto_active: false,
             category: skill.category,
             tags: skill.tags,
+            display_name: skill.display_name,
+            icon_file: skill.icon_file,
         })
         .collect())
 }
@@ -1969,6 +2018,8 @@ async fn list_team_skills_from_disk(paths: &SkillPaths) -> Result<Vec<SkillListI
                 auto_active,
                 category: skill.category,
                 tags: skill.tags,
+                display_name: skill.display_name,
+                icon_file: skill.icon_file,
             }
         })
         .collect())
@@ -2113,12 +2164,18 @@ async fn scan_skill_dirs(dir: &Path) -> Result<Vec<ScannedSkill>, ExtensionError
                     } else {
                         parsed.name
                     };
+                    let icon_file = SKILL_ICON_FILES
+                        .iter()
+                        .find(|f| entry_path.join(f).is_file())
+                        .map(|f| f.to_string());
                     result.push(ScannedSkill {
                         name: final_name,
                         description: parsed.description,
                         path: entry_path.to_string_lossy().into_owned(),
                         category: parsed.category,
                         tags: parsed.tags,
+                        display_name: parsed.display_name,
+                        icon_file,
                     });
                 }
             }
@@ -2243,6 +2300,7 @@ fn zip_error(err: zip::result::ZipError) -> ExtensionError {
 pub(crate) struct ParsedFrontmatter {
     pub name: String,
     pub description: String,
+    pub display_name: Option<String>,
     pub category: Option<String>,
     pub tags: Vec<String>,
 }
@@ -2253,6 +2311,8 @@ fn parse_frontmatter_fields(content: &str) -> Option<ParsedFrontmatter> {
         #[serde(default)]
         name: String,
         description: String,
+        #[serde(default)]
+        display_name: Option<String>,
         #[serde(default)]
         category: Option<String>,
         /// Tolerate both `tags: [a, b]` and a bare `tags: a` scalar.
@@ -2303,6 +2363,7 @@ fn parse_frontmatter_fields(content: &str) -> Option<ParsedFrontmatter> {
     Some(ParsedFrontmatter {
         name: parsed.name.trim().to_string(),
         description,
+        display_name: parsed.display_name.map(|d| d.trim().to_string()).filter(|d| !d.is_empty()),
         category: parsed.category.map(|c| c.trim().to_string()).filter(|c| !c.is_empty()),
         tags: parsed.tags.0,
     })

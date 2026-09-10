@@ -870,6 +870,8 @@ impl CronService {
                 UpsertSkillParams {
                     name: &name,
                     description: Some(&description),
+display_name: None,
+icon_file: None,
                     path: &path.to_string_lossy(),
                     source: "cron",
                     enabled: true,

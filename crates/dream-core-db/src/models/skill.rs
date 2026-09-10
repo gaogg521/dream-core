@@ -8,6 +8,10 @@ pub struct SkillRow {
     pub user_id: Option<String>,
     pub name: String,
     pub description: Option<String>,
+    /// Human-facing display name (display-only; `name` is the identity).
+    pub display_name: Option<String>,
+    /// Icon file name inside the skill directory (display-only).
+    pub icon_file: Option<String>,
     pub path: String,
     pub source: String,
     pub enabled: bool,
