@@ -98,8 +98,11 @@ impl ModelFetchService {
             .ok_or_else(|| SystemError::NotFound(format!("Provider {provider_id} not found")))?;
 
         let api_key = decrypt_string(&row.api_key_encrypted, &self.encryption_key)?;
-        // A local Ollama daemon has no credentials at all.
-        if api_key.trim().is_empty() && row.platform != "ollama" {
+        // The third copy of this rule, and the one that still disagreed: it
+        // exempted Ollama but not Bedrock, so refreshing the model list of a
+        // SAVED Bedrock provider — which correctly stores no key — failed with
+        // "API key is empty". Now shared, like the other two.
+        if api_key.trim().is_empty() && !crate::platform_authenticates_without_api_key(&row.platform) {
             return Err(SystemError::BadRequest("API key is empty".into()));
         }
 
@@ -123,9 +126,6 @@ fn validate_anonymous_request(req: &FetchModelsAnonymousRequest) -> Result<(), S
     // Bedrock is the exception: the AWS SDK derives its endpoint from the
     // region, so the dialog sends no base URL and `fetch_bedrock` never reads
     // one. Requiring it here failed the Bedrock model list outright.
-    // Bedrock is the exception: the AWS SDK derives its endpoint from the
-    // region, so the dialog sends no base URL and `fetch_bedrock` never reads
-    // one. Requiring it here failed the Bedrock model list outright.
     if !crate::platform_has_no_base_url(&req.platform) && req.base_url.trim().is_empty() {
         return Err(SystemError::BadRequest("baseUrl is required".into()));
     }
@@ -145,7 +145,19 @@ fn validate_anonymous_request(req: &FetchModelsAnonymousRequest) -> Result<(), S
 fn supports_url_fix(platform: &str) -> bool {
     !matches!(
         platform,
-        "anthropic" | "claude" | "gemini" | "bedrock" | "vertex-ai" | "minimax" | "dashscope-coding" | "ollama"
+        "anthropic"
+            | "claude"
+            | "gemini"
+            // Same pair as the fetch dispatch: `gemini-vertex-ai` is the value
+            // real rows carry, `vertex-ai` is kept for legacy ones. Listing
+            // only the short name let URL auto-fix probe `/v1` against Vertex,
+            // which has no such variant to find.
+            | "gemini-vertex-ai"
+            | "vertex-ai"
+            | "bedrock"
+            | "minimax"
+            | "dashscope-coding"
+            | "ollama"
     )
 }
 
@@ -379,6 +391,92 @@ mod tests {
             try_fix: false,
         };
         assert!(validate_anonymous_request(&req).is_err());
+    }
+
+    /// A SAVED Bedrock provider stores no API key — correctly, since its
+    /// credentials live in `bedrock_config`. Refreshing its model list goes
+    /// through `load_provider_config`, which kept its own copy of the
+    /// empty-key rule that exempted Ollama and not Bedrock, and so rejected
+    /// the row with "API key is empty" before the fetcher ever ran.
+    ///
+    /// The fetch itself is expected to fail here (no `bedrock_config` is
+    /// attached to the row), so this asserts on WHICH error comes back: the
+    /// gate must no longer be the thing that stops it.
+    #[tokio::test]
+    async fn a_saved_bedrock_provider_passes_the_empty_key_gate() {
+        let (svc, db) = setup().await;
+        let id = create_provider(&db, "bedrock", "", "").await;
+        let err = svc
+            .load_provider_config(TEST_USER_ID, &id)
+            .await
+            .err()
+            .map(|e| e.to_string());
+        assert!(
+            !err.as_deref().is_some_and(|m| m.contains("API key is empty")),
+            "the empty-key gate must not fire for Bedrock, got: {err:?}"
+        );
+    }
+
+    /// The same gate for a saved Ollama daemon, which likewise has no key.
+    #[tokio::test]
+    async fn a_saved_ollama_provider_passes_the_empty_key_gate() {
+        let (svc, db) = setup().await;
+        let id = create_provider(&db, "ollama", "http://localhost:11434", "").await;
+        let config = svc
+            .load_provider_config(TEST_USER_ID, &id)
+            .await
+            .expect("a keyless Ollama row must load");
+        assert_eq!(config.platform, "ollama");
+        assert!(config.api_key.is_empty());
+    }
+
+    /// And it still fires for a platform that genuinely authenticates with a
+    /// key, so the exemption did not become a blanket removal.
+    #[tokio::test]
+    async fn a_saved_keyed_provider_still_fails_the_empty_key_gate() {
+        let (svc, db) = setup().await;
+        let id = create_provider(&db, "openai", "https://api.openai.com/v1", "").await;
+        let err = svc.load_provider_config(TEST_USER_ID, &id).await.unwrap_err();
+        assert!(err.to_string().contains("API key is empty"), "got: {err}");
+    }
+
+    /// Vertex is the value real rows carry, spelled the way the client and
+    /// `model_platforms` spell it.
+    ///
+    /// The fetch dispatch used to match `"vertex-ai"` alone — a string no
+    /// provider row has ever contained — so every Vertex provider skipped its
+    /// hard-coded catalogue and fell through to the OpenAI-compatible branch,
+    /// which asks for `{base_url}/models` with a bearer token. The tests did
+    /// not catch it because they built their fixtures from that same invented
+    /// string.
+    #[tokio::test]
+    async fn vertex_resolves_under_the_platform_name_clients_actually_send() {
+        let client = reqwest::Client::new();
+        for platform in ["gemini-vertex-ai", "vertex-ai"] {
+            let config = FetchConfig {
+                platform: platform.into(),
+                // Deliberately unroutable: reaching the network at all would
+                // mean the hard-coded catalogue was not used.
+                base_url: "http://127.0.0.1:1".into(),
+                api_key: String::new(),
+                bedrock_config: None,
+            };
+            let models = fetchers::fetch_for_platform(&client, &config)
+                .await
+                .unwrap_or_else(|e| panic!("{platform} must resolve from the built-in catalogue: {e}"));
+            assert!(!models.is_empty(), "{platform} returned an empty catalogue");
+        }
+    }
+
+    /// URL auto-fix probes `/v1` variants, which Vertex has none of — the
+    /// exclusion list had the same invented spelling as the dispatch.
+    #[test]
+    fn vertex_is_excluded_from_url_auto_fix_under_both_spellings() {
+        assert!(!supports_url_fix("gemini-vertex-ai"));
+        assert!(!supports_url_fix("vertex-ai"));
+        // The exclusion is still a list, not a blanket off-switch.
+        assert!(supports_url_fix("custom"));
+        assert!(supports_url_fix("new-api"));
     }
 
     /// `platform` crosses the wire as free text; a capitalised value must not

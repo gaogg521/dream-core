@@ -19,7 +19,13 @@ pub(crate) async fn fetch_for_platform(
         "anthropic" | "claude" => fetch_anthropic(client, &config.base_url, &config.api_key).await,
         "gemini" => fetch_gemini(client, &config.base_url, &config.api_key).await,
         "bedrock" => fetch_bedrock(config).await,
-        "vertex-ai" => Ok(vertex_ai_models()),
+        // The client and `model_platforms` both call this `gemini-vertex-ai`;
+        // `vertex-ai` alone never reaches here from a real provider row and is
+        // kept only so any legacy row still resolves. Matching the short name
+        // only meant every Vertex provider fell through to the
+        // OpenAI-compatible branch below and asked a Google endpoint for
+        // `/models` with a bearer token.
+        "gemini-vertex-ai" | "vertex-ai" => Ok(vertex_ai_models()),
         "new-api" => fetch_new_api(client, &config.base_url, &config.api_key).await,
         "ollama" => fetch_ollama(client, &config.base_url).await,
         "minimax" => Ok(minimax_models()),
