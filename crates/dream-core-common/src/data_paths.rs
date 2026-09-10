@@ -6,12 +6,22 @@
 //! looks for a name nothing on disk uses does not fail loudly. It creates the
 //! file, finds it empty, and the user opens an app with no conversations.
 //!
-//! So nothing is moved. [`resolve_with_legacy`] prefers the current name and
-//! falls back to the legacy one when that is what actually exists, which makes
-//! the rename an aliasing change rather than a migration: an existing install
-//! keeps reading and writing the exact files it always has, and a fresh install
-//! gets the new names. There is no window in which a path is ambiguous, because
-//! the legacy name is only ever chosen when the current one is absent.
+//! Two mechanisms, and they answer different questions.
+//!
+//! [`resolve_with_legacy`] decides which name to USE right now: the current
+//! one, falling back to the legacy one when that is what exists. It is what
+//! kept every pre-rebrand install working through the rename without touching
+//! a byte.
+//!
+//! [`adopt_current_name`] decides what the name SHOULD be, once, at startup:
+//! it renames a legacy path onto the current one. Aliasing alone was supposed
+//! to be enough, on the reasoning that "there is no window in which a path is
+//! ambiguous, because the legacy name is only ever chosen when the current one
+//! is absent". That is true of the lookup and false of the outcome — an
+//! install left on `aionui-backend.db` indefinitely is one stray empty
+//! `one-backend.db` away from opening with no history at all, because the
+//! current name always wins. Renaming ends the exposure; the fallback stays,
+//! because a rename that cannot happen must still leave a working app.
 //!
 //! The deliberate exceptions live elsewhere and must stay: the packaged app id,
 //! the `1ONE Code` userData folder and the `aionui://` deep-link scheme are
@@ -49,6 +59,80 @@ pub fn resolve_with_legacy(parent: &Path, current: &str, legacy: &str) -> PathBu
         return legacy_path;
     }
     current_path
+}
+
+/// What [`adopt_current_name`] did, for the caller to log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdoptOutcome {
+    /// Nothing to do: already on the current name, or neither name exists.
+    AlreadyCurrent,
+    /// The legacy name was renamed onto the current one.
+    Adopted,
+    /// Both names exist. Left alone — see the doc comment.
+    Conflict,
+    /// The rename failed. Left alone; `resolve_with_legacy` still finds the
+    /// legacy name in place, so nothing is worse than before.
+    Failed,
+}
+
+/// Bring a legacy-named path onto the current name, once, at startup.
+///
+/// Aliasing alone left every pre-rebrand install reading and writing
+/// `aionui-backend.db` forever, and that is a file one stray empty
+/// `one-backend.db` permanently hides: [`resolve_with_legacy`] prefers the
+/// current name whenever it exists, so the moment anything creates one beside
+/// a legacy catalog the user opens an app with none of their history in it.
+/// Renaming closes that window instead of living with it.
+///
+/// Deliberately does nothing when BOTH names exist. That state means two
+/// catalogs hold data and only a human knows which one matters; picking by
+/// size or age would be a guess, and a wrong guess here is the user's entire
+/// history. The caller logs it loudly and today's behaviour continues.
+///
+/// Must run before anything opens these paths — a directory or an open SQLite
+/// file cannot be renamed on Windows.
+///
+/// Failure is not fatal by construction: if the rename does not happen, the
+/// legacy name is still on disk and `resolve_with_legacy` still resolves to
+/// it, which is exactly the behaviour that shipped before this existed.
+pub fn adopt_current_name(parent: &Path, current: &str, legacy: &str) -> AdoptOutcome {
+    let current_path = parent.join(current);
+    let legacy_path = parent.join(legacy);
+    if !legacy_path.exists() {
+        return AdoptOutcome::AlreadyCurrent;
+    }
+    if current_path.exists() {
+        return AdoptOutcome::Conflict;
+    }
+    if std::fs::rename(&legacy_path, &current_path).is_err() {
+        return AdoptOutcome::Failed;
+    }
+
+    // SQLite keeps committed transactions in `-wal` until a checkpoint, and it
+    // finds that file by the database's own name. Renaming the catalog without
+    // it silently discards whatever had not been checkpointed — an unclean
+    // shutdown's worth of the user's most recent work. Move it too, and put
+    // the catalog back if that fails rather than leave the pair split.
+    let wal_from = sidecar(&legacy_path, "-wal");
+    if wal_from.exists() && std::fs::rename(&wal_from, sidecar(&current_path, "-wal")).is_err() {
+        let _ = std::fs::rename(&current_path, &legacy_path);
+        return AdoptOutcome::Failed;
+    }
+    // `-shm` is a rebuildable index into the WAL, not data. Moving it is nice;
+    // failing to is harmless, and a stale one under the old name is ignored.
+    let shm_from = sidecar(&legacy_path, "-shm");
+    if shm_from.exists() {
+        let _ = std::fs::rename(&shm_from, sidecar(&current_path, "-shm"));
+    }
+    AdoptOutcome::Adopted
+}
+
+/// `path` with `suffix` appended to its file name — SQLite's own convention
+/// for `-wal` / `-shm`, which are `<db>-wal`, not `<db>.wal`.
+fn sidecar(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(suffix);
+    path.with_file_name(name)
 }
 
 /// Path to the backend SQLite catalog inside `data_dir`.
@@ -126,5 +210,120 @@ mod tests {
 
         assert_eq!(agent_sessions_dir(dir.path()), dir.path().join(AGENT_SESSIONS_DIR));
         assert_eq!(process_registry_dir(dir.path()), dir.path().join(PROCESS_REGISTRY_DIR));
+    }
+
+    // -- adopt_current_name --------------------------------------------------
+
+    fn write(path: &std::path::Path, body: &str) {
+        std::fs::write(path, body).unwrap();
+    }
+
+    /// The case every pre-rebrand install is in. The catalog keeps its
+    /// contents and gains the current name, so nothing can hide it later.
+    #[test]
+    fn a_legacy_catalog_alone_is_renamed_onto_the_current_name() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join(LEGACY_BACKEND_DB_NAME), "the user's history");
+
+        assert_eq!(
+            adopt_current_name(dir.path(), BACKEND_DB_NAME, LEGACY_BACKEND_DB_NAME),
+            AdoptOutcome::Adopted
+        );
+        assert!(!dir.path().join(LEGACY_BACKEND_DB_NAME).exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(BACKEND_DB_NAME)).unwrap(),
+            "the user's history"
+        );
+        // And the resolver now finds it under the current name.
+        assert_eq!(backend_db_path(dir.path()), dir.path().join(BACKEND_DB_NAME));
+    }
+
+    /// SQLite keeps committed transactions in `-wal` until a checkpoint and
+    /// finds that file by the database's own name. Leaving it behind would
+    /// discard an unclean shutdown's worth of the user's most recent work.
+    #[test]
+    fn the_wal_travels_with_the_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join(LEGACY_BACKEND_DB_NAME), "catalog");
+        write(
+            &dir.path().join(format!("{LEGACY_BACKEND_DB_NAME}-wal")),
+            "uncheckpointed",
+        );
+        write(&dir.path().join(format!("{LEGACY_BACKEND_DB_NAME}-shm")), "index");
+
+        assert_eq!(
+            adopt_current_name(dir.path(), BACKEND_DB_NAME, LEGACY_BACKEND_DB_NAME),
+            AdoptOutcome::Adopted
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(format!("{BACKEND_DB_NAME}-wal"))).unwrap(),
+            "uncheckpointed"
+        );
+        assert!(!dir.path().join(format!("{LEGACY_BACKEND_DB_NAME}-wal")).exists());
+        assert!(dir.path().join(format!("{BACKEND_DB_NAME}-shm")).exists());
+    }
+
+    /// Both names holding data is the one case where a guess costs the user
+    /// everything. Nothing is moved, nothing is deleted, and resolution stays
+    /// exactly what it was.
+    #[test]
+    fn two_catalogs_are_left_alone_rather_than_guessed_between() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join(BACKEND_DB_NAME), "new");
+        write(&dir.path().join(LEGACY_BACKEND_DB_NAME), "old");
+
+        assert_eq!(
+            adopt_current_name(dir.path(), BACKEND_DB_NAME, LEGACY_BACKEND_DB_NAME),
+            AdoptOutcome::Conflict
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(BACKEND_DB_NAME)).unwrap(),
+            "new"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(LEGACY_BACKEND_DB_NAME)).unwrap(),
+            "old"
+        );
+    }
+
+    /// A fresh install, and an install that has already been through this.
+    /// Both must be a no-op — in particular, no empty file is created.
+    #[test]
+    fn nothing_happens_when_there_is_no_legacy_name() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            adopt_current_name(dir.path(), BACKEND_DB_NAME, LEGACY_BACKEND_DB_NAME),
+            AdoptOutcome::AlreadyCurrent
+        );
+        assert!(!dir.path().join(BACKEND_DB_NAME).exists());
+
+        write(&dir.path().join(BACKEND_DB_NAME), "already current");
+        assert_eq!(
+            adopt_current_name(dir.path(), BACKEND_DB_NAME, LEGACY_BACKEND_DB_NAME),
+            AdoptOutcome::AlreadyCurrent
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(BACKEND_DB_NAME)).unwrap(),
+            "already current"
+        );
+    }
+
+    /// Directories go the same way — the session store and the process
+    /// registry are directories, not files, and carry no sidecars.
+    #[test]
+    fn a_legacy_directory_is_renamed_with_its_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join(LEGACY_AGENT_SESSIONS_DIR);
+        std::fs::create_dir_all(legacy.join("nested")).unwrap();
+        write(&legacy.join("nested").join("session.json"), "a session");
+
+        assert_eq!(
+            adopt_current_name(dir.path(), AGENT_SESSIONS_DIR, LEGACY_AGENT_SESSIONS_DIR),
+            AdoptOutcome::Adopted
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(AGENT_SESSIONS_DIR).join("nested").join("session.json")).unwrap(),
+            "a session"
+        );
     }
 }

@@ -31,7 +31,11 @@ pub use agent_bridge::{
 pub use backend_capabilities::{CapabilityOrigin, McpTransportCapabilities, ResolvedBackendCapabilities};
 pub use case_convert::{camel_to_snake, normalize_keys_to_snake_case};
 pub use crypto::{CryptoError, decrypt_string, encrypt_string};
-pub use data_paths::{agent_sessions_dir, backend_db_path, process_registry_dir, resolve_with_legacy};
+pub use data_paths::{
+    AGENT_SESSIONS_DIR, AdoptOutcome, BACKEND_DB_NAME, LEGACY_AGENT_SESSIONS_DIR, LEGACY_BACKEND_DB_NAME,
+    LEGACY_PROCESS_REGISTRY_DIR, PROCESS_REGISTRY_DIR, adopt_current_name, agent_sessions_dir, backend_db_path,
+    process_registry_dir, resolve_with_legacy,
+};
 pub use enums::{
     AgentKillReason, AgentType, ConversationSource, ConversationStatus, FileChangeOperation, McpServerStatus,
     McpSource, MessagePosition, MessageStatus, MessageType, PreviewContentType, ProtocolType, RemoteAgentAuthType,
