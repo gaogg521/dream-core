@@ -11,6 +11,7 @@ use dream_core_auth::CurrentUser;
 use crate::error::MemoryError;
 use crate::service::MemoryActor;
 use crate::state::OneMemoryRouterState;
+use dream_core_common::governance_caller::{GovernanceCaller, classify_governance_caller};
 
 /// Requires enterprise membership with an admin role — collection inventory,
 /// refinement, and grant administration belong to them.
@@ -49,7 +50,16 @@ impl FromRequestParts<OneMemoryRouterState> for RequireMemoryMember {
         // C1-2 fix: a blocked machine must stop reading company memory. See
         // `dream_domain_platform::rbac::RequirePlatformMember` for the full
         // reasoning (deliberately not on `RequireMemoryAdmin`, same as there).
-        if let Some(machine_id) = parts.headers.get("x-dream-machine-id").and_then(|v| v.to_str().ok())
+        let caller_machine = match classify_governance_caller(&parts.headers) {
+            GovernanceCaller::Identified(id) => Some(Some(id)),
+            GovernanceCaller::UnidentifiedRemoteClient => Some(None),
+            // The console reaches this same extractor over a session cookie and
+            // never sends a machine id — judging it on one would lock an
+            // administrator whose own laptop is blocked out of the page that
+            // unblocks it.
+            GovernanceCaller::BrowserSession => None,
+        };
+        if let Some(machine_id) = caller_machine
             && state
                 .service
                 .machine_blocked(&actor.tenant_id, &user.id, machine_id)

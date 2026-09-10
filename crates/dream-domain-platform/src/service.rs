@@ -255,19 +255,40 @@ impl PlatformService {
     /// this (tenant, user, machine) — a machine that never heartbeat, or one
     /// still `approved`/`pending` — only an explicit `'blocked'` status trips
     /// this.
+    /// `machine_id` is `None` when the caller is a desktop client that sent no
+    /// `x-dream-machine-id`. That used to be waved through, which made the block
+    /// advisory: it held only for as long as the client chose to identify itself,
+    /// and the real client omits the header whenever its own lookup times out.
+    ///
+    /// An unidentified client is refused, but only when this user actually has a
+    /// blocked node — the only case where something is being enforced and the
+    /// request cannot show it is not the thing being kept out. A user with
+    /// nothing blocked is left exactly as before. Browser sessions never reach
+    /// here; see `dream_core_common::governance_caller`.
     pub async fn machine_blocked(
         &self,
         tenant_id: &str,
         user_id: &str,
-        machine_id: &str,
+        machine_id: Option<&str>,
     ) -> Result<bool, PlatformError> {
-        let status = self
-            .db
-            .fetch_optional_scalar::<String>(
-                "SELECT status FROM one_runtime_nodes WHERE tenant_id = ? AND user_id = ? AND machine_id = ? LIMIT 1",
-                &dream_core_db::db_params![tenant_id, user_id, machine_id],
-            )
-            .await?;
+        let status = match machine_id {
+            Some(machine_id) => {
+                self.db
+                    .fetch_optional_scalar::<String>(
+                        "SELECT status FROM one_runtime_nodes WHERE tenant_id = ? AND user_id = ? AND machine_id = ?                          LIMIT 1",
+                        &dream_core_db::db_params![tenant_id, user_id, machine_id],
+                    )
+                    .await?
+            }
+            None => {
+                self.db
+                    .fetch_optional_scalar::<String>(
+                        "SELECT status FROM one_runtime_nodes WHERE tenant_id = ? AND user_id = ? AND status =                          'blocked' LIMIT 1",
+                        &dream_core_db::db_params![tenant_id, user_id],
+                    )
+                    .await?
+            }
+        };
         Ok(status.as_deref() == Some("blocked"))
     }
 
@@ -4796,12 +4817,22 @@ mod tests {
 
         assert!(
             service
-                .machine_blocked("t1", "member1", "blocked-laptop")
+                .machine_blocked("t1", "member1", Some("blocked-laptop"))
                 .await
                 .unwrap()
         );
-        assert!(!service.machine_blocked("t1", "member1", "ok-laptop").await.unwrap());
-        assert!(!service.machine_blocked("t1", "member1", "never-seen").await.unwrap());
+        assert!(
+            !service
+                .machine_blocked("t1", "member1", Some("ok-laptop"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !service
+                .machine_blocked("t1", "member1", Some("never-seen"))
+                .await
+                .unwrap()
+        );
     }
 
     /// Personal edition (no one_user_org table/row): resolve → None, admin gate

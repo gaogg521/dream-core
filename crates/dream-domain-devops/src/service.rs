@@ -689,17 +689,44 @@ impl DevopsService {
     /// still `approved`/`pending` — only an explicit `'blocked'` status trips
     /// this. Same missing-table fallback as `user_org_role`: one-org crate not
     /// initialized means there is no roster to be blocked from.
-    pub async fn machine_blocked(&self, user_id: &str, machine_id: &str) -> Result<bool, DevopsError> {
+    /// `machine_id` is `None` when the caller sent no `x-dream-machine-id`.
+    /// That used to be let through unconditionally, which made the block
+    /// advisory: it held only for as long as the client chose to identify
+    /// itself, and the client omits the header whenever its own lookup times
+    /// out. Anyone who simply stopped sending it — an older build, a
+    /// hand-made request with the same bearer token — was never blocked at
+    /// all.
+    ///
+    /// So an unidentified caller is refused, but only when this user actually
+    /// has a blocked node: that is the only case where something is being
+    /// enforced and the request cannot prove it is not the thing being kept
+    /// out. A user with nothing blocked has nothing to bypass, and is left
+    /// exactly as before — no old client breaks unless an administrator has
+    /// deliberately blocked one of that user's machines.
+    pub async fn machine_blocked(&self, user_id: &str, machine_id: Option<&str>) -> Result<bool, DevopsError> {
         let Some(tenant_id) = self.active_tenant_id(user_id).await? else {
             return Ok(false);
         };
-        let result = self
-            .db
-            .fetch_optional_scalar::<String>(
-                "SELECT status FROM one_runtime_nodes WHERE tenant_id = ? AND user_id = ? AND machine_id = ? LIMIT 1",
-                &db_params![tenant_id, user_id, machine_id],
-            )
-            .await;
+        let result = match machine_id {
+            Some(machine_id) => {
+                self.db
+                    .fetch_optional_scalar::<String>(
+                        "SELECT status FROM one_runtime_nodes WHERE tenant_id = ? AND user_id = ? AND machine_id = ? \
+                         LIMIT 1",
+                        &db_params![tenant_id, user_id, machine_id],
+                    )
+                    .await
+            }
+            None => {
+                self.db
+                    .fetch_optional_scalar::<String>(
+                        "SELECT status FROM one_runtime_nodes WHERE tenant_id = ? AND user_id = ? AND status = \
+                         'blocked' LIMIT 1",
+                        &db_params![tenant_id, user_id],
+                    )
+                    .await
+            }
+        };
         match result {
             Ok(status) => Ok(status.as_deref() == Some("blocked")),
             Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => Ok(false),
@@ -3419,7 +3446,7 @@ mod tests {
 
         // Standalone: one_runtime_nodes (and one_active_tenant) never created
         // -> false, never an error (C1-2).
-        assert!(!svc.machine_blocked("u1", "m1").await.unwrap());
+        assert!(!svc.machine_blocked("u1", Some("m1")).await.unwrap());
 
         sqlx::raw_sql(
             "CREATE TABLE one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
@@ -3433,10 +3460,43 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(svc.machine_blocked("member1", "blocked-machine").await.unwrap());
-        assert!(!svc.machine_blocked("member1", "approved-machine").await.unwrap());
+        assert!(svc.machine_blocked("member1", Some("blocked-machine")).await.unwrap());
+        assert!(!svc.machine_blocked("member1", Some("approved-machine")).await.unwrap());
         // Never heartbeat -> false, not an error.
-        assert!(!svc.machine_blocked("member1", "never-seen-machine").await.unwrap());
+        assert!(
+            !svc.machine_blocked("member1", Some("never-seen-machine"))
+                .await
+                .unwrap()
+        );
+
+        // No `x-dream-machine-id` at all. This user HAS a blocked node, and
+        // the request cannot show it is not that node — refuse. Passing it
+        // through is what made the block advisory: a client that stops
+        // identifying itself was never blocked, and the real client omits the
+        // header whenever its own machine-id lookup times out.
+        assert!(svc.machine_blocked("member1", None).await.unwrap());
+    }
+
+    /// The other half, and the one that decides the blast radius: an
+    /// unidentified caller is only refused when there is something to enforce.
+    /// A member with nothing blocked keeps working exactly as before, so no
+    /// older client breaks unless an administrator deliberately blocked one of
+    /// that member's machines.
+    #[tokio::test]
+    async fn an_unidentified_caller_is_allowed_when_this_member_has_no_blocked_node() {
+        let svc = service().await;
+        sqlx::raw_sql(
+            "CREATE TABLE one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE one_runtime_nodes (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, machine_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'approved');
+             INSERT INTO one_active_tenant (user_id, tenant_id) VALUES ('member1', 't1');
+             INSERT INTO one_runtime_nodes (id, tenant_id, user_id, machine_id, status) VALUES                 ('n1', 't1', 'member1', 'approved-machine', 'approved');",
+        )
+        .execute(svc.db.sqlite())
+        .await
+        .unwrap();
+
+        assert!(!svc.machine_blocked("member1", None).await.unwrap());
+        assert!(!svc.machine_blocked("member1", Some("approved-machine")).await.unwrap());
     }
 
     /// Seed a two-group enterprise: memberA∈Group A, memberB∈Group B, admin1 is

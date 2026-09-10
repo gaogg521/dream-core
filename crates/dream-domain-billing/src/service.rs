@@ -312,18 +312,40 @@ impl BillingService {
     /// `x-dream-machine-id` header) has been blocked by an administrator in
     /// the caller's active tenant (C1-2 fix). `Ok(false)` when the caller has
     /// no active tenant, or the roster has no matching row.
-    pub async fn machine_blocked(&self, user_id: &str, machine_id: &str) -> Result<bool, BillingError> {
+    /// `machine_id` is `None` when the caller is a desktop client that sent no
+    /// `x-dream-machine-id`. That used to be waved through, which made the
+    /// block advisory: it held only for as long as the client chose to
+    /// identify itself, and the real client omits the header whenever its own
+    /// lookup times out.
+    ///
+    /// An unidentified client is refused, but only when this user actually has
+    /// a blocked node. A user with nothing blocked is left exactly as before.
+    /// Browser sessions never reach here; see
+    /// `dream_core_common::governance_caller`.
+    pub async fn machine_blocked(&self, user_id: &str, machine_id: Option<&str>) -> Result<bool, BillingError> {
         let Some(tenant_id) = self.active_tenant_id(user_id).await? else {
             return Ok(false);
         };
-        let status: Option<String> = self
-            .db
-            .fetch_optional_scalar(
-                "SELECT status FROM one_runtime_nodes WHERE tenant_id = ? AND user_id = ? AND machine_id = ? LIMIT 1",
-                &db_params![tenant_id, user_id, machine_id],
-            )
-            .await
-            .unwrap_or(None);
+        let status: Option<String> = match machine_id {
+            Some(machine_id) => {
+                self.db
+                    .fetch_optional_scalar(
+                        "SELECT status FROM one_runtime_nodes WHERE tenant_id = ? AND user_id = ? AND machine_id = ?                          LIMIT 1",
+                        &db_params![tenant_id, user_id, machine_id],
+                    )
+                    .await
+                    .unwrap_or(None)
+            }
+            None => {
+                self.db
+                    .fetch_optional_scalar(
+                        "SELECT status FROM one_runtime_nodes WHERE tenant_id = ? AND user_id = ? AND status =                          'blocked' LIMIT 1",
+                        &db_params![tenant_id, user_id],
+                    )
+                    .await
+                    .unwrap_or(None)
+            }
+        };
         Ok(status.as_deref() == Some("blocked"))
     }
 
@@ -2482,14 +2504,14 @@ mod tests {
         let (svc, pool) = service().await;
 
         // No active tenant at all -> false, not an error.
-        assert!(!svc.machine_blocked("member1", "blocked-laptop").await.unwrap());
+        assert!(!svc.machine_blocked("member1", Some("blocked-laptop")).await.unwrap());
 
         seed_runtime_node(&pool, "t1", "member1", "blocked-laptop", "blocked").await;
         seed_runtime_node(&pool, "t1", "member1", "ok-laptop", "approved").await;
 
-        assert!(svc.machine_blocked("member1", "blocked-laptop").await.unwrap());
-        assert!(!svc.machine_blocked("member1", "ok-laptop").await.unwrap());
-        assert!(!svc.machine_blocked("member1", "never-seen").await.unwrap());
+        assert!(svc.machine_blocked("member1", Some("blocked-laptop")).await.unwrap());
+        assert!(!svc.machine_blocked("member1", Some("ok-laptop")).await.unwrap());
+        assert!(!svc.machine_blocked("member1", Some("never-seen")).await.unwrap());
     }
 
     /// A company admin's scope: the whole company, no group restriction.
@@ -4066,11 +4088,18 @@ mod tests {
         .await
         .unwrap();
 
-        let depts: Vec<Option<String>> =
-            sqlx::query_scalar("SELECT department_id FROM one_usage_events WHERE user_id = 'dana' ORDER BY created_at")
-                .fetch_all(&sqlite)
-                .await
-                .unwrap();
+        // `created_at` is milliseconds and both turns are recorded in the same
+        // breath, so ordering on it alone is a coin flip — measured at a 50%
+        // failure rate before the tiebreak was added. `id` settles it the same
+        // way the production listing query does (`created_at DESC, id DESC`):
+        // these are UUIDv7, whose counter keeps rising inside one millisecond,
+        // so it is genuine insertion order rather than merely a stable one.
+        let depts: Vec<Option<String>> = sqlx::query_scalar(
+            "SELECT department_id FROM one_usage_events WHERE user_id = 'dana' ORDER BY created_at, id",
+        )
+        .fetch_all(&sqlite)
+        .await
+        .unwrap();
         assert_eq!(depts, vec![Some("deptA".to_owned()), Some("deptA".to_owned())]);
 
         // No one_user_org row at all → NULL, not an error.
@@ -4191,11 +4220,18 @@ mod tests {
         .await
         .unwrap();
 
-        let depts: Vec<Option<String>> =
-            sqlx::query_scalar("SELECT department_id FROM one_usage_events WHERE user_id = 'dana' ORDER BY created_at")
-                .fetch_all(&sqlite)
-                .await
-                .unwrap();
+        // `created_at` is milliseconds and both turns are recorded in the same
+        // breath, so ordering on it alone is a coin flip — measured at a 50%
+        // failure rate before the tiebreak was added. `id` settles it the same
+        // way the production listing query does (`created_at DESC, id DESC`):
+        // these are UUIDv7, whose counter keeps rising inside one millisecond,
+        // so it is genuine insertion order rather than merely a stable one.
+        let depts: Vec<Option<String>> = sqlx::query_scalar(
+            "SELECT department_id FROM one_usage_events WHERE user_id = 'dana' ORDER BY created_at, id",
+        )
+        .fetch_all(&sqlite)
+        .await
+        .unwrap();
         assert_eq!(depts, vec![Some("deptA".to_owned()), Some("deptB".to_owned())]);
     }
 
