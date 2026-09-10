@@ -468,6 +468,31 @@ mod tests {
         }
     }
 
+    /// The whole Vertex path in one call, with the body the Add-Platform form
+    /// actually produces: no endpoint (the platform has no preset and the field
+    /// is optional), a bearer token, no bedrock_config.
+    ///
+    /// It was broken twice over — the validator rejected the empty endpoint,
+    /// and the dispatch would not have recognised the platform name even if it
+    /// had passed. Asserting the two halves separately still left the claim
+    /// "Vertex works now" resting on reading rather than on running it.
+    #[tokio::test]
+    async fn the_vertex_dialogs_actual_payload_returns_the_catalogue() {
+        let (svc, _db) = setup().await;
+        let req = FetchModelsAnonymousRequest {
+            platform: "gemini-vertex-ai".into(),
+            base_url: String::new(),
+            api_key: "ya29.token".into(),
+            bedrock_config: None,
+            try_fix: true,
+        };
+        let res = svc
+            .fetch_models_anonymous(&req)
+            .await
+            .expect("the Vertex dialog's own payload must be accepted end to end");
+        assert!(!res.models.is_empty(), "Vertex returns its built-in catalogue");
+    }
+
     /// URL auto-fix probes `/v1` variants, which Vertex has none of — the
     /// exclusion list had the same invented spelling as the dispatch.
     #[test]
