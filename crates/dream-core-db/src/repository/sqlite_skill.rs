@@ -91,10 +91,12 @@ impl ISkillRepository for SqliteSkillRepository {
 
         sqlx::query(
             "INSERT INTO skills \
-                (id, user_id, name, description, path, source, enabled, deleted_at, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?) \
+                (id, user_id, name, description, display_name, icon_file, path, source, enabled, deleted_at, created_at, updated_at)\
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)\
              ON CONFLICT(user_id, name) WHERE user_id IS NOT NULL DO UPDATE SET \
                 description = excluded.description, \
+                display_name = excluded.display_name,\
+                icon_file = excluded.icon_file,\
                 path = excluded.path, \
                 source = excluded.source, \
                 enabled = excluded.enabled, \
@@ -105,6 +107,8 @@ impl ISkillRepository for SqliteSkillRepository {
         .bind(user_id)
         .bind(params.name)
         .bind(params.description)
+        .bind(params.display_name)
+        .bind(params.icon_file)
         .bind(params.path)
         .bind(params.source)
         .bind(params.enabled)
@@ -288,6 +292,8 @@ mod tests {
             .upsert(UpsertSkillParams {
                 name: "sample",
                 description: Some("Old"),
+                display_name: None,
+                icon_file: None,
                 path: "/tmp/old",
                 source: "user",
                 enabled: true,
@@ -300,6 +306,8 @@ mod tests {
             .upsert(UpsertSkillParams {
                 name: "sample",
                 description: Some("New"),
+                display_name: None,
+                icon_file: None,
                 path: "/tmp/new",
                 source: "user",
                 enabled: true,
@@ -321,6 +329,8 @@ mod tests {
         repo.upsert(UpsertSkillParams {
             name: "active",
             description: None,
+            display_name: None,
+            icon_file: None,
             path: "/tmp/active",
             source: "user",
             enabled: true,
@@ -330,6 +340,8 @@ mod tests {
         repo.upsert(UpsertSkillParams {
             name: "deleted",
             description: None,
+            display_name: None,
+            icon_file: None,
             path: "/tmp/deleted",
             source: "user",
             enabled: true,
@@ -384,6 +396,8 @@ mod tests {
                 UpsertSkillParams {
                     name: "shared",
                     description: Some("A"),
+                    display_name: None,
+                    icon_file: None,
                     path: "/tmp/a",
                     source: "user",
                     enabled: true,
@@ -397,6 +411,8 @@ mod tests {
                 UpsertSkillParams {
                     name: "shared",
                     description: Some("B"),
+                    display_name: None,
+                    icon_file: None,
                     path: "/tmp/b",
                     source: "user",
                     enabled: true,
@@ -436,6 +452,8 @@ mod tests {
         repo.upsert_global(UpsertSkillParams {
             name: "shared",
             description: Some("Global"),
+            display_name: None,
+            icon_file: None,
             path: "/tmp/global",
             source: "builtin",
             enabled: true,
@@ -457,6 +475,8 @@ mod tests {
             UpsertSkillParams {
                 name: "shared",
                 description: Some("B"),
+                display_name: None,
+                icon_file: None,
                 path: "/tmp/b",
                 source: "user",
                 enabled: true,

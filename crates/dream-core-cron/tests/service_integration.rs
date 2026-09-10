@@ -2438,6 +2438,8 @@ async fn sk11_init_reconciles_owner_rows_and_cleans_legacy_names() {
             dream_core_db::UpsertSkillParams {
                 name: "analyze",
                 description: Some("Analyze numbers"),
+                display_name: None,
+                icon_file: None,
                 path: "/legacy/path",
                 source: "cron",
                 enabled: true,

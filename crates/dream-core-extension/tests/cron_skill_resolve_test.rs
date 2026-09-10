@@ -74,6 +74,8 @@ async fn cron_skill_resolves_only_for_owning_user() {
         UpsertSkillParams {
             name: "number-analysis",
             description: Some("Saved cron skill"),
+display_name: None,
+icon_file: None,
             path: skill_dir.to_str().unwrap(),
             source: "cron",
             enabled: true,

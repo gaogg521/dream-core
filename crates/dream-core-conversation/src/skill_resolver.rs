@@ -351,6 +351,8 @@ mod tests {
             UpsertSkillParams {
                 name: "stock-picker",
                 description: Some("User A skill"),
+                display_name: None,
+                icon_file: None,
                 path: &user_a_skill.to_string_lossy(),
                 source: "user",
                 enabled: true,
@@ -363,6 +365,8 @@ mod tests {
             UpsertSkillParams {
                 name: "fund-analysis",
                 description: Some("User B skill"),
+                display_name: None,
+                icon_file: None,
                 path: &user_b_skill.to_string_lossy(),
                 source: "user",
                 enabled: true,
@@ -424,6 +428,8 @@ mod tests {
             UpsertSkillParams {
                 name: "shared",
                 description: Some("User A skill"),
+                display_name: None,
+                icon_file: None,
                 path: &user_a_skill_path,
                 source: "user",
                 enabled: true,
@@ -436,6 +442,8 @@ mod tests {
             UpsertSkillParams {
                 name: "shared",
                 description: Some("User B skill"),
+                display_name: None,
+                icon_file: None,
                 path: &user_b_skill_path,
                 source: "user",
                 enabled: true,

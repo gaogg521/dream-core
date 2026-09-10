@@ -4,8 +4,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Extension, Json, Path as AxumPath, State};
+use axum::http::{StatusCode, header};
+use axum::response::Response;
 use axum::routing::{delete, get, post};
 use tracing::warn;
 
@@ -157,6 +160,7 @@ pub fn skill_routes(state: SkillRouterState) -> Router {
         .route("/api/skills/import", post(import_skill))
         .route("/api/skills/export-symlink", post(export_skill_symlink))
         .route("/api/skills/{name}", delete(delete_skill))
+        .route("/api/skills/{name}/icon", get(skill_icon))
         // Scanning & discovery
         .route("/api/skills/scan", post(scan_for_skills))
         .route("/api/skills/detect-paths", get(detect_paths))
@@ -216,6 +220,8 @@ async fn list_skills(
             source: to_source_response(s.source),
             category: s.category,
             tags: s.tags,
+            display_name: s.display_name,
+            icon_file: s.icon_file,
         })
         .collect();
     Ok(Json(ApiResponse::ok(resp)))
@@ -333,6 +339,47 @@ async fn delete_skill(
     )
     .await?;
     Ok(Json(ApiResponse::success()))
+}
+
+/// `GET /api/skills/:name/icon` — serve a skill's icon bytes.
+///
+/// Display-only companion to the skills listing: imported skills may ship an
+/// icon file (e.g. `_icon.svg`) beside SKILL.md, and the Skills Hub renders
+/// it from this route so icon bytes never ride along in list responses.
+async fn skill_icon(
+    State(state): State<SkillRouterState>,
+    Extension(current_user): Extension<CurrentUser>,
+    AxumPath(name): AxumPath<String>,
+) -> Result<Response, ApiError> {
+    let row = state
+        .skill_repo
+        .find_by_name_for_user(&current_user.id, &name)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("skill '{name}' not found")))?;
+    let icon_file = row
+        .icon_file
+        .as_deref()
+        .filter(|f| !f.is_empty())
+        .ok_or_else(|| ApiError::NotFound(format!("skill '{name}' has no icon")))?;
+    let path = std::path::Path::new(&row.path).join(icon_file);
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| ApiError::NotFound(format!("icon file for skill '{name}' not found")))?;
+    let content_type = match icon_file.rsplit('.').next().unwrap_or_default().to_ascii_lowercase().as_str() {
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => "application/octet-stream",
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(bytes))
+        .map_err(|e| ApiError::Internal(e.to_string()))
 }
 
 /// `GET /api/skills/import-history` — list recent skill import records.

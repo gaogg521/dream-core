@@ -209,6 +209,8 @@ async fn discover_by_names_for_user_ignores_other_users_skills() {
         UpsertSkillParams {
             name: "current-skill",
             description: Some("Current user skill"),
+            display_name: None,
+            icon_file: None,
             path: &current_dir.to_string_lossy(),
             source: "user",
             enabled: true,
@@ -221,6 +223,8 @@ async fn discover_by_names_for_user_ignores_other_users_skills() {
         UpsertSkillParams {
             name: "foreign-skill",
             description: Some("Foreign user skill"),
+            display_name: None,
+            icon_file: None,
             path: &foreign_dir.to_string_lossy(),
             source: "user",
             enabled: true,
@@ -231,6 +235,8 @@ async fn discover_by_names_for_user_ignores_other_users_skills() {
     repo.upsert_global(UpsertSkillParams {
         name: "global-skill",
         description: Some("Global skill"),
+        display_name: None,
+        icon_file: None,
         path: "global-skill",
         source: "builtin",
         enabled: true,
