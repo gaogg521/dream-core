@@ -23,6 +23,7 @@ use crate::models::{
 };
 use crate::service::{CreateRequirementInput, UpdateRequirementInput};
 use crate::state::OneDevopsRouterState;
+use dream_core_common::governance_caller::{GovernanceCaller, classify_governance_caller};
 
 pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
     Router::new()
@@ -683,18 +684,29 @@ async fn require_registry_admin(state: &OneDevopsRouterState, user_id: &str) -> 
 
 /// C1-2 fix: reject the request when the caller's machine has been blocked
 /// in the runtime-node roster. The client self-reports its machine id in
-/// `x-dream-machine-id` (added alongside the Bearer token on every remote
-/// governance request); a request with no such header — an older client, or
-/// one that never resolved its identity — is let through unchanged, the same
-/// fail-open posture every other machine-agnostic check in this crate takes
-/// when it cannot read the signal it needs.
+/// `x-dream-machine-id`, added alongside the Bearer token on every remote
+/// governance request.
+///
+/// A client that sends no such header is passed on as `None` rather than
+/// waved through — see `machine_blocked`, which refuses an unidentified
+/// caller only when this user actually has a blocked node. Waving it through
+/// made the block advisory: it held only while the client chose to identify
+/// itself.
+///
+/// The console is exempt, and has to be: these same routes back the skill,
+/// MCP and channel registry pages, so judging a browser session on a machine
+/// id it never sends would lock an administrator whose own laptop is blocked
+/// out of the page they would unblock it from. `classify_governance_caller`
+/// is what tells the two apart.
 async fn reject_if_machine_blocked(
     state: &OneDevopsRouterState,
     headers: &HeaderMap,
     user_id: &str,
 ) -> Result<(), DevopsError> {
-    let Some(machine_id) = headers.get("x-dream-machine-id").and_then(|v| v.to_str().ok()) else {
-        return Ok(());
+    let machine_id = match classify_governance_caller(headers) {
+        GovernanceCaller::Identified(id) => Some(id),
+        GovernanceCaller::UnidentifiedRemoteClient => None,
+        GovernanceCaller::BrowserSession => return Ok(()),
     };
     if state.service.machine_blocked(user_id, machine_id).await? {
         return Err(DevopsError::MachineBlocked(

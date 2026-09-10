@@ -24,6 +24,7 @@ use crate::models::{
 };
 use crate::service::{LLM_CALL_RETENTION_DAYS, MediaAssetFilters, MediaUsage};
 use crate::state::OneBillingRouterState;
+use dream_core_common::governance_caller::{GovernanceCaller, classify_governance_caller};
 
 pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
     Router::new()
@@ -281,7 +282,13 @@ async fn billing_plan(
     // would otherwise enforce against itself. No header (older client) skips
     // the check, same fail-open posture as every other machine-agnostic
     // check in this codebase.
-    if let Some(machine_id) = headers.get("x-dream-machine-id").and_then(|v| v.to_str().ok())
+    let caller_machine = match classify_governance_caller(&headers) {
+        GovernanceCaller::Identified(id) => Some(Some(id)),
+        GovernanceCaller::UnidentifiedRemoteClient => Some(None),
+        // The console never sends a machine id; see `governance_caller`.
+        GovernanceCaller::BrowserSession => None,
+    };
+    if let Some(machine_id) = caller_machine
         && state.service.machine_blocked(&user.id, machine_id).await?
     {
         return Err(BillingError::MachineBlocked(

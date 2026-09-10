@@ -294,18 +294,38 @@ pub(crate) fn is_missing_table_error(e: &sqlx::Error) -> bool {
 /// `ConversationService`/`AgentRegistry` dependencies — `EmployeeService`
 /// itself is never unit-constructed anywhere in this crate for exactly that
 /// reason. `EmployeeService::machine_blocked` is a thin wrapper over this.
+/// `machine_id` is `None` when the caller is a desktop client that sent no
+/// `x-dream-machine-id`. That used to be waved through, which made the block
+/// advisory: it held only for as long as the client chose to identify itself,
+/// and the real client omits the header whenever its own lookup times out.
+///
+/// An unidentified client is refused, but only when this user actually has a
+/// blocked node — the only case where something is being enforced and the
+/// request cannot show it is not the thing being kept out. A user with
+/// nothing blocked is left exactly as before. Browser sessions never reach
+/// here; see `dream_core_common::governance_caller`.
 pub(crate) async fn machine_blocked_query(
     db: &DbPool,
     tenant_id: &str,
     user_id: &str,
-    machine_id: &str,
+    machine_id: Option<&str>,
 ) -> Result<bool, EmployeeError> {
-    let result = db
-        .fetch_optional_scalar::<String>(
-            "SELECT status FROM one_runtime_nodes WHERE tenant_id = ? AND user_id = ? AND machine_id = ? LIMIT 1",
-            &db_params![tenant_id, user_id, machine_id],
-        )
-        .await;
+    let result = match machine_id {
+        Some(machine_id) => {
+            db.fetch_optional_scalar::<String>(
+                "SELECT status FROM one_runtime_nodes WHERE tenant_id = ? AND user_id = ? AND machine_id = ? LIMIT 1",
+                &db_params![tenant_id, user_id, machine_id],
+            )
+            .await
+        }
+        None => {
+            db.fetch_optional_scalar::<String>(
+                "SELECT status FROM one_runtime_nodes WHERE tenant_id = ? AND user_id = ? AND status = 'blocked'                  LIMIT 1",
+                &db_params![tenant_id, user_id],
+            )
+            .await
+        }
+    };
     match result {
         Ok(status) => Ok(status.as_deref() == Some("blocked")),
         Err(e) if is_missing_table_error(&e) => Ok(false),
@@ -970,7 +990,7 @@ impl EmployeeService {
         &self,
         tenant_id: &str,
         user_id: &str,
-        machine_id: &str,
+        machine_id: Option<&str>,
     ) -> Result<bool, EmployeeError> {
         machine_blocked_query(&self.db, tenant_id, user_id, machine_id).await
     }
@@ -2272,7 +2292,7 @@ mod tests {
 
         // Standalone: table not yet created by this seed -> false, not an error.
         assert!(
-            !machine_blocked_query(&pool, "t1", "member1", "blocked-laptop")
+            !machine_blocked_query(&pool, "t1", "member1", Some("blocked-laptop"))
                 .await
                 .unwrap()
         );
@@ -2281,17 +2301,17 @@ mod tests {
         seed_runtime_node(&pool, "t1", "member1", "ok-laptop", "approved").await;
 
         assert!(
-            machine_blocked_query(&pool, "t1", "member1", "blocked-laptop")
+            machine_blocked_query(&pool, "t1", "member1", Some("blocked-laptop"))
                 .await
                 .unwrap()
         );
         assert!(
-            !machine_blocked_query(&pool, "t1", "member1", "ok-laptop")
+            !machine_blocked_query(&pool, "t1", "member1", Some("ok-laptop"))
                 .await
                 .unwrap()
         );
         assert!(
-            !machine_blocked_query(&pool, "t1", "member1", "never-seen")
+            !machine_blocked_query(&pool, "t1", "member1", Some("never-seen"))
                 .await
                 .unwrap()
         );

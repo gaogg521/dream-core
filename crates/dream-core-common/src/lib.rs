@@ -15,6 +15,7 @@ mod crypto;
 mod enums;
 mod error;
 pub mod error_extract;
+pub mod governance_caller;
 mod hooks;
 mod id;
 pub mod license;

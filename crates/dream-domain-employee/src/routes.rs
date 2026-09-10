@@ -17,6 +17,7 @@ use crate::models::{EmployeeGrantRow, EmployeeRunRow, PersonalAgentDto};
 use crate::service::{CreateEmployeeInput, ScheduleInput, UpdateEmployeeInput};
 use crate::state::OneEmployeeRouterState;
 use crate::team_sync::{TeamAgentPayload, TeamAgentSyncReport};
+use dream_core_common::governance_caller::{GovernanceCaller, classify_governance_caller};
 
 pub fn one_employee_routes(state: OneEmployeeRouterState) -> Router {
     Router::new()
@@ -114,7 +115,13 @@ async fn list_agents(
     // employees. The client self-reports its machine id; no header (older
     // client) means the check is skipped, same fail-open posture as every
     // other machine-agnostic check here.
-    if let Some(machine_id) = headers.get("x-dream-machine-id").and_then(|v| v.to_str().ok())
+    let caller_machine = match classify_governance_caller(&headers) {
+        GovernanceCaller::Identified(id) => Some(Some(id)),
+        GovernanceCaller::UnidentifiedRemoteClient => Some(None),
+        // The console never sends a machine id; see `governance_caller`.
+        GovernanceCaller::BrowserSession => None,
+    };
+    if let Some(machine_id) = caller_machine
         && state.service.machine_blocked(&tenant, &user.id, machine_id).await?
     {
         return Err(EmployeeError::MachineBlocked(
