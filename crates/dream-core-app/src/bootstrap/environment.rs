@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use tracing::info;
+use tracing::{error, info, warn};
 
 use dream_core_app::{AppConfig, IdentityMode};
 use dream_core_db::Database;
@@ -104,12 +104,72 @@ fn validate_identity_environment(
     Ok(())
 }
 
+/// Rename the pre-rebrand data names onto the current ones, once.
+///
+/// Aliasing alone (`resolve_with_legacy`) left every install that predates the
+/// rename reading and writing `aionui-backend.db` indefinitely — and that file
+/// is hidden the moment anything creates a `one-backend.db` beside it, because
+/// the current name always wins. The user then opens an app with none of their
+/// history. Renaming ends that exposure instead of carrying it forever.
+///
+/// Runs here because this is before the catalog is opened, the session store is
+/// read, or the process registry is touched: Windows will not rename a
+/// directory or a file that anything holds open.
+///
+/// Never fails the boot. A rename that does not happen leaves the legacy name
+/// exactly where it was, which `resolve_with_legacy` still finds — the same
+/// behaviour that shipped before this ran at all.
+fn adopt_current_data_names(data_dir: &std::path::Path) {
+    use dream_core_common::{
+        AGENT_SESSIONS_DIR, AdoptOutcome, BACKEND_DB_NAME, LEGACY_AGENT_SESSIONS_DIR, LEGACY_BACKEND_DB_NAME,
+        LEGACY_PROCESS_REGISTRY_DIR, PROCESS_REGISTRY_DIR, adopt_current_name,
+    };
+    use dream_core_process::RUNTIME_DIR;
+
+    let runtime_dir = data_dir.join(RUNTIME_DIR);
+    let targets: [(&std::path::Path, &str, &str); 3] = [
+        (data_dir, BACKEND_DB_NAME, LEGACY_BACKEND_DB_NAME),
+        (data_dir, AGENT_SESSIONS_DIR, LEGACY_AGENT_SESSIONS_DIR),
+        (runtime_dir.as_path(), PROCESS_REGISTRY_DIR, LEGACY_PROCESS_REGISTRY_DIR),
+    ];
+
+    for (parent, current, legacy) in targets {
+        match adopt_current_name(parent, current, legacy) {
+            AdoptOutcome::AlreadyCurrent => {}
+            AdoptOutcome::Adopted => {
+                info!(current, legacy, dir = %parent.display(), "startup: adopted the current data name");
+            }
+            // Both names hold data. Which one matters is not something this
+            // code can know, and guessing wrong costs the user everything, so
+            // it keeps today's resolution (current wins) and says so.
+            AdoptOutcome::Conflict => {
+                error!(
+                    current,
+                    legacy,
+                    dir = %parent.display(),
+                    "startup: both the current and the pre-rebrand name exist; using the current one and leaving the other \n                     untouched — if history is missing, the other file is where it is"
+                );
+            }
+            AdoptOutcome::Failed => {
+                warn!(
+                    current,
+                    legacy,
+                    dir = %parent.display(),
+                    "startup: could not adopt the current data name; continuing on the pre-rebrand one"
+                );
+            }
+        }
+    }
+}
+
 /// Layer 2: Materialize builtin skills + initialize the database.
 ///
 /// Requires only `data_dir`. Subcommands that need persistent state
 /// (database, skill files) should call this after `init_environment`.
 pub async fn init_data_layer(config: &AppConfig) -> Result<Database, BootstrapError> {
     let boot = Instant::now();
+
+    adopt_current_data_names(&config.data_dir);
 
     materialize_builtin_skills(&config.data_dir).await.map_err(|e| {
         BootstrapError::new(
