@@ -232,10 +232,18 @@ impl DevopsService {
     // -- API assets (P1-6) -------------------------------------------------
 
     /// Non-deleted assets of one tenant, newest first.
+    ///
+    /// `created_at` is milliseconds, so two imports in the same tick tie — and
+    /// a tie under a bare `ORDER BY created_at DESC` is resolved by SQLite
+    /// however it likes (in practice rowid ascending, i.e. OLDEST first, the
+    /// exact opposite of the contract). `id` breaks it correctly rather than
+    /// merely deterministically: these are UUIDv7, whose leading 48 bits are
+    /// that same millisecond and whose counter keeps rising within it, so
+    /// `id DESC` is genuine creation order — see `new_id`.
     pub async fn list_api_assets(&self, tenant_id: &str) -> Result<Vec<ApiAssetDto>, DevopsError> {
         let sql = format!(
             "SELECT {ASSET_COLS} FROM one_api_assets \
-                           WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY created_at DESC"
+                           WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY created_at DESC, id DESC"
         );
         let rows = self
             .db
@@ -574,6 +582,42 @@ mod tests {
             svc.import_api_asset("t1", "admin1", "  ", &sample_spec()).await,
             Err(DevopsError::BadRequest(_))
         ));
+    }
+
+    /// The ordering above, pinned so it cannot regress on a slow machine.
+    ///
+    /// `list_orders_and_soft_delete_hides` creates two assets back to back and
+    /// asserts newest-first, but whether they land in the same millisecond is
+    /// up to the host: locally they usually do not and it passes, on a loaded
+    /// CI runner they did and it failed with the older asset at index 0. This
+    /// forces the tie instead of hoping for it, so it fails every time the
+    /// tiebreak is missing rather than once in a while.
+    #[tokio::test]
+    async fn list_orders_newest_first_when_created_at_ties() {
+        let svc = service().await;
+        let a = svc
+            .import_api_asset("t1", "admin1", "first", &sample_spec())
+            .await
+            .unwrap();
+        let b = svc
+            .import_api_asset("t1", "admin1", "second", &sample_spec())
+            .await
+            .unwrap();
+
+        // Collapse both rows onto one timestamp: the state a same-millisecond
+        // burst produces, without depending on the host being fast enough.
+        svc.db
+            .execute("UPDATE one_api_assets SET created_at = 1700000000000", &db_params![])
+            .await
+            .unwrap();
+
+        let listed = svc.list_api_assets("t1").await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(
+            listed[0].id, b.id,
+            "with created_at tied, the later import must still come first"
+        );
+        assert_eq!(listed[1].id, a.id);
     }
 
     #[tokio::test]
