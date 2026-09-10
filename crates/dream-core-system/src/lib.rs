@@ -19,6 +19,22 @@ pub fn platform_authenticates_without_api_key(platform: &str) -> bool {
     matches!(platform.trim().to_ascii_lowercase().as_str(), "bedrock" | "ollama")
 }
 
+/// Platforms reached through a vendor SDK rather than an HTTP endpoint the
+/// user configures, so there is no base URL to ask for — or to require.
+///
+/// `bedrock` talks to AWS through `aws_sdk_bedrock`, which builds its own
+/// endpoint from the region in `bedrock_config`; `fetch_bedrock` never reads
+/// `base_url` at all. The settings dialog knows this and sends no base URL for
+/// Bedrock, so demanding one rejected the request before the fetcher that
+/// would have ignored the field ever ran.
+///
+/// Shared for the same reason as [`platform_authenticates_without_api_key`]:
+/// this rule was applied on the provider-create path and not on the
+/// model-list path, and the two silently disagreed.
+pub fn platform_has_no_base_url(platform: &str) -> bool {
+    platform.trim().eq_ignore_ascii_case("bedrock")
+}
+
 pub mod bedrock_probe;
 pub mod client_pref;
 pub mod content_inspection;

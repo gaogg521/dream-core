@@ -351,6 +351,12 @@ pub struct FetchModelsRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchModelsAnonymousRequest {
     pub platform: String,
+    /// Absent for platforms that have no configurable HTTP endpoint — the
+    /// Bedrock dialog sends `{platform, api_key, bedrock_config}` and nothing
+    /// else. The TypeScript client has always typed this optional; without the
+    /// `default` here that body failed to deserialize and the Bedrock model
+    /// list could not load at all.
+    #[serde(default)]
     pub base_url: String,
     /// Plain-text API key (supports multi-key).
     pub api_key: String,
@@ -1032,10 +1038,30 @@ mod tests {
         assert_eq!(cfg.auth_method, BedrockAuthMethod::AccessKey);
     }
 
+    /// `base_url` used to be required here, and this test pinned that. It is
+    /// now optional on purpose: the Bedrock dialog has no base-URL field and
+    /// posts `{platform, api_key, bedrock_config}`, which this struct then
+    /// refused to deserialize at all — the Bedrock model list could not load.
+    /// The endpoint is still required for every platform actually reached over
+    /// HTTP, but that is a validation rule (`validate_anonymous_request`),
+    /// not a parsing one, because only the validator knows the platform.
+    #[test]
+    fn test_fetch_models_anonymous_request_allows_absent_base_url() {
+        let raw = json!({"platform": "bedrock", "api_key": ""});
+        let req = serde_json::from_value::<FetchModelsAnonymousRequest>(raw).expect("base_url is optional");
+        assert_eq!(req.base_url, "");
+    }
+
+    /// Relaxing `base_url` must not relax the rest: `platform` and `api_key`
+    /// carry no default, so a body missing either is still a parse error
+    /// rather than one silently filled with empty strings.
     #[test]
     fn test_fetch_models_anonymous_request_missing_required_field() {
-        let raw = json!({"platform": "openai", "api_key": "sk"});
-        assert!(serde_json::from_value::<FetchModelsAnonymousRequest>(raw).is_err());
+        let no_platform = json!({"base_url": "https://api.openai.com", "api_key": "sk"});
+        assert!(serde_json::from_value::<FetchModelsAnonymousRequest>(no_platform).is_err());
+
+        let no_api_key = json!({"platform": "openai", "base_url": "https://api.openai.com"});
+        assert!(serde_json::from_value::<FetchModelsAnonymousRequest>(no_api_key).is_err());
     }
 
     // -- ModelInfo --

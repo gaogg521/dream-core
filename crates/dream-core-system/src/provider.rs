@@ -273,7 +273,7 @@ fn validate_create_request(req: &CreateProviderRequest) -> Result<(), SystemErro
     }
     // Bedrock auths via bedrock_config (IAM profile / static keys) rather than
     // an HTTP endpoint + bearer key, so baseUrl and apiKey may be empty.
-    if req.platform == "bedrock" {
+    if crate::platform_has_no_base_url(&req.platform) {
         if req.bedrock_config.is_none() {
             return Err(SystemError::BadRequest(
                 "bedrockConfig is required for bedrock platform".into(),
