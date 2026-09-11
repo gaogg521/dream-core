@@ -1,10 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
-  <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#5BD4EF"/>
-      <stop offset="1" stop-color="#3BA8D4"/>
-    </linearGradient>
-  </defs>
-  <rect width="96" height="96" rx="22" fill="url(#g)"/>
-  <text x="48" y="48" dy="0.36em" text-anchor="middle" font-family="'Segoe UI', 'Microsoft YaHei', sans-serif" font-size="44" font-weight="700" fill="#FFFFFF">P</text>
+  <rect width="96" height="96" rx="22" fill="#E2683C"/>
+  <rect x="16" y="30" width="38" height="30" rx="5" fill="#FFFFFF" opacity="0.45"/>
+  <rect x="34" y="36" width="46" height="34" rx="5" fill="#FFFFFF"/>
+  <path d="M46 46h20M46 54h14" stroke="#E2683C" stroke-width="4" stroke-linecap="round"/>
 </svg>
