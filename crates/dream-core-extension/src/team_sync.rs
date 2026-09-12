@@ -198,16 +198,33 @@ pub async fn sync_team_skills(
             continue;
         }
         let skill_dir = team_skills_dir.join(&dir_id);
-        tokio::fs::create_dir_all(&skill_dir).await?;
-        tokio::fs::write(skill_dir.join(SKILL_MANIFEST_FILE), build_skill_md(payload)).await?;
-        tokio::fs::write(skill_dir.join(TEAM_ORIGIN_MARKER), payload.id.as_bytes()).await?;
+        let manifest_path = skill_dir.join(SKILL_MANIFEST_FILE);
         let auto_marker = skill_dir.join(TEAM_AUTO_MARKER);
-        if payload.auto_active {
-            tokio::fs::write(&auto_marker, b"1").await?;
-        } else if let Err(e) = tokio::fs::remove_file(&auto_marker).await
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            return Err(ExtensionError::Io(e));
+        let manifest = build_skill_md(payload);
+
+        // Steady-state short circuit: with hundreds to thousands of team
+        // skills, an admin editing one of them must not cost every OTHER
+        // member's 5-minute sync cycle a full rewrite of everything. Compare
+        // against what is already on disk and only touch files that would
+        // actually change. `.team-origin` is not compared — it is never
+        // mutated once written (it always holds this same `payload.id`) — so
+        // checking it here would only add an I/O for no behavioral benefit.
+        let existing_manifest = tokio::fs::read_to_string(&manifest_path).await.ok();
+        let auto_marker_present = tokio::fs::try_exists(&auto_marker).await.unwrap_or(false);
+        let unchanged =
+            existing_manifest.as_deref() == Some(manifest.as_str()) && auto_marker_present == payload.auto_active;
+
+        if !unchanged {
+            tokio::fs::create_dir_all(&skill_dir).await?;
+            tokio::fs::write(&manifest_path, &manifest).await?;
+            tokio::fs::write(skill_dir.join(TEAM_ORIGIN_MARKER), payload.id.as_bytes()).await?;
+            if payload.auto_active {
+                tokio::fs::write(&auto_marker, b"1").await?;
+            } else if let Err(e) = tokio::fs::remove_file(&auto_marker).await
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(ExtensionError::Io(e));
+            }
         }
         wanted.insert(dir_id.clone());
         report.written.push(dir_id);
@@ -275,6 +292,44 @@ mod tests {
         p.auto_active = false;
         sync_team_skills(&dir, &[p], true).await.unwrap();
         assert!(!dir.join("oskill_auto").join(TEAM_AUTO_MARKER).exists());
+    }
+
+    #[tokio::test]
+    async fn resync_with_no_changes_does_not_rewrite_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("team-skills");
+        let p = payload("oskill_a", "alpha", "do alpha");
+        let manifest = dir.join("oskill_a").join(SKILL_MANIFEST_FILE);
+
+        sync_team_skills(&dir, &[p.clone()], true).await.unwrap();
+        let mtime_after_first = std::fs::metadata(&manifest).unwrap().modified().unwrap();
+
+        // Give the filesystem clock room to distinguish "touched again" from
+        // "left alone" before checking either way.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // Steady-state resync: the registry returned the exact same skill.
+        // With hundreds to thousands of team skills fanned out to every
+        // member on a 5-minute timer, rewriting all of them every cycle
+        // regardless of whether an admin touched anything is the actual
+        // motivation for this short circuit — see the comment in
+        // `sync_team_skills`.
+        let report = sync_team_skills(&dir, &[p.clone()], true).await.unwrap();
+        let mtime_after_resync = std::fs::metadata(&manifest).unwrap().modified().unwrap();
+        assert_eq!(
+            mtime_after_first, mtime_after_resync,
+            "unchanged skill must not be rewritten"
+        );
+        assert_eq!(report.written, vec!["oskill_a".to_string()], "still reported as present");
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // A real change (admin edited the body) still writes through.
+        let mut changed = p;
+        changed.content = "do alpha, differently now".to_string();
+        sync_team_skills(&dir, &[changed], true).await.unwrap();
+        let mtime_after_edit = std::fs::metadata(&manifest).unwrap().modified().unwrap();
+        assert!(mtime_after_edit > mtime_after_resync, "changed skill must be rewritten");
     }
 
     #[tokio::test]
