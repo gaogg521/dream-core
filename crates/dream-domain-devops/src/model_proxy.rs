@@ -129,6 +129,17 @@ fn conversation_id_header(headers: &HeaderMap) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
+fn client_ip_header(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()))
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned)
+}
+
 pub fn model_proxy_routes(state: OneDevopsRouterState) -> Router {
     Router::new()
         .route("/api/one/model-proxy/{channel_id}/{*path}", any(handle_proxy))
@@ -260,6 +271,7 @@ async fn handle_proxy(
     // C1-4: the conversation this call belongs to — the one fact only the
     // client knows. Read before anything consumes the headers.
     let conversation_id = conversation_id_header(&headers);
+    let user_ip = client_ip_header(&headers);
 
     // Compared before `method` is moved into the reqwest builder.
     let is_post = method == Method::POST;
@@ -382,6 +394,7 @@ async fn handle_proxy(
         status.is_success(),
         request_model,
         conversation_id,
+        user_ip,
     );
     let stream = crate::proxy_usage::UsageTapStream::new(upstream.bytes_stream().map_err(std::io::Error::other), tap);
     builder
@@ -670,6 +683,7 @@ async fn handle_bedrock_proxy(
         status.is_success(),
         None,
         conversation_id_header(&headers),
+        client_ip_header(&headers),
     );
     let stream = crate::proxy_usage::UsageTapStream::new(upstream.bytes_stream().map_err(std::io::Error::other), tap);
     builder

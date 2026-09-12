@@ -72,6 +72,10 @@ pub struct ProxyUsageEvent {
     pub model: Option<String>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
+    pub cache_read_tokens: Option<i64>,
+    pub cache_write_tokens: Option<i64>,
+    pub request_id: Option<String>,
+    pub user_ip: Option<String>,
     /// Wall time from the moment the tap was built to the end of the upstream
     /// stream. It is the whole point of the per-call trace — without it the
     /// admin console's latency percentiles have nothing to compute over for
@@ -232,6 +236,7 @@ struct TapContext {
     /// say (an old client, or a non-conversation call) — the row stays
     /// unattributed rather than guessing.
     conversation_id: Option<String>,
+    user_ip: Option<String>,
     /// When the tap was built — as close to "the call started" as this layer
     /// gets, which is after the request body probe and before the upstream
     /// request is sent.
@@ -248,6 +253,9 @@ pub struct UsageTap {
     model: Option<String>,
     input_tokens: Option<i64>,
     output_tokens: Option<i64>,
+    cache_read_tokens: Option<i64>,
+    cache_write_tokens: Option<i64>,
+    request_id: Option<String>,
     /// The stream errored mid-flight — never record a partial call.
     failed: bool,
 }
@@ -261,6 +269,7 @@ impl UsageTap {
         upstream_success: bool,
         request_model: Option<String>,
         conversation_id: Option<String>,
+        user_ip: Option<String>,
     ) -> Self {
         let context = recorder.map(|recorder| TapContext {
             recorder,
@@ -268,6 +277,7 @@ impl UsageTap {
             channel_id,
             request_model,
             conversation_id,
+            user_ip,
             success: upstream_success,
             started_at: Instant::now(),
         });
@@ -283,6 +293,9 @@ impl UsageTap {
             model: None,
             input_tokens: None,
             output_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            request_id: None,
             failed: false,
         }
     }
@@ -341,6 +354,10 @@ impl UsageTap {
             model,
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
+            cache_read_tokens: self.cache_read_tokens,
+            cache_write_tokens: self.cache_write_tokens,
+            request_id: self.request_id.clone(),
+            user_ip: context.user_ip,
             duration_ms: i64::try_from(context.started_at.elapsed().as_millis()).ok(),
         });
     }
@@ -408,6 +425,14 @@ impl UsageTap {
     /// placeholder output count from `message_start`, while the input count
     /// (absent from the delta) survives.
     fn absorb_event(&mut self, value: &serde_json::Value) {
+        if self.request_id.is_none() {
+            self.request_id = value
+                .get("id")
+                .or_else(|| value.get("response").and_then(|r| r.get("id")))
+                .and_then(|id| id.as_str())
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned);
+        }
         if self.model.is_none() {
             for probe in [Some(value), value.get("message"), value.get("response")] {
                 if let Some(model) = probe.and_then(|v| v.get("model")).and_then(|m| m.as_str())
@@ -441,6 +466,27 @@ impl UsageTap {
         }
         if output.is_some() {
             self.output_tokens = output;
+        }
+        let cache_read = usage
+            .get("cached_tokens")
+            .and_then(serde_json::Value::as_i64)
+            .or_else(|| usage.get("cache_read_input_tokens").and_then(serde_json::Value::as_i64))
+            .or_else(|| usage.get("cache_read_tokens").and_then(serde_json::Value::as_i64))
+            .or_else(|| {
+                usage
+                    .get("input_tokens_details")
+                    .and_then(|d| d.get("cached_tokens"))
+                    .and_then(serde_json::Value::as_i64)
+            });
+        let cache_write = usage
+            .get("cache_creation_input_tokens")
+            .and_then(serde_json::Value::as_i64)
+            .or_else(|| usage.get("cache_write_tokens").and_then(serde_json::Value::as_i64));
+        if cache_read.is_some() {
+            self.cache_read_tokens = cache_read;
+        }
+        if cache_write.is_some() {
+            self.cache_write_tokens = cache_write;
         }
     }
 }
@@ -533,6 +579,7 @@ mod tests {
             success,
             None,
             Some("conv-1".into()),
+            None,
         )
     }
 
@@ -579,7 +626,16 @@ mod tests {
 
     #[test]
     fn inert_tap_buffers_nothing_and_records_nothing() {
-        let mut tap = UsageTap::new(None, "u".into(), "c".into(), "text/event-stream", true, None, None);
+        let mut tap = UsageTap::new(
+            None,
+            "u".into(),
+            "c".into(),
+            "text/event-stream",
+            true,
+            None,
+            None,
+            None,
+        );
         tap.absorb(b"data: {\"model\":\"m\"}\n\n");
         tap.finish();
         // No recorder behind the tap: it must not have retained the bytes.
@@ -770,6 +826,7 @@ mod tests {
             "application/json",
             true,
             Some("gpt-4o".into()),
+            None,
             None,
         );
         tap.absorb(br#"{"usage":{"prompt_tokens":5,"completion_tokens":6}}"#);

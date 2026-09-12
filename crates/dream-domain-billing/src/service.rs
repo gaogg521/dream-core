@@ -17,7 +17,7 @@ use dream_core_db::{DbPool, day_bucket_expr, db_params};
 use crate::error::BillingError;
 use crate::models::{
     AgentSessionDto, AgentSessionPageDto, CheckoutResultDto, DepartmentBudgetDto, EnterpriseReportDto, EntitlementDto,
-    LatencyTrendPointDto, LicenseInfoDto, LlmCallDto, LlmCallPageDto, MediaAssetDto, PlanDto, TopUserDto,
+    KeyUsageDto, LatencyTrendPointDto, LicenseInfoDto, LlmCallDto, LlmCallPageDto, MediaAssetDto, PlanDto, TopUserDto,
     UsageBucketDto, UsageEventDto, UsageEventPageDto, UsageSummaryDto,
 };
 
@@ -73,6 +73,13 @@ pub struct NewLlmCall {
     pub tool_name: Option<String>,
     pub input_tokens: i64,
     pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub request_id: Option<String>,
+    pub user_ip: Option<String>,
+    /// Provider/channel configuration that selected the credential. This is a
+    /// stable opaque id, never the secret or its prefix.
+    pub credential_key_id: Option<String>,
     pub duration_ms: Option<i64>,
     /// `None` = the call succeeded; otherwise the failure reason. Failed calls
     /// are recorded like successful ones — a retry storm is exactly what this
@@ -1433,6 +1440,11 @@ impl BillingService {
             tool_name,
             input_tokens,
             output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            request_id,
+            user_ip,
+            credential_key_id,
             duration_ms,
             error,
         } = call;
@@ -1443,8 +1455,8 @@ impl BillingService {
             .execute(
                 "INSERT INTO one_llm_calls \
                 (id, enterprise_id, user_id, conversation_id, model, provider, tool_name, \
-                 input_tokens, output_tokens, duration_ms, error, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, request_id, user_ip, credential_key_id, duration_ms, error, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 &db_params![
                     generate_prefixed_id("llmcall"),
                     &enterprise_id,
@@ -1455,6 +1467,11 @@ impl BillingService {
                     tool_name,
                     input_tokens,
                     output_tokens,
+                    cache_read_tokens,
+                    cache_write_tokens,
+                    request_id,
+                    user_ip,
+                    credential_key_id,
                     duration_ms,
                     error,
                     now_ms()
@@ -1514,12 +1531,17 @@ impl BillingService {
             Option<String>,
             i64,
             i64,
+            i64,
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
             Option<i64>,
             Option<String>,
             i64,
         );
         let list_sql = format!(
-            "SELECT id, user_id, conversation_id, model, provider, tool_name, input_tokens, output_tokens,                     duration_ms, error, created_at              FROM one_llm_calls {where_sql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+            "SELECT id, user_id, conversation_id, model, provider, tool_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, request_id, user_ip, credential_key_id, duration_ms, error, created_at FROM one_llm_calls {where_sql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
         );
         let mut list_params = params.clone();
         list_params.push(limit.into());
@@ -1538,6 +1560,11 @@ impl BillingService {
                     tool_name,
                     input_tokens,
                     output_tokens,
+                    cache_read_tokens,
+                    cache_write_tokens,
+                    request_id,
+                    user_ip,
+                    credential_key_id,
                     duration_ms,
                     error,
                     created_at,
@@ -1551,6 +1578,11 @@ impl BillingService {
                         tool_name,
                         input_tokens,
                         output_tokens,
+                        cache_read_tokens,
+                        cache_write_tokens,
+                        request_id,
+                        user_ip,
+                        credential_key_id,
                         duration_ms,
                         error,
                         created_at,
@@ -1560,6 +1592,51 @@ impl BillingService {
             .collect();
 
         Ok(LlmCallPageDto { calls, total })
+    }
+
+    pub async fn key_usage(&self, scope: &AuditScope, since_ms: i64) -> Result<Vec<KeyUsageDto>, BillingError> {
+        type Row = (String, i64, i64, i64, i64, i64, i64);
+        let sql = format!(
+            "SELECT COALESCE(credential_key_id, 'unattributed'), COUNT(*), \
+                    COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), \
+                    COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_write_tokens), 0), MAX(created_at) \
+             FROM one_llm_calls WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} AND created_at >= ? \
+             GROUP BY COALESCE(credential_key_id, 'unattributed') ORDER BY MAX(created_at) DESC"
+        );
+        let rows = self
+            .db
+            .fetch_all_as::<Row>(
+                &sql,
+                &db_params![
+                    scope.enterprise_id(),
+                    scope.tenant_bind(),
+                    scope.tenant_bind(),
+                    since_ms
+                ],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    credential_key_id,
+                    calls,
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    cache_write_tokens,
+                    last_used_at,
+                )| KeyUsageDto {
+                    credential_key_id,
+                    calls,
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    cache_write_tokens,
+                    last_used_at,
+                },
+            )
+            .collect())
     }
 
     /// P2-5 retention: delete every trace row for `enterprise_id` created
@@ -4497,6 +4574,11 @@ mod tests {
             tool_name: None,
             input_tokens: 10,
             output_tokens: 20,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            request_id: None,
+            user_ip: None,
+            credential_key_id: None,
             duration_ms: Some(120),
             error: None,
         }

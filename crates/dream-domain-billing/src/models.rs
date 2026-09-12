@@ -193,10 +193,27 @@ pub struct LlmCallDto {
     pub tool_name: Option<String>,
     pub input_tokens: i64,
     pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub request_id: Option<String>,
+    pub user_ip: Option<String>,
+    pub credential_key_id: Option<String>,
     pub duration_ms: Option<i64>,
     /// `null` = the call succeeded; otherwise why it failed.
     pub error: Option<String>,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyUsageDto {
+    pub credential_key_id: String,
+    pub calls: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub last_used_at: i64,
 }
 
 /// A page of `LlmCallDto` plus the total row count matching the filter — same

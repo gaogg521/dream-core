@@ -18,7 +18,7 @@ use crate::service::{AuditMessageInput, AuditedConversationDto, ConversationAudi
 
 use crate::error::BillingError;
 use crate::models::{
-    AgentSessionPageDto, CheckoutResultDto, ConversationCostDto, DepartmentBudgetDto, EnterpriseReportDto,
+    AgentSessionPageDto, CheckoutResultDto, ConversationCostDto, DepartmentBudgetDto, EnterpriseReportDto, KeyUsageDto,
     LicenseInfoDto, LlmCallPageDto, LlmCallPurgeResultDto, MediaAssetDto, MediaLedgerSettingsDto, PlanDto,
     UsageEventPageDto, UsageSummaryDto,
 };
@@ -33,6 +33,7 @@ pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
         .route("/api/one/billing/enterprise-report", get(billing_enterprise_report))
         .route("/api/one/billing/usage-events", get(billing_usage_events))
         .route("/api/one/billing/llm-calls", get(billing_llm_calls))
+        .route("/api/one/billing/key-usage", get(billing_key_usage))
         .route("/api/one/billing/llm-calls/purge", post(billing_purge_llm_calls))
         .route("/api/one/billing/sessions", get(billing_sessions))
         .route("/api/one/billing/conversation-cost", get(billing_conversation_cost))
@@ -199,6 +200,14 @@ struct ClientUsageBody {
     channel_id: Option<String>,
     input_tokens: Option<i64>,
     output_tokens: Option<i64>,
+    #[serde(default)]
+    cache_read_tokens: Option<i64>,
+    #[serde(default)]
+    cache_write_tokens: Option<i64>,
+    #[serde(default)]
+    duration_ms: Option<i64>,
+    #[serde(default)]
+    request_id: Option<String>,
     /// Attribution, not content — same role as in `media-usage`.
     conversation_id: Option<String>,
 }
@@ -211,6 +220,7 @@ struct ClientUsageBody {
 async fn billing_client_usage(
     State(state): State<OneBillingRouterState>,
     Extension(user): Extension<CurrentUser>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<ClientUsageBody>,
 ) -> Result<Json<ApiResponse<()>>, BillingError> {
     // A personal user has no company ledger to land in; a NULL-enterprise row
@@ -231,6 +241,34 @@ async fn billing_client_usage(
             body.input_tokens,
             body.output_tokens,
         )
+        .await?;
+    let user_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()))
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("unknown")
+        .to_owned();
+    state
+        .service
+        .record_llm_call(crate::service::NewLlmCall {
+            user_id: user.id,
+            conversation_id: body.conversation_id,
+            model: body.model,
+            provider: Some("personal_direct".to_owned()),
+            tool_name: None,
+            input_tokens: body.input_tokens.unwrap_or(0),
+            output_tokens: body.output_tokens.unwrap_or(0),
+            cache_read_tokens: body.cache_read_tokens.unwrap_or(0),
+            cache_write_tokens: body.cache_write_tokens.unwrap_or(0),
+            request_id: body.request_id,
+            user_ip: (user_ip != "unknown").then_some(user_ip),
+            credential_key_id: body.channel_id,
+            duration_ms: body.duration_ms,
+            error: None,
+        })
         .await?;
     Ok(Json(ApiResponse::ok(())))
 }
@@ -354,6 +392,21 @@ async fn billing_enterprise_report(
     Ok(Json(ApiResponse::ok(
         state.service.enterprise_report(&scope, since).await?,
     )))
+}
+
+async fn billing_key_usage(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(q): Query<UsageQuery>,
+) -> Result<Json<ApiResponse<Vec<KeyUsageDto>>>, BillingError> {
+    let scope = state
+        .service
+        .resolve_audit_scope(&user.id)
+        .await?
+        .ok_or_else(|| BillingError::Forbidden("key usage is admin-only".into()))?;
+    const THIRTY_DAYS_MS: i64 = 30 * 24 * 3600 * 1000;
+    let since = q.since.unwrap_or_else(|| now_ms() - THIRTY_DAYS_MS);
+    Ok(Json(ApiResponse::ok(state.service.key_usage(&scope, since).await?)))
 }
 
 #[derive(Deserialize)]
