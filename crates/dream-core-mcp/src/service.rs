@@ -485,23 +485,44 @@ impl McpConfigService {
 
             // Conflict guard: never clobber a member's personal server that
             // happens to share the name — only servers we own (team marker).
-            if let Some(existing) = self.repo.find_by_name_any(user_id, &payload.name).await?
+            let existing = self.repo.find_by_name_any(user_id, &payload.name).await?;
+            if let Some(existing) = &existing
                 && team_registry_id_of(existing.original_json.as_deref()).is_none()
             {
                 report.conflicts.push(payload.name.clone());
                 continue;
             }
 
-            self.upsert_server(UpsertMcpServer {
-                user_id,
-                name: &payload.name,
-                description: Some("Team-distributed MCP connector"),
-                transport: &transport,
-                original_json: Some(&team_origin_json(&payload.registry_id)),
-                builtin: false,
-                enabled: payload.enabled,
-            })
-            .await?;
+            let description = "Team-distributed MCP connector";
+            let original_json = team_origin_json(&payload.registry_id);
+            let config_json = transport.to_config_json()?;
+
+            // Steady-state short circuit: this loop reruns every 5 minutes
+            // for every server visible to this member — with the registry at
+            // the size this org has, that is thousands of sequential
+            // find-then-upsert DB round trips a cycle for connectors nothing
+            // changed about. Skip the write when the row already matches.
+            let unchanged = existing.as_ref().is_some_and(|row| {
+                row.deleted_at.is_none()
+                    && row.enabled == payload.enabled
+                    && row.description.as_deref() == Some(description)
+                    && row.transport_type == transport.transport_type()
+                    && row.transport_config == config_json
+                    && row.original_json.as_deref() == Some(original_json.as_str())
+            });
+
+            if !unchanged {
+                self.upsert_server(UpsertMcpServer {
+                    user_id,
+                    name: &payload.name,
+                    description: Some(description),
+                    transport: &transport,
+                    original_json: Some(&original_json),
+                    builtin: false,
+                    enabled: payload.enabled,
+                })
+                .await?;
+            }
             wanted.insert(payload.registry_id.clone());
             report.written.push(payload.name.clone());
         }
@@ -547,6 +568,12 @@ mod tests {
     pub(super) struct MockMcpServerRepo {
         servers: Mutex<Vec<McpServerRow>>,
         id_counter: Mutex<u32>,
+        /// Write-call counters, so a test can assert a resync that changed
+        /// nothing skipped the DB write entirely rather than inferring it
+        /// from `updated_at` (the mock clock is fixed, so that would prove
+        /// nothing).
+        create_calls: Mutex<u32>,
+        update_calls: Mutex<u32>,
     }
 
     impl MockMcpServerRepo {
@@ -554,7 +581,13 @@ mod tests {
             Self {
                 servers: Mutex::new(Vec::new()),
                 id_counter: Mutex::new(0),
+                create_calls: Mutex::new(0),
+                update_calls: Mutex::new(0),
             }
+        }
+
+        pub(super) fn write_call_count(&self) -> u32 {
+            *self.create_calls.lock().unwrap() + *self.update_calls.lock().unwrap()
         }
 
         fn next_id(&self) -> String {
@@ -615,6 +648,7 @@ mod tests {
         }
 
         async fn create(&self, params: CreateMcpServerParams<'_>) -> Result<McpServerRow, DbError> {
+            *self.create_calls.lock().unwrap() += 1;
             let mut servers = self.servers.lock().unwrap();
             if servers.iter().any(|s| s.name == params.name) {
                 return Err(DbError::Conflict(format!(
@@ -649,6 +683,7 @@ mod tests {
             id: &str,
             params: UpdateMcpServerParams<'_>,
         ) -> Result<McpServerRow, DbError> {
+            *self.update_calls.lock().unwrap() += 1;
             let mut servers = self.servers.lock().unwrap();
             let idx = servers
                 .iter()
@@ -1673,6 +1708,42 @@ mod team_sync_tests {
         assert!(
             search.original_json.as_deref().unwrap_or("").contains("omcp_a"),
             "ownership marker stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn resync_with_no_changes_writes_nothing() {
+        let repo = Arc::new(MockMcpServerRepo::new());
+        let svc = McpConfigService::new(repo.clone());
+        let payloads = [
+            payload("omcp_a", "team-search", "sse", "https://mcp.corp/sse"),
+            payload("omcp_b", "team-tools", "stdio", "npx corp-tools --serve"),
+        ];
+
+        svc.sync_team_servers(TEST_USER_ID, &payloads, true).await.unwrap();
+        let after_first_pass = repo.write_call_count();
+        assert_eq!(after_first_pass, 2, "first pass creates both connectors");
+
+        // Same registry state next cycle (nothing an admin touched) — this is
+        // the steady-state case that used to cost a DB upsert per connector
+        // every 5 minutes regardless of whether anything changed.
+        let report = svc.sync_team_servers(TEST_USER_ID, &payloads, true).await.unwrap();
+        assert_eq!(
+            repo.write_call_count(),
+            after_first_pass,
+            "unchanged resync must not touch the repo"
+        );
+        assert_eq!(report.written, vec!["team-search".to_owned(), "team-tools".to_owned()]);
+        assert!(report.conflicts.is_empty());
+
+        // A real change (admin re-pointed the endpoint) still writes through.
+        let mut changed = payloads.to_vec();
+        changed[0] = payload("omcp_a", "team-search", "sse", "https://mcp.corp/sse-v2");
+        svc.sync_team_servers(TEST_USER_ID, &changed, true).await.unwrap();
+        assert_eq!(
+            repo.write_call_count(),
+            after_first_pass + 1,
+            "the one connector that actually changed writes; the other still doesn't"
         );
     }
 
