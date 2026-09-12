@@ -31,7 +31,8 @@ use dream_core_api_types::{
 };
 use dream_core_common::{
     AgentKillReason, AgentType, ConversationSource, ConversationStatus, ErrorChain, MessageType, OnConversationDelete,
-    PaginatedResult, WorkspacePathValidationError, generate_short_id, now_ms, validate_workspace_path_availability,
+    PaginatedResult, ProviderWithModel, WorkspacePathValidationError, generate_short_id, now_ms,
+    validate_workspace_path_availability,
 };
 use dream_core_db::models::{
     AssistantDefinitionRow, ConversationAssistantSnapshotRow, ConversationRow, McpServerRow, MessageRow,
@@ -511,6 +512,39 @@ impl ConversationService {
         if let Ok(mut guard) = self.send_gate.write() {
             *guard = Some(gate);
         }
+    }
+
+    /// Enforce the model-allowlist dimension of the send gate. The entry-time
+    /// `check_send(user_id, None)` calls run before the turn's model is known,
+    /// so the allowlist half can only be decided once the conversation's
+    /// pinned model is resolved — this is that second half. The rate-limit
+    /// half stays at entry time.
+    pub(crate) async fn enforce_model_allowlist(
+        &self,
+        user_id: &str,
+        model: &str,
+    ) -> Result<(), ConversationError> {
+        let gate = self.send_gate.read().ok().and_then(|g| g.clone());
+        if let Some(gate) = gate
+            && let Err(denial) = gate.check_model(user_id, model).await
+        {
+            return Err(ConversationError::PolicyDenied {
+                code: denial.code,
+                message: denial.message,
+                details: denial.details,
+            });
+        }
+        Ok(())
+    }
+
+    /// The turn's effective model name from a conversation row's pinned
+    /// `ProviderWithModel` JSON: `use_model` when set, else the model. `None`
+    /// when the row carries no model config.
+    fn pinned_model_of(row: &ConversationRow) -> Option<String> {
+        let raw = row.model.as_deref()?;
+        let parsed = serde_json::from_str::<ProviderWithModel>(raw).ok()?;
+        let selected = parsed.use_model.unwrap_or_else(|| parsed.model);
+        (!selected.trim().is_empty()).then_some(selected)
     }
 
     /// Attach the post-turn memory extractor (one-memory; P2-2). Reaches
@@ -3995,6 +4029,12 @@ impl ConversationService {
 
         reject_deprecated_runtime_row(&row)?;
 
+        // Model allowlist (F1): the entry gate can't know the turn's model —
+        // here the conversation's pinned model is resolved, so enforce it.
+        if let Some(selected_model) = Self::pinned_model_of(&row) {
+            self.enforce_model_allowlist(user_id, &selected_model).await?;
+        }
+
         // Resolve file attachments at the send boundary before any persist/claim
         // (atomic: a bad reference fails the whole send). Produces the inlined
         // `[[DREAM_FILES]]` content used for persistence, broadcast, and the turn.
@@ -4207,6 +4247,12 @@ impl ConversationService {
             })?;
 
         reject_deprecated_runtime_row(&row)?;
+
+        // Model allowlist (F1), same as `send_message`: entry gate runs before
+        // the model is known; the cron/automation path enforces here.
+        if let Some(selected_model) = Self::pinned_model_of(&row) {
+            self.enforce_model_allowlist(&request.user_id, &selected_model).await?;
+        }
 
         let turn_id = Self::mint_turn_id();
         let turn_claim = self.runtime_state.try_claim_turn(&request.conversation_id, &turn_id)?;
