@@ -681,6 +681,11 @@ impl dream_domain_devops::ProxyUsageRecorder for BillingProxyUsageRecorder {
                 tool_name: None,
                 input_tokens: event.input_tokens.unwrap_or(0),
                 output_tokens: event.output_tokens.unwrap_or(0),
+                cache_read_tokens: event.cache_read_tokens.unwrap_or(0),
+                cache_write_tokens: event.cache_write_tokens.unwrap_or(0),
+                request_id: event.request_id,
+                user_ip: event.user_ip,
+                credential_key_id: Some(channel_id),
                 duration_ms: event.duration_ms,
                 error: None,
             };
@@ -1118,6 +1123,11 @@ impl dream_core_conversation::LlmCallTraceRecorder for BillingLlmCallTrace {
                 tool_name: None,
                 input_tokens: trace.input_tokens.unwrap_or(0),
                 output_tokens: trace.output_tokens.unwrap_or(0),
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                request_id: None,
+                user_ip: None,
+                credential_key_id: None,
                 // P1-3 latency collection: the orchestrator times the whole
                 // attempt; delegates arrive as None (no honest timer) and stay
                 // NULL in the table so percentiles only see measured calls.

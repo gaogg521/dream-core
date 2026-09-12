@@ -46,6 +46,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "billing_009_conversation_audit_requests",
         include_str!("../migrations/billing_009_conversation_audit_requests.sql"),
     ),
+    (
+        "billing_010_llm_call_details",
+        include_str!("../migrations/billing_010_llm_call_details.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -84,6 +88,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "billing_009_conversation_audit_requests",
         include_str!("../migrations_mysql/billing_009_conversation_audit_requests.sql"),
+    ),
+    (
+        "billing_010_llm_call_details",
+        include_str!("../migrations_mysql/billing_010_llm_call_details.sql"),
     ),
 ];
 
