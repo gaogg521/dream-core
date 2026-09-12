@@ -61,7 +61,7 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
                 .delete(admin_clear_exit_password),
         )
         // M2e: user management + audit + runtime nodes
-        .route("/api/one/admin/users", get(admin_list_users))
+        .route("/api/one/admin/users", get(admin_list_users).post(admin_create_member))
         .route("/api/one/admin/users/{user_id}", delete(admin_remove_user))
         .route("/api/one/admin/users/{user_id}/role", put(admin_set_user_role))
         .route(
@@ -913,6 +913,30 @@ async fn admin_list_users(
 ) -> Result<Json<ApiResponse<Vec<AdminUserDto>>>, OrgError> {
     let users = state.service.list_users(&actor.tenant_id).await?;
     Ok(Json(ApiResponse::ok(users)))
+}
+
+/// F6: provision a member account. The enterprise build has no
+/// self-registration, so the admin creates the account directly — the invite
+/// flow then works even without SSO.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminCreateMemberInput {
+    pub username: String,
+    pub password: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+async fn admin_create_member(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Json(body): Json<AdminCreateMemberInput>,
+) -> Result<Json<ApiResponse<AdminUserDto>>, OrgError> {
+    let user = state
+        .service
+        .admin_create_member(&actor.tenant_id, &body.username, &body.password, body.display_name.as_deref())
+        .await?;
+    Ok(Json(ApiResponse::ok(user)))
 }
 
 /// Remove a member from the caller's project group (P0-2), freeing their seat

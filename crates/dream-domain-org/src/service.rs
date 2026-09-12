@@ -2443,6 +2443,101 @@ impl OrgService {
         Ok(rows)
     }
 
+    /// Admin-provisioned member account (F6). The enterprise build has no
+    /// self-registration, so without SSO this is the only way a member account
+    /// can exist: create the local user, join the admin's tenant as
+    /// `member`, and point the account's active tenant at it. Duplicate
+    /// usernames are refused before the insert so the admin gets a readable
+    /// message instead of a raw constraint error.
+    pub async fn admin_create_member(
+        &self,
+        tenant_id: &str,
+        username: &str,
+        password: &str,
+        display_name: Option<&str>,
+    ) -> Result<AdminUserDto, OrgError> {
+        let username = username.trim();
+        if username.len() < 2 || username.len() > 64 {
+            return Err(OrgError::BadRequest("用户名长度需在 2-64 个字符之间".into()));
+        }
+        if !username.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
+            return Err(OrgError::BadRequest("用户名只能包含字母、数字、点、短横线和下划线".into()));
+        }
+        if password.len() < 8 {
+            return Err(OrgError::BadRequest("初始密码至少 8 位字符".into()));
+        }
+        let taken: i64 = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM users WHERE username = ?",
+                &db_params![username],
+            )
+            .await?;
+        if taken > 0 {
+            return Err(OrgError::BadRequest(format!("用户名「{username}」已存在")));
+        }
+        let password_hash = dream_core_auth::hash_password(password)
+            .map_err(|e| OrgError::BadRequest(format!("密码加密失败: {e}")))?;
+
+        let user_id = dream_core_common::generate_prefixed_id("user");
+        let now = now_ms() as i64;
+        let mut tx = self.db.begin().await?;
+        let user_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO users (id, user_type, username, password_hash, status, session_generation, created_at, updated_at) \
+                 VALUES (?, 'local', ?, ?, 'active', 0, ?, ?)"
+            }
+            DbBackend::MySql => {
+                "INSERT INTO users (id, user_type, username, password_hash, status, session_generation, created_at, updated_at) \
+                 VALUES (?, 'local', ?, ?, 'active', 0, ?, ?)"
+            }
+        };
+        tx.execute(user_sql, &db_params![&user_id, username, &password_hash, now, now])
+            .await?;
+        let member_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO one_user_org (user_id, tenant_id, role, display_name, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(user_id, tenant_id) DO NOTHING"
+            }
+            DbBackend::MySql => {
+                "INSERT IGNORE INTO one_user_org (user_id, tenant_id, role, display_name, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?)"
+            }
+        };
+        tx.execute(
+            member_sql,
+            &db_params![&user_id, tenant_id, ROLE_MEMBER, display_name, now, now],
+        )
+        .await?;
+        let active_tenant_sql = match tx.backend() {
+            DbBackend::Sqlite => {
+                "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) \
+                 ON CONFLICT(user_id) DO NOTHING"
+            }
+            DbBackend::MySql => {
+                "INSERT IGNORE INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?)"
+            }
+        };
+        tx.execute(active_tenant_sql, &db_params![&user_id, tenant_id, now]).await?;
+        tx.commit().await?;
+
+        self.audit(tenant_id, None, None, "org.admin_create_member", Some(username), None)
+            .await;
+
+        Ok(AdminUserDto {
+            user_id,
+            username: username.to_owned(),
+            tenant_id: tenant_id.to_owned(),
+            role: ROLE_MEMBER.to_owned(),
+            display_name: display_name.map(|s| s.to_owned()),
+            org_unit_path: None,
+            job_title: None,
+            department_id: None,
+            last_login: None,
+            created_at: now,
+        })
+    }
+
     // --- departments / organizational hierarchy (P2-3) ---
 
     /// Create a department (top-level when `parent_id` is `None`). The parent,
