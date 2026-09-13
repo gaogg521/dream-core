@@ -13,7 +13,7 @@ use dream_core_api_types::ApiResponse;
 use dream_core_auth::CurrentUser;
 use dream_domain_employee::models::ContentTagRow;
 
-use crate::api_assets::{ApiAssetDetailDto, ApiAssetDto};
+use crate::api_assets::{ApiAssetDetailDto, ApiAssetDto, ApiAssetProfileInput};
 use crate::dlp_service::{DlpEventDto, DlpEventInput, DlpRuleDto, DlpSummaryDto};
 use crate::error::DevopsError;
 use crate::market_sync::{MarketSourceDto, MarketSyncReportDto};
@@ -57,8 +57,16 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
             get(list_api_assets).post(import_api_asset),
         )
         .route(
+            // Separate path from the document importer on purpose: the two
+            // take different bodies and the console calls them from different
+            // buttons ("Swagger 导入" vs "新建资产"). Overloading one POST on
+            // the shape of its body would make both harder to read.
+            "/api/one/devops/api-assets/manual",
+            axum::routing::post(create_api_asset),
+        )
+        .route(
             "/api/one/devops/api-assets/{id}",
-            get(get_api_asset).delete(delete_api_asset),
+            get(get_api_asset).patch(update_api_asset).delete(delete_api_asset),
         )
         .route(
             "/api/one/devops/api-assets/{id}/publish",
@@ -1042,6 +1050,36 @@ async fn publish_api_asset(
         .publish_api_asset_skill(&tenant, &user.id, &id, body.base_url.as_deref(), body.auto_active)
         .await?;
     audit(&state, &user.id, "devops.api_asset.publish", Some(&dto.id)).await;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+/// Create an asset by hand (no OpenAPI document). Body is
+/// [`ApiAssetProfileInput`]; `name` and `code` are required, the rest default.
+async fn create_api_asset(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<ApiAssetProfileInput>,
+) -> Result<Json<ApiResponse<ApiAssetDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    let dto = state.service.create_api_asset(&tenant, &user.id, &body).await?;
+    audit(&state, &user.id, "devops.api_asset.create", Some(&dto.id)).await;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+/// Edit an asset's operator-authored fields. Absent fields are left alone —
+/// notably `authConfig`, so a form that never renders the stored credential
+/// cannot erase it by saving.
+async fn update_api_asset(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(body): Json<ApiAssetProfileInput>,
+) -> Result<Json<ApiResponse<ApiAssetDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    let dto = state.service.update_api_asset(&tenant, &id, &body).await?;
+    audit(&state, &user.id, "devops.api_asset.update", Some(&dto.id)).await;
     Ok(Json(ApiResponse::ok(dto)))
 }
 

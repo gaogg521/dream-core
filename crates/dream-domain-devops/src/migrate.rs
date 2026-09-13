@@ -51,6 +51,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "016_provider_channel_model_protocols",
         include_str!("../migrations/016_provider_channel_model_protocols.sql"),
     ),
+    (
+        "017_api_asset_profile",
+        include_str!("../migrations/017_api_asset_profile.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -96,6 +100,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "016_provider_channel_model_protocols",
         include_str!("../migrations_mysql/016_provider_channel_model_protocols.sql"),
+    ),
+    (
+        "017_api_asset_profile",
+        include_str!("../migrations_mysql/017_api_asset_profile.sql"),
     ),
 ];
 
