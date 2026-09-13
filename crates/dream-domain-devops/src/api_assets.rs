@@ -572,6 +572,76 @@ impl DevopsService {
         }
     }
 
+    /// Replace the operation list of a hand-authored asset.
+    ///
+    /// Only `source_format = 'manual'`. An imported asset's `endpoints` is the
+    /// parse of its stored `spec`, and letting the console overwrite one
+    /// without the other would leave the row describing two different APIs —
+    /// re-import the document instead.
+    ///
+    /// Without this, a manual asset was half a feature: you could register it,
+    /// but publishing produced a SKILL.md with no operations in it, because
+    /// `publish_api_asset_skill` renders exactly this list.
+    pub async fn set_api_asset_endpoints(
+        &self,
+        tenant_id: &str,
+        id: &str,
+        endpoints: &[ApiEndpoint],
+    ) -> Result<ApiAssetDto, DevopsError> {
+        let current = self.get_api_asset(tenant_id, id).await?.asset;
+        if current.source_format != "manual" {
+            return Err(DevopsError::BadRequest(
+                "operations can only be edited on a manually created asset; re-import the document instead".into(),
+            ));
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        let mut cleaned = Vec::with_capacity(endpoints.len());
+        for ep in endpoints {
+            let method = ep.method.trim().to_ascii_uppercase();
+            let path = ep.path.trim().to_owned();
+            if method.is_empty() || path.is_empty() {
+                return Err(DevopsError::BadRequest("each operation needs a method and a path".into()));
+            }
+            if !PATH_ITEM_METHODS.contains(&method.to_ascii_lowercase().as_str()) {
+                return Err(DevopsError::BadRequest(format!("unsupported HTTP method {method}")));
+            }
+            if !path.starts_with('/') {
+                return Err(DevopsError::BadRequest(format!("path {path} must start with /")));
+            }
+            // The generated SKILL.md addresses one call per method+path, so a
+            // duplicate would render two identical curl examples.
+            if !seen.insert((method.clone(), path.clone())) {
+                return Err(DevopsError::BadRequest(format!("duplicate operation {method} {path}")));
+            }
+            cleaned.push(ApiEndpoint {
+                method,
+                path,
+                summary: ep.summary.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned),
+                operation_id: ep
+                    .operation_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_owned),
+            });
+        }
+
+        self.db
+            .execute(
+                "UPDATE one_api_assets SET endpoints = ?, updated_at = ? \
+                 WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL",
+                &db_params![
+                    serde_json::to_string(&cleaned).map_err(|e| DevopsError::Internal(e.to_string()))?,
+                    now_ms(),
+                    id,
+                    tenant_id
+                ],
+            )
+            .await?;
+        self.get_api_asset(tenant_id, id).await.map(|d| d.asset)
+    }
+
     /// Soft delete (the row keeps its spec for audit; it just leaves every
     /// listing). Tenant-scoped like every other read.
     pub async fn delete_api_asset(&self, tenant_id: &str, id: &str) -> Result<(), DevopsError> {
@@ -929,6 +999,85 @@ mod tests {
             .unwrap();
         assert_eq!(untouched.base_url.as_deref(), Some("https://api.example.com"));
         assert_eq!(untouched.description.as_deref(), Some("now described"));
+    }
+
+    #[tokio::test]
+    async fn manual_assets_can_declare_their_operations_and_then_publish_them() {
+        let svc = service().await;
+        let asset = svc
+            .create_api_asset("t1", "admin1", &manual_input("Recording", "recording_service"))
+            .await
+            .unwrap();
+        assert_eq!(asset.endpoint_count, 0);
+
+        let saved = svc
+            .set_api_asset_endpoints(
+                "t1",
+                &asset.id,
+                &[
+                    ApiEndpoint {
+                        method: "get".into(),
+                        path: "/recordings".into(),
+                        summary: Some("  List recordings  ".into()),
+                        operation_id: Some("listRecordings".into()),
+                    },
+                    ApiEndpoint {
+                        method: "POST".into(),
+                        path: "/recordings".into(),
+                        summary: Some("".into()),
+                        operation_id: None,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(saved.endpoint_count, 2);
+        let eps: Vec<ApiEndpoint> = serde_json::from_value(saved.endpoints).unwrap();
+        assert_eq!(eps[0].method, "GET", "method is normalised for the generated curl");
+        assert_eq!(eps[0].summary.as_deref(), Some("List recordings"));
+        assert_eq!(eps[1].summary, None, "a blank summary is absent, not empty");
+
+        // The point of the whole exercise: publishing now renders real calls.
+        let skill = svc.publish_api_asset_skill("t1", "admin1", &asset.id, None, false).await.unwrap();
+        assert!(skill.content.contains("/recordings"), "published skill: {}", skill.content);
+    }
+
+    #[tokio::test]
+    async fn operation_edits_are_validated_and_refused_on_imported_assets() {
+        let svc = service().await;
+        let manual = svc
+            .create_api_asset("t1", "admin1", &manual_input("Recording", "recording_service"))
+            .await
+            .unwrap();
+
+        let ep = |m: &str, p: &str| ApiEndpoint {
+            method: m.into(),
+            path: p.into(),
+            summary: None,
+            operation_id: None,
+        };
+
+        for (bad, why) in [
+            (vec![ep("GET", "recordings")], "path must start with /"),
+            (vec![ep("FETCH", "/recordings")], "unknown method"),
+            (vec![ep("GET", "")], "empty path"),
+            (vec![ep("GET", "/a"), ep("get", "/a")], "duplicate after normalisation"),
+        ] {
+            let res = svc.set_api_asset_endpoints("t1", &manual.id, &bad).await;
+            assert!(matches!(res, Err(DevopsError::BadRequest(_))), "{why}: {res:?}");
+        }
+
+        // An imported asset's operations are the parse of its document; editing
+        // them here would leave the row describing two different APIs.
+        let imported = svc
+            .import_api_asset("t1", "admin1", "petstore", &sample_spec())
+            .await
+            .unwrap();
+        let res = svc
+            .set_api_asset_endpoints("t1", &imported.id, &[ep("GET", "/pets")])
+            .await;
+        assert!(matches!(res, Err(DevopsError::BadRequest(_))), "{res:?}");
     }
 
     #[tokio::test]
