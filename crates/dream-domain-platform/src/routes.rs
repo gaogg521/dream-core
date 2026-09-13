@@ -638,6 +638,8 @@ struct SceneBody {
     #[serde(default)]
     description: Option<String>,
     #[serde(default)]
+    avatar_ref: Option<String>,
+    #[serde(default)]
     job_functions: Vec<String>,
 }
 
@@ -655,7 +657,15 @@ async fn create_scene(
             &body.job_functions,
         )
         .await?;
-    Ok(Json(ApiResponse::ok(dto)))
+    if body.avatar_ref.is_some() {
+        state
+            .service
+            .update_scene_avatar(&actor.tenant_id, &dto.id, body.avatar_ref.as_deref())
+            .await?;
+    }
+    Ok(Json(ApiResponse::ok(
+        state.service.get_scene_for_admin(&actor.tenant_id, &dto.id).await?,
+    )))
 }
 
 async fn update_scene(
@@ -674,7 +684,13 @@ async fn update_scene(
             &body.job_functions,
         )
         .await?;
-    Ok(Json(ApiResponse::ok(dto)))
+    state
+        .service
+        .update_scene_avatar(&actor.tenant_id, &dto.id, body.avatar_ref.as_deref())
+        .await?;
+    Ok(Json(ApiResponse::ok(
+        state.service.get_scene_for_admin(&actor.tenant_id, &dto.id).await?,
+    )))
 }
 
 async fn delete_scene(

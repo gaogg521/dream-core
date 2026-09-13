@@ -126,7 +126,7 @@ fn is_admin_role(role: &str) -> bool {
 /// id, name, description, job_functions, built_in, created_at, updated_at.
 /// (`SceneRow` further down is the wider admin shape, which also carries
 /// `tenant_id`.)
-type MySceneRow = (String, String, Option<String>, String, bool, i64, i64);
+type MySceneRow = (String, String, Option<String>, Option<String>, String, bool, i64, i64);
 
 /// A notification row as read for a recipient: id, kind, category, title,
 /// body, created_by, created_at, read_at.
@@ -1261,11 +1261,12 @@ impl PlatformService {
             id: row.0,
             name: row.2,
             description: row.3,
-            job_functions: serde_json::from_str(&row.4).unwrap_or_default(),
-            built_in: row.5,
+            avatar_ref: row.4,
+            job_functions: serde_json::from_str(&row.5).unwrap_or_default(),
+            built_in: row.6,
             member_count,
-            created_at: row.6,
-            updated_at: row.7,
+            created_at: row.7,
+            updated_at: row.8,
         })
     }
 
@@ -1332,7 +1333,7 @@ impl PlatformService {
         let rows: Vec<SceneRow> = self
             .db
             .fetch_all_as::<SceneRow>(
-                "SELECT id, tenant_id, name, description, job_functions, built_in, created_at, updated_at \
+                "SELECT id, tenant_id, name, description, avatar_ref, job_functions, built_in, created_at, updated_at \
              FROM one_scenes WHERE tenant_id = ? ORDER BY built_in DESC, name ASC",
                 &db_params![tenant_id],
             )
@@ -1379,7 +1380,7 @@ impl PlatformService {
         let row: Option<SceneRow> = self
             .db
             .fetch_optional_as::<SceneRow>(
-                "SELECT id, tenant_id, name, description, job_functions, built_in, created_at, updated_at \
+                "SELECT id, tenant_id, name, description, avatar_ref, job_functions, built_in, created_at, updated_at \
              FROM one_scenes WHERE tenant_id = ? AND id = ?",
                 &db_params![tenant_id, scene_id],
             )
@@ -1388,6 +1389,35 @@ impl PlatformService {
             Some(row) => Ok(Some(self.scene_row_to_dto(row).await?)),
             None => Ok(None),
         }
+    }
+
+    pub async fn update_scene_avatar(
+        &self,
+        tenant_id: &str,
+        scene_id: &str,
+        avatar_ref: Option<&str>,
+    ) -> Result<(), PlatformError> {
+        let avatar_ref = avatar_ref.map(str::trim).filter(|v| !v.is_empty());
+        if avatar_ref.is_some_and(|v| v.len() > 900_000) {
+            return Err(PlatformError::BadRequest("scene avatar is too large".into()));
+        }
+        let changed = self
+            .db
+            .execute(
+                "UPDATE one_scenes SET avatar_ref = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+                &db_params![avatar_ref, now_ms(), tenant_id, scene_id],
+            )
+            .await?;
+        if changed == 0 {
+            return Err(PlatformError::NotFound("scene not found".into()));
+        }
+        Ok(())
+    }
+
+    pub async fn get_scene_for_admin(&self, tenant_id: &str, scene_id: &str) -> Result<SceneDto, PlatformError> {
+        self.get_scene(tenant_id, scene_id)
+            .await?
+            .ok_or_else(|| PlatformError::NotFound("scene not found".into()))
     }
 
     pub async fn update_scene(
@@ -1542,7 +1572,7 @@ impl PlatformService {
         let rows: Vec<MySceneRow> = self
             .db
             .fetch_all_as::<MySceneRow>(
-                "SELECT s.id, s.name, s.description, s.job_functions, s.built_in, s.created_at, s.updated_at \
+                "SELECT s.id, s.name, s.description, s.avatar_ref, s.job_functions, s.built_in, s.created_at, s.updated_at \
                  FROM one_scene_members m \
                  JOIN one_scenes s ON s.tenant_id = m.tenant_id AND s.id = m.scene_id \
                  WHERE m.tenant_id = ? AND m.user_id = ? \
@@ -1574,7 +1604,7 @@ impl PlatformService {
             entry.1 |= resource_id == GRANT_ALL_RESOURCES;
         }
         let mut out = Vec::with_capacity(rows.len());
-        for (id, name, description, job_functions_json, built_in, created_at, updated_at) in rows {
+        for (id, name, description, avatar_ref, job_functions_json, built_in, created_at, updated_at) in rows {
             let per_type = packages.remove(&id).unwrap_or_default();
             // Canonical order = the matrix's own type order, so the client
             // renders "skills before channels" consistently with the console.
@@ -1605,6 +1635,7 @@ impl PlatformService {
                 id,
                 name,
                 description,
+                avatar_ref,
                 job_functions: serde_json::from_str(&job_functions_json).unwrap_or_default(),
                 built_in,
                 resources,
@@ -3882,7 +3913,17 @@ type PolicyTemplateRow = (
     i64,         // binding_count (aggregate)
 );
 
-type SceneRow = (String, String, String, Option<String>, String, bool, i64, i64);
+type SceneRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    bool,
+    i64,
+    i64,
+);
 
 /// one_config_sets row + aggregate: id, name, description, created_by,
 /// created_at, updated_at, entry_count.

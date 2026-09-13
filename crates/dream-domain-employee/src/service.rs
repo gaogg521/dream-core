@@ -1186,6 +1186,46 @@ impl EmployeeService {
         set_published_batch(&self.db, tenant_id, ids, published).await
     }
 
+    /// Admin-only presentation fields used by the enterprise registry.  The
+    /// route performs the role check; tenant scoping here prevents a console
+    /// from ever editing another project's employee by id.
+    pub async fn admin_update_identity(
+        &self,
+        tenant_id: &str,
+        agent_id: &str,
+        name: &str,
+        description: Option<&str>,
+        automation_config: serde_json::Value,
+    ) -> Result<PersonalAgentDto, EmployeeError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(EmployeeError::BadRequest("name must not be empty".into()));
+        }
+        let automation_config = automation_config.to_string();
+        if automation_config.len() > 900_000 {
+            return Err(EmployeeError::BadRequest("employee avatar is too large".into()));
+        }
+        let changed = self
+            .db
+            .execute(
+                "UPDATE one_personal_agents SET name = ?, description = ?, automation_config = ?, updated_at = ? \
+                 WHERE id = ? AND tenant_id = ?",
+                &db_params![
+                    name,
+                    description,
+                    &automation_config,
+                    now_ms() as i64,
+                    agent_id,
+                    tenant_id
+                ],
+            )
+            .await?;
+        if changed == 0 {
+            return Err(EmployeeError::NotFound);
+        }
+        Ok(self.get_by_id(agent_id).await?.into())
+    }
+
     // ── digital-employee catalog (P1-2) ───────────────────────────────
     //
     // Thin wrappers around `catalog.rs` free functions, same testability

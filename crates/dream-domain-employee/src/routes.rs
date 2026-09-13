@@ -44,6 +44,7 @@ pub fn one_employee_routes(state: OneEmployeeRouterState) -> Router {
         // registry writes (`require_registry_admin`) — direct SQL against
         // one-org's table, not a shared trait (see `EmployeeService::user_org_role`).
         .route("/api/one/employee/admin/agents", get(list_agents_for_admin))
+        .route("/api/one/employee/admin/agents/{agent_id}", put(update_agent_for_admin))
         .route("/api/one/employee/admin/agents/publish", put(publish_agents))
         .route(
             "/api/one/employee/admin/grants",
@@ -434,6 +435,38 @@ async fn list_agents_for_admin(
     require_registry_admin(&state, &user.id).await?;
     let tenant = state.tenant_of(&user.id).await;
     Ok(Json(ApiResponse::ok(state.service.list_all_for_tenant(&tenant).await?)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminUpdateAgentBody {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    automation_config: serde_json::Value,
+}
+
+async fn update_agent_for_admin(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<AdminUpdateAgentBody>,
+) -> Result<Json<ApiResponse<PersonalAgentDto>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .admin_update_identity(
+                &tenant,
+                &agent_id,
+                &body.name,
+                body.description.as_deref(),
+                body.automation_config,
+            )
+            .await?,
+    )))
 }
 
 #[derive(Deserialize)]
