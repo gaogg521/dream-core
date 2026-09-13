@@ -49,6 +49,7 @@ use crate::models::{
     MySceneDto, NewApiKeyDto, NotificationDto, PolicyTemplateBindingDto, ResourceGrantDto, SceneDto, SecurityPolicyDto,
     SecurityPolicyTemplateDto, ShareConversationInput, SharedConversationDetail, SharedMessageInput, SiemConfigDto,
 };
+use crate::object_storage::{ObjectListingDto, ObjectStorageConfigDto, ObjectStorageConfigInput, StorageProbeDto};
 use crate::rbac::{RequirePlatformAdmin, RequirePlatformMember};
 use crate::service::ConfigImportRow;
 use crate::siem::SiemStatus;
@@ -192,6 +193,28 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
         )
         // P2-4 admin governance half: per-member status/quota/usage plus the
         // ledger-vs-disk reconciliation pass.
+        // 文件管理: the tenant's external S3 / MinIO buckets. Distinct from the
+        // file-vault routes above, which are the per-member local vault.
+        .route(
+            "/api/one/admin/platform/object-storage",
+            get(admin_list_object_storage).post(admin_create_object_storage),
+        )
+        .route(
+            "/api/one/admin/platform/object-storage/{id}",
+            axum::routing::patch(admin_update_object_storage).delete(admin_delete_object_storage),
+        )
+        .route(
+            "/api/one/admin/platform/object-storage/{id}/default",
+            axum::routing::put(admin_set_default_object_storage),
+        )
+        .route(
+            "/api/one/admin/platform/object-storage/{id}/probe",
+            axum::routing::post(admin_probe_object_storage),
+        )
+        .route(
+            "/api/one/admin/platform/object-storage/{id}/objects",
+            get(admin_list_object_storage_entries),
+        )
         .route("/api/one/admin/platform/file-vault", get(admin_list_file_vaults))
         .route(
             "/api/one/admin/platform/file-vault/reconcile",
@@ -1335,6 +1358,114 @@ async fn delete_vault_file(
 }
 
 // --- P2-4 personal file vault — admin governance half ---
+
+// -- 文件管理 (object storage) ------------------------------------------------
+
+async fn admin_list_object_storage(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<Vec<ObjectStorageConfigDto>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_object_storage_configs(&actor.tenant_id).await?,
+    )))
+}
+
+async fn admin_create_object_storage(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<ObjectStorageConfigInput>,
+) -> Result<Json<ApiResponse<ObjectStorageConfigDto>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .create_object_storage_config(&actor.tenant_id, &user.id, &body)
+            .await?,
+    )))
+}
+
+async fn admin_update_object_storage(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+    Json(body): Json<ObjectStorageConfigInput>,
+) -> Result<Json<ApiResponse<ObjectStorageConfigDto>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .update_object_storage_config(&actor.tenant_id, &id, &body)
+            .await?,
+    )))
+}
+
+async fn admin_delete_object_storage(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, PlatformError> {
+    state
+        .service
+        .delete_object_storage_config(&actor.tenant_id, &id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn admin_set_default_object_storage(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<ObjectStorageConfigDto>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .set_default_object_storage_config(&actor.tenant_id, &id)
+            .await?,
+    )))
+}
+
+/// Connectivity probe. Answers 200 with `ok: false` for a bucket that refuses
+/// us — "these credentials do not work" is the question the operator asked,
+/// not a server fault.
+async fn admin_probe_object_storage(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<StorageProbeDto>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.probe_object_storage(&actor.tenant_id, &id).await?,
+    )))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ObjectListingQuery {
+    #[serde(default)]
+    prefix: Option<String>,
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    limit: Option<i32>,
+}
+
+async fn admin_list_object_storage_entries(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+    Query(q): Query<ObjectListingQuery>,
+) -> Result<Json<ApiResponse<ObjectListingDto>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .list_object_storage_entries(
+                &actor.tenant_id,
+                &id,
+                q.prefix.as_deref(),
+                q.token.as_deref(),
+                q.limit.unwrap_or(200),
+            )
+            .await?,
+    )))
+}
 
 async fn admin_list_file_vaults(
     State(state): State<OnePlatformRouterState>,

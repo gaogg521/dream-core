@@ -205,6 +205,10 @@ sha2 = "0.10"
 
 # AWS
 aws-config = { version = "1", features = ["behavior-version-latest"] }
+# Object storage for the enterprise file-management console (S3 / MinIO).
+# Same minimal feature set as the bedrock clients above: no default TLS stack
+# pulled twice, no behaviour-version-latest surprise.
+aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client"] }
 aws-sdk-bedrock = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client"] }
 aws-sdk-bedrockruntime = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client"] }
 # SigV4 re-signing for the model proxy's Bedrock channels

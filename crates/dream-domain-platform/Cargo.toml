@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+aws-sdk-s3.workspace = true
+aws-config.workspace = true
+aws-credential-types.workspace = true
 dream-core-api-types.workspace = true
 dream-core-auth.workspace = true
 dream-core-common.workspace = true

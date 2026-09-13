@@ -96,10 +96,12 @@ pub struct ConfigImportRow {
 }
 
 pub struct PlatformService {
-    db: DbPool,
+    // `pub(crate)` so sibling modules (object_storage) can reach them; the
+    // struct itself stays the only public surface.
+    pub(crate) db: DbPool,
     /// Encrypts stored registry/collaboration credentials (same key/helper as
     /// one-org's SMTP password and provider API keys).
-    encryption_key: [u8; 32],
+    pub(crate) encryption_key: [u8; 32],
     container_runtime: Arc<dyn ContainerRuntime>,
     collaboration_provider: Arc<dyn CollaborationProvider>,
     siem_exporter: Arc<dyn SiemExporter>,
@@ -7010,6 +7012,154 @@ mod tests {
         let service = PlatformService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()), [7u8; 32])
             .with_storage_root(root.clone());
         (db, service, root)
+    }
+
+    // -- 文件管理 / object storage configs --------------------------------
+
+    fn storage_input(key: &str) -> crate::object_storage::ObjectStorageConfigInput {
+        crate::object_storage::ObjectStorageConfigInput {
+            config_key: Some(key.into()),
+            bucket: Some("onework".into()),
+            endpoint: Some("http://minio:9000".into()),
+            access_key_id: Some("minioadmin".into()),
+            secret_access_key: Some("FAKE-SECRET-NOT-REAL".into()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn storage_secret_is_write_only_and_survives_an_edit_that_omits_it() {
+        let (db, _) = setup().await;
+        let service = PlatformService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()), [7u8; 32]);
+
+        let created = service
+            .create_object_storage_config("t1", "admin1", &storage_input("minio"))
+            .await
+            .unwrap();
+        assert!(created.has_secret);
+        assert!(created.is_default, "the first config becomes the default");
+
+        // The secret must not be reachable through any read payload.
+        let listed = service.list_object_storage_configs("t1").await.unwrap();
+        let rendered = serde_json::to_string(&listed).unwrap();
+        assert!(!rendered.contains("FAKE-SECRET-NOT-REAL"), "secret leaked: {rendered}");
+
+        // An edit that never mentions the secret keeps it — this is the form
+        // path, where the field is deliberately blank.
+        let renamed = service
+            .update_object_storage_config(
+                "t1",
+                &created.id,
+                &crate::object_storage::ObjectStorageConfigInput {
+                    bucket: Some("onework-prod".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(renamed.bucket, "onework-prod");
+        assert!(renamed.has_secret, "omitting the secret must not clear it");
+
+        // An explicit empty string clears it.
+        let cleared = service
+            .update_object_storage_config(
+                "t1",
+                &created.id,
+                &crate::object_storage::ObjectStorageConfigInput {
+                    secret_access_key: Some("  ".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!cleared.has_secret);
+    }
+
+    #[tokio::test]
+    async fn exactly_one_storage_config_is_default_per_tenant() {
+        let (db, _) = setup().await;
+        let service = PlatformService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()), [7u8; 32]);
+
+        let a = service
+            .create_object_storage_config("t1", "admin1", &storage_input("minio"))
+            .await
+            .unwrap();
+        let b = service
+            .create_object_storage_config("t1", "admin1", &storage_input("backup"))
+            .await
+            .unwrap();
+        assert!(a.is_default && !b.is_default);
+
+        service.set_default_object_storage_config("t1", &b.id).await.unwrap();
+        let after = service.list_object_storage_configs("t1").await.unwrap();
+        assert_eq!(after.iter().filter(|c| c.is_default).count(), 1);
+        assert!(after.iter().find(|c| c.id == b.id).unwrap().is_default);
+
+        // Deleting the default hands the flag on rather than leaving the
+        // tenant with none — otherwise "use the default bucket" silently
+        // resolves to nothing.
+        service.delete_object_storage_config("t1", &b.id).await.unwrap();
+        let remaining = service.list_object_storage_configs("t1").await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert!(remaining[0].is_default);
+    }
+
+    #[tokio::test]
+    async fn storage_keys_are_unique_per_tenant_but_not_across_them() {
+        let (db, _) = setup().await;
+        let service = PlatformService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()), [7u8; 32]);
+
+        service
+            .create_object_storage_config("t1", "admin1", &storage_input("minio"))
+            .await
+            .unwrap();
+        let clash = service
+            .create_object_storage_config("t1", "admin1", &storage_input("minio"))
+            .await;
+        assert!(matches!(clash, Err(PlatformError::BadRequest(_))), "{clash:?}");
+
+        service
+            .create_object_storage_config("t2", "admin1", &storage_input("minio"))
+            .await
+            .unwrap();
+        assert_eq!(service.list_object_storage_configs("t2").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_config_without_credentials_probes_false_instead_of_erroring() {
+        let (db, _) = setup().await;
+        let service = PlatformService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()), [7u8; 32]);
+        let cfg = service
+            .create_object_storage_config(
+                "t1",
+                "admin1",
+                &crate::object_storage::ObjectStorageConfigInput {
+                    config_key: Some("nocreds".into()),
+                    bucket: Some("onework".into()),
+                    endpoint: Some("http://minio:9000".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        // "it does not work, and here is why" is a successful answer to the
+        // question the operator asked, not a 500.
+        let probe = service.probe_object_storage("t1", &cfg.id).await.unwrap();
+        assert!(!probe.ok);
+        assert!(probe.message.contains("access key"), "{}", probe.message);
+    }
+
+    #[tokio::test]
+    async fn storage_configs_are_tenant_scoped() {
+        let (db, _) = setup().await;
+        let service = PlatformService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()), [7u8; 32]);
+        let a = service
+            .create_object_storage_config("t1", "admin1", &storage_input("minio"))
+            .await
+            .unwrap();
+        assert!(service.list_object_storage_configs("t2").await.unwrap().is_empty());
+        let cross = service.delete_object_storage_config("t2", &a.id).await;
+        assert!(matches!(cross, Err(PlatformError::NotFound(_))), "{cross:?}");
     }
 
     #[tokio::test]
