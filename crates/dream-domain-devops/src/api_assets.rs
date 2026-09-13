@@ -172,6 +172,24 @@ fn normalize_code(raw: &str) -> Result<String, DevopsError> {
     Ok(code)
 }
 
+/// Resolve one optional text field on edit.
+///
+/// Three cases, and the middle one is the bug this exists to prevent: the
+/// console posts every optional input, so a field the operator left blank
+/// arrives as `Some("")`. Storing that verbatim gives the column an empty
+/// string where it should hold NULL — and `tool_prefix` in particular is read
+/// as "unset means fall back to the code", which an empty string silently
+/// defeats.
+fn resolve_optional(input: Option<&str>, current: &Option<String>) -> Option<String> {
+    match input {
+        None => current.clone(),
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() { None } else { Some(trimmed.to_owned()) }
+        }
+    }
+}
+
 fn validate_auth(auth_type: &str, auth_config: Option<&str>) -> Result<(), DevopsError> {
     if !AUTH_TYPES.contains(&auth_type) {
         return Err(DevopsError::BadRequest(format!(
@@ -513,32 +531,12 @@ impl DevopsService {
         let params = db_params![
             &name,
             &code,
-            input
-                .category
-                .as_deref()
-                .map(str::trim)
-                .map(str::to_owned)
-                .or_else(|| current.category.clone()),
-            input
-                .tool_prefix
-                .as_deref()
-                .map(str::trim)
-                .map(str::to_owned)
-                .or_else(|| current.tool_prefix.clone()),
-            input
-                .base_url
-                .as_deref()
-                .map(str::trim)
-                .map(str::to_owned)
-                .or_else(|| current.base_url.clone()),
+            resolve_optional(input.category.as_deref(), &current.category),
+            resolve_optional(input.tool_prefix.as_deref(), &current.tool_prefix),
+            resolve_optional(input.base_url.as_deref(), &current.base_url),
             &auth_type,
             i64::from(input.enabled.unwrap_or(current.enabled)),
-            input
-                .description
-                .as_deref()
-                .map(str::trim)
-                .map(str::to_owned)
-                .or_else(|| current.description.clone()),
+            resolve_optional(input.description.as_deref(), &current.description),
             auth_set,
             auth_value,
             now_ms(),
@@ -878,6 +876,59 @@ mod tests {
             .await
             .unwrap();
         assert!(!cleared.auth_configured);
+    }
+
+    #[tokio::test]
+    async fn a_blank_optional_field_clears_to_null_never_to_an_empty_string() {
+        let svc = service().await;
+        let created = svc
+            .create_api_asset(
+                "t1",
+                "admin1",
+                &ApiAssetProfileInput {
+                    category: Some("media".into()),
+                    tool_prefix: Some("rec".into()),
+                    ..manual_input("Recording", "recording_service")
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.tool_prefix.as_deref(), Some("rec"));
+
+        // The console posts every optional input, so an untouched box arrives
+        // as "". That must read as "unset", not as an empty prefix — callers
+        // treat None as "fall back to the code".
+        let saved = svc
+            .update_api_asset(
+                "t1",
+                &created.id,
+                &ApiAssetProfileInput {
+                    name: Some("Recording".into()),
+                    code: Some("recording_service".into()),
+                    tool_prefix: Some("   ".into()),
+                    category: Some("".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved.tool_prefix, None, "blank prefix must be NULL, not an empty string");
+        assert_eq!(saved.category, None);
+
+        // An omitted field is still left alone.
+        let untouched = svc
+            .update_api_asset(
+                "t1",
+                &created.id,
+                &ApiAssetProfileInput {
+                    description: Some("now described".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(untouched.base_url.as_deref(), Some("https://api.example.com"));
+        assert_eq!(untouched.description.as_deref(), Some("now described"));
     }
 
     #[tokio::test]
