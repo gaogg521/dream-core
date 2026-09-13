@@ -1244,6 +1244,37 @@ impl MemoryService {
         Ok(())
     }
 
+    /// Every grant in the tenant, newest first.
+    ///
+    /// `list_grants` is per-collection because the drawer that calls it is
+    /// scoped to one. The standalone 记忆授权 page answers the other question —
+    /// "who can reach memory here, across all collections" — and fanning the
+    /// per-collection call out from the client would issue one request per
+    /// collection to rebuild a list the database can produce in one.
+    pub async fn list_all_grants(&self, tenant_id: &str) -> Result<Vec<MemoryGrantDto>, MemoryError> {
+        let rows: Vec<(String, String, String, String, String, String, i64)> = self
+            .db
+            .fetch_all_as::<(String, String, String, String, String, String, i64)>(
+                "SELECT id, collection_id, subject_type, subject_id, access, granted_by, created_at              FROM one_memory_grants WHERE tenant_id = ? ORDER BY created_at DESC, id DESC",
+                &db_params![tenant_id],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, collection_id, subject_type, subject_id, access, granted_by, created_at)| MemoryGrantDto {
+                    id,
+                    collection_id,
+                    subject_type,
+                    subject_id,
+                    access,
+                    granted_by,
+                    created_at,
+                },
+            )
+            .collect())
+    }
+
     pub async fn list_grants(&self, tenant_id: &str, collection_id: &str) -> Result<Vec<MemoryGrantDto>, MemoryError> {
         self.load_collection(tenant_id, collection_id)
             .await?
@@ -1878,6 +1909,26 @@ mod tests {
         let narrow = service.refine_summary("t1", 0, 10).await.unwrap();
         assert_eq!(narrow.window_days, 1, "window is clamped to at least a day");
         assert_eq!(narrow.recent.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_all_grants_spans_collections_and_stops_at_the_tenant() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "admin1", "t1", "org_admin").await;
+        seed_membership(db.pool(), "m1", "t1", "member").await;
+        let a = make_collection(&service, "admin1", "global", None, "collection a").await;
+        let b = make_collection(&service, "admin1", "global", None, "collection b").await;
+        service.grant_memory("t1", &a.id, "member", "m1", "read", "admin1").await.unwrap();
+        service.grant_memory("t1", &b.id, "member", "m1", "write", "admin1").await.unwrap();
+
+        let all = service.list_all_grants("t1").await.unwrap();
+        assert_eq!(all.len(), 2, "both collections' grants, in one call");
+        let by_collection: std::collections::HashSet<&str> =
+            all.iter().map(|g| g.collection_id.as_str()).collect();
+        assert!(by_collection.contains(a.id.as_str()));
+        assert!(by_collection.contains(b.id.as_str()));
+
+        assert!(service.list_all_grants("t2").await.unwrap().is_empty());
     }
 
     #[tokio::test]

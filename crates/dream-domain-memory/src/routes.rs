@@ -39,7 +39,7 @@ pub fn one_memory_routes(state: OneMemoryRouterState) -> Router {
             post(admin_refine_collection),
         )
         .route("/api/one/admin/memory/collections/{id}/grants", get(admin_list_grants))
-        .route("/api/one/admin/memory/grants", put(admin_put_grant))
+        .route("/api/one/admin/memory/grants", get(admin_list_all_grants).put(admin_put_grant))
         .route(
             "/api/one/admin/memory/config",
             get(admin_get_memory_config).put(admin_put_memory_config),
@@ -165,6 +165,16 @@ async fn admin_refine_collection(
 ) -> Result<Json<ApiResponse<MemoryRefineJobDto>>, MemoryError> {
     let dto = state.service.run_refine_job(&actor.tenant_id, &id).await?;
     Ok(Json(ApiResponse::ok(dto)))
+}
+
+/// Tenant-wide grant list for the standalone 记忆授权 page.
+async fn admin_list_all_grants(
+    State(state): State<OneMemoryRouterState>,
+    RequireMemoryAdmin(actor): RequireMemoryAdmin,
+) -> Result<Json<ApiResponse<Vec<MemoryGrantDto>>>, MemoryError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_all_grants(&actor.tenant_id).await?,
+    )))
 }
 
 async fn admin_list_grants(
