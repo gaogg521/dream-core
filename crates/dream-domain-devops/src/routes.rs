@@ -69,6 +69,12 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
             get(get_api_asset).patch(update_api_asset).delete(delete_api_asset),
         )
         .route(
+            // Manual assets only; an imported asset's operations come from its
+            // stored document (see set_api_asset_endpoints).
+            "/api/one/devops/api-assets/{id}/endpoints",
+            axum::routing::put(set_api_asset_endpoints),
+        )
+        .route(
             "/api/one/devops/api-assets/{id}/publish",
             axum::routing::post(publish_api_asset),
         )
@@ -1080,6 +1086,29 @@ async fn update_api_asset(
     let tenant = state.tenant_of(&user.id).await;
     let dto = state.service.update_api_asset(&tenant, &id, &body).await?;
     audit(&state, &user.id, "devops.api_asset.update", Some(&dto.id)).await;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+/// Body for replacing a manual asset's operation list.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetApiAssetEndpointsBody {
+    endpoints: Vec<crate::api_assets::ApiEndpoint>,
+}
+
+async fn set_api_asset_endpoints(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(body): Json<SetApiAssetEndpointsBody>,
+) -> Result<Json<ApiResponse<ApiAssetDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    let dto = state
+        .service
+        .set_api_asset_endpoints(&tenant, &id, &body.endpoints)
+        .await?;
+    audit(&state, &user.id, "devops.api_asset.endpoints", Some(&dto.id)).await;
     Ok(Json(ApiResponse::ok(dto)))
 }
 
