@@ -15,6 +15,7 @@ pub mod error;
 pub mod ip_allowlist;
 pub mod migrate;
 pub mod models;
+pub mod object_storage;
 pub mod rbac;
 pub mod routes;
 pub mod service;
