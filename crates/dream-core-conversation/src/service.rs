@@ -519,11 +519,7 @@ impl ConversationService {
     /// so the allowlist half can only be decided once the conversation's
     /// pinned model is resolved — this is that second half. The rate-limit
     /// half stays at entry time.
-    pub(crate) async fn enforce_model_allowlist(
-        &self,
-        user_id: &str,
-        model: &str,
-    ) -> Result<(), ConversationError> {
+    pub(crate) async fn enforce_model_allowlist(&self, user_id: &str, model: &str) -> Result<(), ConversationError> {
         let gate = self.send_gate.read().ok().and_then(|g| g.clone());
         if let Some(gate) = gate
             && let Err(denial) = gate.check_model(user_id, model).await

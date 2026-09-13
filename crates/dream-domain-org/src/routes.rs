@@ -934,7 +934,12 @@ async fn admin_create_member(
 ) -> Result<Json<ApiResponse<AdminUserDto>>, OrgError> {
     let user = state
         .service
-        .admin_create_member(&actor.tenant_id, &body.username, &body.password, body.display_name.as_deref())
+        .admin_create_member(
+            &actor.tenant_id,
+            &body.username,
+            &body.password,
+            body.display_name.as_deref(),
+        )
         .await?;
     Ok(Json(ApiResponse::ok(user)))
 }

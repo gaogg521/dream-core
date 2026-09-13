@@ -1918,13 +1918,18 @@ mod tests {
         seed_membership(db.pool(), "m1", "t1", "member").await;
         let a = make_collection(&service, "admin1", "global", None, "collection a").await;
         let b = make_collection(&service, "admin1", "global", None, "collection b").await;
-        service.grant_memory("t1", &a.id, "member", "m1", "read", "admin1").await.unwrap();
-        service.grant_memory("t1", &b.id, "member", "m1", "write", "admin1").await.unwrap();
+        service
+            .grant_memory("t1", &a.id, "member", "m1", "read", "admin1")
+            .await
+            .unwrap();
+        service
+            .grant_memory("t1", &b.id, "member", "m1", "write", "admin1")
+            .await
+            .unwrap();
 
         let all = service.list_all_grants("t1").await.unwrap();
         assert_eq!(all.len(), 2, "both collections' grants, in one call");
-        let by_collection: std::collections::HashSet<&str> =
-            all.iter().map(|g| g.collection_id.as_str()).collect();
+        let by_collection: std::collections::HashSet<&str> = all.iter().map(|g| g.collection_id.as_str()).collect();
         assert!(by_collection.contains(a.id.as_str()));
         assert!(by_collection.contains(b.id.as_str()));
 

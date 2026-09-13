@@ -2460,24 +2460,26 @@ impl OrgService {
         if username.len() < 2 || username.len() > 64 {
             return Err(OrgError::BadRequest("用户名长度需在 2-64 个字符之间".into()));
         }
-        if !username.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
-            return Err(OrgError::BadRequest("用户名只能包含字母、数字、点、短横线和下划线".into()));
+        if !username
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        {
+            return Err(OrgError::BadRequest(
+                "用户名只能包含字母、数字、点、短横线和下划线".into(),
+            ));
         }
         if password.len() < 8 {
             return Err(OrgError::BadRequest("初始密码至少 8 位字符".into()));
         }
         let taken: i64 = self
             .db
-            .fetch_one_scalar(
-                "SELECT COUNT(*) FROM users WHERE username = ?",
-                &db_params![username],
-            )
+            .fetch_one_scalar("SELECT COUNT(*) FROM users WHERE username = ?", &db_params![username])
             .await?;
         if taken > 0 {
             return Err(OrgError::BadRequest(format!("用户名「{username}」已存在")));
         }
-        let password_hash = dream_core_auth::hash_password(password)
-            .map_err(|e| OrgError::BadRequest(format!("密码加密失败: {e}")))?;
+        let password_hash =
+            dream_core_auth::hash_password(password).map_err(|e| OrgError::BadRequest(format!("密码加密失败: {e}")))?;
 
         let user_id = dream_core_common::generate_prefixed_id("user");
         let now = now_ms() as i64;
@@ -2518,7 +2520,8 @@ impl OrgService {
                 "INSERT IGNORE INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?)"
             }
         };
-        tx.execute(active_tenant_sql, &db_params![&user_id, tenant_id, now]).await?;
+        tx.execute(active_tenant_sql, &db_params![&user_id, tenant_id, now])
+            .await?;
         tx.commit().await?;
 
         self.audit(tenant_id, None, None, "org.admin_create_member", Some(username), None)
