@@ -43,6 +43,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "013_conversation_shares",
         include_str!("../migrations/013_conversation_shares.sql"),
     ),
+    ("014_scene_avatars", include_str!("../migrations/014_scene_avatars.sql")),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -82,6 +83,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "013_conversation_shares",
         include_str!("../migrations_mysql/013_conversation_shares.sql"),
+    ),
+    (
+        "014_scene_avatars",
+        include_str!("../migrations_mysql/014_scene_avatars.sql"),
     ),
 ];
 
