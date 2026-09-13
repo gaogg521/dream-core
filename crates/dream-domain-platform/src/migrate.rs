@@ -48,6 +48,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "015_object_storage",
         include_str!("../migrations/015_object_storage.sql"),
     ),
+    (
+        "016_object_storage_protocol",
+        include_str!("../migrations/016_object_storage_protocol.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -95,6 +99,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "015_object_storage",
         include_str!("../migrations_mysql/015_object_storage.sql"),
+    ),
+    (
+        "016_object_storage_protocol",
+        include_str!("../migrations_mysql/016_object_storage_protocol.sql"),
     ),
 ];
 

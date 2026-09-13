@@ -7076,6 +7076,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn storage_protocol_defaults_to_s3_and_rejects_unimplemented_ones() {
+        let (db, _) = setup().await;
+        let service = PlatformService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()), [7u8; 32]);
+
+        // Rows written before the driver seam existed spoke S3 by definition,
+        // so an omitted protocol must land there and not on something else.
+        let s3 = service
+            .create_object_storage_config("t1", "admin1", &storage_input("minio"))
+            .await
+            .unwrap();
+        assert_eq!(s3.protocol, "s3");
+
+        // A NAS: the whole point of the seam.
+        let nas = service
+            .create_object_storage_config(
+                "t1",
+                "admin1",
+                &crate::object_storage::ObjectStorageConfigInput {
+                    protocol: Some("webdav".into()),
+                    config_key: Some("nas".into()),
+                    bucket: Some("team".into()),
+                    endpoint: Some("http://nas:5005".into()),
+                    access_key_id: Some("svc".into()),
+                    secret_access_key: Some("FAKE-NAS-PASSWORD".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(nas.protocol, "webdav");
+        assert!(nas.has_secret);
+
+        // The NAS password must be as unreachable as the S3 secret.
+        let listed = service.list_object_storage_configs("t1").await.unwrap();
+        let rendered = serde_json::to_string(&listed).unwrap();
+        assert!(!rendered.contains("FAKE-NAS-PASSWORD"), "credential leaked: {rendered}");
+
+        // Refused at write time, so a value no driver implements can never be
+        // stored and then fail on every page load.
+        let smb = service
+            .create_object_storage_config(
+                "t1",
+                "admin1",
+                &crate::object_storage::ObjectStorageConfigInput {
+                    protocol: Some("smb".into()),
+                    ..storage_input("fileserver")
+                },
+            )
+            .await;
+        assert!(matches!(smb, Err(PlatformError::BadRequest(_))), "{smb:?}");
+
+        // Switching protocol on an existing config is validated the same way.
+        let bad_switch = service
+            .update_object_storage_config(
+                "t1",
+                &s3.id,
+                &crate::object_storage::ObjectStorageConfigInput {
+                    protocol: Some("nfs".into()),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(
+            matches!(bad_switch, Err(PlatformError::BadRequest(_))),
+            "{bad_switch:?}"
+        );
+
+        let good_switch = service
+            .update_object_storage_config(
+                "t1",
+                &s3.id,
+                &crate::object_storage::ObjectStorageConfigInput {
+                    protocol: Some("webdav".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(good_switch.protocol, "webdav", "a protocol change must persist");
+    }
+
+    #[tokio::test]
     async fn exactly_one_storage_config_is_default_per_tenant() {
         let (db, _) = setup().await;
         let service = PlatformService::new(dream_core_db::DbPool::Sqlite(db.pool().clone()), [7u8; 32]);

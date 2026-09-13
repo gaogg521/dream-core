@@ -209,6 +209,9 @@ aws-config = { version = "1", features = ["behavior-version-latest"] }
 # Same minimal feature set as the bedrock clients above: no default TLS stack
 # pulled twice, no behaviour-version-latest surprise.
 aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client"] }
+# WebDAV multistatus parsing for the NAS storage driver. Already in the tree
+# via aws-sdk-s3; named here so the platform crate can depend on it directly.
+quick-xml = "0.41"
 aws-sdk-bedrock = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client"] }
 aws-sdk-bedrockruntime = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client"] }
 # SigV4 re-signing for the model proxy's Bedrock channels

@@ -19,9 +19,6 @@
 //!    is appended, never substituted. Otherwise "browse the bucket" would let
 //!    an admin page read objects the configuration was scoped away from.
 
-use aws_credential_types::Credentials;
-use aws_sdk_s3::config::{BehaviorVersion, Region};
-use aws_sdk_s3::{Client as S3Client, Config as S3Config};
 use serde::{Deserialize, Serialize};
 
 use dream_core_common::{decrypt_string, encrypt_string, generate_prefixed_id, now_ms};
@@ -29,12 +26,15 @@ use dream_core_db::db_params;
 
 use crate::error::PlatformError;
 use crate::service::PlatformService;
+use crate::storage_driver::{DriverConfig, driver_for, validate_protocol};
 
 /// One registered bucket, as the console renders it. No credential material.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ObjectStorageConfigDto {
     pub id: String,
+    /// `'s3' | 'webdav'` — which driver talks to this storage.
+    pub protocol: String,
     /// Operator-facing handle, unique per tenant (the reference product's 配置 Key).
     pub config_key: String,
     pub bucket: String,
@@ -57,6 +57,7 @@ pub struct ObjectStorageConfigDto {
 #[serde(rename_all = "camelCase")]
 pub struct ObjectStorageConfigInput {
     pub config_key: Option<String>,
+    pub protocol: Option<String>,
     pub bucket: Option<String>,
     pub endpoint: Option<String>,
     pub region: Option<String>,
@@ -104,6 +105,7 @@ pub struct StorageProbeDto {
 
 type ConfigRow = (
     String,
+    String, // protocol
     String,
     String,
     String,
@@ -118,7 +120,7 @@ type ConfigRow = (
     i64,
 );
 
-const CONFIG_COLS: &str = "id, config_key, bucket, endpoint, region, prefix, access_key_id, \
+const CONFIG_COLS: &str = "id, protocol, config_key, bucket, endpoint, region, prefix, access_key_id, \
                            secret_access_key_encrypted, force_path_style, is_default, created_by, \
                            created_at, updated_at";
 
@@ -153,35 +155,13 @@ fn reject_traversal(sub: &str) -> Result<(), PlatformError> {
     Ok(())
 }
 
-/// Collapse an S3 SDK error into the vendor's own code and message.
-///
-/// `DisplayErrorContext` renders the whole smithy chain — several hundred
-/// characters of `ServiceError(Unhandled(...))` that end up in a toast. The
-/// code ("NoSuchBucket", "AccessDenied") is the part an operator acts on.
-fn s3_message<E, R>(err: &aws_sdk_s3::error::SdkError<E, R>) -> String
-where
-    E: std::error::Error + 'static,
-    R: std::fmt::Debug,
-{
-    let full = format!("{}", aws_sdk_s3::error::DisplayErrorContext(err));
-    // The code appears as `(SomeCode)`; prefer it, fall back to the first line.
-    if let Some(start) = full.find('(')
-        && let Some(end) = full[start..].find(')')
-    {
-        let code = &full[start + 1..start + end];
-        if !code.is_empty() && code.chars().all(|c| c.is_ascii_alphanumeric()) {
-            return code.to_owned();
-        }
-    }
-    full.lines().next().unwrap_or("storage request failed").to_owned()
-}
-
 impl PlatformService {
     // -- object storage configs -------------------------------------------
 
     fn row_to_dto(&self, row: ConfigRow) -> ObjectStorageConfigDto {
         let (
             id,
+            protocol,
             config_key,
             bucket,
             endpoint,
@@ -197,6 +177,7 @@ impl PlatformService {
         ) = row;
         ObjectStorageConfigDto {
             id,
+            protocol,
             config_key,
             bucket,
             endpoint,
@@ -258,6 +239,11 @@ impl PlatformService {
         let endpoint = trimmed(input.endpoint.as_deref())
             .ok_or_else(|| PlatformError::BadRequest("endpoint is required".into()))?;
 
+        // Default to S3: it is what every row written before the driver seam
+        // existed speaks, and what the console offers first.
+        let protocol = trimmed(input.protocol.as_deref()).unwrap_or_else(|| "s3".into());
+        validate_protocol(&protocol)?;
+
         let existing = self
             .db
             .fetch_optional_as::<(String,)>(
@@ -288,12 +274,13 @@ impl PlatformService {
         self.db
             .execute(
                 "INSERT INTO one_object_storage_configs \
-                (id, tenant_id, config_key, bucket, endpoint, region, prefix, access_key_id, \
+                (id, tenant_id, protocol, config_key, bucket, endpoint, region, prefix, access_key_id, \
                  secret_access_key_encrypted, force_path_style, is_default, created_by, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 &db_params![
                     &id,
                     tenant_id,
+                    &protocol,
                     &config_key,
                     &bucket,
                     &endpoint,
@@ -339,15 +326,26 @@ impl PlatformService {
                 ),
             ),
         };
+        // A protocol change re-points the config at a different driver, so it
+        // is validated exactly like a create — and stored, or the row would
+        // keep claiming the old one.
+        let protocol = match input.protocol.as_deref().map(str::trim) {
+            Some(p) if !p.is_empty() => {
+                validate_protocol(p)?;
+                p.to_owned()
+            }
+            _ => current.protocol.clone(),
+        };
         let is_default = input.is_default.unwrap_or(current.is_default);
 
         self.db
             .execute(
-                "UPDATE one_object_storage_configs SET bucket = ?, endpoint = ?, region = ?, prefix = ?, \
+                "UPDATE one_object_storage_configs SET protocol = ?, bucket = ?, endpoint = ?, region = ?, prefix = ?, \
                  access_key_id = ?, force_path_style = ?, is_default = ?, \
                  secret_access_key_encrypted = CASE WHEN ? = 1 THEN ? ELSE secret_access_key_encrypted END, \
                  updated_at = ? WHERE tenant_id = ? AND id = ?",
                 &db_params![
+                    &protocol,
                     trimmed(input.bucket.as_deref()).unwrap_or(current.bucket),
                     trimmed(input.endpoint.as_deref()).unwrap_or(current.endpoint),
                     trimmed(input.region.as_deref()).unwrap_or(current.region),
@@ -420,13 +418,29 @@ impl PlatformService {
         Ok(self.row_to_dto(self.load_config_row(tenant_id, id).await?))
     }
 
-    // -- talking to the bucket --------------------------------------------
+    // -- talking to the storage -------------------------------------------
 
-    /// Build a client for one stored config, decrypting the secret at the last
-    /// possible moment.
-    async fn s3_client(&self, tenant_id: &str, id: &str) -> Result<(S3Client, ConfigRow), PlatformError> {
+    /// Resolve one stored config into a driver plus the material it needs,
+    /// decrypting the secret at the last possible moment.
+    async fn driver_for_config(
+        &self,
+        tenant_id: &str,
+        id: &str,
+    ) -> Result<(Box<dyn crate::storage_driver::StorageDriver>, DriverConfig, ConfigRow), PlatformError> {
         let row = self.load_config_row(tenant_id, id).await?;
-        let (_, _, _, ref endpoint, ref region, _, ref access_key_id, ref secret_cipher, force_path_style, ..) = row;
+        let (
+            _,
+            ref protocol,
+            _,
+            ref bucket,
+            ref endpoint,
+            ref region,
+            _,
+            ref access_key_id,
+            ref secret_cipher,
+            force_path_style,
+            ..,
+        ) = row;
 
         let secret = match secret_cipher {
             Some(cipher) => Some(
@@ -441,22 +455,22 @@ impl PlatformService {
             ));
         };
 
-        let config = S3Config::builder()
-            .behavior_version(BehaviorVersion::latest())
-            .region(Region::new(region.clone()))
-            .endpoint_url(endpoint.clone())
-            // MinIO and most self-hosted gateways serve path-style only.
-            .force_path_style(force_path_style != 0)
-            .credentials_provider(Credentials::new(key_id, secret, None, None, "one-work-console"))
-            .build();
-        Ok((S3Client::from_conf(config), row))
+        let cfg = DriverConfig {
+            endpoint: endpoint.clone(),
+            bucket: bucket.clone(),
+            region: region.clone(),
+            access_key_id: key_id,
+            secret_access_key: secret,
+            force_path_style: force_path_style != 0,
+        };
+        Ok((driver_for(protocol)?, cfg, row.clone()))
     }
 
-    /// Probe a stored config. Errors from the bucket are reported as `ok:
-    /// false` with the vendor's own message — the operator asked whether it
-    /// works, so "it does not, and here is why" is a successful answer.
+    /// Probe a stored config. A refusal from the storage is reported as
+    /// `ok: false` with its own words — the operator asked whether it works,
+    /// so "it does not, and here is why" is a successful answer.
     pub async fn probe_object_storage(&self, tenant_id: &str, id: &str) -> Result<StorageProbeDto, PlatformError> {
-        let (client, row) = match self.s3_client(tenant_id, id).await {
+        let (driver, cfg, _) = match self.driver_for_config(tenant_id, id).await {
             Ok(v) => v,
             Err(PlatformError::BadRequest(msg)) => {
                 return Ok(StorageProbeDto {
@@ -466,26 +480,19 @@ impl PlatformService {
             }
             Err(e) => return Err(e),
         };
-        let bucket = row.2.clone();
-        match client.head_bucket().bucket(&bucket).send().await {
-            Ok(_) => Ok(StorageProbeDto {
-                ok: true,
-                message: format!("bucket {bucket} reachable"),
-            }),
-            Err(e) => Ok(StorageProbeDto {
-                ok: false,
-                // `into_service_error` gives the S3 code (NoSuchBucket,
-                // AccessDenied) instead of a smithy wrapper nobody can act on.
-                message: s3_message(&e),
-            }),
+        match driver.probe(&cfg).await {
+            Ok(message) => Ok(StorageProbeDto { ok: true, message }),
+            Err(PlatformError::BadRequest(message)) => Ok(StorageProbeDto { ok: false, message }),
+            Err(e) => Err(e),
         }
     }
 
-    /// List one "folder" of the bucket.
+    /// List one level of the storage.
     ///
-    /// `sub_prefix` is appended to the config's own prefix, never used in place
-    /// of it: a config scoped to `media/` must not be able to browse the bucket
-    /// root through this endpoint.
+    /// `sub_prefix` is appended to the config's own prefix, never used in
+    /// place of it: a config scoped to `media/` must not be able to browse the
+    /// root through this endpoint. Traversal segments are refused here rather
+    /// than in each driver, so a new driver cannot forget the check.
     pub async fn list_object_storage_entries(
         &self,
         tenant_id: &str,
@@ -494,9 +501,8 @@ impl PlatformService {
         token: Option<&str>,
         limit: i32,
     ) -> Result<ObjectListingDto, PlatformError> {
-        let (client, row) = self.s3_client(tenant_id, id).await?;
-        let bucket = row.2.clone();
-        let base = row.5.clone().unwrap_or_default();
+        let (driver, cfg, row) = self.driver_for_config(tenant_id, id).await?;
+        let base = row.6.clone().unwrap_or_default();
         let sub = match sub_prefix {
             Some(raw) => {
                 reject_traversal(raw)?;
@@ -506,56 +512,21 @@ impl PlatformService {
         };
         let prefix = format!("{base}{sub}");
 
-        let mut req = client
-            .list_objects_v2()
-            .bucket(&bucket)
-            .delimiter("/")
-            .max_keys(limit.clamp(1, 1000));
-        if !prefix.is_empty() {
-            req = req.prefix(&prefix);
-        }
-        if let Some(token) = token.filter(|t| !t.is_empty()) {
-            req = req.continuation_token(token);
-        }
-
-        let out = req
-            .send()
-            .await
-            .map_err(|e| PlatformError::BadRequest(s3_message(&e)))?;
-
-        let mut entries: Vec<ObjectEntryDto> = out
-            .common_prefixes()
-            .iter()
-            .filter_map(|cp| cp.prefix())
-            .map(|p| ObjectEntryDto {
-                name: p.trim_start_matches(&prefix).trim_end_matches('/').to_owned(),
-                key: p.to_owned(),
-                is_prefix: true,
-                size_bytes: None,
-                last_modified: None,
-            })
-            .collect();
-
-        entries.extend(
-            out.contents()
-                .iter()
-                .filter(|o| o.key().is_some_and(|k| k != prefix))
-                .map(|o| {
-                    let key = o.key().unwrap_or_default().to_owned();
-                    ObjectEntryDto {
-                        name: key.trim_start_matches(&prefix).to_owned(),
-                        key,
-                        is_prefix: false,
-                        size_bytes: o.size(),
-                        last_modified: o.last_modified().map(|t| t.to_millis().unwrap_or(0)),
-                    }
-                }),
-        );
-
+        let listing = driver.list(&cfg, &prefix, token, limit).await?;
         Ok(ObjectListingDto {
-            entries,
+            entries: listing
+                .entries
+                .into_iter()
+                .map(|e| ObjectEntryDto {
+                    key: e.key,
+                    name: e.name,
+                    is_prefix: e.is_prefix,
+                    size_bytes: e.size_bytes,
+                    last_modified: e.last_modified,
+                })
+                .collect(),
             prefix,
-            next_token: out.next_continuation_token().map(str::to_owned),
+            next_token: listing.next_token,
         })
     }
 }

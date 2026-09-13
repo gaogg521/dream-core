@@ -5,6 +5,9 @@ edition.workspace = true
 
 [dependencies]
 aws-sdk-s3.workspace = true
+base64.workspace = true
+quick-xml.workspace = true
+reqwest.workspace = true
 aws-config.workspace = true
 aws-credential-types.workspace = true
 dream-core-api-types.workspace = true
