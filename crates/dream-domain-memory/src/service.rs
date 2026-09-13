@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 use crate::error::MemoryError;
 use crate::models::{
     GrantCoverageDto, MemoryCollectionDto, MemoryConfigDto, MemoryGrantDto, MemoryItemDto, MemoryRefineJobDto,
+    MemoryRefineSummaryDto,
 };
 
 /// The three OpenOcta-aligned memory tiers (§产品口径): global company
@@ -1274,6 +1275,64 @@ impl MemoryService {
     /// Grant coverage: of the tenant's members, how many can read at least
     /// one active memory. The governance signal for "is memory actually
     /// reaching people, or is it written and never seen".
+    /// Read back the refine ledger: this window's totals plus the runs behind
+    /// them.
+    ///
+    /// Only `status = 'done'` rows feed the totals — a failed run inserts a
+    /// row with zero counts for audit, and counting those as "0 merged" is
+    /// fine, but they must not be mistaken for work that happened. The recent
+    /// list keeps failures, because a console that hides them would report a
+    /// silent problem as an idle week.
+    pub async fn refine_summary(
+        &self,
+        tenant_id: &str,
+        window_days: i64,
+        limit: i64,
+    ) -> Result<MemoryRefineSummaryDto, MemoryError> {
+        let window_days = window_days.clamp(1, 365);
+        let since = now_ms() - window_days * 24 * 60 * 60 * 1000;
+
+        let totals = self
+            .db
+            .fetch_optional_as::<(Option<i64>, Option<i64>)>(
+                "SELECT SUM(merged_count), SUM(trimmed_count) FROM one_memory_refine_jobs                  WHERE tenant_id = ? AND status = 'done' AND created_at >= ?",
+                &db_params![tenant_id, since],
+            )
+            .await?
+            .unwrap_or((None, None));
+
+        let rows = self
+            .db
+            .fetch_all_as::<(String, String, String, i64, i64, Option<String>, i64, Option<i64>)>(
+                "SELECT id, collection_id, status, merged_count, trimmed_count, error, created_at, finished_at                  FROM one_memory_refine_jobs WHERE tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+                &db_params![tenant_id, limit.clamp(1, 200)],
+            )
+            .await?;
+
+        Ok(MemoryRefineSummaryDto {
+            merged_this_week: totals.0.unwrap_or(0),
+            trimmed_this_week: totals.1.unwrap_or(0),
+            window_days,
+            recent: rows
+                .into_iter()
+                .map(
+                    |(id, collection_id, status, merged_count, trimmed_count, error, created_at, finished_at)| {
+                        MemoryRefineJobDto {
+                            id,
+                            collection_id,
+                            status,
+                            merged_count,
+                            trimmed_count,
+                            error,
+                            created_at,
+                            finished_at,
+                        }
+                    },
+                )
+                .collect(),
+        })
+    }
+
     pub async fn grant_coverage(&self, tenant_id: &str) -> Result<GrantCoverageDto, MemoryError> {
         let members: Vec<(String, String, Option<String>)> = self
             .db
@@ -1782,6 +1841,43 @@ mod tests {
         assert_eq!(job.merged_count, 0);
         assert_eq!(job.trimmed_count, 1);
         assert_eq!(active_count(&service, &global.id).await, 20);
+    }
+
+    #[tokio::test]
+    async fn refine_summary_reads_back_the_ledger_that_was_only_ever_written() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "admin1", "t1", "org_admin").await;
+
+        // Nothing has run yet: zeros, not an error and not a missing row.
+        let empty = service.refine_summary("t1", 7, 10).await.unwrap();
+        assert_eq!((empty.merged_this_week, empty.trimmed_this_week), (0, 0));
+        assert!(empty.recent.is_empty());
+        assert_eq!(empty.window_days, 7);
+
+        let global = make_collection(&service, "admin1", "global", None, "company knowledge").await;
+        for i in 0..21 {
+            add_item(&service, "admin1", &global.id, &format!("low value note {i}"), 0.1).await;
+        }
+        let job = service.run_refine_job("t1", &global.id).await.unwrap();
+
+        let summary = service.refine_summary("t1", 7, 10).await.unwrap();
+        assert_eq!(summary.trimmed_this_week, job.trimmed_count);
+        assert_eq!(summary.merged_this_week, job.merged_count);
+        assert_eq!(summary.recent.len(), 1);
+        assert_eq!(summary.recent[0].id, job.id);
+        assert_eq!(summary.recent[0].status, "done");
+
+        // Another tenant's ledger is not visible here.
+        let other = service.refine_summary("t2", 7, 10).await.unwrap();
+        assert_eq!((other.merged_this_week, other.trimmed_this_week), (0, 0));
+        assert!(other.recent.is_empty());
+
+        // A window that predates the run excludes it from the totals but the
+        // run still shows in the recent list — an operator must be able to see
+        // that something ran, even outside the headline window.
+        let narrow = service.refine_summary("t1", 0, 10).await.unwrap();
+        assert_eq!(narrow.window_days, 1, "window is clamped to at least a day");
+        assert_eq!(narrow.recent.len(), 1);
     }
 
     #[tokio::test]

@@ -19,6 +19,7 @@ use dream_core_auth::CurrentUser;
 use crate::error::MemoryError;
 use crate::models::{
     GrantCoverageDto, MemoryCollectionDto, MemoryConfigDto, MemoryGrantDto, MemoryItemDto, MemoryRefineJobDto,
+    MemoryRefineSummaryDto,
 };
 use crate::rbac::{RequireMemoryAdmin, RequireMemoryMember};
 use crate::state::OneMemoryRouterState;
@@ -45,6 +46,7 @@ pub fn one_memory_routes(state: OneMemoryRouterState) -> Router {
         )
         .route("/api/one/admin/memory/grants/{grantId}", delete(admin_revoke_grant))
         .route("/api/one/admin/memory/coverage", get(admin_coverage))
+        .route("/api/one/admin/memory/refine-summary", get(admin_refine_summary))
         .route("/api/one/memory/collections", get(member_list_collections))
         .route(
             "/api/one/memory/collections/{id}/items",
@@ -213,6 +215,30 @@ async fn admin_revoke_grant(
 ) -> Result<Json<ApiResponse<()>>, MemoryError> {
     state.service.revoke_memory(&actor.tenant_id, &grant_id).await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+/// The refine ledger for the console overview. `windowDays` defaults to 7
+/// (the reference product's "this week"); `limit` caps the recent list.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RefineSummaryQuery {
+    #[serde(default)]
+    window_days: Option<i64>,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+async fn admin_refine_summary(
+    State(state): State<OneMemoryRouterState>,
+    RequireMemoryAdmin(actor): RequireMemoryAdmin,
+    axum::extract::Query(q): axum::extract::Query<RefineSummaryQuery>,
+) -> Result<Json<ApiResponse<MemoryRefineSummaryDto>>, MemoryError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .refine_summary(&actor.tenant_id, q.window_days.unwrap_or(7), q.limit.unwrap_or(10))
+            .await?,
+    )))
 }
 
 async fn admin_coverage(

@@ -85,6 +85,26 @@ pub struct MemoryRefineJobDto {
     pub finished_at: Option<i64>,
 }
 
+/// The refine ledger as the console's overview reads it.
+///
+/// `one_memory_refine_jobs` has recorded every run since the feature landed,
+/// but nothing ever read it back — so the console could only show "a refine
+/// happened" as a toast that vanished. These are the two headline figures the
+/// reference product puts on its overview (this week's merges and trims) plus
+/// the recent runs behind them, all computed from real rows.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryRefineSummaryDto {
+    /// Sum of `merged_count` over successful runs in the trailing window.
+    pub merged_this_week: i64,
+    /// Sum of `trimmed_count` over the same window.
+    pub trimmed_this_week: i64,
+    /// How many days the two figures above cover (7 unless asked otherwise).
+    pub window_days: i64,
+    /// Most recent runs, newest first, capped for the overview list.
+    pub recent: Vec<MemoryRefineJobDto>,
+}
+
 /// One read/write delegation on a collection.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
