@@ -61,6 +61,18 @@ struct ApiAssetRow {
     published_skill_id: Option<String>,
     created_at: i64,
     updated_at: i64,
+    // -- 017 (manual authoring) ----------------------------------------
+    code: Option<String>,
+    category: Option<String>,
+    tool_prefix: Option<String>,
+    auth_type: String,
+    /// Credentials. Read into the row so `into_dto` can report *whether* an
+    /// asset is authenticated; it is dropped there and must never be copied
+    /// into a DTO, a log line, or an audit payload.
+    auth_config: Option<String>,
+    /// SQLite has no bool; MySQL stores TINYINT(1). Both decode as an integer.
+    enabled: i64,
+    description: Option<String>,
 }
 
 /// An asset as the UI list/browse renders it. `spec` is deliberately absent
@@ -83,6 +95,19 @@ pub struct ApiAssetDto {
     pub imported_by: String,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Operator-facing handle, unique per tenant. `None` for the documents
+    /// imported before 017 — they were only ever addressed by id.
+    pub code: Option<String>,
+    pub category: Option<String>,
+    /// Prefix the published operations are named with. `None` means "use
+    /// `code`"; the UI states that rather than pre-filling it.
+    pub tool_prefix: Option<String>,
+    /// 'none' | 'api_key' | 'bearer' | 'basic'
+    pub auth_type: String,
+    /// Whether credentials are stored — never the credentials themselves.
+    pub auth_configured: bool,
+    pub enabled: bool,
+    pub description: Option<String>,
 }
 
 /// Detail variant: same as [`ApiAssetDto`] plus the raw stored document.
@@ -93,6 +118,77 @@ pub struct ApiAssetDetailDto {
     pub asset: ApiAssetDto,
     /// The original document, verbatim.
     pub spec: Value,
+}
+
+/// Fields an operator types by hand, on create and on edit alike.
+///
+/// Every field is optional so one struct serves both: on create the required
+/// ones are checked explicitly, on edit `None` means "leave this alone". The
+/// one field that needs a third state is `auth_config` — `None` keeps the
+/// stored credentials, `Some("")` clears them, `Some(json)` replaces them.
+/// Without that distinction an edit form that (correctly) never renders the
+/// stored token would wipe it on every save.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiAssetProfileInput {
+    pub name: Option<String>,
+    pub code: Option<String>,
+    pub category: Option<String>,
+    pub tool_prefix: Option<String>,
+    pub base_url: Option<String>,
+    pub auth_type: Option<String>,
+    pub auth_config: Option<String>,
+    pub enabled: Option<bool>,
+    pub description: Option<String>,
+}
+
+/// Authentication shapes the console offers. Kept as a closed set because
+/// `publish_api_asset_skill` has to describe each one in the generated
+/// SKILL.md — an unknown value would silently produce a skill that tells the
+/// agent nothing about how to authenticate.
+/// Trim, then treat an all-whitespace field as absent — the console posts
+/// empty strings for untouched optional inputs.
+fn trimmed(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned)
+}
+
+const AUTH_TYPES: [&str; 4] = ["none", "api_key", "bearer", "basic"];
+
+/// A code is the tenant-unique handle *and* the default tool prefix, so it has
+/// to survive being pasted into a tool name: lowercase, no spaces, no dots.
+fn normalize_code(raw: &str) -> Result<String, DevopsError> {
+    let code = raw.trim().to_ascii_lowercase();
+    if code.is_empty() {
+        return Err(DevopsError::BadRequest("code is required".into()));
+    }
+    if code.len() > 64 {
+        return Err(DevopsError::BadRequest("code must be at most 64 characters".into()));
+    }
+    if !code.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(DevopsError::BadRequest(
+            "code may only contain letters, digits and underscores".into(),
+        ));
+    }
+    Ok(code)
+}
+
+fn validate_auth(auth_type: &str, auth_config: Option<&str>) -> Result<(), DevopsError> {
+    if !AUTH_TYPES.contains(&auth_type) {
+        return Err(DevopsError::BadRequest(format!(
+            "unsupported auth type {auth_type}; expected one of {}",
+            AUTH_TYPES.join(", ")
+        )));
+    }
+    // An unparseable blob would be stored and then fail at call time, far away
+    // from the form that produced it.
+    if let Some(raw) = auth_config.map(str::trim).filter(|c| !c.is_empty()) {
+        let parsed: Value =
+            serde_json::from_str(raw).map_err(|e| DevopsError::BadRequest(format!("auth config must be JSON: {e}")))?;
+        if !parsed.is_object() {
+            return Err(DevopsError::BadRequest("auth config must be a JSON object".into()));
+        }
+    }
+    Ok(())
 }
 
 /// Result of a strict parse of an imported document.
@@ -205,7 +301,8 @@ fn parse_spec(spec: &Value) -> Result<ParsedSpec, DevopsError> {
 }
 
 const ASSET_COLS: &str = "id, tenant_id, name, source_format, title, version, base_url, spec, endpoints, \
-                          imported_by, published_skill_id, created_at, updated_at";
+                          imported_by, published_skill_id, created_at, updated_at, code, category, \
+                          tool_prefix, auth_type, auth_config, enabled, description";
 
 impl ApiAssetRow {
     fn into_dto(self) -> Result<ApiAssetDto, DevopsError> {
@@ -224,6 +321,14 @@ impl ApiAssetRow {
             imported_by: self.imported_by,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            code: self.code,
+            category: self.category,
+            tool_prefix: self.tool_prefix,
+            auth_type: self.auth_type,
+            // The value itself stops here, on purpose.
+            auth_configured: self.auth_config.as_deref().is_some_and(|c| !c.trim().is_empty()),
+            enabled: self.enabled != 0,
+            description: self.description,
         })
     }
 }
@@ -310,6 +415,163 @@ impl DevopsService {
             .await?;
 
         self.get_api_asset(tenant_id, &id).await.map(|d| d.asset)
+    }
+
+    /// Create an asset by hand — the entry point for a service that has no
+    /// published OpenAPI document. It carries no spec, so `source_format` is
+    /// 'manual' and `endpoints` starts empty: operations are added afterwards
+    /// on the detail page. `import_api_asset` remains the document path and is
+    /// untouched.
+    pub async fn create_api_asset(
+        &self,
+        tenant_id: &str,
+        created_by: &str,
+        input: &ApiAssetProfileInput,
+    ) -> Result<ApiAssetDto, DevopsError> {
+        let name = input.name.as_deref().unwrap_or_default().trim().to_owned();
+        if name.is_empty() {
+            return Err(DevopsError::BadRequest("name is required".into()));
+        }
+        let code = normalize_code(input.code.as_deref().unwrap_or_default())?;
+        let auth_type = input.auth_type.as_deref().unwrap_or("none").trim().to_owned();
+        validate_auth(&auth_type, input.auth_config.as_deref())?;
+        self.ensure_code_free(tenant_id, &code, None).await?;
+
+        let id = new_id("oapi");
+        let now = now_ms();
+        self.db
+            .execute(
+                "INSERT INTO one_api_assets                 (id, tenant_id, name, source_format, base_url, spec, endpoints, imported_by, created_at, updated_at,                  code, category, tool_prefix, auth_type, auth_config, enabled, description)              VALUES (?, ?, ?, 'manual', ?, '{}', '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                &db_params![
+                    &id,
+                    tenant_id,
+                    &name,
+                    trimmed(input.base_url.as_deref()),
+                    created_by,
+                    now,
+                    now,
+                    &code,
+                    trimmed(input.category.as_deref()),
+                    trimmed(input.tool_prefix.as_deref()),
+                    &auth_type,
+                    trimmed(input.auth_config.as_deref()),
+                    i64::from(input.enabled.unwrap_or(true)),
+                    trimmed(input.description.as_deref())
+                ],
+            )
+            .await?;
+
+        self.get_api_asset(tenant_id, &id).await.map(|d| d.asset)
+    }
+
+    /// Edit an asset's operator-authored fields. Read-modify-write rather than
+    /// a dynamic SET clause: the column list is short, and one fixed statement
+    /// is far easier to read than assembled SQL — the only cost is that two
+    /// admins saving the same asset in the same second have last-write-wins,
+    /// which this console already has everywhere else.
+    pub async fn update_api_asset(
+        &self,
+        tenant_id: &str,
+        id: &str,
+        input: &ApiAssetProfileInput,
+    ) -> Result<ApiAssetDto, DevopsError> {
+        let current = self.get_api_asset(tenant_id, id).await?.asset;
+
+        let name = match input.name.as_deref().map(str::trim) {
+            Some(n) if n.is_empty() => return Err(DevopsError::BadRequest("name cannot be blank".into())),
+            Some(n) => n.to_owned(),
+            None => current.name.clone(),
+        };
+        let code = match input.code.as_deref() {
+            Some(raw) => Some(normalize_code(raw)?),
+            None => current.code.clone(),
+        };
+        if let Some(code) = code.as_deref() {
+            self.ensure_code_free(tenant_id, code, Some(id)).await?;
+        }
+        let auth_type = input
+            .auth_type
+            .as_deref()
+            .map(|a| a.trim().to_owned())
+            .unwrap_or_else(|| current.auth_type.clone());
+        validate_auth(&auth_type, input.auth_config.as_deref())?;
+
+        // Three states in two bound values, so the statement and its
+        // parameter count stay fixed: flag 0 keeps the stored credentials,
+        // flag 1 writes `auth_value` (NULL when the operator cleared the
+        // field). COALESCE cannot express this — it collapses "clear" and
+        // "keep" into the same NULL.
+        let (auth_set, auth_value): (i64, Option<String>) = match input.auth_config.as_deref().map(str::trim) {
+            None => (0, None),
+            Some("") => (1, None),
+            Some(json) => (1, Some(json.to_owned())),
+        };
+        let sql = "UPDATE one_api_assets SET name = ?, code = ?, category = ?, tool_prefix = ?, base_url = ?, \
+             auth_type = ?, enabled = ?, description = ?, \
+             auth_config = CASE WHEN ? = 1 THEN ? ELSE auth_config END, updated_at = ? \
+             WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL";
+        let params = db_params![
+            &name,
+            &code,
+            input
+                .category
+                .as_deref()
+                .map(str::trim)
+                .map(str::to_owned)
+                .or_else(|| current.category.clone()),
+            input
+                .tool_prefix
+                .as_deref()
+                .map(str::trim)
+                .map(str::to_owned)
+                .or_else(|| current.tool_prefix.clone()),
+            input
+                .base_url
+                .as_deref()
+                .map(str::trim)
+                .map(str::to_owned)
+                .or_else(|| current.base_url.clone()),
+            &auth_type,
+            i64::from(input.enabled.unwrap_or(current.enabled)),
+            input
+                .description
+                .as_deref()
+                .map(str::trim)
+                .map(str::to_owned)
+                .or_else(|| current.description.clone()),
+            auth_set,
+            auth_value,
+            now_ms(),
+            id,
+            tenant_id
+        ];
+
+        let affected = self.db.execute(sql, &params).await?;
+        if affected == 0 {
+            return Err(DevopsError::NotFound(format!("api asset {id}")));
+        }
+        self.get_api_asset(tenant_id, id).await.map(|d| d.asset)
+    }
+
+    /// Guard the `(tenant_id, code)` uniqueness before writing, so a clash
+    /// answers 400 with the offending code instead of surfacing a raw driver
+    /// error. `skip_id` exempts the row being edited from colliding with
+    /// itself. Soft-deleted rows still hold their code on MySQL (no partial
+    /// index), so they are checked too and the message says as much.
+    async fn ensure_code_free(&self, tenant_id: &str, code: &str, skip_id: Option<&str>) -> Result<(), DevopsError> {
+        let existing = self
+            .db
+            .fetch_optional_as::<(String,)>(
+                "SELECT id FROM one_api_assets WHERE tenant_id = ? AND code = ?",
+                &db_params![tenant_id, code],
+            )
+            .await?;
+        match existing {
+            Some((found,)) if Some(found.as_str()) != skip_id => Err(DevopsError::BadRequest(format!(
+                "asset code {code} is already used in this tenant"
+            ))),
+            _ => Ok(()),
+        }
     }
 
     /// Soft delete (the row keeps its spec for audit; it just leaves every
@@ -502,6 +764,170 @@ mod tests {
                 }
             }
         })
+    }
+
+    fn manual_input(name: &str, code: &str) -> ApiAssetProfileInput {
+        ApiAssetProfileInput {
+            name: Some(name.into()),
+            code: Some(code.into()),
+            base_url: Some("https://api.example.com".into()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn manual_create_stores_the_operator_authored_profile() {
+        let svc = service().await;
+        let asset = svc
+            .create_api_asset(
+                "t1",
+                "admin1",
+                &ApiAssetProfileInput {
+                    category: Some("media".into()),
+                    tool_prefix: Some("rec".into()),
+                    description: Some("recording backend".into()),
+                    ..manual_input("Recording Service", "recording_service")
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(asset.source_format, "manual");
+        assert_eq!(asset.code.as_deref(), Some("recording_service"));
+        assert_eq!(asset.category.as_deref(), Some("media"));
+        assert_eq!(asset.tool_prefix.as_deref(), Some("rec"));
+        assert_eq!(asset.auth_type, "none");
+        assert!(asset.enabled);
+        assert_eq!(asset.endpoint_count, 0);
+    }
+
+    #[tokio::test]
+    async fn codes_are_normalised_and_unique_per_tenant() {
+        let svc = service().await;
+        svc.create_api_asset("t1", "admin1", &manual_input("A", "Billing_API"))
+            .await
+            .unwrap();
+
+        // Uppercase input is folded, so the "different" code collides.
+        let clash = svc
+            .create_api_asset("t1", "admin1", &manual_input("B", "billing_api"))
+            .await;
+        assert!(matches!(clash, Err(DevopsError::BadRequest(_))), "{clash:?}");
+
+        // Another tenant may reuse it.
+        svc.create_api_asset("t2", "admin1", &manual_input("C", "billing_api"))
+            .await
+            .unwrap();
+
+        // Punctuation that would break a tool name is refused outright.
+        let bad = svc
+            .create_api_asset("t1", "admin1", &manual_input("D", "bad code.v2"))
+            .await;
+        assert!(matches!(bad, Err(DevopsError::BadRequest(_))), "{bad:?}");
+    }
+
+    #[tokio::test]
+    async fn auth_config_is_write_only_and_survives_an_edit_that_omits_it() {
+        let svc = service().await;
+        let created = svc
+            .create_api_asset(
+                "t1",
+                "admin1",
+                &ApiAssetProfileInput {
+                    auth_type: Some("bearer".into()),
+                    auth_config: Some(r#"{"token":"sk_live_secret"}"#.into()),
+                    ..manual_input("Secure", "secure_api")
+                },
+            )
+            .await
+            .unwrap();
+        assert!(created.auth_configured);
+
+        // The credential must not be reachable through any read payload.
+        let detail = svc.get_api_asset("t1", &created.id).await.unwrap();
+        let rendered = serde_json::to_string(&detail).unwrap();
+        assert!(!rendered.contains("sk_live_secret"), "credential leaked: {rendered}");
+
+        // An edit that does not mention authConfig keeps it — this is the
+        // form-save path, where the field is deliberately never populated.
+        let renamed = svc
+            .update_api_asset(
+                "t1",
+                &created.id,
+                &ApiAssetProfileInput {
+                    name: Some("Secure v2".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(renamed.name, "Secure v2");
+        assert!(renamed.auth_configured, "omitting authConfig must not clear it");
+        assert_eq!(renamed.auth_type, "bearer");
+
+        // An explicit empty string is how the operator clears it.
+        let cleared = svc
+            .update_api_asset(
+                "t1",
+                &created.id,
+                &ApiAssetProfileInput {
+                    auth_config: Some("   ".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!cleared.auth_configured);
+    }
+
+    #[tokio::test]
+    async fn auth_input_is_validated() {
+        let svc = service().await;
+        let bad_type = svc
+            .create_api_asset(
+                "t1",
+                "admin1",
+                &ApiAssetProfileInput {
+                    auth_type: Some("kerberos".into()),
+                    ..manual_input("X", "x_api")
+                },
+            )
+            .await;
+        assert!(matches!(bad_type, Err(DevopsError::BadRequest(_))), "{bad_type:?}");
+
+        let bad_json = svc
+            .create_api_asset(
+                "t1",
+                "admin1",
+                &ApiAssetProfileInput {
+                    auth_type: Some("api_key".into()),
+                    auth_config: Some("not json".into()),
+                    ..manual_input("Y", "y_api")
+                },
+            )
+            .await;
+        assert!(matches!(bad_json, Err(DevopsError::BadRequest(_))), "{bad_json:?}");
+    }
+
+    #[tokio::test]
+    async fn imported_assets_keep_working_after_017() {
+        let svc = service().await;
+        let asset = svc
+            .import_api_asset("t1", "admin1", "petstore", &sample_spec())
+            .await
+            .unwrap();
+        // The document path sets none of the 017 columns, and must not be
+        // forced to: the row is valid with a NULL code and default auth.
+        assert_eq!(asset.code, None);
+        assert_eq!(asset.auth_type, "none");
+        assert!(!asset.auth_configured);
+        assert!(asset.enabled);
+
+        // Two imports with no code must not collide on the unique index.
+        svc.import_api_asset("t1", "admin1", "petstore-2", &sample_spec())
+            .await
+            .unwrap();
+        assert_eq!(svc.list_api_assets("t1").await.unwrap().len(), 2);
     }
 
     #[tokio::test]
