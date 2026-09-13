@@ -320,7 +320,11 @@ mod tests {
             mtime_after_first, mtime_after_resync,
             "unchanged skill must not be rewritten"
         );
-        assert_eq!(report.written, vec!["oskill_a".to_string()], "still reported as present");
+        assert_eq!(
+            report.written,
+            vec!["oskill_a".to_string()],
+            "still reported as present"
+        );
 
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 

@@ -185,7 +185,11 @@ fn resolve_optional(input: Option<&str>, current: &Option<String>) -> Option<Str
         None => current.clone(),
         Some(raw) => {
             let trimmed = raw.trim();
-            if trimmed.is_empty() { None } else { Some(trimmed.to_owned()) }
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            }
         }
     }
 }
@@ -601,7 +605,9 @@ impl DevopsService {
             let method = ep.method.trim().to_ascii_uppercase();
             let path = ep.path.trim().to_owned();
             if method.is_empty() || path.is_empty() {
-                return Err(DevopsError::BadRequest("each operation needs a method and a path".into()));
+                return Err(DevopsError::BadRequest(
+                    "each operation needs a method and a path".into(),
+                ));
             }
             if !PATH_ITEM_METHODS.contains(&method.to_ascii_lowercase().as_str()) {
                 return Err(DevopsError::BadRequest(format!("unsupported HTTP method {method}")));
@@ -617,7 +623,12 @@ impl DevopsService {
             cleaned.push(ApiEndpoint {
                 method,
                 path,
-                summary: ep.summary.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned),
+                summary: ep
+                    .summary
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_owned),
                 operation_id: ep
                     .operation_id
                     .as_deref()
@@ -982,7 +993,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(saved.tool_prefix, None, "blank prefix must be NULL, not an empty string");
+        assert_eq!(
+            saved.tool_prefix, None,
+            "blank prefix must be NULL, not an empty string"
+        );
         assert_eq!(saved.category, None);
 
         // An omitted field is still left alone.
@@ -1039,8 +1053,15 @@ mod tests {
         assert_eq!(eps[1].summary, None, "a blank summary is absent, not empty");
 
         // The point of the whole exercise: publishing now renders real calls.
-        let skill = svc.publish_api_asset_skill("t1", "admin1", &asset.id, None, false).await.unwrap();
-        assert!(skill.content.contains("/recordings"), "published skill: {}", skill.content);
+        let skill = svc
+            .publish_api_asset_skill("t1", "admin1", &asset.id, None, false)
+            .await
+            .unwrap();
+        assert!(
+            skill.content.contains("/recordings"),
+            "published skill: {}",
+            skill.content
+        );
     }
 
     #[tokio::test]

@@ -39,7 +39,10 @@ pub fn one_memory_routes(state: OneMemoryRouterState) -> Router {
             post(admin_refine_collection),
         )
         .route("/api/one/admin/memory/collections/{id}/grants", get(admin_list_grants))
-        .route("/api/one/admin/memory/grants", get(admin_list_all_grants).put(admin_put_grant))
+        .route(
+            "/api/one/admin/memory/grants",
+            get(admin_list_all_grants).put(admin_put_grant),
+        )
         .route(
             "/api/one/admin/memory/config",
             get(admin_get_memory_config).put(admin_put_memory_config),
