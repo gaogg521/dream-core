@@ -42,11 +42,10 @@ use serde::{Deserialize, Serialize};
 /// Rotating this constant invalidates every previously issued key, so treat a
 /// change here as a breaking release.
 ///
-/// Rotated 2026-08-11: the prior placeholder's private half had been printed
-/// into a chat transcript (twice) and was retired as compromised before any
-/// real customer license was ever issued against it. The signing secret for
-/// *this* key lives offline in the vendor's password manager only.
-pub const LICENSE_PUBLIC_KEY_B64: &str = "_Nx1PhMApIz8psYTShRHnc3s1jSCB0hXGSp9qqLvc0g";
+/// Rotated 2026-09-14 to the signing identity provisioned in the private
+/// One Work issuer. The private half is DPAPI-protected on the vendor machine
+/// and is never part of this repository or a customer deployment.
+pub const LICENSE_PUBLIC_KEY_B64: &str = "vCOzCflWWj5og2Ph7cXf40qKwHoZohgdwKSxbq5VArg";
 
 /// Human-facing prefix, so a pasted key is recognizable and a stray copy of
 /// some other product's token fails fast with a clear message.
