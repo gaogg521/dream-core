@@ -18,6 +18,9 @@ pub struct EntitlementDto {
 pub struct PlanDto {
     pub enterprise_id: String,
     pub tier: String,
+    /// `free`, `official`, or `unofficial`. Unofficial means a paid tier row
+    /// exists without a vendor activation record; effective tier is free.
+    pub license_status: String,
     /// ACTIVE (governed, billable) seats only — what `seat_limit` actually
     /// caps. Does not include `seat_pending`.
     pub seat_used: i64,

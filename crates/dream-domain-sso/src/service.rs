@@ -258,7 +258,30 @@ impl SsoService {
             .await
             .unwrap_or(None);
         let tier = tier.map(|t| Tier::parse(&t)).unwrap_or(Tier::Free);
+        if tier != Tier::Free {
+            let official: i64 = self
+                .db
+                .fetch_one_scalar(
+                    "SELECT COUNT(*) FROM one_license_activation WHERE enterprise_id = ?",
+                    &db_params![&enterprise_id],
+                )
+                .await
+                .unwrap_or(0);
+            if official == 0 {
+                return Ok(false);
+            }
+        }
         Ok(tier_allows(tier, feature))
+    }
+
+    /// SSO providers are deployment-global, so login must fail closed unless
+    /// at least one officially activated company currently includes SSO.
+    pub async fn sso_login_allowed(&self) -> Result<bool, SsoError> {
+        let count: i64 = self.db.fetch_one_scalar(
+            "SELECT COUNT(*) FROM one_enterprise_license l JOIN one_license_activation a ON a.enterprise_id = l.enterprise_id WHERE l.tier IN ('team','enterprise') AND (l.expires_at IS NULL OR l.expires_at > ?)",
+            &db_params![now_ms()],
+        ).await.unwrap_or(0);
+        Ok(count > 0)
     }
 
     pub async fn upsert_provider(
