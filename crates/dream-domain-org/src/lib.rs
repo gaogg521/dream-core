@@ -28,7 +28,7 @@ pub mod state;
 pub use bridge::CompanyAdminResolver;
 pub use credential_revoker::{CredentialRevoker, NoopCredentialRevoker};
 pub use directory_bridge::{DirectoryDepartmentRef, DirectoryTreeSource, NoopDirectoryTreeSource};
-pub use email::{EmailSender, SendEmailResult, StubEmailSender};
+pub use email::{send_invite_via_smtp, EmailSender, SendEmailResult, StubEmailSender};
 pub use enterprise_hooks::CompanySeatSync;
 pub use error::OrgError;
 pub use integration::{

@@ -1,21 +1,18 @@
-//! Container runtime seam (P1-3 reserved framework).
+//! Container runtime seam (P1-3).
 //!
-//! No container client (Docker / Kubernetes / Podman) is wired in here — this
-//! is the "reserved adapter" pattern used across the app (SMTP `EmailSender`,
-//! `IntegrationProvider`, billing `BillingProvider`): a config store (see
-//! `PlatformService::{get,set}_container_config`) plus a pluggable
-//! `ContainerRuntime` trait. `NoopContainerRuntime` is the default and reports
-//! "not configured"; a real runtime can be dropped in at the app layer via
-//! `PlatformService::with_container_runtime` without touching this crate.
+//! Default adapter HTTP-probes the saved Docker/K8s API endpoint. A custom
+//! `ContainerRuntime` can still be dropped in via `PlatformService::with_container_runtime`.
 
 use async_trait::async_trait;
+
+use crate::http_probe::probe_http_endpoint;
 
 /// Outcome of a container-runtime probe, shaped like `dream_domain_org`'s
 /// `IntegrationTestResult` for the same "not configured yet" UX.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContainerStatus {
-    /// `"not_configured"` (stub), `"ok"` (runtime reachable), or `"error"`.
+    /// `"not_configured"`, `"ok"`, or `"error"`.
     pub status: String,
     pub message: String,
 }
@@ -36,19 +33,13 @@ pub trait ContainerRuntime: Send + Sync {
     async fn probe(&self, settings: ContainerSettings<'_>) -> ContainerStatus;
 }
 
-/// No runtime wired: every probe reports that containerized execution is not
-/// configured yet, so the admin UI can surface a clear "saved, but not live
-/// yet" message instead of implying containers are running.
+/// Default runtime: GET the configured HTTP endpoint (Bearer registry secret if set).
 pub struct NoopContainerRuntime;
 
 #[async_trait]
 impl ContainerRuntime for NoopContainerRuntime {
-    async fn probe(&self, _settings: ContainerSettings<'_>) -> ContainerStatus {
-        ContainerStatus {
-            status: "not_configured".to_owned(),
-            message: "Container runtime is not wired in yet. The configuration is saved and will be used once \
-                      containerized execution is available."
-                .to_owned(),
-        }
+    async fn probe(&self, settings: ContainerSettings<'_>) -> ContainerStatus {
+        let (status, message) = probe_http_endpoint(settings.endpoint, settings.registry_secret).await;
+        ContainerStatus { status, message }
     }
 }
