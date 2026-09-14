@@ -549,7 +549,7 @@ impl BillingService {
              VALUES (?, ?, NULL, NULL, ?) ON CONFLICT(enterprise_id) DO NOTHING",
             "INSERT IGNORE INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at) \
              VALUES (?, ?, NULL, NULL, ?)",
-            &db_params![enterprise_id, Tier::Enterprise.as_str(), now_ms()],
+            &db_params![enterprise_id, Tier::Free.as_str(), now_ms()],
         )
         .await?;
         Ok(())
@@ -568,6 +568,11 @@ impl BillingService {
         activated_by: &str,
     ) -> Result<crate::license_key::LicensePayload, BillingError> {
         let payload = crate::license_key::verify_license_key(license_key)?;
+        if !payload.valid_for_instance(enterprise_id) {
+            return Err(BillingError::Forbidden(
+                "license is bound to a different installation".into(),
+            ));
+        }
 
         // Re-serialized rather than storing the raw signed payload bytes: this
         // table is a read model for the admin UI, not a re-verification
@@ -4765,11 +4770,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ensure_default_license_sets_enterprise_tier_with_unlimited_seats() {
+    async fn ensure_default_license_starts_free_with_unlimited_seats() {
         let (svc, _sqlite) = service().await;
         svc.ensure_default_license("ent-boot").await.unwrap();
         let license = svc.license_of("ent-boot").await.unwrap();
-        assert_eq!(license.tier, Tier::Enterprise);
+        assert_eq!(license.tier, Tier::Free);
         assert_eq!(license.seat_limit, None);
         assert_eq!(license.expires_at, None);
     }

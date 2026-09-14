@@ -7,7 +7,9 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
+use base64::Engine as _;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use dream_core_api_types::ApiResponse;
 use dream_core_auth::CurrentUser;
@@ -43,6 +45,7 @@ pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
             "/api/one/billing/license",
             get(billing_get_license).post(billing_activate_license),
         )
+        .route("/api/one/billing/license/request", get(billing_license_request))
         .route("/api/one/billing/checkout", post(billing_checkout))
         .route("/api/one/billing/webhook", post(billing_webhook))
         .route("/api/one/billing/media-precheck", post(billing_media_precheck))
@@ -280,6 +283,54 @@ async fn billing_get_license(
         return Ok(Json(ApiResponse::ok(None)));
     };
     Ok(Json(ApiResponse::ok(state.service.active_license(&eid).await?)))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LicenseRequestDto {
+    request_code: String,
+    instance_id: String,
+    deployment_fingerprint: String,
+    app_id: String,
+    requested_at: i64,
+    nonce: String,
+}
+
+async fn billing_license_request(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<LicenseRequestDto>>, BillingError> {
+    if !state.service.is_billing_admin(&user.id).await? {
+        return Err(BillingError::Forbidden(
+            "only an admin can create a license request".into(),
+        ));
+    }
+    let instance_id = state
+        .service
+        .resolve_enterprise_id(&user.id)
+        .await?
+        .ok_or(BillingError::EnterpriseNotFound)?;
+    let app_id = "one-work-enterprise".to_owned();
+    let requested_at = now_ms();
+    let nonce = uuid::Uuid::now_v7().simple().to_string();
+    let fingerprint = format!(
+        "sha256:{:x}",
+        Sha256::digest(format!("{instance_id}|{app_id}").as_bytes())
+    );
+    let claims = serde_json::json!({"instanceId":instance_id,"deploymentFingerprint":fingerprint,"appId":app_id,"requestedAt":requested_at,"nonce":nonce});
+    let request_code = format!(
+        "ONEWORK-REQ-{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&claims).map_err(|e| BillingError::Internal(e.to_string()))?)
+    );
+    Ok(Json(ApiResponse::ok(LicenseRequestDto {
+        request_code,
+        instance_id: claims["instanceId"].as_str().unwrap().to_owned(),
+        deployment_fingerprint: claims["deploymentFingerprint"].as_str().unwrap().to_owned(),
+        app_id,
+        requested_at,
+        nonce,
+    })))
 }
 
 #[derive(Deserialize)]
