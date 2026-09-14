@@ -214,6 +214,11 @@ async fn authorize(
     if !row.enabled {
         return Err(SsoError::ProviderDisabled(provider.as_str().into()));
     }
+    if !state.service.sso_login_allowed().await? {
+        return Err(SsoError::Forbidden(
+            "SSO is unavailable on the free or unofficial plan".into(),
+        ));
+    }
 
     // Screened here as well as at the callback: the callback's check is the
     // one that actually protects the redirect, but rejecting an off-origin
@@ -585,6 +590,11 @@ async fn ldap_login(
         .ok_or_else(|| SsoError::ProviderNotConfigured("ldap".into()))?;
     if !row.enabled {
         return Err(SsoError::ProviderDisabled("ldap".into()));
+    }
+    if !state.service.sso_login_allowed().await? {
+        return Err(SsoError::Forbidden(
+            "SSO is unavailable on the free or unofficial plan".into(),
+        ));
     }
     let cfg: crate::providers::ldap::LdapProviderConfig =
         serde_json::from_str(&row.config).map_err(|e| SsoError::Internal(format!("parse ldap config: {e}")))?;

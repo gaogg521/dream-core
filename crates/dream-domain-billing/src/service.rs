@@ -416,6 +416,15 @@ impl BillingService {
             .await?;
         Ok(match row {
             Some((tier, seat_limit, expires_at, cost_cap_micros, allowed_models_json)) => {
+                let stored_tier = Tier::parse(&tier);
+                let official: i64 = self
+                    .db
+                    .fetch_one_scalar(
+                        "SELECT COUNT(*) FROM one_license_activation WHERE enterprise_id = ?",
+                        &db_params![enterprise_id],
+                    )
+                    .await
+                    .unwrap_or(0);
                 // Expiry is enforced here, at the single read point every gate
                 // funnels through, so a lapsed license degrades everywhere at
                 // once without a background job. The row is left untouched: the
@@ -423,7 +432,11 @@ impl BillingService {
                 // renewing re-activates it without losing history.
                 let expired = expires_at.is_some_and(|exp| exp <= dream_core_common::now_ms());
                 License {
-                    tier: if expired { Tier::Free } else { Tier::parse(&tier) },
+                    tier: if expired || (stored_tier != Tier::Free && official == 0) {
+                        Tier::Free
+                    } else {
+                        stored_tier
+                    },
                     // A lapsed license also loses its seat override, otherwise
                     // an expired enterprise plan would keep an unlimited cap.
                     seat_limit: if expired { None } else { seat_limit },
@@ -1126,6 +1139,30 @@ impl BillingService {
     /// The company plan for the dashboard: tier, seat usage, entitlements.
     pub async fn plan(&self, enterprise_id: &str) -> Result<PlanDto, BillingError> {
         let license = self.license_of(enterprise_id).await?;
+        let stored_tier: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT tier FROM one_enterprise_license WHERE enterprise_id = ?",
+                &db_params![enterprise_id],
+            )
+            .await
+            .unwrap_or(None);
+        let activation_count: i64 = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_license_activation WHERE enterprise_id = ?",
+                &db_params![enterprise_id],
+            )
+            .await
+            .unwrap_or(0);
+        let license_status =
+            if stored_tier.as_deref().is_some_and(|t| Tier::parse(t) != Tier::Free) && activation_count == 0 {
+                "unofficial"
+            } else if activation_count > 0 {
+                "official"
+            } else {
+                "free"
+            };
         let entitlements = dream_core_common::license::ALL_FEATURES
             .iter()
             .map(|f| EntitlementDto {
@@ -1136,6 +1173,7 @@ impl BillingService {
         Ok(PlanDto {
             enterprise_id: enterprise_id.to_owned(),
             tier: license.tier.as_str().to_owned(),
+            license_status: license_status.to_owned(),
             seat_used: self.seat_used(enterprise_id).await?,
             seat_limit: Self::effective_seat_limit(&license),
             seat_pending: self.seat_pending(enterprise_id).await?,
@@ -2792,6 +2830,13 @@ mod tests {
         )
         .await
         .unwrap();
+        if tier != Tier::Free {
+            svc.upsert(
+                "INSERT INTO one_license_activation (license_id, enterprise_id, customer, tier, issued_at, activated_at, activated_by) VALUES (?, ?, 'test', ?, 0, 0, 'test') ON CONFLICT(license_id) DO NOTHING",
+                "INSERT IGNORE INTO one_license_activation (license_id, enterprise_id, customer, tier, issued_at, activated_at, activated_by) VALUES (?, ?, 'test', ?, 0, 0, 'test')",
+                &db_params![format!("lic_{enterprise_id}"), enterprise_id, tier.as_str()],
+            ).await.unwrap();
+        }
     }
 
     #[tokio::test]
@@ -2866,7 +2911,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn existing_enterprise_grandfathered_to_top_tier() {
+    async fn unsigned_grandfathered_enterprise_is_treated_as_unofficial_free() {
         let (svc, sqlite) = service().await;
         // Simulate a pre-billing company, then re-run migration (grandfather).
         sqlx::query("INSERT INTO one_enterprises (id, provider, external_id, created_at, updated_at) VALUES ('ent_old', 'feishu', 'x', 0, 0)")
@@ -2881,11 +2926,12 @@ mod tests {
         crate::migrate::run_one_billing_migrations(&dream_core_db::DbPool::Sqlite(sqlite.clone()))
             .await
             .unwrap();
-        // Grandfathered to enterprise: all features on, unlimited seats.
-        assert!(svc.entitlement(Some("ent_old"), Feature::AuditLog).await.unwrap());
+        // A paid row without an official activation record is not trusted.
+        assert!(!svc.entitlement(Some("ent_old"), Feature::AuditLog).await.unwrap());
         let plan = svc.plan("ent_old").await.unwrap();
-        assert_eq!(plan.tier, "enterprise");
-        assert_eq!(plan.seat_limit, None);
+        assert_eq!(plan.tier, "free");
+        assert_eq!(plan.license_status, "unofficial");
+        assert_eq!(plan.seat_limit, Some(3));
     }
 
     #[tokio::test]
