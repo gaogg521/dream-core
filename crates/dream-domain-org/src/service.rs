@@ -13,7 +13,7 @@ use std::sync::{Arc, RwLock};
 
 use serde::Serialize;
 
-use dream_core_auth::{generate_random_secret_string, hash_password, verify_password};
+use dream_core_auth::{generate_password, generate_random_secret_string, hash_password, verify_password};
 use dream_core_common::license::{Feature, Tier, tier_allows};
 use dream_core_common::{decrypt_string, encrypt_string, now_ms};
 use dream_core_db::{DbBackend, DbPool, DbValue, IConversationRepository, IUserRepository, db_params};
@@ -1950,7 +1950,6 @@ impl OrgService {
                 "cannot remove yourself; use leave to exit the project group".into(),
             ));
         }
-
         let membership = self
             .membership_row(target_user_id, tenant_id)
             .await?
@@ -2539,6 +2538,74 @@ impl OrgService {
             last_login: None,
             created_at: now,
         })
+    }
+
+    /// Reset another local member's password, invalidate every active session,
+    /// and require the member to replace the temporary credential after login.
+    /// The generated password is returned exactly once to the requesting
+    /// administrator and is never written to logs or audit metadata.
+    pub async fn admin_reset_user_password(
+        &self,
+        tenant_id: &str,
+        actor_user_id: &str,
+        actor_username: &str,
+        actor_role: &str,
+        target_user_id: &str,
+    ) -> Result<String, OrgError> {
+        if actor_user_id == target_user_id {
+            return Err(OrgError::BadRequest(
+                "请使用个人菜单中的“修改密码”更改自己的密码".into(),
+            ));
+        }
+        if !is_system_admin_role(actor_role) {
+            return Err(OrgError::Forbidden(
+                "only system_admin can reset another user's password".into(),
+            ));
+        }
+
+        let target: Option<(String, String)> = self
+            .db
+            .fetch_optional_as(
+                "SELECT uo.role, u.user_type FROM one_user_org uo JOIN users u ON u.id = uo.user_id \
+                 WHERE uo.tenant_id = ? AND uo.user_id = ?",
+                &db_params![tenant_id, target_user_id],
+            )
+            .await?;
+        let Some((_target_role, user_type)) = target else {
+            return Err(OrgError::BadRequest("成员不存在或不属于当前项目组".into()));
+        };
+        if user_type != "local" {
+            return Err(OrgError::BadRequest(
+                "该成员使用企业身份登录，请在身份提供方重置密码".into(),
+            ));
+        }
+
+        const TEMPORARY_PASSWORD_LEN: usize = 16;
+        let temporary_password = generate_password(TEMPORARY_PASSWORD_LEN);
+        let password_hash = hash_password(&temporary_password)?;
+
+        let changed = self
+            .db
+            .execute(
+                "UPDATE users SET password_hash = ?, must_change_password = 1, \
+                 session_generation = session_generation + 1, updated_at = ? WHERE id = ?",
+                &db_params![&password_hash, now_ms() as i64, target_user_id],
+            )
+            .await?;
+        if changed == 0 {
+            return Err(OrgError::BadRequest("成员账号不存在".into()));
+        }
+
+        self.audit(
+            tenant_id,
+            Some(actor_user_id),
+            Some(actor_username),
+            "org.admin_reset_user_password",
+            Some(target_user_id),
+            None,
+        )
+        .await;
+        Ok(temporary_password)
     }
 
     // --- departments / organizational hierarchy (P2-3) ---
@@ -3355,6 +3422,79 @@ mod tests {
     /// guarantees this).
     async fn create_user(user_repo: &Arc<dyn IUserRepository>, username: &str) -> String {
         user_repo.create_user(username, "x").await.unwrap().id
+    }
+
+    #[tokio::test]
+    async fn admin_password_reset_sets_temporary_password_and_revokes_sessions() {
+        let (db, service, user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let member = service
+            .admin_create_member(&tenant_id, "alice", "OldPassword!23", Some("Alice"))
+            .await
+            .unwrap();
+        let before = user_repo.find_by_id(&member.user_id).await.unwrap().unwrap();
+
+        let temporary = service
+            .admin_reset_user_password(
+                &tenant_id,
+                SYSTEM_DEFAULT_USER_ID,
+                "admin",
+                ROLE_SYSTEM_ADMIN,
+                &member.user_id,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(temporary.len(), 16);
+        let after = user_repo.find_by_id(&member.user_id).await.unwrap().unwrap();
+        assert!(after.must_change_password);
+        assert_eq!(after.session_generation, before.session_generation + 1);
+        assert!(verify_password(&temporary, after.password_hash.as_deref().unwrap()).unwrap());
+        assert!(!verify_password("OldPassword!23", after.password_hash.as_deref().unwrap()).unwrap());
+
+        let logs = service.list_audit_logs(&tenant_id, 20).await.unwrap();
+        let reset = logs
+            .iter()
+            .find(|row| row.action == "org.admin_reset_user_password")
+            .expect("password reset audit entry");
+        assert_eq!(reset.user_id.as_deref(), Some(SYSTEM_DEFAULT_USER_ID));
+        assert_eq!(reset.resource.as_deref(), Some(member.user_id.as_str()));
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn org_admin_cannot_reset_system_admin_or_self() {
+        let (db, service, user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let org_admin = create_user(&user_repo, "orgadmin").await;
+        let (_, code) = service
+            .create_invite(&tenant_id, SYSTEM_DEFAULT_USER_ID, None, None)
+            .await
+            .unwrap();
+        service.join_with_invite(&org_admin, &code).await.unwrap();
+        service
+            .set_user_role(&tenant_id, SYSTEM_DEFAULT_USER_ID, &org_admin, ROLE_ORG_ADMIN)
+            .await
+            .unwrap();
+
+        let privileged = service
+            .admin_reset_user_password(
+                &tenant_id,
+                &org_admin,
+                "orgadmin",
+                ROLE_ORG_ADMIN,
+                SYSTEM_DEFAULT_USER_ID,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(privileged.code(), "FORBIDDEN");
+
+        let own = service
+            .admin_reset_user_password(&tenant_id, &org_admin, "orgadmin", ROLE_ORG_ADMIN, &org_admin)
+            .await
+            .unwrap_err();
+        assert_eq!(own.code(), "BAD_REQUEST");
+        db.close().await;
     }
 
     /// ⚠️ The point of company disband cascading into one-org: every project
