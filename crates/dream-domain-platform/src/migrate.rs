@@ -52,6 +52,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "016_object_storage_protocol",
         include_str!("../migrations/016_object_storage_protocol.sql"),
     ),
+    (
+        "017_im_pipelines_and_console_settings",
+        include_str!("../migrations/017_im_pipelines_and_console_settings.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -103,6 +107,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "016_object_storage_protocol",
         include_str!("../migrations_mysql/016_object_storage_protocol.sql"),
+    ),
+    (
+        "017_im_pipelines_and_console_settings",
+        include_str!("../migrations_mysql/017_im_pipelines_and_console_settings.sql"),
     ),
 ];
 

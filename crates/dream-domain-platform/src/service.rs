@@ -26,10 +26,11 @@ use crate::models::{
     ApiKeyDto, CollaborationConfigDto, ConfigBulkImportDto, ConfigEntryDto, ConfigSetDto, ConfigSetReference,
     ConfigSetReferencesDto, ContainerConfigDto, ConversationShareDto, ConversationShareRow, EffectiveGrantDto,
     FileVaultDto, FileVaultObjectDto, FileVaultReconcileEntry, GrantMode, GrantModeDto, ImChannelMemberDto,
-    ImChannelPluginDto, IpAllowlistConfigDto, MyNotificationDto, MyNotificationsDto, MySceneDto,
-    MySceneResourceSummaryDto, NewApiKeyDto, NotificationDto, PolicyTemplateBindingDto, ResourceGrantDto,
-    SENSITIVE_PLACEHOLDER, SceneDto, SecurityPolicyDto, SecurityPolicyTemplateDto, ShareConversationInput,
-    SharedConversationDetail, SharedMessageDto, SiemConfigDto,
+    ImChannelPluginDto, ImPipelineDto, IpAllowlistConfigDto, MyNotificationDto, MyNotificationsDto, MySceneDto,
+    MySceneResourceSummaryDto, NewApiKeyDto, NotificationDto, PolicyTemplateBindingDto, PlatformVersionDto,
+    ResourceGrantDto, SENSITIVE_PLACEHOLDER, SceneDto, SecurityPolicyDto, SecurityPolicyTemplateDto,
+    ShareConversationInput, SharedConversationDetail, SharedMessageDto, SiemConfigDto, ConsoleAppearanceDto,
+    ConsoleMarketplaceDto, ConsoleRiskDto, ConsoleSettingsDto,
 };
 use crate::siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
 use dream_core_db::{DbBackend, DbPool, DbValue, db_params};
@@ -571,8 +572,8 @@ impl PlatformService {
     }
 
     /// Whether `ip` may reach `tenant_id`'s server per the allowlist. When the
-    /// allowlist is disabled, everyone is allowed (the reserved default — no
-    /// blocking). When enabled, the IP must match a configured CIDR/address.
+    /// allowlist is disabled, everyone is allowed. When enabled, the IP must
+    /// match a configured CIDR/address (enforced by auth middleware).
     pub async fn is_ip_allowed(&self, tenant_id: &str, ip: &str) -> Result<bool, PlatformError> {
         let cfg = self.get_ip_allowlist(tenant_id).await?;
         Ok(!cfg.enabled || ip_allowed(&cfg.cidrs, ip))
@@ -1328,6 +1329,245 @@ impl PlatformService {
             }
         }
         Ok(members)
+    }
+
+    pub async fn list_im_pipelines(&self, tenant_id: &str) -> Result<Vec<ImPipelineDto>, PlatformError> {
+        type Row = (
+            String,
+            String,
+            String,
+            bool,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+        );
+        let rows: Vec<Row> = self
+            .db
+            .fetch_all_as::<Row>(
+                "SELECT id, platform, name, enabled, endpoint, app_id, secret_encrypted, extra_json, created_at, updated_at \
+             FROM one_im_pipelines WHERE tenant_id = ? ORDER BY updated_at DESC",
+                &db_params![tenant_id],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, platform, name, enabled, endpoint, app_id, secret_encrypted, extra_json, created_at, updated_at)| {
+                    ImPipelineDto {
+                        id,
+                        platform,
+                        name,
+                        enabled,
+                        endpoint,
+                        app_id,
+                        has_secret: secret_encrypted.is_some(),
+                        extra: extra_json
+                            .and_then(|s| serde_json::from_str(&s).ok())
+                            .unwrap_or(serde_json::json!({})),
+                        created_at,
+                        updated_at,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    pub async fn create_im_pipeline(
+        &self,
+        tenant_id: &str,
+        platform: &str,
+        name: &str,
+        enabled: bool,
+        endpoint: Option<&str>,
+        app_id: Option<&str>,
+        secret: Option<&str>,
+        extra: &serde_json::Value,
+    ) -> Result<ImPipelineDto, PlatformError> {
+        let platform = platform.trim();
+        let name = name.trim();
+        if platform.is_empty() || name.is_empty() {
+            return Err(PlatformError::BadRequest("platform and name are required".into()));
+        }
+        let id = generate_prefixed_id("imp");
+        let now = now_ms();
+        let secret_encrypted = match secret {
+            Some(s) if !s.is_empty() => {
+                Some(encrypt_string(s, &self.encryption_key).map_err(|e| PlatformError::Internal(e.to_string()))?)
+            }
+            _ => None,
+        };
+        let extra_json = serde_json::to_string(extra).unwrap_or_else(|_| "{}".into());
+        self.db
+            .execute(
+                "INSERT INTO one_im_pipelines \
+                 (id, tenant_id, platform, name, enabled, endpoint, app_id, secret_encrypted, extra_json, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                &db_params![
+                    &id,
+                    tenant_id,
+                    platform,
+                    name,
+                    enabled,
+                    endpoint,
+                    app_id,
+                    &secret_encrypted,
+                    &extra_json,
+                    now,
+                    now
+                ],
+            )
+            .await?;
+        self.get_im_pipeline(tenant_id, &id).await
+    }
+
+    pub async fn update_im_pipeline(
+        &self,
+        tenant_id: &str,
+        id: &str,
+        name: &str,
+        enabled: bool,
+        endpoint: Option<&str>,
+        app_id: Option<&str>,
+        secret: Option<&str>,
+        extra: &serde_json::Value,
+    ) -> Result<ImPipelineDto, PlatformError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(PlatformError::BadRequest("name is required".into()));
+        }
+        let existing: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT secret_encrypted FROM one_im_pipelines WHERE id = ? AND tenant_id = ?",
+                &db_params![id, tenant_id],
+            )
+            .await?
+            .flatten();
+        if existing.is_none() && secret.unwrap_or("").is_empty() {
+            // Distinguishes missing row: fetch the id.
+            let found: Option<String> = self
+                .db
+                .fetch_optional_scalar(
+                    "SELECT id FROM one_im_pipelines WHERE id = ? AND tenant_id = ?",
+                    &db_params![id, tenant_id],
+                )
+                .await?;
+            if found.is_none() {
+                return Err(PlatformError::NotFound("im pipeline not found".into()));
+            }
+        }
+        let secret_encrypted = match secret {
+            Some(s) if !s.is_empty() => {
+                Some(encrypt_string(s, &self.encryption_key).map_err(|e| PlatformError::Internal(e.to_string()))?)
+            }
+            _ => existing,
+        };
+        let extra_json = serde_json::to_string(extra).unwrap_or_else(|_| "{}".into());
+        let n = self
+            .db
+            .execute(
+                "UPDATE one_im_pipelines SET name = ?, enabled = ?, endpoint = ?, app_id = ?, secret_encrypted = ?, extra_json = ?, updated_at = ? \
+                 WHERE id = ? AND tenant_id = ?",
+                &db_params![
+                    name,
+                    enabled,
+                    endpoint,
+                    app_id,
+                    &secret_encrypted,
+                    &extra_json,
+                    now_ms(),
+                    id,
+                    tenant_id
+                ],
+            )
+            .await?;
+        if n == 0 {
+            return Err(PlatformError::NotFound("im pipeline not found".into()));
+        }
+        self.get_im_pipeline(tenant_id, id).await
+    }
+
+    pub async fn delete_im_pipeline(&self, tenant_id: &str, id: &str) -> Result<(), PlatformError> {
+        let n = self
+            .db
+            .execute(
+                "DELETE FROM one_im_pipelines WHERE id = ? AND tenant_id = ?",
+                &db_params![id, tenant_id],
+            )
+            .await?;
+        if n == 0 {
+            return Err(PlatformError::NotFound("im pipeline not found".into()));
+        }
+        Ok(())
+    }
+
+    async fn get_im_pipeline(&self, tenant_id: &str, id: &str) -> Result<ImPipelineDto, PlatformError> {
+        self.list_im_pipelines(tenant_id)
+            .await?
+            .into_iter()
+            .find(|p| p.id == id)
+            .ok_or_else(|| PlatformError::NotFound("im pipeline not found".into()))
+    }
+
+    pub async fn get_console_settings(&self, tenant_id: &str) -> Result<ConsoleSettingsDto, PlatformError> {
+        type Row = (String, String, String, i64);
+        let row: Option<Row> = self
+            .db
+            .fetch_optional_as::<Row>(
+                "SELECT appearance_json, risk_json, marketplace_json, updated_at FROM one_console_settings WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?;
+        Ok(match row {
+            Some((appearance_json, risk_json, marketplace_json, updated_at)) => ConsoleSettingsDto {
+                appearance: serde_json::from_str(&appearance_json).unwrap_or_default(),
+                risk: serde_json::from_str(&risk_json).unwrap_or_default(),
+                marketplace: serde_json::from_str(&marketplace_json).unwrap_or_default(),
+                updated_at: Some(updated_at),
+            },
+            None => ConsoleSettingsDto::default(),
+        })
+    }
+
+    pub async fn set_console_settings(
+        &self,
+        tenant_id: &str,
+        appearance: &ConsoleAppearanceDto,
+        risk: &ConsoleRiskDto,
+        marketplace: &ConsoleMarketplaceDto,
+    ) -> Result<ConsoleSettingsDto, PlatformError> {
+        let appearance_json =
+            serde_json::to_string(appearance).map_err(|e| PlatformError::Internal(e.to_string()))?;
+        let risk_json = serde_json::to_string(risk).map_err(|e| PlatformError::Internal(e.to_string()))?;
+        let marketplace_json =
+            serde_json::to_string(marketplace).map_err(|e| PlatformError::Internal(e.to_string()))?;
+        let now = now_ms();
+        self.upsert(
+            "INSERT INTO one_console_settings (tenant_id, appearance_json, risk_json, marketplace_json, updated_at) \
+             VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(tenant_id) DO UPDATE SET appearance_json = excluded.appearance_json, \
+                 risk_json = excluded.risk_json, marketplace_json = excluded.marketplace_json, \
+                 updated_at = excluded.updated_at",
+            "INSERT INTO one_console_settings (tenant_id, appearance_json, risk_json, marketplace_json, updated_at) \
+             VALUES (?, ?, ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE appearance_json = new.appearance_json, \
+                 risk_json = new.risk_json, marketplace_json = new.marketplace_json, \
+                 updated_at = new.updated_at",
+            &db_params![tenant_id, &appearance_json, &risk_json, &marketplace_json, now],
+        )
+        .await?;
+        self.get_console_settings(tenant_id).await
+    }
+
+    pub fn platform_version() -> PlatformVersionDto {
+        PlatformVersionDto {
+            product: "One Work".to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            edition: "enterprise".to_owned(),
+        }
     }
 
     pub async fn list_scenes(&self, tenant_id: &str) -> Result<Vec<SceneDto>, PlatformError> {
@@ -4981,6 +5221,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn im_pipelines_and_console_settings_roundtrip() {
+        let (_db, service) = setup().await;
+        let created = service
+            .create_im_pipeline(
+                "t1",
+                "lark",
+                "飞书生产",
+                true,
+                Some("https://open.feishu.cn"),
+                Some("cli_app"),
+                Some("secret"),
+                &serde_json::json!({ "botName": "ops" }),
+            )
+            .await
+            .unwrap();
+        assert!(created.has_secret);
+        assert_eq!(created.platform, "lark");
+        let listed = service.list_im_pipelines("t1").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        let updated = service
+            .update_im_pipeline(
+                "t1",
+                &created.id,
+                "飞书生产-改",
+                false,
+                Some("https://open.feishu.cn"),
+                Some("cli_app"),
+                None,
+                &serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+        assert!(updated.has_secret && !updated.enabled);
+        assert_eq!(updated.name, "飞书生产-改");
+        service.delete_im_pipeline("t1", &created.id).await.unwrap();
+        assert!(service.list_im_pipelines("t1").await.unwrap().is_empty());
+
+        let saved = service
+            .set_console_settings(
+                "t1",
+                &ConsoleAppearanceDto {
+                    display_name: "Acme".into(),
+                    logo_url: "/logo.png".into(),
+                    primary_color: "#3366ff".into(),
+                },
+                &ConsoleRiskDto {
+                    session_timeout_minutes: 30,
+                    lockout_after_failures: 5,
+                    force_mfa: true,
+                },
+                &ConsoleMarketplaceDto {
+                    publish_requires_approval: true,
+                    default_visibility: "tenant".into(),
+                    allow_member_upload: false,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved.appearance.display_name, "Acme");
+        assert!(saved.risk.force_mfa);
+        assert!(saved.marketplace.publish_requires_approval);
+        assert_eq!(PlatformService::platform_version().edition, "enterprise");
+    }
+
+    #[tokio::test]
     async fn admin_gate_accepts_admin_rejects_member() {
         let (db, service) = setup().await;
         seed_membership(db.pool(), "admin1", "t1", "org_admin").await;
@@ -5024,7 +5329,7 @@ mod tests {
             Some("reg_secret")
         );
 
-        // Default Noop runtime reports "not configured".
+        // Default HTTP probe with no endpoint reports "not configured".
         assert_eq!(service.probe_container("t1").await.unwrap().status, "not_configured");
     }
 
@@ -5156,10 +5461,8 @@ mod tests {
             Some("relay_tok")
         );
 
-        assert_eq!(
-            service.probe_collaboration("t1").await.unwrap().status,
-            "not_configured"
-        );
+        let probe = service.probe_collaboration("t1").await.unwrap();
+        assert_ne!(probe.status, "not_configured");
     }
 
     #[tokio::test]
@@ -5216,7 +5519,8 @@ mod tests {
         assert!(updated.has_secret && !updated.enabled);
         assert_eq!(service.siem_secret("t1").await.unwrap().as_deref(), Some("hec_token"));
 
-        assert_eq!(service.probe_siem("t1").await.unwrap().status, "not_configured");
+        let probe = service.probe_siem("t1").await.unwrap();
+        assert_ne!(probe.status, "not_configured");
     }
 
     // --- E5 resource authorization matrix ---

@@ -1,24 +1,16 @@
-//! Realtime collaboration seam (P2-2 reserved framework).
+//! Realtime collaboration seam (P2-2).
 //!
-//! No collaboration backend (presence relay / CRDT sync) is wired in here.
-//! This is the "reserved adapter" pattern: a config store (see
-//! `PlatformService::{get,set}_collaboration_config`) plus a pluggable
-//! `CollaborationProvider` trait. `NoopCollaborationProvider` is the default
-//! and reports "not configured"; a real provider can be dropped in at the app
-//! layer via `PlatformService::with_collaboration_provider`.
-//!
-//! Distinct from `dream-realtime` (the WebSocket *transport*): this layer is
-//! the admin-configured collaboration *backend* (which relay, presence on/off,
-//! auth token) — the transport is a separate concern that a real provider would
-//! build on.
+//! Default adapter HTTP-probes the saved relay URL (`wss://` is rewritten to HTTPS).
 
 use async_trait::async_trait;
+
+use crate::http_probe::probe_http_endpoint;
 
 /// Outcome of a collaboration-backend probe.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CollaborationStatus {
-    /// `"not_configured"` (stub), `"ok"` (backend reachable), or `"error"`.
+    /// `"not_configured"`, `"ok"`, or `"error"`.
     pub status: String,
     pub message: String,
 }
@@ -38,18 +30,13 @@ pub trait CollaborationProvider: Send + Sync {
     async fn probe(&self, settings: CollaborationSettings<'_>) -> CollaborationStatus;
 }
 
-/// No backend wired: every probe reports that realtime collaboration is not
-/// configured yet.
+/// Default provider: HTTP GET the relay (Bearer token if stored).
 pub struct NoopCollaborationProvider;
 
 #[async_trait]
 impl CollaborationProvider for NoopCollaborationProvider {
-    async fn probe(&self, _settings: CollaborationSettings<'_>) -> CollaborationStatus {
-        CollaborationStatus {
-            status: "not_configured".to_owned(),
-            message: "Realtime collaboration is not wired in yet. The configuration is saved and will be used once \
-                      the collaboration backend is available."
-                .to_owned(),
-        }
+    async fn probe(&self, settings: CollaborationSettings<'_>) -> CollaborationStatus {
+        let (status, message) = probe_http_endpoint(settings.endpoint, settings.secret).await;
+        CollaborationStatus { status, message }
     }
 }

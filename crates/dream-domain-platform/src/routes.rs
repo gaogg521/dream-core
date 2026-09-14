@@ -32,7 +32,7 @@
 
 use axum::extract::{Multipart, Path, Query, State};
 use axum::response::IntoResponse;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
 use serde::Deserialize;
 
@@ -44,10 +44,11 @@ use crate::container::ContainerStatus;
 use crate::error::PlatformError;
 use crate::models::{
     ApiKeyDto, CollaborationConfigDto, ConfigBulkImportDto, ConfigEntryDto, ConfigSetDto, ConfigSetReferencesDto,
-    ContainerConfigDto, ConversationShareDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto,
-    FileVaultReconcileEntry, GrantMode, GrantModeDto, ImChannelMemberDto, IpAllowlistConfigDto, MyNotificationsDto,
-    MySceneDto, NewApiKeyDto, NotificationDto, PolicyTemplateBindingDto, ResourceGrantDto, SceneDto, SecurityPolicyDto,
-    SecurityPolicyTemplateDto, ShareConversationInput, SharedConversationDetail, SharedMessageInput, SiemConfigDto,
+    ConsoleSettingsDto, ContainerConfigDto, ConversationShareDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto,
+    FileVaultReconcileEntry, GrantMode, GrantModeDto, ImChannelMemberDto, ImPipelineDto, IpAllowlistConfigDto,
+    MyNotificationsDto, MySceneDto, NewApiKeyDto, NotificationDto, PolicyTemplateBindingDto, PlatformVersionDto,
+    ResourceGrantDto, SceneDto, SecurityPolicyDto, SecurityPolicyTemplateDto, ShareConversationInput,
+    SharedConversationDetail, SharedMessageInput, SiemConfigDto,
 };
 use crate::object_storage::{ObjectListingDto, ObjectStorageConfigDto, ObjectStorageConfigInput, StorageProbeDto};
 use crate::rbac::{RequirePlatformAdmin, RequirePlatformMember};
@@ -91,6 +92,19 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
             get(list_grant_modes).put(set_grant_mode),
         )
         .route("/api/one/admin/platform/im-channels", get(list_im_channels))
+        .route(
+            "/api/one/admin/platform/im-pipelines",
+            get(list_im_pipelines).post(create_im_pipeline),
+        )
+        .route(
+            "/api/one/admin/platform/im-pipelines/{id}",
+            put(update_im_pipeline).delete(delete_im_pipeline),
+        )
+        .route(
+            "/api/one/admin/platform/console-settings",
+            get(get_console_settings).put(set_console_settings),
+        )
+        .route("/api/one/admin/platform/version", get(get_platform_version))
         .route("/api/one/admin/platform/scenes", get(list_scenes).post(create_scene))
         .route(
             "/api/one/admin/platform/scenes/{id}",
@@ -652,6 +666,114 @@ async fn list_im_channels(
     Ok(Json(ApiResponse::ok(
         state.service.list_im_channels(&actor.tenant_id).await?,
     )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImPipelineBody {
+    #[serde(default)]
+    platform: Option<String>,
+    name: String,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    endpoint: Option<String>,
+    #[serde(default)]
+    app_id: Option<String>,
+    #[serde(default)]
+    secret: Option<String>,
+    #[serde(default)]
+    extra: Option<serde_json::Value>,
+}
+
+async fn list_im_pipelines(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<Vec<ImPipelineDto>>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_im_pipelines(&actor.tenant_id).await?,
+    )))
+}
+
+async fn create_im_pipeline(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Json(body): Json<ImPipelineBody>,
+) -> Result<Json<ApiResponse<ImPipelineDto>>, PlatformError> {
+    let extra = body.extra.unwrap_or(serde_json::json!({}));
+    let dto = state
+        .service
+        .create_im_pipeline(
+            &actor.tenant_id,
+            body.platform.as_deref().unwrap_or(""),
+            &body.name,
+            body.enabled,
+            body.endpoint.as_deref(),
+            body.app_id.as_deref(),
+            body.secret.as_deref(),
+            &extra,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn update_im_pipeline(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+    Json(body): Json<ImPipelineBody>,
+) -> Result<Json<ApiResponse<ImPipelineDto>>, PlatformError> {
+    let extra = body.extra.unwrap_or(serde_json::json!({}));
+    let dto = state
+        .service
+        .update_im_pipeline(
+            &actor.tenant_id,
+            &id,
+            &body.name,
+            body.enabled,
+            body.endpoint.as_deref(),
+            body.app_id.as_deref(),
+            body.secret.as_deref(),
+            &extra,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn delete_im_pipeline(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, PlatformError> {
+    state.service.delete_im_pipeline(&actor.tenant_id, &id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn get_console_settings(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<ConsoleSettingsDto>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.get_console_settings(&actor.tenant_id).await?,
+    )))
+}
+
+async fn set_console_settings(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Json(body): Json<ConsoleSettingsDto>,
+) -> Result<Json<ApiResponse<ConsoleSettingsDto>>, PlatformError> {
+    let dto = state
+        .service
+        .set_console_settings(&actor.tenant_id, &body.appearance, &body.risk, &body.marketplace)
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn get_platform_version(
+    RequirePlatformAdmin(_actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<PlatformVersionDto>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(crate::service::PlatformService::platform_version())))
 }
 
 #[derive(Deserialize)]

@@ -1,13 +1,9 @@
-//! Integration connector seam (P2-1 reserved framework).
+//! Integration connector seam (P2-1).
 //!
-//! No connector client (Octocrab / gitlab / jira / Feishu SDK) is wired in
-//! here — this is the same "reserved adapter" pattern used for invite email
-//! (`EmailSender`) and billing (`dream_domain_billing::BillingProvider`): a config store
-//! (see `OrgService::{list,get,set}_integration`) plus a pluggable
-//! `IntegrationProvider` trait. `StubIntegrationProvider` is the default and
-//! reports "not configured"; when real credentials and a real client are
-//! available, a concrete implementation can be dropped in at the app layer via
-//! `OrgService::with_integration_provider` without touching this crate.
+//! Default provider HTTP-GETs `base_url` (Bearer secret if stored). Empty URL
+//! reports `not_configured`.
+
+use std::time::Duration;
 
 use async_trait::async_trait;
 
@@ -17,13 +13,11 @@ use async_trait::async_trait;
 /// that a new connector needs before its real sync is built.
 pub const KNOWN_PROVIDERS: &[&str] = &["github", "gitlab", "jira", "feishu"];
 
-/// Outcome of a connector "test connection" attempt, shaped like
-/// `SendEmailResult` for the same "not configured yet" UX.
+/// Outcome of a connector "test connection" attempt.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IntegrationTestResult {
-    /// `"not_configured"` (stub), `"ok"` (a real provider reached the system),
-    /// or `"error"` (a real provider tried and failed).
+    /// `"not_configured"`, `"ok"`, or `"error"`.
     pub status: String,
     pub message: String,
 }
@@ -44,19 +38,55 @@ pub trait IntegrationProvider: Send + Sync {
     async fn test_connection(&self, creds: IntegrationCredentials<'_>) -> IntegrationTestResult;
 }
 
-/// No connector wired: every probe reports that live syncing is not configured
-/// yet, so the admin UI can surface a clear "saved, but sync isn't available
-/// yet" message instead of implying the connector is live.
+/// Default provider: HTTP GET the connector base URL.
 pub struct StubIntegrationProvider;
 
 #[async_trait]
 impl IntegrationProvider for StubIntegrationProvider {
-    async fn test_connection(&self, _creds: IntegrationCredentials<'_>) -> IntegrationTestResult {
-        IntegrationTestResult {
-            status: "not_configured".to_owned(),
-            message: "Connector sync is not wired in yet. The configuration is saved and will be used once live \
-                      syncing is available."
-                .to_owned(),
+    async fn test_connection(&self, creds: IntegrationCredentials<'_>) -> IntegrationTestResult {
+        let Some(raw) = creds.base_url.map(str::trim).filter(|s| !s.is_empty()) else {
+            return IntegrationTestResult {
+                status: "not_configured".to_owned(),
+                message: "Save a base URL for this connector, then test again.".to_owned(),
+            };
+        };
+        let url = if raw.starts_with("http://") || raw.starts_with("https://") {
+            raw.to_owned()
+        } else {
+            format!("https://{raw}")
+        };
+        let client = match reqwest::Client::builder().timeout(Duration::from_secs(5)).build() {
+            Ok(c) => c,
+            Err(e) => {
+                return IntegrationTestResult {
+                    status: "error".to_owned(),
+                    message: e.to_string(),
+                };
+            }
+        };
+        let mut req = client.get(&url);
+        if let Some(token) = creds.secret.map(str::trim).filter(|s| !s.is_empty()) {
+            req = req.bearer_auth(token);
+        }
+        match req.send().await {
+            Ok(resp) => {
+                let code = resp.status().as_u16();
+                if resp.status().is_success() || matches!(code, 401 | 403 | 404) {
+                    IntegrationTestResult {
+                        status: "ok".to_owned(),
+                        message: format!("{} reached {url} (HTTP {code})", creds.provider),
+                    }
+                } else {
+                    IntegrationTestResult {
+                        status: "error".to_owned(),
+                        message: format!("{url} returned HTTP {code}"),
+                    }
+                }
+            }
+            Err(e) => IntegrationTestResult {
+                status: "error".to_owned(),
+                message: format!("Could not reach {url}: {e}"),
+            },
         }
     }
 }

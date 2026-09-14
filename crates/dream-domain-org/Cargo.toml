@@ -17,6 +17,9 @@ sqlx = { workspace = true, features = ["mysql"] }
 thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+lettre.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true

@@ -33,8 +33,8 @@ pub struct CollaborationConfigDto {
 }
 
 /// IP allowlist config (P1-4). `cidrs` is the parsed list of allowed CIDR/IP
-/// strings. Enforcement (request blocking) is a reserved drop-in — storing this
-/// does not by itself block anyone.
+/// strings. When `enabled` is true, `dream-core-app` auth middleware calls
+/// `is_ip_allowed` and rejects non-matching clients.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IpAllowlistConfigDto {
@@ -592,4 +592,88 @@ impl From<ConversationShareRow> for ConversationShareDto {
             uploaded: row.uploaded != 0,
         }
     }
+}
+
+/// Tenant-registered IM pipeline (enterprise bot), distinct from per-member
+/// `assistant_plugins` oversight. Secret is never echoed.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImPipelineDto {
+    pub id: String,
+    pub platform: String,
+    pub name: String,
+    pub enabled: bool,
+    pub endpoint: Option<String>,
+    pub app_id: Option<String>,
+    pub has_secret: bool,
+    pub extra: serde_json::Value,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsoleAppearanceDto {
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub logo_url: String,
+    #[serde(default)]
+    pub primary_color: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsoleRiskDto {
+    #[serde(default)]
+    pub session_timeout_minutes: i64,
+    #[serde(default)]
+    pub lockout_after_failures: i64,
+    #[serde(default)]
+    pub force_mfa: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsoleMarketplaceDto {
+    #[serde(default)]
+    pub publish_requires_approval: bool,
+    #[serde(default = "default_market_visibility")]
+    pub default_visibility: String,
+    #[serde(default)]
+    pub allow_member_upload: bool,
+}
+
+fn default_market_visibility() -> String {
+    "tenant".to_owned()
+}
+
+impl Default for ConsoleMarketplaceDto {
+    fn default() -> Self {
+        Self {
+            publish_requires_approval: false,
+            default_visibility: default_market_visibility(),
+            allow_member_upload: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsoleSettingsDto {
+    #[serde(default)]
+    pub appearance: ConsoleAppearanceDto,
+    #[serde(default)]
+    pub risk: ConsoleRiskDto,
+    #[serde(default)]
+    pub marketplace: ConsoleMarketplaceDto,
+    pub updated_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformVersionDto {
+    pub product: String,
+    pub version: String,
+    pub edition: String,
 }
