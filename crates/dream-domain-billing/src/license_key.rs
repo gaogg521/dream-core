@@ -116,6 +116,10 @@ pub struct LicensePayload {
     /// Suggested filename when a customer saves this key to disk.
     #[serde(default)]
     pub file_name: Option<String>,
+    /// Deployment identity from the customer's activation request. Older
+    /// unbound keys remain valid for backwards compatibility.
+    #[serde(default)]
+    pub instance_id: Option<String>,
 }
 
 /// One module's authorization window inside a [`LicensePayload`].
@@ -262,6 +266,11 @@ pub fn classify_module_access(modules: &[LicenseModuleGrant], module: &str, now_
 }
 
 impl LicensePayload {
+    /// Old licenses without an installation binding remain portable; a new
+    /// request-bound license is valid only for the exact requesting instance.
+    pub fn valid_for_instance(&self, instance_id: &str) -> bool {
+        self.instance_id.as_deref().is_none_or(|bound| bound == instance_id)
+    }
     /// Whether `module` is authorized at `now_ms`. See [`classify_module_access`]
     /// for the full semantics (this is just its boolean collapse).
     pub fn module_authorized(&self, module: &str, now_ms: i64) -> bool {
@@ -378,6 +387,15 @@ mod tests {
         p
     }
 
+    #[test]
+    fn installation_binding_is_exact_and_legacy_keys_remain_portable() {
+        let mut p = payload("enterprise", None);
+        assert!(p.valid_for_instance("ent-a"));
+        p.instance_id = Some("ent-a".into());
+        assert!(p.valid_for_instance("ent-a"));
+        assert!(!p.valid_for_instance("ent-b"));
+    }
+
     fn payload(tier: &str, exp: Option<i64>) -> LicensePayload {
         LicensePayload {
             lid: "lic_test_1".to_owned(),
@@ -394,6 +412,7 @@ mod tests {
             serial: None,
             app_id: None,
             file_name: None,
+            instance_id: None,
         }
     }
 
