@@ -65,6 +65,10 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
         .route("/api/one/admin/users/{user_id}", delete(admin_remove_user))
         .route("/api/one/admin/users/{user_id}/role", put(admin_set_user_role))
         .route(
+            "/api/one/admin/users/{user_id}/password-reset",
+            post(admin_reset_user_password),
+        )
+        .route(
             "/api/one/admin/users/{user_id}/department",
             put(admin_assign_member_department),
         )
@@ -942,6 +946,32 @@ async fn admin_create_member(
         )
         .await?;
     Ok(Json(ApiResponse::ok(user)))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminResetPasswordOutput {
+    temporary_password: String,
+    must_change_password: bool,
+}
+
+/// Reset another local member's password to a server-generated temporary
+/// credential. Existing sessions are revoked and the member must choose a new
+/// password at the next login. This is instance-admin-only because a local
+/// credential spans every project group the account belongs to.
+async fn admin_reset_user_password(
+    State(state): State<OneOrgRouterState>,
+    RequireSystemAdmin(actor): RequireSystemAdmin,
+    Path(user_id): Path<String>,
+) -> Result<Json<ApiResponse<AdminResetPasswordOutput>>, OrgError> {
+    let temporary_password = state
+        .service
+        .admin_reset_user_password(&actor.tenant_id, &actor.user_id, &actor.username, &actor.role, &user_id)
+        .await?;
+    Ok(Json(ApiResponse::ok(AdminResetPasswordOutput {
+        temporary_password,
+        must_change_password: true,
+    })))
 }
 
 /// Remove a member from the caller's project group (P0-2), freeing their seat
