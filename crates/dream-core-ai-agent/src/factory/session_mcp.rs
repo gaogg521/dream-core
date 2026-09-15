@@ -36,6 +36,14 @@ const AUTO_INJECTED_BUILTIN_NAMES: &[&str] = &[
     "aionui-image-generation",
     "AionUi Image Generation",
     "builtin-image-gen",
+    // Web search, on the same reasoning as media generation: it is inert until
+    // the user pastes a provider API key, and pasting one is the explicit
+    // statement that this capability is wanted. Without it here, an enabled
+    // `one-web-search` still never reaches a conversation — the model is simply
+    // never offered `web_search`, so it answers from training data or reaches
+    // for an unrelated skill, with nothing anywhere saying why.
+    "one-web-search",
+    "builtin-web-search",
 ];
 
 pub(crate) fn is_auto_injected_builtin(name: &str) -> bool {
@@ -175,6 +183,51 @@ mod tests {
 
     fn names(rows: &[McpServerRow]) -> Vec<&str> {
         rows.iter().map(|r| r.name.as_str()).collect()
+    }
+
+    /// Web search has to reach a conversation the same way media does.
+    ///
+    /// Observed before this was added: `one-web-search` was enabled, its
+    /// connection test passed, and the settings page listed its `web_search`
+    /// tool — but a conversation was injected with exactly one server
+    /// (`mcp_count=1 mcp_names=["one-image-generation"]`). The model was never
+    /// offered the tool, so a question about a live stock price was answered by
+    /// reaching for an unrelated skill instead, with nothing reporting a
+    /// failure anywhere.
+    #[tokio::test]
+    async fn web_search_builtin_reaches_a_conversation_with_no_snapshot() {
+        let repo = FakeRepo {
+            rows: vec![
+                row("b1", "one-web-search", true, true),
+                row("b2", "one-export-pdf", true, true),
+            ],
+        };
+        let rows = load_session_mcp_rows(&repo, None, "u", "c1").await;
+        assert_eq!(names(&rows), vec!["one-web-search"]);
+    }
+
+    /// Disabled means disabled: the entry ships default-off and only turns on
+    /// when the user has pasted a provider key, so an off row must not ride in.
+    #[tokio::test]
+    async fn disabled_web_search_is_not_injected() {
+        let repo = FakeRepo {
+            rows: vec![row("b1", "one-web-search", false, true)],
+        };
+        assert!(load_session_mcp_rows(&repo, None, "u", "c1").await.is_empty());
+    }
+
+    /// A snapshot is about user servers; an auto-injected built-in follows its
+    /// own enabled flag even when the snapshot never mentioned it.
+    #[tokio::test]
+    async fn web_search_rides_along_despite_a_snapshot_that_omits_it() {
+        let repo = FakeRepo {
+            rows: vec![
+                row("u1", "user-server", true, false),
+                row("b1", "one-web-search", true, true),
+            ],
+        };
+        let rows = load_session_mcp_rows(&repo, Some(&["u1".to_owned()]), "u", "c1").await;
+        assert_eq!(names(&rows), vec!["user-server", "one-web-search"]);
     }
 
     /// The regression this module exists for: a conversation nobody created
