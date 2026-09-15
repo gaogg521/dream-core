@@ -104,19 +104,33 @@ struct LocalOcrSkill {
 }
 
 async fn find_host_local_ocr_skill(ctx: &PromptCtx<'_>) -> Result<Option<LocalOcrSkill>, String> {
+    find_host_local_ocr_skill_in(ctx.skill_manager, &ctx.params.user_id, &ctx.params.config.skills).await
+}
+
+/// The discovery itself, separated from `PromptCtx` so it can be exercised
+/// against a real skill corpus.
+///
+/// This path fails silently by design — an install without the bundled skill
+/// must still send the message — which also means a regression in it looks
+/// exactly like nothing happening. It needs a test that runs the real lookup
+/// over the real assets, not a hand-built `LocalOcrSkill`.
+async fn find_host_local_ocr_skill_in(
+    skill_manager: &crate::capability::skill_manager::AcpSkillManager,
+    user_id: &str,
+    configured_skills: &[String],
+) -> Result<Option<LocalOcrSkill>, String> {
     let Some(expected_name) = host_local_ocr_skill_name() else {
         return Ok(None);
     };
-    let selected = with_host_local_ocr_skill(&ctx.params.config.skills);
-    let discovered = ctx
-        .skill_manager
-        .discover_skills_for_user(&ctx.params.user_id, Some(&selected), None)
+    let selected = with_host_local_ocr_skill(configured_skills);
+    let discovered = skill_manager
+        .discover_skills_for_user(user_id, Some(&selected), None)
         .await;
     if !discovered.iter().any(|skill| skill.name == expected_name) {
         return Ok(None);
     }
 
-    let Some(definition) = ctx.skill_manager.get_skill(expected_name).await else {
+    let Some(definition) = skill_manager.get_skill(expected_name).await else {
         return Err(format!(
             "The default local OCR skill '{expected_name}' could not be read."
         ));
@@ -431,5 +445,85 @@ mod tests {
         );
         assert!(outcome.delegate_usage.is_empty());
         assert!(outcome.warnings.is_empty());
+    }
+
+    /// Point a real `AcpSkillManager` at the real shipped corpus.
+    ///
+    /// `SkillPaths` is built by hand rather than through `resolve_skill_paths`
+    /// so this does not read `BUILTIN_SKILLS_ENV_VAR` — other tests in this
+    /// crate set and clear that variable, and tests run in parallel.
+    fn skill_manager_over_shipped_assets(data_dir: &Path) -> Arc<crate::capability::skill_manager::AcpSkillManager> {
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates dir")
+            .join("dream-core-app/assets");
+        let paths = dream_core_extension::SkillPaths {
+            data_dir: data_dir.to_path_buf(),
+            user_skills_dir: data_dir.join("skills"),
+            cron_skills_dir: data_dir.join("cron/skills"),
+            builtin_skills_dir: assets.join("builtin-skills"),
+            builtin_rules_dir: assets.join("builtin-rules"),
+            assistant_rules_dir: data_dir.join("assistant-rules"),
+            assistant_skills_dir: data_dir.join("assistant-skills"),
+        };
+        crate::capability::skill_manager::AcpSkillManager::new(Arc::new(paths))
+    }
+
+    /// The end-to-end lookup a text-only session depends on, over the assets
+    /// that actually ship.
+    ///
+    /// Everything else in this file constructs `LocalOcrSkill` by hand, so a
+    /// break anywhere in discovery — a renamed directory, a changed
+    /// frontmatter name, a skill that stops being classified as builtin —
+    /// would leave every one of those tests green while the feature does
+    /// nothing in production.
+    #[tokio::test]
+    async fn the_host_ocr_skill_is_found_in_the_shipped_corpus() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let manager = skill_manager_over_shipped_assets(data_dir.path());
+
+        let found = find_host_local_ocr_skill_in(&manager, "test-user", &[])
+            .await
+            .expect("looking for the bundled OCR skill must not error");
+
+        let Some(expected_name) = host_local_ocr_skill_name() else {
+            assert!(found.is_none(), "an unsupported platform has no bundled OCR skill");
+            return;
+        };
+        let skill = found.unwrap_or_else(|| {
+            panic!(
+                "the bundled '{expected_name}' skill was not discovered; a text-only session would silently lose OCR"
+            )
+        });
+        assert_eq!(skill.name, expected_name);
+        assert!(
+            !skill.instructions.trim().is_empty(),
+            "the skill body is what tells the agent how to run OCR"
+        );
+        assert!(
+            Path::new(&skill.script_dir).join("scripts").is_dir(),
+            "the agent is pointed at {} to run the script from",
+            skill.script_dir
+        );
+    }
+
+    /// The user having selected other skills must not displace the OCR one —
+    /// `with_host_local_ocr_skill` appends rather than replaces, and discovery
+    /// drops any builtin skill absent from the selection.
+    #[tokio::test]
+    async fn the_host_ocr_skill_survives_an_existing_skill_selection() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let manager = skill_manager_over_shipped_assets(data_dir.path());
+
+        let found = find_host_local_ocr_skill_in(&manager, "test-user", &["pdf".to_owned(), "docx".to_owned()])
+            .await
+            .expect("looking for the bundled OCR skill must not error");
+
+        if host_local_ocr_skill_name().is_some() {
+            assert!(
+                found.is_some(),
+                "a user's own skill selection hid the bundled OCR skill"
+            );
+        }
     }
 }
