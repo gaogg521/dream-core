@@ -44,9 +44,9 @@ use dream_core_project::ProjectRouterState;
 use dream_core_realtime::{MessageRouter, TokenUserResolver, WsHandlerState};
 use dream_core_shell::ShellRouterState;
 use dream_core_system::{
-    ClientPrefService, ConnectionTestRouterState, ConnectionTestService, FeedbackDiagnosticsService, ModelFetchService,
-    ProtocolDetectionService, ProviderService, RuntimePrepareService, SettingsService, SystemRouterState,
-    VersionCheckService,
+    BackupRouterState, BackupService, ClientPrefService, ConnectionTestRouterState, ConnectionTestService,
+    FeedbackDiagnosticsService, ModelFetchService, ProtocolDetectionService, ProviderService, RuntimePrepareService,
+    SettingsService, SystemRouterState, VersionCheckService,
 };
 use dream_core_team::{
     AgentTurnCancellationPort, AgentTurnExecutionPort, NativeSlashCommandPort, TeamAssistantCatalogEntry,
@@ -134,6 +134,7 @@ pub struct ModuleStates {
     pub agent: AgentRouterState,
 
     pub connection_test: ConnectionTestRouterState,
+    pub backup: BackupRouterState,
     pub file: FileRouterState,
     pub project: ProjectRouterState,
     pub mcp: McpRouterState,
@@ -330,6 +331,7 @@ pub async fn build_module_states(
             service: agent_service,
         }),
         connection_test: build_module_state_phase(&boot, "connection_test", build_connection_test_state),
+        backup: build_module_state_phase(&boot, "backup", || build_backup_state(services)),
         file: build_module_state_phase(&boot, "file", || build_file_state(services))?,
         project: build_module_state_phase(&boot, "project", || build_project_state(services)),
         mcp: build_module_state_phase(&boot, "mcp", || build_mcp_state(services)),
@@ -525,6 +527,14 @@ pub fn build_remote_agent_state(services: &AppServices) -> RemoteAgentRouterStat
 pub fn build_connection_test_state() -> ConnectionTestRouterState {
     ConnectionTestRouterState {
         service: ConnectionTestService::new(reqwest::Client::new()),
+    }
+}
+
+/// Build the `BackupRouterState` for personal-edition backup and restore.
+pub fn build_backup_state(services: &AppServices) -> BackupRouterState {
+    BackupRouterState {
+        service: BackupService::new(services.data_dir.clone(), services.app_version.clone()),
+        pool: dream_core_db::DbPool::Sqlite(services.database.pool().clone()),
     }
 }
 

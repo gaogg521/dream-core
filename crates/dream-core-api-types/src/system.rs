@@ -120,6 +120,82 @@ pub struct FeedbackDiagnosticsPrivacyResponse {
     pub api_keys_included: bool,
 }
 
+/// The kinds of data a backup carries. Selected on export, and again on
+/// restore to narrow what gets merged.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupScopeDto {
+    #[serde(default)]
+    pub conversations: bool,
+    #[serde(default)]
+    pub attachments: bool,
+    #[serde(default)]
+    pub providers: bool,
+    #[serde(default)]
+    pub skills: bool,
+    #[serde(default)]
+    pub app_settings: bool,
+}
+
+/// Write a backup archive to `destination`.
+///
+/// The path comes from the client because the file dialog lives there: the
+/// backend is a local service and writes where the user chose, rather than
+/// streaming a multi-gigabyte body through HTTP.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateBackupRequest {
+    pub destination: String,
+    pub scope: BackupScopeDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupManifestResponse {
+    pub format_version: u32,
+    pub exported_at: i64,
+    pub app_version: String,
+    pub scope: BackupScopeDto,
+    pub total_bytes: u64,
+    /// True when the archive carries decryptable provider credentials, so the
+    /// UI can tell the user to store the file accordingly.
+    pub contains_credentials: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateBackupResponse {
+    pub path: String,
+    /// Size of the archive on disk, which is smaller than the manifest's
+    /// `totalBytes` because entries are deflated.
+    pub archive_bytes: u64,
+    pub manifest: BackupManifestResponse,
+}
+
+/// Inspect an archive without applying it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewBackupRequest {
+    pub source: String,
+}
+
+/// Merge an archive into this install. `scope` narrows what is applied;
+/// categories the archive does not carry are ignored.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreBackupRequest {
+    pub source: String,
+    pub scope: BackupScopeDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreBackupResponse {
+    /// Rows merged into the live catalog, keyed by table.
+    pub rows_by_table: std::collections::BTreeMap<String, u64>,
+    pub files_restored: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
