@@ -103,6 +103,7 @@ fn make_engine_config() -> DreamEngineResolvedConfig {
         compat_overrides: Default::default(),
         vision_model: None,
         vision_unavailable_reason: None,
+        local_ocr: None,
         session_directory: std::env::temp_dir().join("aionrs-test-sessions"),
         session_mode: None,
         skills: Vec::new(),

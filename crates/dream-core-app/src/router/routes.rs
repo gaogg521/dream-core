@@ -1361,6 +1361,7 @@ impl dream_core_conversation::TurnMemoryExtractor for OneMemoryTurnExtractor {
                             mcp: Default::default(),
                             logging: Default::default(),
                             vision: None,
+                            local_ocr: None,
                             extra_headers: None,
                         };
                         match dream_core_ai_agent::extract_facts_via_llm(

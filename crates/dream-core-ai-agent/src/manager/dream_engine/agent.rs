@@ -391,6 +391,10 @@ impl DreamEngineAgentManager {
         // providers; `None` here means the tool will report images as
         // unreadable rather than let the agent guess.
         config.vision = config_extra.vision_model;
+        // On-device OCR, tried before that delegate when the caller asks for
+        // text. Free, exact and never leaves the machine, so a screenshot does
+        // not cost a paid vision call. `None` restores the vision-only path.
+        config.local_ocr = config_extra.local_ocr;
         // Why there is no delegate, when the factory knows a reason more
         // specific than "none configured" — today: the company's model
         // allowlist excluded every vision-capable model this user has. Without

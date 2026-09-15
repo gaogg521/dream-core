@@ -37,6 +37,7 @@ fn make_test_config() -> DreamEngineResolvedConfig {
         compat_overrides: Default::default(),
         vision_model: None,
         vision_unavailable_reason: None,
+        local_ocr: None,
         session_directory: env::temp_dir().join("dream-engine-test-sessions"),
         session_mode: None,
         skills: Vec::new(),

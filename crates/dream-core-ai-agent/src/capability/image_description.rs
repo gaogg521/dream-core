@@ -134,6 +134,9 @@ fn provider_config_from_delegate(vision: &VisionModelConfig) -> Config {
         mcp: McpConfig::default(),
         logging: LoggingConfig::default(),
         vision: None,
+        // This config drives a one-shot call to the vision model itself, which
+        // has no ReadImage tool and therefore nothing that would consult OCR.
+        local_ocr: None,
         // One-shot vision delegate: never carries session headers (the
         // delegate may be a personal provider even when the session is not).
         extra_headers: None,

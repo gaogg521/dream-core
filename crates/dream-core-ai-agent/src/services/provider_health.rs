@@ -103,6 +103,8 @@ impl ProviderHealthCheckService {
             // has no use for an image-reading delegate.
             vision_model: None,
             vision_unavailable_reason: None,
+            // A health probe sends one trivial request and reads no images.
+            local_ocr: None,
             session_directory: self.data_dir.join("aionrs-health-check-sessions"),
             session_mode: None,
             skills: Vec::new(),
