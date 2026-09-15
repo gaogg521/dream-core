@@ -1667,7 +1667,9 @@ impl DevopsService {
 
     pub async fn delete_rag_library(&self, id: &str) -> Result<(), DevopsError> {
         if id == "oraglib_default" {
-            return Err(DevopsError::BadRequest("cannot delete the default knowledge library".into()));
+            return Err(DevopsError::BadRequest(
+                "cannot delete the default knowledge library".into(),
+            ));
         }
         let count: i64 = self
             .db
@@ -4021,7 +4023,17 @@ mod tests {
             .await
             .unwrap();
         let doc = svc
-            .register_rag_document("a-only-doc", None, None, None, "team", Some("tA"), "all", "admin1", None)
+            .register_rag_document(
+                "a-only-doc",
+                None,
+                None,
+                None,
+                "team",
+                Some("tA"),
+                "all",
+                "admin1",
+                None,
+            )
             .await
             .unwrap();
 

@@ -3560,27 +3560,24 @@ impl PlatformService {
         let rows: Vec<ConfigSetRow> = self
             .db
             .fetch_all_as::<ConfigSetRow>(
-                "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.updated_at, \
-                    (SELECT COUNT(*) FROM one_config_entries e WHERE e.set_id = s.id) AS entry_count \
-             FROM one_config_sets s WHERE s.tenant_id = ? ORDER BY s.created_at DESC",
+                &format!("{CONFIG_SET_SELECT} WHERE s.tenant_id = ? ORDER BY s.created_at DESC"),
                 &db_params![tenant_id],
             )
             .await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
-            // Reference counting is one extra scan per set; sets are a
-            // handful per tenant, so a loop beats a dynamic-SQL join.
-            let ref_count = self.config_reference_count(&row.1).await?;
-            out.push(ConfigSetDto {
-                id: row.0,
-                name: row.1,
-                description: row.2,
-                created_by: row.3,
-                created_at: row.4,
-                updated_at: row.5,
-                entry_count: row.6,
-                ref_count,
-            });
+            let alias = if row.7.trim().is_empty() {
+                row.1.as_str()
+            } else {
+                row.7.as_str()
+            };
+            let ref_count = self.config_reference_count(alias).await?;
+            let extra = if alias != row.1 {
+                self.config_reference_count(&row.1).await?
+            } else {
+                0
+            };
+            out.push(config_set_dto(row, ref_count + extra));
         }
         Ok(out)
     }
@@ -3617,6 +3614,43 @@ impl PlatformService {
             .ok_or_else(|| PlatformError::Internal("config set vanished immediately after update".into()))
     }
 
+    pub async fn set_config_set_governance(
+        &self,
+        tenant_id: &str,
+        id: &str,
+        alias: Option<&str>,
+        template: Option<&str>,
+        scope: Option<&str>,
+        enabled: Option<bool>,
+    ) -> Result<ConfigSetDto, PlatformError> {
+        let existing = self
+            .get_config_set(tenant_id, id)
+            .await?
+            .ok_or_else(|| PlatformError::NotFound("config set not found".into()))?;
+        let alias = alias.map(str::trim).unwrap_or(existing.alias.as_str()).to_owned();
+        let template = template.map(str::trim).unwrap_or(existing.template.as_str()).to_owned();
+        let scope = normalize_config_scope(scope.unwrap_or(&existing.scope))?;
+        let enabled = enabled.unwrap_or(existing.enabled);
+        self.db
+            .execute(
+                "UPDATE one_config_sets SET alias = ?, template = ?, scope = ?, enabled = ?, updated_at = ? \
+                 WHERE tenant_id = ? AND id = ?",
+                &db_params![
+                    alias,
+                    template,
+                    scope,
+                    if enabled { 1 } else { 0 },
+                    now_ms(),
+                    tenant_id,
+                    id
+                ],
+            )
+            .await?;
+        self.get_config_set(tenant_id, id)
+            .await?
+            .ok_or_else(|| PlatformError::Internal("config set vanished after governance update".into()))
+    }
+
     /// Delete a set and its entries in one transaction. Entries reference the
     /// set by id, so leaving them behind would dangle — same posture as
     /// policy-template deletion. Note this does NOT stop a skill body from
@@ -3643,25 +3677,24 @@ impl PlatformService {
         let row: Option<ConfigSetRow> = self
             .db
             .fetch_optional_as::<ConfigSetRow>(
-                "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.updated_at, \
-                    (SELECT COUNT(*) FROM one_config_entries e WHERE e.set_id = s.id) AS entry_count \
-             FROM one_config_sets s WHERE s.tenant_id = ? AND s.id = ?",
+                &format!("{CONFIG_SET_SELECT} WHERE s.tenant_id = ? AND s.id = ?"),
                 &db_params![tenant_id, id],
             )
             .await?;
         match row {
             Some(row) => {
-                let ref_count = self.config_reference_count(&row.1).await?;
-                Ok(Some(ConfigSetDto {
-                    id: row.0,
-                    name: row.1,
-                    description: row.2,
-                    created_by: row.3,
-                    created_at: row.4,
-                    updated_at: row.5,
-                    entry_count: row.6,
-                    ref_count,
-                }))
+                let alias = if row.7.trim().is_empty() {
+                    row.1.as_str()
+                } else {
+                    row.7.as_str()
+                };
+                let ref_count = self.config_reference_count(alias).await?;
+                let extra = if alias != row.1 {
+                    self.config_reference_count(&row.1).await?
+                } else {
+                    0
+                };
+                Ok(Some(config_set_dto(row, ref_count + extra)))
             }
             None => Ok(None),
         }
@@ -4022,10 +4055,10 @@ impl PlatformService {
         // One query for the tenant's whole vault: a skill rarely references
         // more than a couple of keys, but this keeps it to a single round
         // trip regardless of token count.
-        let rows: Vec<(String, String, String, bool)> = self
+        let rows: Vec<(String, String, String, String, bool, i64)> = self
             .db
-            .fetch_all_as::<(String, String, String, bool)>(
-                "SELECT s.name, e.key, e.value, e.sensitive \
+            .fetch_all_as::<(String, String, String, String, bool, i64)>(
+                "SELECT s.name, s.alias, e.key, e.value, e.sensitive, s.enabled \
              FROM one_config_entries e JOIN one_config_sets s ON s.id = e.set_id \
              WHERE s.tenant_id = ?",
                 &db_params![tenant_id],
@@ -4033,18 +4066,23 @@ impl PlatformService {
             .await
             .unwrap_or_default();
         let mut lookup: std::collections::HashMap<(String, String), String> = std::collections::HashMap::new();
-        for (set_name, key, stored, sensitive) in rows {
+        for (set_name, alias, key, stored, sensitive, enabled) in rows {
+            if enabled == 0 {
+                continue;
+            }
             let value = if sensitive {
                 match decrypt_string(&stored, &self.encryption_key) {
                     Ok(v) => v,
-                    // A row that cannot be decrypted is left unresolved
-                    // rather than substituted with garbage.
                     Err(_) => continue,
                 }
             } else {
                 stored
             };
-            lookup.insert((set_name, key), value);
+            lookup.insert((set_name.clone(), key.clone()), value.clone());
+            let alias = alias.trim();
+            if !alias.is_empty() && alias != set_name {
+                lookup.insert((alias.to_owned(), key), value);
+            }
         }
         expand_config_tokens(content, |set, key| {
             lookup.get(&(set.to_owned(), key.to_owned())).cloned()
@@ -4195,7 +4233,52 @@ type SceneRow = (
 
 /// one_config_sets row + aggregate: id, name, description, created_by,
 /// created_at, updated_at, entry_count.
-type ConfigSetRow = (String, String, String, String, i64, i64, i64);
+type ConfigSetRow = (
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    String,
+    String,
+    String,
+    i64,
+);
+
+const CONFIG_SET_SELECT: &str = "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.updated_at, \
+                    (SELECT COUNT(*) FROM one_config_entries e WHERE e.set_id = s.id) AS entry_count, \
+                    s.alias, s.template, s.scope, s.enabled \
+             FROM one_config_sets s";
+
+fn normalize_config_scope(scope: &str) -> Result<String, PlatformError> {
+    let scope = scope.trim();
+    if matches!(scope, "tenant" | "department" | "personal") {
+        Ok(scope.to_owned())
+    } else {
+        Err(PlatformError::BadRequest(
+            "config set scope must be tenant, department, or personal".into(),
+        ))
+    }
+}
+
+fn config_set_dto(row: ConfigSetRow, ref_count: i64) -> ConfigSetDto {
+    ConfigSetDto {
+        id: row.0,
+        name: row.1.clone(),
+        description: row.2,
+        created_by: row.3,
+        created_at: row.4,
+        updated_at: row.5,
+        entry_count: row.6,
+        ref_count,
+        alias: row.7,
+        template: row.8,
+        scope: if row.9.is_empty() { "tenant".into() } else { row.9 },
+        enabled: row.10 != 0,
+    }
+}
 
 // --- P2-2: member-to-organization conversation sharing ---
 
@@ -7768,6 +7851,16 @@ mod tests {
         assert_eq!(set.name, "api-gateway");
         assert_eq!(set.entry_count, 0);
         assert_eq!(set.ref_count, 0);
+        assert!(set.enabled);
+        assert_eq!(set.scope, "tenant");
+        let patched = service
+            .set_config_set_governance("t1", &set.id, Some("gw"), Some("http"), Some("department"), Some(false))
+            .await
+            .unwrap();
+        assert_eq!(patched.alias, "gw");
+        assert_eq!(patched.template, "http");
+        assert_eq!(patched.scope, "department");
+        assert!(!patched.enabled);
 
         // A duplicate alias would make `{{config.<name>.…}}` ambiguous.
         assert_eq!(

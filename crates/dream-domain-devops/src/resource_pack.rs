@@ -57,8 +57,8 @@ pub fn join_pack(skill_md: &str, files: &BTreeMap<String, String>) -> Result<Str
     if files.is_empty() {
         return Ok(skill_md.to_owned());
     }
-    let json = serde_json::to_string_pretty(files)
-        .map_err(|e| DevopsError::BadRequest(format!("package files json: {e}")))?;
+    let json =
+        serde_json::to_string_pretty(files).map_err(|e| DevopsError::BadRequest(format!("package files json: {e}")))?;
     Ok(format!("{}{PACK_START}{json}{PACK_END}", skill_md.trim_end()))
 }
 
@@ -114,8 +114,8 @@ fn looks_like_zip(bytes: &[u8]) -> bool {
 }
 
 fn ingest_zip_with_root(bytes: &[u8], roots: &[&str]) -> Result<SkillPack, DevopsError> {
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
-        .map_err(|e| DevopsError::BadRequest(format!("invalid zip: {e}")))?;
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| DevopsError::BadRequest(format!("invalid zip: {e}")))?;
     let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
     for i in 0..archive.len() {
         let mut entry = archive
@@ -127,7 +127,10 @@ fn ingest_zip_with_root(bytes: &[u8], roots: &[&str]) -> Result<SkillPack, Devop
         if let Some(mode) = entry.unix_mode()
             && mode & 0o170000 == 0o120000
         {
-            return Err(DevopsError::BadRequest(format!("zip symlink refused: {}", entry.name())));
+            return Err(DevopsError::BadRequest(format!(
+                "zip symlink refused: {}",
+                entry.name()
+            )));
         }
         let path = safe_zip_path(entry.name())?;
         if path.as_os_str().is_empty() {
@@ -149,7 +152,11 @@ fn ingest_zip_with_root(bytes: &[u8], roots: &[&str]) -> Result<SkillPack, Devop
         .ok_or_else(|| {
             DevopsError::BadRequest(format!(
                 "zip must contain {}",
-                roots.iter().map(|r| r.to_ascii_uppercase()).collect::<Vec<_>>().join(" or ")
+                roots
+                    .iter()
+                    .map(|r| r.to_ascii_uppercase())
+                    .collect::<Vec<_>>()
+                    .join(" or ")
             ))
         })?
         .to_owned();
@@ -172,20 +179,17 @@ fn ingest_zip_with_root(bytes: &[u8], roots: &[&str]) -> Result<SkillPack, Devop
         if total > MAX_TOTAL_BYTES {
             return Err(DevopsError::BadRequest("zip is larger than 1 MB unpacked".into()));
         }
-        if roots
-            .iter()
-            .any(|root| rel.eq_ignore_ascii_case(root))
-        {
-            skill_md = String::from_utf8(buf)
-                .map_err(|_| DevopsError::BadRequest("SKILL.md must be UTF-8 text".into()))?;
+        if roots.iter().any(|root| rel.eq_ignore_ascii_case(root)) {
+            skill_md =
+                String::from_utf8(buf).map_err(|_| DevopsError::BadRequest("SKILL.md must be UTF-8 text".into()))?;
             continue;
         }
         if is_text_path(rel) {
             if buf.len() > MAX_FILE_BYTES {
                 return Err(DevopsError::BadRequest(format!("{rel} exceeds 256 KB")));
             }
-            let text = String::from_utf8(buf)
-                .map_err(|_| DevopsError::BadRequest(format!("{rel} must be UTF-8 text")))?;
+            let text =
+                String::from_utf8(buf).map_err(|_| DevopsError::BadRequest(format!("{rel} must be UTF-8 text")))?;
             files.insert(rel.to_owned(), text);
         }
     }
@@ -224,8 +228,8 @@ fn validate_files(files: &BTreeMap<String, String>) -> Result<(), DevopsError> {
 fn is_text_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     const OK: &[&str] = &[
-        ".md", ".txt", ".json", ".yml", ".yaml", ".toml", ".py", ".js", ".ts", ".sh", ".ps1", ".xml",
-        ".html", ".css", ".csv", ".svg",
+        ".md", ".txt", ".json", ".yml", ".yaml", ".toml", ".py", ".js", ".ts", ".sh", ".ps1", ".xml", ".html", ".css",
+        ".csv", ".svg",
     ];
     OK.iter().any(|ext| lower.ends_with(ext))
 }

@@ -44,7 +44,10 @@ pub fn one_employee_routes(state: OneEmployeeRouterState) -> Router {
         // registry writes (`require_registry_admin`) — direct SQL against
         // one-org's table, not a shared trait (see `EmployeeService::user_org_role`).
         .route("/api/one/employee/admin/agents", get(list_agents_for_admin))
-        .route("/api/one/employee/admin/agents/pack-preview", post(preview_employee_pack))
+        .route(
+            "/api/one/employee/admin/agents/pack-preview",
+            post(preview_employee_pack),
+        )
         .route("/api/one/employee/admin/agents/upload", post(upload_employee_pack))
         .route("/api/one/employee/admin/agents/{agent_id}", put(update_agent_for_admin))
         .route("/api/one/employee/admin/agents/publish", put(publish_agents))
@@ -473,10 +476,7 @@ async fn update_agent_for_admin(
         )
         .await?;
     if let Some(tag_ids) = body.tag_ids {
-        state
-            .service
-            .set_resource_tags("employee", &agent_id, &tag_ids)
-            .await?;
+        state.service.set_resource_tags("employee", &agent_id, &tag_ids).await?;
     }
     Ok(Json(ApiResponse::ok(updated)))
 }
@@ -590,10 +590,7 @@ async fn upload_employee_pack(
             },
         )
         .await?;
-    let shared = state
-        .service
-        .set_visibility(&user.id, &created.id, "shared")
-        .await?;
+    let shared = state.service.set_visibility(&user.id, &created.id, "shared").await?;
     Ok(Json(ApiResponse::ok(shared)))
 }
 
