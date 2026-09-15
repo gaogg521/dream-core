@@ -1270,7 +1270,7 @@ impl DevopsService {
     // -- mcp registry -----------------------------------------------------
 
     pub async fn list_mcp_registry(&self, viewer_user_id: &str) -> Result<Vec<McpRegistryDto>, DevopsError> {
-        const COLS: &str = "id, name, `type`, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, \
+        const COLS: &str = "id, name, `type`, endpoint, enabled, has_keys, secrets_json, content, scope, team_id, visibility, \
                             origin, category_id, published, created_by, created_at, updated_at";
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
         if privileged {
@@ -1394,7 +1394,7 @@ impl DevopsService {
         };
         self.db
             .fetch_one_as::<McpRegistryDto>(
-                "SELECT id, name, `type`, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, \
+                "SELECT id, name, `type`, endpoint, enabled, has_keys, secrets_json, content, scope, team_id, visibility, \
              origin, category_id, published, created_by, created_at, updated_at \
              FROM one_mcp_registry WHERE id = ?",
                 &db_params![&id],
@@ -1443,7 +1443,7 @@ impl DevopsService {
 
     pub async fn list_rag_documents(&self, viewer_user_id: &str) -> Result<Vec<RagDocumentDto>, DevopsError> {
         const COLS: &str = "id, title, file_path, file_size, mime_type, status, last_error, chunk_count, \
-                            scope, team_id, visibility, created_by, created_at";
+                            scope, team_id, visibility, created_by, created_at, library_id";
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
         if privileged {
             let sql = format!("SELECT {COLS} FROM one_rag_documents ORDER BY created_at DESC");
@@ -1479,6 +1479,7 @@ impl DevopsService {
         team_id: Option<&str>,
         visibility: &str,
         created_by: &str,
+        library_id: Option<&str>,
     ) -> Result<RagDocumentDto, DevopsError> {
         let title = title.trim();
         if title.is_empty() {
@@ -1496,16 +1497,20 @@ impl DevopsService {
         }
         let id = new_id("orag");
         let now = now_ms();
+        let library_id = library_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("oraglib_default");
         self.db.execute(
             "INSERT INTO one_rag_documents \
-                (id, title, file_path, file_size, mime_type, status, last_error, chunk_count, scope, team_id, visibility, created_by, created_at) \
-             VALUES (?, ?, ?, ?, ?, 'pending', NULL, 0, ?, ?, ?, ?, ?)",
-        &db_params![&id, title, file_path, file_size, mime_type, scope, team_id, visibility, created_by, now])
+                (id, title, file_path, file_size, mime_type, status, last_error, chunk_count, scope, team_id, visibility, created_by, created_at, library_id) \
+             VALUES (?, ?, ?, ?, ?, 'pending', NULL, 0, ?, ?, ?, ?, ?, ?)",
+        &db_params![&id, title, file_path, file_size, mime_type, scope, team_id, visibility, created_by, now, library_id])
         .await?;
         self.db
             .fetch_one_as::<RagDocumentDto>(
                 "SELECT id, title, file_path, file_size, mime_type, status, last_error, chunk_count, \
-                    scope, team_id, visibility, created_by, created_at \
+                    scope, team_id, visibility, created_by, created_at, library_id \
              FROM one_rag_documents WHERE id = ?",
                 &db_params![&id],
             )
@@ -1542,6 +1547,179 @@ impl DevopsService {
             .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    pub async fn set_mcp_content(&self, id: &str, content: &str) -> Result<(), DevopsError> {
+        let pack = crate::resource_pack::split_pack(content);
+        let joined = crate::resource_pack::join_pack(&pack.skill_md, &pack.files)?;
+        let updated = self
+            .db
+            .execute(
+                "UPDATE one_mcp_registry SET content = ?, updated_at = ? WHERE id = ?",
+                &db_params![joined, now_ms(), id],
+            )
+            .await?;
+        if updated == 0 {
+            return Err(DevopsError::NotFound(format!("mcp registry entry {id}")));
+        }
+        Ok(())
+    }
+
+    pub async fn copy_skill(&self, id: &str, created_by: &str) -> Result<SkillRegistryDto, DevopsError> {
+        let src = self
+            .db
+            .fetch_one_as::<SkillRegistryDto>(
+                "SELECT id, name, description, content, enabled, auto_active, scope, team_id, visibility, \
+             origin, category_id, published, created_by, created_at, updated_at \
+             FROM one_skill_registry WHERE id = ?",
+                &db_params![id],
+            )
+            .await
+            .map_err(|_| DevopsError::NotFound(format!("skill {id}")))?;
+        let mut name = format!("{}-copy", src.name);
+        let mut n = 2u32;
+        loop {
+            let taken: bool = self
+                .db
+                .fetch_one_scalar(
+                    "SELECT COUNT(*) > 0 FROM one_skill_registry WHERE name = ?",
+                    &db_params![&name],
+                )
+                .await?;
+            if !taken {
+                break;
+            }
+            name = format!("{}-copy{n}", src.name);
+            n += 1;
+        }
+        self.upsert_skill(
+            None,
+            &name,
+            &src.description,
+            &src.content,
+            src.enabled,
+            src.auto_active,
+            &src.scope,
+            src.team_id.as_deref(),
+            &src.visibility,
+            src.category_id.as_deref(),
+            created_by,
+        )
+        .await
+    }
+
+    pub async fn list_rag_libraries(&self) -> Result<Vec<crate::models::RagLibraryDto>, DevopsError> {
+        Ok(self
+            .db
+            .fetch_all_as::<crate::models::RagLibraryDto>(
+                "SELECT id, name, description, created_by, created_at, updated_at FROM one_rag_libraries ORDER BY name",
+                &[],
+            )
+            .await?)
+    }
+
+    pub async fn upsert_rag_library(
+        &self,
+        id: Option<&str>,
+        name: &str,
+        description: &str,
+        created_by: &str,
+    ) -> Result<crate::models::RagLibraryDto, DevopsError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(DevopsError::BadRequest("library name is required".into()));
+        }
+        let now = now_ms();
+        let id = match id {
+            Some(existing) => {
+                let updated = self
+                    .db
+                    .execute(
+                        "UPDATE one_rag_libraries SET name = ?, description = ?, updated_at = ? WHERE id = ?",
+                        &db_params![name, description, now, existing],
+                    )
+                    .await?;
+                if updated == 0 {
+                    return Err(DevopsError::NotFound(format!("library {existing}")));
+                }
+                existing.to_owned()
+            }
+            None => {
+                let id = new_id("oraglib");
+                self.db
+                    .execute(
+                        "INSERT INTO one_rag_libraries (id, name, description, created_by, created_at, updated_at) \
+                         VALUES (?, ?, ?, ?, ?, ?)",
+                        &db_params![&id, name, description, created_by, now, now],
+                    )
+                    .await?;
+                id
+            }
+        };
+        Ok(self
+            .db
+            .fetch_one_as::<crate::models::RagLibraryDto>(
+                "SELECT id, name, description, created_by, created_at, updated_at FROM one_rag_libraries WHERE id = ?",
+                &db_params![&id],
+            )
+            .await?)
+    }
+
+    pub async fn delete_rag_library(&self, id: &str) -> Result<(), DevopsError> {
+        if id == "oraglib_default" {
+            return Err(DevopsError::BadRequest("cannot delete the default knowledge library".into()));
+        }
+        let count: i64 = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_rag_documents WHERE library_id = ?",
+                &db_params![id],
+            )
+            .await?;
+        if count > 0 {
+            return Err(DevopsError::BadRequest(
+                "move or delete documents in this library first".into(),
+            ));
+        }
+        let deleted = self
+            .db
+            .execute("DELETE FROM one_rag_libraries WHERE id = ?", &db_params![id])
+            .await?;
+        if deleted == 0 {
+            return Err(DevopsError::NotFound(format!("library {id}")));
+        }
+        Ok(())
+    }
+
+    pub async fn get_scan_policy(&self) -> Result<crate::models::ScanPolicyDto, DevopsError> {
+        Ok(self
+            .db
+            .fetch_one_as::<crate::models::ScanPolicyDto>(
+                "SELECT id, block_on_warning, extra_needles, updated_at FROM one_scan_policy WHERE id = 'default'",
+                &[],
+            )
+            .await?)
+    }
+
+    pub async fn set_scan_policy(
+        &self,
+        block_on_warning: bool,
+        extra_needles: &str,
+    ) -> Result<crate::models::ScanPolicyDto, DevopsError> {
+        let extra = if extra_needles.trim().is_empty() {
+            "[]"
+        } else {
+            extra_needles
+        };
+        serde_json::from_str::<Vec<String>>(extra)
+            .map_err(|_| DevopsError::BadRequest("extraNeedles must be a JSON array of strings".into()))?;
+        self.db
+            .execute(
+                "UPDATE one_scan_policy SET block_on_warning = ?, extra_needles = ?, updated_at = ? WHERE id = 'default'",
+                &db_params![block_on_warning, extra, now_ms()],
+            )
+            .await?;
+        self.get_scan_policy().await
     }
 
     // -- milestones -------------------------------------------------------
@@ -3565,7 +3743,7 @@ mod tests {
             ("b-doc", "team", Some("tB"), "all", "admin2"),
             ("secret-doc", "org", None, "admin", "admin1"),
         ] {
-            svc.register_rag_document(title, None, None, None, scope, team, vis, author)
+            svc.register_rag_document(title, None, None, None, scope, team, vis, author, None)
                 .await
                 .unwrap();
         }
@@ -3633,7 +3811,7 @@ mod tests {
             ("secret-doc", "org", None, "admin", "admin1"),
         ] {
             let doc = svc
-                .register_rag_document(title, None, None, None, scope, team, vis, author)
+                .register_rag_document(title, None, None, None, scope, team, vis, author, None)
                 .await
                 .unwrap();
             sqlx::query("INSERT INTO one_rag_chunks (id, document_id, chunk_index, content, embedding, created_at) VALUES (?, ?, 0, ?, ?, 0)")
@@ -3767,7 +3945,7 @@ mod tests {
             "BAD_REQUEST"
         );
         assert_eq!(
-            svc.register_rag_document("d", None, None, None, "org", None, "secret", "admin1")
+            svc.register_rag_document("d", None, None, None, "org", None, "secret", "admin1", None)
                 .await
                 .unwrap_err()
                 .code(),
@@ -3843,7 +4021,7 @@ mod tests {
             .await
             .unwrap();
         let doc = svc
-            .register_rag_document("a-only-doc", None, None, None, "team", Some("tA"), "all", "admin1")
+            .register_rag_document("a-only-doc", None, None, None, "team", Some("tA"), "all", "admin1", None)
             .await
             .unwrap();
 
@@ -4033,7 +4211,7 @@ mod tests {
             DevopsError::Forbidden(_)
         ));
         assert!(matches!(
-            svc.register_rag_document("d", None, None, None, "team", Some("tB"), "all", "admin1")
+            svc.register_rag_document("d", None, None, None, "team", Some("tB"), "all", "admin1", None)
                 .await
                 .unwrap_err(),
             DevopsError::Forbidden(_)
@@ -4309,6 +4487,7 @@ mod tests {
                 None,
                 "all",
                 "u1",
+                None,
             )
             .await
             .unwrap();
@@ -4444,7 +4623,7 @@ mod tests {
     async fn deleting_a_rag_document_erases_its_lexical_rows() {
         let svc = service().await;
         let doc = svc
-            .register_rag_document("Confidential", None, None, None, "org", None, "all", "admin1")
+            .register_rag_document("Confidential", None, None, None, "org", None, "all", "admin1", None)
             .await
             .unwrap();
 

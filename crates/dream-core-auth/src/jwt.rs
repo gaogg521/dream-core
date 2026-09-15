@@ -72,8 +72,20 @@ impl JwtService {
         username: &str,
         session_generation: i64,
     ) -> Result<String, AuthError> {
+        self.sign_with_session_generation_and_ttl(user_id, username, session_generation, None)
+    }
+
+    /// Sign a JWT, optionally shortening the default 24h lifetime.
+    pub fn sign_with_session_generation_and_ttl(
+        &self,
+        user_id: &str,
+        username: &str,
+        session_generation: i64,
+        ttl: Option<Duration>,
+    ) -> Result<String, AuthError> {
         let now = now_secs()?;
-        let exp = now + TOKEN_EXPIRY.as_secs();
+        let lifetime = ttl.filter(|d| *d > Duration::from_secs(0)).unwrap_or(TOKEN_EXPIRY);
+        let exp = now + lifetime.as_secs();
 
         let claims = TokenPayload {
             user_id: user_id.to_owned(),

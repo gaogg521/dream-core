@@ -24,13 +24,13 @@ use crate::error::PlatformError;
 use crate::ip_allowlist::ip_allowed;
 use crate::models::{
     ApiKeyDto, CollaborationConfigDto, ConfigBulkImportDto, ConfigEntryDto, ConfigSetDto, ConfigSetReference,
-    ConfigSetReferencesDto, ContainerConfigDto, ConversationShareDto, ConversationShareRow, EffectiveGrantDto,
-    FileVaultDto, FileVaultObjectDto, FileVaultReconcileEntry, GrantMode, GrantModeDto, ImChannelMemberDto,
-    ImChannelPluginDto, ImPipelineDto, IpAllowlistConfigDto, MyNotificationDto, MyNotificationsDto, MySceneDto,
-    MySceneResourceSummaryDto, NewApiKeyDto, NotificationDto, PolicyTemplateBindingDto, PlatformVersionDto,
-    ResourceGrantDto, SENSITIVE_PLACEHOLDER, SceneDto, SecurityPolicyDto, SecurityPolicyTemplateDto,
-    ShareConversationInput, SharedConversationDetail, SharedMessageDto, SiemConfigDto, ConsoleAppearanceDto,
-    ConsoleMarketplaceDto, ConsoleRiskDto, ConsoleSettingsDto,
+    ConfigSetReferencesDto, ConsoleAppearanceDto, ConsoleMarketplaceDto, ConsoleRiskDto, ConsoleSettingsDto,
+    ContainerConfigDto, ConversationShareDto, ConversationShareRow, EffectiveGrantDto, FileVaultDto,
+    FileVaultObjectDto, FileVaultReconcileEntry, GrantMode, GrantModeDto, ImChannelMemberDto, ImChannelPluginDto,
+    ImPipelineDto, IpAllowlistConfigDto, MyNotificationDto, MyNotificationsDto, MySceneDto, MySceneResourceSummaryDto,
+    NewApiKeyDto, NotificationDto, PlatformVersionDto, PolicyTemplateBindingDto, ResourceGrantDto,
+    SENSITIVE_PLACEHOLDER, SceneDto, SecurityPolicyDto, SecurityPolicyTemplateDto, ShareConversationInput,
+    SharedConversationDetail, SharedMessageDto, SiemConfigDto,
 };
 use crate::siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
 use dream_core_db::{DbBackend, DbPool, DbValue, db_params};
@@ -1355,7 +1355,18 @@ impl PlatformService {
         Ok(rows
             .into_iter()
             .map(
-                |(id, platform, name, enabled, endpoint, app_id, secret_encrypted, extra_json, created_at, updated_at)| {
+                |(
+                    id,
+                    platform,
+                    name,
+                    enabled,
+                    endpoint,
+                    app_id,
+                    secret_encrypted,
+                    extra_json,
+                    created_at,
+                    updated_at,
+                )| {
                     ImPipelineDto {
                         id,
                         platform,
@@ -1532,6 +1543,22 @@ impl PlatformService {
         })
     }
 
+    /// Deployment-wide login risk: most recently saved console settings row.
+    /// Password login has no tenant yet, so the latest tenant policy applies.
+    pub async fn latest_console_risk(&self) -> ConsoleRiskDto {
+        let row: Result<Option<(String,)>, _> = self
+            .db
+            .fetch_optional_as::<(String,)>(
+                "SELECT risk_json FROM one_console_settings ORDER BY updated_at DESC LIMIT 1",
+                &[],
+            )
+            .await;
+        match row {
+            Ok(Some((json,))) => serde_json::from_str(&json).unwrap_or_default(),
+            _ => ConsoleRiskDto::default(),
+        }
+    }
+
     pub async fn set_console_settings(
         &self,
         tenant_id: &str,
@@ -1539,8 +1566,7 @@ impl PlatformService {
         risk: &ConsoleRiskDto,
         marketplace: &ConsoleMarketplaceDto,
     ) -> Result<ConsoleSettingsDto, PlatformError> {
-        let appearance_json =
-            serde_json::to_string(appearance).map_err(|e| PlatformError::Internal(e.to_string()))?;
+        let appearance_json = serde_json::to_string(appearance).map_err(|e| PlatformError::Internal(e.to_string()))?;
         let risk_json = serde_json::to_string(risk).map_err(|e| PlatformError::Internal(e.to_string()))?;
         let marketplace_json =
             serde_json::to_string(marketplace).map_err(|e| PlatformError::Internal(e.to_string()))?;

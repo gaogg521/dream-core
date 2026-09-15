@@ -1196,6 +1196,7 @@ impl EmployeeService {
         name: &str,
         description: Option<&str>,
         automation_config: serde_json::Value,
+        category_id: Option<&str>,
     ) -> Result<PersonalAgentDto, EmployeeError> {
         let name = name.trim();
         if name.is_empty() {
@@ -1208,12 +1209,13 @@ impl EmployeeService {
         let changed = self
             .db
             .execute(
-                "UPDATE one_personal_agents SET name = ?, description = ?, automation_config = ?, updated_at = ? \
+                "UPDATE one_personal_agents SET name = ?, description = ?, automation_config = ?, category_id = ?, updated_at = ? \
                  WHERE id = ? AND tenant_id = ?",
                 &db_params![
                     name,
                     description,
                     &automation_config,
+                    category_id,
                     now_ms() as i64,
                     agent_id,
                     tenant_id

@@ -20,7 +20,7 @@ use dream_core_db::{DbBackend, DbPool, DbValue, IConversationRepository, IUserRe
 
 use crate::credential_revoker::{CredentialRevoker, NoopCredentialRevoker};
 use crate::directory_bridge::DirectoryDepartmentRef;
-use crate::email::{send_invite_via_smtp, EmailSender, SendEmailResult, StubEmailSender};
+use crate::email::{EmailSender, SendEmailResult, StubEmailSender, send_invite_via_smtp};
 use crate::error::OrgError;
 use crate::integration::{IntegrationCredentials, IntegrationProvider, IntegrationTestResult, StubIntegrationProvider};
 use crate::models::{

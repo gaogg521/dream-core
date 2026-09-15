@@ -1,5 +1,7 @@
 //! HTTP router assembly for the application.
 
+#[cfg(feature = "enterprise")]
+mod admin_web;
 mod antigravity_hook;
 mod clipboard_writer;
 mod fs_monitor;

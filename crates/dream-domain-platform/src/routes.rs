@@ -46,7 +46,7 @@ use crate::models::{
     ApiKeyDto, CollaborationConfigDto, ConfigBulkImportDto, ConfigEntryDto, ConfigSetDto, ConfigSetReferencesDto,
     ConsoleSettingsDto, ContainerConfigDto, ConversationShareDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto,
     FileVaultReconcileEntry, GrantMode, GrantModeDto, ImChannelMemberDto, ImPipelineDto, IpAllowlistConfigDto,
-    MyNotificationsDto, MySceneDto, NewApiKeyDto, NotificationDto, PolicyTemplateBindingDto, PlatformVersionDto,
+    MyNotificationsDto, MySceneDto, NewApiKeyDto, NotificationDto, PlatformVersionDto, PolicyTemplateBindingDto,
     ResourceGrantDto, SceneDto, SecurityPolicyDto, SecurityPolicyTemplateDto, ShareConversationInput,
     SharedConversationDetail, SharedMessageInput, SiemConfigDto,
 };
@@ -773,7 +773,9 @@ async fn set_console_settings(
 async fn get_platform_version(
     RequirePlatformAdmin(_actor): RequirePlatformAdmin,
 ) -> Result<Json<ApiResponse<PlatformVersionDto>>, PlatformError> {
-    Ok(Json(ApiResponse::ok(crate::service::PlatformService::platform_version())))
+    Ok(Json(ApiResponse::ok(
+        crate::service::PlatformService::platform_version(),
+    )))
 }
 
 #[derive(Deserialize)]

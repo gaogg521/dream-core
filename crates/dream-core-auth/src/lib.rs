@@ -65,6 +65,6 @@ pub use middleware::{
 pub use qr_token::QrTokenStore;
 
 // Routes
-pub use routes::{AuthRouterState, SessionRevokedHook, auth_routes};
+pub use routes::{AuthRouterState, LoginRiskGate, SessionRevokedHook, auth_routes};
 
 pub use service::{AuthProvisionService, ProvisionError, SystemDefaultFilesystemAdopter};
