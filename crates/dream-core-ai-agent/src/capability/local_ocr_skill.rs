@@ -63,4 +63,57 @@ mod tests {
         assert!(is_bundled_local_ocr_skill("local-ocr-linux"));
         assert!(!is_bundled_local_ocr_skill("image-helper"));
     }
+
+    /// The name this module returns is matched against the `name:` in the
+    /// bundled skill's frontmatter, and discovery drops anything that does not
+    /// match exactly. Nothing enforces that at compile time: renaming the
+    /// directory, or editing the frontmatter, would leave a text-only session
+    /// silently without OCR — no error, just an image the model cannot read.
+    ///
+    /// Checked against the shipped asset for every platform rather than only
+    /// the host, so a rename is caught wherever it is made.
+    #[test]
+    fn every_bundled_skill_declares_the_name_this_module_looks_for() {
+        let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates dir")
+            .join("dream-core-app/assets/builtin-skills");
+        assert!(
+            assets.is_dir(),
+            "bundled skills are not where this test expects them: {}",
+            assets.display()
+        );
+
+        for name in ["local-ocr-windows", "local-ocr-macos", "local-ocr-linux"] {
+            let manifest = assets.join(name).join("SKILL.md");
+            let body = std::fs::read_to_string(&manifest)
+                .unwrap_or_else(|error| panic!("could not read {}: {error}", manifest.display()));
+            assert!(
+                body.lines().any(|line| line.trim() == format!("name: {name}")),
+                "{} does not declare `name: {name}`; discovery matches on that exact string",
+                manifest.display()
+            );
+            // The hook hands the agent this directory to run the script from.
+            assert!(
+                assets.join(name).join("scripts").is_dir(),
+                "{name} has no scripts/ directory for the agent to run"
+            );
+        }
+    }
+
+    /// The host must resolve to one of the names the asset check above covers,
+    /// on every platform the app ships to.
+    #[test]
+    fn the_host_name_is_one_of_the_bundled_ones() {
+        match host_local_ocr_skill_name() {
+            Some(name) => assert!(is_bundled_local_ocr_skill(name)),
+            // Only reachable on a platform the app does not ship; the callers
+            // keep their image-unavailable path for it.
+            None => assert!(!cfg!(any(
+                target_os = "windows",
+                target_os = "macos",
+                target_os = "linux"
+            ))),
+        }
+    }
 }
