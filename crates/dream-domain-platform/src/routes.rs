@@ -1679,6 +1679,14 @@ struct ConfigSetBody {
     name: String,
     #[serde(default)]
     description: String,
+    #[serde(default)]
+    alias: Option<String>,
+    #[serde(default)]
+    template: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    enabled: Option<bool>,
 }
 
 async fn create_config_set(
@@ -1690,6 +1698,17 @@ async fn create_config_set(
     let dto = state
         .service
         .create_config_set(&actor.tenant_id, &body.name, &body.description, &user.id)
+        .await?;
+    let dto = state
+        .service
+        .set_config_set_governance(
+            &actor.tenant_id,
+            &dto.id,
+            body.alias.as_deref(),
+            body.template.as_deref(),
+            body.scope.as_deref(),
+            body.enabled,
+        )
         .await?;
     Ok(Json(ApiResponse::ok(dto)))
 }
@@ -1703,6 +1722,17 @@ async fn update_config_set(
     let dto = state
         .service
         .update_config_set(&actor.tenant_id, &id, &body.name, &body.description)
+        .await?;
+    let dto = state
+        .service
+        .set_config_set_governance(
+            &actor.tenant_id,
+            &dto.id,
+            body.alias.as_deref(),
+            body.template.as_deref(),
+            body.scope.as_deref(),
+            body.enabled,
+        )
         .await?;
     Ok(Json(ApiResponse::ok(dto)))
 }

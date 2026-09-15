@@ -52,8 +52,8 @@ pub fn parse_employee_zip(bytes: &[u8]) -> Result<EmployeePack, EmployeeError> {
     if bytes.len() > MAX_ZIP {
         return Err(EmployeeError::BadRequest("employee zip exceeds 2 MB".into()));
     }
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
-        .map_err(|e| EmployeeError::BadRequest(format!("invalid zip: {e}")))?;
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| EmployeeError::BadRequest(format!("invalid zip: {e}")))?;
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     for i in 0..archive.len() {
         let mut entry = archive
@@ -88,15 +88,13 @@ pub fn parse_employee_zip(bytes: &[u8]) -> Result<EmployeePack, EmployeeError> {
     for (path, buf) in files {
         let rel = path.strip_prefix(&prefix).unwrap_or(path.as_str());
         if rel.eq_ignore_ascii_case("config.json") {
-            config_raw = Some(String::from_utf8(buf).map_err(|_| {
-                EmployeeError::BadRequest("config.json must be UTF-8".into())
-            })?);
+            config_raw = Some(
+                String::from_utf8(buf).map_err(|_| EmployeeError::BadRequest("config.json must be UTF-8".into()))?,
+            );
         } else if rel.eq_ignore_ascii_case("readme.md") {
-            readme = Some(String::from_utf8(buf).map_err(|_| {
-                EmployeeError::BadRequest("README.md must be UTF-8".into())
-            })?);
-        } else if rel.eq_ignore_ascii_case("assets/icon.png") || rel.eq_ignore_ascii_case("icon.png")
-        {
+            readme =
+                Some(String::from_utf8(buf).map_err(|_| EmployeeError::BadRequest("README.md must be UTF-8".into()))?);
+        } else if rel.eq_ignore_ascii_case("assets/icon.png") || rel.eq_ignore_ascii_case("icon.png") {
             if buf.len() > MAX_ICON {
                 return Err(EmployeeError::BadRequest("icon.png exceeds 650 KB".into()));
             }
@@ -144,8 +142,8 @@ pub fn parse_employee_zip(bytes: &[u8]) -> Result<EmployeePack, EmployeeError> {
 }
 
 fn parse_nested_skill_zip(filename: &str, bytes: &[u8]) -> Result<NestedSkillPack, EmployeeError> {
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
-        .map_err(|e| EmployeeError::BadRequest(format!("skill.zip: {e}")))?;
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| EmployeeError::BadRequest(format!("skill.zip: {e}")))?;
     let mut skill_md = String::new();
     let mut extras = std::collections::BTreeMap::new();
     for i in 0..archive.len() {

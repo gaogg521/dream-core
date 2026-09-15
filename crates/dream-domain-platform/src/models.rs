@@ -444,6 +444,12 @@ pub struct ConfigSetDto {
     pub updated_at: i64,
     pub entry_count: i64,
     pub ref_count: i64,
+    /// Display handle; empty means "same as `name`".
+    pub alias: String,
+    pub template: String,
+    /// `tenant` | `department` | `personal`
+    pub scope: String,
+    pub enabled: bool,
 }
 
 /// One key/value entry of a config set, as every read surface returns it.

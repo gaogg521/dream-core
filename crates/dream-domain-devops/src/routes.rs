@@ -13,7 +13,7 @@ use dream_core_api_types::ApiResponse;
 use dream_core_auth::CurrentUser;
 use dream_domain_employee::models::ContentTagRow;
 
-use crate::api_assets::{ApiAssetDetailDto, ApiAssetDto, ApiAssetProfileInput};
+use crate::api_assets::{ApiAssetDetailDto, ApiAssetDto, ApiAssetProbeDto, ApiAssetProfileInput};
 use crate::dlp_service::{DlpEventDto, DlpEventInput, DlpRuleDto, DlpSummaryDto};
 use crate::error::DevopsError;
 use crate::market_sync::{MarketSourceDto, MarketSyncReportDto};
@@ -82,6 +82,14 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
             "/api/one/devops/api-assets/{id}/publish",
             axum::routing::post(publish_api_asset),
         )
+        .route(
+            "/api/one/devops/api-assets/{id}/probe",
+            axum::routing::post(probe_api_asset),
+        )
+        .route(
+            "/api/one/devops/api-assets/{id}/publish-mcp",
+            axum::routing::post(publish_api_asset_mcp),
+        )
         // P1-1 round 2: remote content market — admin-curated HTTP(S)
         // sources synced into the skill/MCP registries (origin='market').
         .route(
@@ -127,7 +135,10 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
         // Aggregated findings for the reports' security half — same admin gate
         // as the raw list it summarizes.
         .route("/api/one/devops/dlp/summary", get(dlp_summary))
-        .route("/api/one/devops/rag/libraries", get(list_rag_libraries).post(upsert_rag_library))
+        .route(
+            "/api/one/devops/rag/libraries",
+            get(list_rag_libraries).post(upsert_rag_library),
+        )
         .route(
             "/api/one/devops/rag/libraries/{id}",
             axum::routing::put(update_rag_library).delete(delete_rag_library),
@@ -1182,6 +1193,45 @@ async fn publish_api_asset(
     Ok(Json(ApiResponse::ok(dto)))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProbeApiAssetBody {
+    method: String,
+    path: String,
+}
+
+async fn probe_api_asset(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(body): Json<ProbeApiAssetBody>,
+) -> Result<Json<ApiResponse<ApiAssetProbeDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    let dto = state
+        .service
+        .probe_api_asset(&tenant, &id, &body.method, &body.path)
+        .await?;
+    audit(&state, &user.id, "devops.api_asset.probe", Some(&id)).await;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn publish_api_asset_mcp(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(body): Json<PublishApiAssetBody>,
+) -> Result<Json<ApiResponse<crate::models::McpRegistryDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    let dto = state
+        .service
+        .publish_api_asset_mcp(&tenant, &user.id, &id, body.base_url.as_deref())
+        .await?;
+    audit(&state, &user.id, "devops.api_asset.publish_mcp", Some(&dto.id)).await;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
 /// Create an asset by hand (no OpenAPI document). Body is
 /// [`ApiAssetProfileInput`]; `name` and `code` are required, the rest default.
 async fn create_api_asset(
@@ -1313,13 +1363,15 @@ async fn upsert_mcp(
     if let Some(tag_ids) = &body.tag_ids {
         set_resource_tags_if_wired(&state, "mcp", &dto.id, tag_ids).await?;
     }
-    let mut rows = vec![state
-        .service
-        .list_mcp_registry(&user.id)
-        .await?
-        .into_iter()
-        .find(|row| row.id == dto.id)
-        .unwrap_or(dto)];
+    let mut rows = vec![
+        state
+            .service
+            .list_mcp_registry(&user.id)
+            .await?
+            .into_iter()
+            .find(|row| row.id == dto.id)
+            .unwrap_or(dto),
+    ];
     attach_mcp_pack_meta(&mut rows, &extra_scan_needles(&state).await);
     audit(&state, &user.id, "devops.mcp.upsert", Some(&rows[0].id)).await;
     Ok(Json(ApiResponse::ok(rows.remove(0))))
@@ -1380,18 +1432,7 @@ async fn upload_mcp(
     let dto = state
         .service
         .upsert_mcp_registry(
-            None,
-            &name,
-            "sse",
-            "",
-            true,
-            false,
-            None,
-            "org",
-            None,
-            "all",
-            None,
-            &user.id,
+            None, &name, "sse", "", true, false, None, "org", None, "all", None, &user.id,
         )
         .await?;
     state.service.set_mcp_content(&dto.id, &content).await?;

@@ -29,7 +29,7 @@ use sqlx::FromRow;
 use dream_core_common::now_ms;
 
 use crate::error::DevopsError;
-use crate::models::SkillRegistryDto;
+use crate::models::{McpRegistryDto, SkillRegistryDto};
 use crate::service::{DevopsService, new_id};
 use dream_core_db::db_params;
 
@@ -59,6 +59,7 @@ struct ApiAssetRow {
     endpoints: String,
     imported_by: String,
     published_skill_id: Option<String>,
+    published_mcp_id: Option<String>,
     created_at: i64,
     updated_at: i64,
     // -- 017 (manual authoring) ----------------------------------------
@@ -92,6 +93,7 @@ pub struct ApiAssetDto {
     pub endpoint_count: usize,
     /// Set once the asset has been published into the skill registry.
     pub published_skill_id: Option<String>,
+    pub published_mcp_id: Option<String>,
     pub imported_by: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -118,6 +120,16 @@ pub struct ApiAssetDetailDto {
     pub asset: ApiAssetDto,
     /// The original document, verbatim.
     pub spec: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiAssetProbeDto {
+    pub url: String,
+    pub status: u16,
+    pub elapsed_ms: u64,
+    pub truncated: bool,
+    pub body: String,
 }
 
 /// Fields an operator types by hand, on create and on edit alike.
@@ -324,7 +336,7 @@ fn parse_spec(spec: &Value) -> Result<ParsedSpec, DevopsError> {
 
 const ASSET_COLS: &str = "id, tenant_id, name, source_format, title, version, base_url, spec, endpoints, \
                           imported_by, published_skill_id, created_at, updated_at, code, category, \
-                          tool_prefix, auth_type, auth_config, enabled, description";
+                          tool_prefix, auth_type, auth_config, enabled, description, published_mcp_id";
 
 impl ApiAssetRow {
     fn into_dto(self) -> Result<ApiAssetDto, DevopsError> {
@@ -340,6 +352,7 @@ impl ApiAssetRow {
             version: self.version,
             base_url: self.base_url,
             published_skill_id: self.published_skill_id,
+            published_mcp_id: self.published_mcp_id,
             imported_by: self.imported_by,
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -738,6 +751,180 @@ impl DevopsService {
         }
         Ok(dto)
     }
+
+    pub async fn probe_api_asset(
+        &self,
+        tenant_id: &str,
+        id: &str,
+        method: &str,
+        path: &str,
+    ) -> Result<ApiAssetProbeDto, DevopsError> {
+        let sql =
+            format!("SELECT {ASSET_COLS} FROM one_api_assets WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL");
+        let row = self
+            .db
+            .fetch_optional_as::<ApiAssetRow>(&sql, &db_params![id, tenant_id])
+            .await?
+            .ok_or_else(|| DevopsError::NotFound(format!("api asset {id}")))?;
+        let endpoints: Vec<ApiEndpoint> = serde_json::from_str(&row.endpoints)
+            .map_err(|e| DevopsError::Internal(format!("stored endpoints are not valid JSON: {e}")))?;
+        let method = method.trim();
+        let path = path.trim();
+        let allowed = endpoints
+            .iter()
+            .any(|ep| ep.method.eq_ignore_ascii_case(method) && ep.path == path);
+        if !allowed {
+            return Err(DevopsError::BadRequest(
+                "probe is limited to an operation declared on this asset".into(),
+            ));
+        }
+        let base = row
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| DevopsError::BadRequest("asset has no baseUrl; set it before probing".into()))?;
+        let url = join_probe_url(base, path)?;
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(8))
+            .redirect(reqwest::redirect::Policy::limited(3))
+            .build()
+            .map_err(|e| DevopsError::Internal(format!("http client: {e}")))?;
+        let request = match method.to_ascii_uppercase().as_str() {
+            "GET" => client.get(url.clone()),
+            "POST" => client.post(url.clone()),
+            "PUT" => client.put(url.clone()),
+            "PATCH" => client.patch(url.clone()),
+            "DELETE" => client.delete(url.clone()),
+            "HEAD" => client.head(url.clone()),
+            other => {
+                return Err(DevopsError::BadRequest(format!("unsupported probe method {other}")));
+            }
+        };
+        let started = std::time::Instant::now();
+        let response = request
+            .send()
+            .await
+            .map_err(|e| DevopsError::BadRequest(format!("probe failed: {e}")))?;
+        if let Some(final_host) = response.url().host_str() {
+            let declared_host = url.host_str().unwrap_or("");
+            if !final_host.eq_ignore_ascii_case(declared_host) {
+                return Err(DevopsError::BadRequest(
+                    "probe refused a redirect to a different host".into(),
+                ));
+            }
+        }
+        let status = response.status().as_u16();
+        let bytes = response.bytes().await.unwrap_or_default();
+        let truncated = bytes.len() > 65_536;
+        let body = String::from_utf8_lossy(&bytes[..bytes.len().min(65_536)]).into_owned();
+        Ok(ApiAssetProbeDto {
+            url: url.to_string(),
+            status,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            truncated,
+            body,
+        })
+    }
+
+    pub async fn publish_api_asset_mcp(
+        &self,
+        tenant_id: &str,
+        actor_user_id: &str,
+        id: &str,
+        base_url: Option<&str>,
+    ) -> Result<McpRegistryDto, DevopsError> {
+        let sql =
+            format!("SELECT {ASSET_COLS} FROM one_api_assets WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL");
+        let row = self
+            .db
+            .fetch_optional_as::<ApiAssetRow>(&sql, &db_params![id, tenant_id])
+            .await?
+            .ok_or_else(|| DevopsError::NotFound(format!("api asset {id}")))?;
+        let endpoints: Vec<ApiEndpoint> = serde_json::from_str(&row.endpoints)
+            .map_err(|e| DevopsError::Internal(format!("stored endpoints are not valid JSON: {e}")))?;
+        let endpoint = base_url.or(row.base_url.as_deref()).unwrap_or("").to_owned();
+        let content = build_api_asset_mcp_md(&row.name, row.title.as_deref(), endpoint.as_str(), &endpoints);
+        let mcp_name = format!("{}-mcp", row.name);
+        let dto = self
+            .upsert_mcp_registry(
+                row.published_mcp_id.as_deref(),
+                &mcp_name,
+                "sse",
+                &endpoint,
+                true,
+                false,
+                None,
+                "org",
+                None,
+                "all",
+                None,
+                actor_user_id,
+            )
+            .await?;
+        self.set_mcp_content(&dto.id, &content).await?;
+        if row.published_mcp_id.as_deref() != Some(dto.id.as_str()) {
+            self.db
+                .execute(
+                    "UPDATE one_api_assets SET published_mcp_id = ?, updated_at = ? WHERE id = ?",
+                    &db_params![&dto.id, now_ms(), &row.id],
+                )
+                .await?;
+        }
+        Ok(dto)
+    }
+}
+
+fn blocked_probe_host(host: &str) -> bool {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    host == "169.254.169.254" || host == "metadata.google.internal" || host.ends_with(".metadata.google.internal")
+}
+
+pub(crate) fn join_probe_url(base_url: &str, path: &str) -> Result<reqwest::Url, DevopsError> {
+    let path = path.trim();
+    if !path.starts_with('/') {
+        return Err(DevopsError::BadRequest("probe path must start with /".into()));
+    }
+    let mut base = base_url.trim().to_owned();
+    while base.ends_with('/') {
+        base.pop();
+    }
+    let parsed = reqwest::Url::parse(&format!("{base}{path}"))
+        .map_err(|e| DevopsError::BadRequest(format!("invalid probe url: {e}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(DevopsError::BadRequest("probe url must be http or https".into()));
+    }
+    let host = parsed.host_str().unwrap_or("");
+    if host.is_empty() || blocked_probe_host(host) {
+        return Err(DevopsError::BadRequest("probe host is not allowed".into()));
+    }
+    let declared = reqwest::Url::parse(base_url.trim())
+        .map_err(|e| DevopsError::BadRequest(format!("invalid asset baseUrl: {e}")))?;
+    if parsed.host_str() != declared.host_str() {
+        return Err(DevopsError::BadRequest(
+            "probe host must match the asset baseUrl".into(),
+        ));
+    }
+    Ok(parsed)
+}
+
+fn build_api_asset_mcp_md(name: &str, title: Option<&str>, endpoint: &str, endpoints: &[ApiEndpoint]) -> String {
+    let display = title.unwrap_or(name);
+    let mut out = String::new();
+    out.push_str(&format!("# {display} MCP\n\n"));
+    if !endpoint.is_empty() {
+        out.push_str(&format!("Upstream: `{endpoint}`\n\n"));
+    }
+    out.push_str("Published as an MCP registry server (SSE). Tools map 1:1 to HTTP operations.\n\n");
+    for ep in endpoints {
+        out.push_str(&format!(
+            "- `{} {}` {}\n",
+            ep.method.to_ascii_uppercase(),
+            ep.path,
+            ep.summary.as_deref().unwrap_or("")
+        ));
+    }
+    out
 }
 
 /// Generate SKILL.md content (frontmatter + body) from the parsed endpoints.
@@ -813,6 +1000,15 @@ mod tests {
     use super::*;
     use crate::migrate::run_one_devops_migrations;
     use serde_json::json;
+
+    #[test]
+    fn probe_url_stays_on_declared_host() {
+        let url = join_probe_url("https://api.example.com/v1", "/pets").unwrap();
+        assert_eq!(url.as_str(), "https://api.example.com/v1/pets");
+        assert!(join_probe_url("https://api.example.com", "pets").is_err());
+        assert!(join_probe_url("file:///etc/passwd", "/x").is_err());
+        assert!(join_probe_url("http://169.254.169.254", "/latest").is_err());
+    }
 
     async fn service() -> DevopsService {
         // Single connection so the in-memory database outlives one call.
