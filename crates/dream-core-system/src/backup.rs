@@ -419,64 +419,87 @@ async fn copy_catalog(pool: &DbPool, destination: &Path) -> Result<(), SystemErr
 /// delete rows the scope asked to keep.
 async fn prune_catalog_to_scope(catalog: &Path, scope: BackupScope) -> Result<(), SystemError> {
     let pool = open_sqlite(catalog).await?;
+    // One connection throughout: `PRAGMA foreign_keys` is per-connection, so
+    // issuing it against the pool would leave the DELETEs running with foreign
+    // keys still on — and the cascade from `users` would then delete rows the
+    // scope asked to keep.
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|error| SystemError::Internal(format!("Could not open the backup catalog: {error}")))?;
     sqlx::query("PRAGMA foreign_keys=OFF")
-        .execute(&pool)
+        .execute(&mut *conn)
         .await
         .map_err(|error| SystemError::Internal(format!("Could not prepare the backup catalog: {error}")))?;
 
     let keep = scope.tables();
     for table in all_known_tables() {
-        if keep.contains(&table) || !table_exists(&pool, table).await? {
+        if keep.contains(&table) || !table_exists(&mut conn, table).await? {
             continue;
         }
         sqlx::query(&format!("DELETE FROM \"{table}\""))
-            .execute(&pool)
+            .execute(&mut *conn)
             .await
             .map_err(|error| SystemError::Internal(format!("Could not trim {table} from the backup: {error}")))?;
     }
 
     sqlx::query("VACUUM")
-        .execute(&pool)
+        .execute(&mut *conn)
         .await
         .map_err(|error| SystemError::Internal(format!("Could not compact the backup catalog: {error}")))?;
+    drop(conn);
     pool.close().await;
     Ok(())
 }
 
 /// Merge the archive's catalog into the live one, table by table.
+///
+/// Everything runs on ONE connection taken out of the pool, and that is not a
+/// detail: `ATTACH DATABASE` is per-connection state. Issued against the pool,
+/// the attach lands on whichever connection is free and the next query — on a
+/// different one of the five — cannot see `backup` at all. The failure is a
+/// plain "no such table", and a pool of one connection (as in a test) hides it
+/// completely.
 async fn merge_catalog(
     live: &SqlitePool,
     staged: &Path,
     scope: BackupScope,
 ) -> Result<std::collections::BTreeMap<String, u64>, SystemError> {
+    let mut conn = live
+        .acquire()
+        .await
+        .map_err(|error| SystemError::Internal(format!("Could not open the catalog for restore: {error}")))?;
+
     let staged_path = staged.to_string_lossy().replace('\'', "''");
     sqlx::query(&format!("ATTACH DATABASE '{staged_path}' AS backup"))
-        .execute(live)
+        .execute(&mut *conn)
         .await
         .map_err(|error| SystemError::Internal(format!("Could not open the backup catalog: {error}")))?;
 
-    let result = merge_tables(live, scope).await;
+    let result = merge_tables(&mut conn, scope).await;
 
-    // Detach even when the merge failed, or the next restore cannot attach.
-    let _ = sqlx::query("DETACH DATABASE backup").execute(live).await;
+    // Detach even when the merge failed: the connection goes back to the pool
+    // either way, and an attached database left on it would make the next
+    // restore's ATTACH fail with "database backup is already in use".
+    let _ = sqlx::query("DETACH DATABASE backup").execute(&mut *conn).await;
     result
 }
 
 async fn merge_tables(
-    live: &SqlitePool,
+    live: &mut sqlx::SqliteConnection,
     scope: BackupScope,
 ) -> Result<std::collections::BTreeMap<String, u64>, SystemError> {
     let mut merged = std::collections::BTreeMap::new();
     for table in scope.tables() {
-        if !table_exists(live, table).await? || !attached_table_exists(live, table).await? {
+        if !table_exists(&mut *live, table).await? || !attached_table_exists(&mut *live, table).await? {
             continue;
         }
 
         // Only columns both schemas have. An archive from an older build is
         // missing columns this one added, and vice versa; selecting `*` would
         // fail on the first such difference.
-        let live_columns = column_names(live, "main", table).await?;
-        let staged_columns = column_names(live, "backup", table).await?;
+        let live_columns = column_names(&mut *live, "main", table).await?;
+        let staged_columns = column_names(&mut *live, "backup", table).await?;
         let shared: Vec<String> = live_columns
             .iter()
             .filter(|column| staged_columns.contains(column))
@@ -491,7 +514,7 @@ async fn merge_tables(
         // overwrite an unrelated local row that happens to hold that number.
         // Drop the column, let SQLite assign, and let the table's own unique
         // index collapse duplicates.
-        let surrogate = surrogate_key_column(live, table).await?;
+        let surrogate = surrogate_key_column(&mut *live, table).await?;
         let insertable: Vec<String> = shared
             .iter()
             .filter(|column| surrogate.as_deref() != Some(column.as_str()))
@@ -513,7 +536,7 @@ async fn merge_tables(
         let affected = sqlx::query(&format!(
             "INSERT {conflict} INTO main.\"{table}\" ({columns}) SELECT {columns} FROM backup.\"{table}\""
         ))
-        .execute(live)
+        .execute(&mut *live)
         .await
         .map_err(|error| SystemError::Internal(format!("Could not restore {table}: {error}")))?
         .rows_affected();
@@ -525,9 +548,13 @@ async fn merge_tables(
 }
 
 /// The column that is an auto-assigned INTEGER primary key, if any.
-async fn surrogate_key_column(pool: &SqlitePool, table: &str) -> Result<Option<String>, SystemError> {
+///
+/// Takes the connection rather than the pool for the same reason the merge
+/// does: it runs between an ATTACH and its DETACH, and those live on one
+/// connection.
+async fn surrogate_key_column(conn: &mut sqlx::SqliteConnection, table: &str) -> Result<Option<String>, SystemError> {
     let rows = sqlx::query(&format!("PRAGMA main.table_info(\"{table}\")"))
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
         .map_err(|error| SystemError::Internal(format!("Could not read the schema of {table}: {error}")))?;
     let mut keys: Vec<(String, String)> = Vec::new();
@@ -547,9 +574,13 @@ async fn surrogate_key_column(pool: &SqlitePool, table: &str) -> Result<Option<S
     }
 }
 
-async fn column_names(pool: &SqlitePool, schema: &str, table: &str) -> Result<Vec<String>, SystemError> {
+async fn column_names(
+    conn: &mut sqlx::SqliteConnection,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<String>, SystemError> {
     let rows = sqlx::query(&format!("PRAGMA {schema}.table_info(\"{table}\")"))
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
         .map_err(|error| SystemError::Internal(format!("Could not read the schema of {table}: {error}")))?;
     Ok(rows
@@ -558,20 +589,20 @@ async fn column_names(pool: &SqlitePool, schema: &str, table: &str) -> Result<Ve
         .collect())
 }
 
-async fn table_exists(pool: &SqlitePool, table: &str) -> Result<bool, SystemError> {
+async fn table_exists(conn: &mut sqlx::SqliteConnection, table: &str) -> Result<bool, SystemError> {
     let found: Option<String> = sqlx::query_scalar("SELECT name FROM main.sqlite_master WHERE type='table' AND name=?")
         .bind(table)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *conn)
         .await
         .map_err(|error| SystemError::Internal(format!("Could not inspect the catalog: {error}")))?;
     Ok(found.is_some())
 }
 
-async fn attached_table_exists(pool: &SqlitePool, table: &str) -> Result<bool, SystemError> {
+async fn attached_table_exists(conn: &mut sqlx::SqliteConnection, table: &str) -> Result<bool, SystemError> {
     let found: Option<String> =
         sqlx::query_scalar("SELECT name FROM backup.sqlite_master WHERE type='table' AND name=?")
             .bind(table)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *conn)
             .await
             .map_err(|error| SystemError::Internal(format!("Could not inspect the backup catalog: {error}")))?;
     Ok(found.is_some())
