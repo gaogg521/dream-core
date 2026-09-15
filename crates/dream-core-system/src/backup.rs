@@ -334,7 +334,17 @@ impl BackupService {
             contains_credentials: scope.providers,
         };
 
-        write_archive(destination, &manifest, &entries)?;
+        // Compressing runs on the blocking pool, not an async worker.
+        //
+        // This is not a formality: a real export was 13,304 files / 228 MB and
+        // took about half an hour, all of it inside one synchronous call. Left
+        // on an async worker that is one of tokio's few threads pinned for the
+        // whole run, and every other request contends for what is left.
+        let manifest_for_write = manifest.clone();
+        let destination = destination.to_path_buf();
+        tokio::task::spawn_blocking(move || write_archive(&destination, &manifest_for_write, &entries))
+            .await
+            .map_err(|error| SystemError::Internal(format!("The backup task could not be run: {error}")))??;
         Ok(manifest)
     }
 
