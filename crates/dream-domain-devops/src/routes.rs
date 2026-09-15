@@ -19,7 +19,8 @@ use crate::error::DevopsError;
 use crate::market_sync::{MarketSourceDto, MarketSyncReportDto};
 use crate::models::{
     McpRegistryDto, MilestoneDto, PipelineDto, PipelineRunDto, ProviderChannelDto, RagConfigDto, RagDocumentDto,
-    RagSearchHit, RequirementCommentDto, RequirementDto, SkillRegistryDto, TestCaseDto, TestPlanDto,
+    RagLibraryDto, RagSearchHit, RequirementCommentDto, RequirementDto, ScanPolicyDto, SkillRegistryDto, TestCaseDto,
+    TestPlanDto,
 };
 use crate::service::{CreateRequirementInput, UpdateRequirementInput};
 use crate::state::OneDevopsRouterState;
@@ -50,6 +51,9 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
         // P1-1 round 1: batch publish/unpublish + upload-a-SKILL.md.
         .route("/api/one/devops/skills/publish", axum::routing::put(publish_skills))
         .route("/api/one/devops/skills/upload", axum::routing::post(upload_skill))
+        .route("/api/one/devops/skills/{id}/copy", axum::routing::post(copy_skill))
+        .route("/api/one/devops/skills/{id}/scan", axum::routing::post(scan_skill))
+        .route("/api/one/devops/scan-policy", get(get_scan_policy).put(put_scan_policy))
         // P1-6 API assets: imported Swagger/OpenAPI docs, publishable into the
         // skill registry so member agents can call the endpoints via curl.
         .route(
@@ -95,6 +99,7 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
         .route("/api/one/devops/mcp-registry", get(list_mcp).post(upsert_mcp))
         .route("/api/one/devops/mcp-registry/{id}", axum::routing::delete(delete_mcp))
         .route("/api/one/devops/mcp-registry/publish", axum::routing::put(publish_mcp))
+        .route("/api/one/devops/mcp-registry/{id}/scan", axum::routing::post(scan_mcp))
         .route(
             "/api/one/devops/model-channels",
             get(list_model_channels).post(upsert_model_channel),
@@ -121,6 +126,11 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
         // Aggregated findings for the reports' security half — same admin gate
         // as the raw list it summarizes.
         .route("/api/one/devops/dlp/summary", get(dlp_summary))
+        .route("/api/one/devops/rag/libraries", get(list_rag_libraries).post(upsert_rag_library))
+        .route(
+            "/api/one/devops/rag/libraries/{id}",
+            axum::routing::put(update_rag_library).delete(delete_rag_library),
+        )
         .route("/api/one/devops/rag/documents", get(list_rag).post(register_rag))
         .route("/api/one/devops/rag/documents/{id}", axum::routing::delete(delete_rag))
         .route(
@@ -738,6 +748,8 @@ async fn list_skills(
     reject_if_machine_blocked(&state, &headers, &user.id).await?;
     let mut skills = state.service.list_skills(&user.id).await?;
     attach_skill_category_and_tags(&state, &mut skills).await;
+    let extra = extra_scan_needles(&state).await;
+    attach_pack_meta(&mut skills, &extra);
     Ok(Json(ApiResponse::ok(skills)))
 }
 
@@ -778,6 +790,49 @@ fn apply_category_and_tags(
             .get(&skill.id)
             .map(|rows| rows.iter().map(|row| row.name.clone()).collect())
             .unwrap_or_default();
+    }
+}
+
+fn attach_pack_meta(skills: &mut [SkillRegistryDto], extra: &[String]) {
+    for skill in skills.iter_mut() {
+        skill.fingerprint = crate::resource_pack::fingerprint(&skill.content);
+        let findings = crate::resource_pack::scan_findings_with(&skill.content, extra);
+        skill.scan_status = if findings.is_empty() {
+            "clean".into()
+        } else {
+            "warning".into()
+        };
+        skill.scan_findings = findings;
+        skill.package_files = crate::resource_pack::split_pack(&skill.content)
+            .files
+            .keys()
+            .cloned()
+            .collect();
+    }
+}
+
+fn attach_mcp_pack_meta(rows: &mut [McpRegistryDto], extra: &[String]) {
+    for row in rows.iter_mut() {
+        row.fingerprint = crate::resource_pack::fingerprint(&row.content);
+        let findings = crate::resource_pack::scan_findings_with(&row.content, extra);
+        row.scan_status = if findings.is_empty() {
+            "clean".into()
+        } else {
+            "warning".into()
+        };
+        row.scan_findings = findings;
+        row.package_files = crate::resource_pack::split_pack(&row.content)
+            .files
+            .keys()
+            .cloned()
+            .collect();
+    }
+}
+
+async fn extra_scan_needles(state: &OneDevopsRouterState) -> Vec<String> {
+    match state.service.get_scan_policy().await {
+        Ok(policy) => serde_json::from_str(&policy.extra_needles).unwrap_or_default(),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -831,13 +886,15 @@ async fn upsert_skill(
     Json(body): Json<UpsertSkillBody>,
 ) -> Result<Json<ApiResponse<SkillRegistryDto>>, DevopsError> {
     require_registry_admin(&state, &user.id).await?;
+    let pack = crate::resource_pack::split_pack(&body.content);
+    let content = crate::resource_pack::join_pack(&pack.skill_md, &pack.files)?;
     let dto = state
         .service
         .upsert_skill(
             body.id.as_deref(),
             &body.name,
             &body.description,
-            &body.content,
+            &content,
             body.enabled,
             body.auto_active,
             &body.scope,
@@ -852,6 +909,7 @@ async fn upsert_skill(
     }
     let mut dto = dto;
     attach_skill_category_and_tags(&state, std::slice::from_mut(&mut dto)).await;
+    attach_pack_meta(std::slice::from_mut(&mut dto), &extra_scan_needles(&state).await);
     audit(&state, &user.id, "devops.skill.upsert", Some(&dto.id)).await;
     Ok(Json(ApiResponse::ok(dto)))
 }
@@ -880,8 +938,56 @@ async fn publish_skills(
     Json(body): Json<PublishBatchBody>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
     require_registry_admin(&state, &user.id).await?;
+    if body.published {
+        if let Ok(policy) = state.service.get_scan_policy().await
+            && policy.block_on_warning
+        {
+            let extra: Vec<String> = serde_json::from_str(&policy.extra_needles).unwrap_or_default();
+            let skills = state.service.list_skills(&user.id).await?;
+            for skill in skills.iter().filter(|s| body.ids.contains(&s.id)) {
+                let findings = crate::resource_pack::scan_findings_with(&skill.content, &extra);
+                if !findings.is_empty() {
+                    return Err(DevopsError::BadRequest(format!(
+                        "refusing to publish '{}' while scan policy blocks warnings ({})",
+                        skill.name,
+                        findings.join(", ")
+                    )));
+                }
+            }
+        }
+    }
     state.service.set_skills_published(&body.ids, body.published).await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+async fn copy_skill(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<SkillRegistryDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    let mut dto = state.service.copy_skill(&id, &user.id).await?;
+    attach_skill_category_and_tags(&state, std::slice::from_mut(&mut dto)).await;
+    let extra = extra_scan_needles(&state).await;
+    attach_pack_meta(std::slice::from_mut(&mut dto), &extra);
+    audit(&state, &user.id, "devops.skill.copy", Some(&dto.id)).await;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn scan_skill(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<SkillRegistryDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    let mut skills = state.service.list_skills(&user.id).await?;
+    let Some(mut dto) = skills.drain(..).find(|s| s.id == id) else {
+        return Err(DevopsError::NotFound(format!("skill {id}")));
+    };
+    attach_skill_category_and_tags(&state, std::slice::from_mut(&mut dto)).await;
+    let extra = extra_scan_needles(&state).await;
+    attach_pack_meta(std::slice::from_mut(&mut dto), &extra);
+    Ok(Json(ApiResponse::ok(dto)))
 }
 
 /// Enterprise self-build upload (P1-1 round 1): admin uploads a `SKILL.md`
@@ -900,6 +1006,8 @@ async fn upload_skill(
     require_registry_admin(&state, &user.id).await?;
 
     let mut file_data: Option<Vec<u8>> = None;
+    let mut filename = String::new();
+    let mut replace_id: Option<String> = None;
     let mut category_id: Option<String> = None;
     let mut tag_ids: Option<Vec<String>> = None;
     while let Some(field) = multipart
@@ -909,6 +1017,7 @@ async fn upload_skill(
     {
         match field.name().unwrap_or("") {
             "file" => {
+                filename = field.file_name().unwrap_or("SKILL.md").to_owned();
                 file_data = Some(
                     field
                         .bytes()
@@ -916,6 +1025,16 @@ async fn upload_skill(
                         .map_err(|e| DevopsError::BadRequest(format!("failed to read file: {e}")))?
                         .to_vec(),
                 );
+            }
+            "id" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| DevopsError::BadRequest(format!("failed to read id: {e}")))?;
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    replace_id = Some(trimmed.to_owned());
+                }
             }
             "categoryId" => {
                 let text = field
@@ -944,15 +1063,15 @@ async fn upload_skill(
     }
 
     let file_data = file_data.ok_or_else(|| DevopsError::BadRequest("missing 'file' field".into()))?;
-    let content =
-        String::from_utf8(file_data).map_err(|_| DevopsError::BadRequest("SKILL.md must be UTF-8 text".into()))?;
-    let parsed = dream_core_cron::skill_file::validate_skill_content(&content)
+    let pack = crate::resource_pack::ingest_upload(&filename, &file_data)?;
+    let parsed = dream_core_cron::skill_file::validate_skill_content(&pack.skill_md)
         .map_err(|e| DevopsError::BadRequest(e.to_string()))?;
+    let content = crate::resource_pack::join_pack(&pack.skill_md, &pack.files)?;
 
     let dto = state
         .service
         .upsert_skill(
-            None,
+            replace_id.as_deref(),
             &parsed.name,
             &parsed.description,
             &content,
@@ -968,6 +1087,9 @@ async fn upload_skill(
     if let Some(tag_ids) = &tag_ids {
         set_resource_tags_if_wired(&state, "skill", &dto.id, tag_ids).await?;
     }
+    let mut dto = dto;
+    attach_skill_category_and_tags(&state, std::slice::from_mut(&mut dto)).await;
+    attach_pack_meta(std::slice::from_mut(&mut dto), &extra_scan_needles(&state).await);
     audit(&state, &user.id, "devops.skill.upload", Some(&dto.id)).await;
     Ok(Json(ApiResponse::ok(dto)))
 }
@@ -1118,7 +1240,10 @@ async fn list_mcp(
     headers: HeaderMap,
 ) -> Result<Json<ApiResponse<Vec<McpRegistryDto>>>, DevopsError> {
     reject_if_machine_blocked(&state, &headers, &user.id).await?;
-    Ok(Json(ApiResponse::ok(state.service.list_mcp_registry(&user.id).await?)))
+    let mut rows = state.service.list_mcp_registry(&user.id).await?;
+    let extra = extra_scan_needles(&state).await;
+    attach_mcp_pack_meta(&mut rows, &extra);
+    Ok(Json(ApiResponse::ok(rows)))
 }
 
 #[derive(Deserialize)]
@@ -1150,6 +1275,8 @@ struct UpsertMcpBody {
     category_id: Option<String>,
     #[serde(default)]
     tag_ids: Option<Vec<String>>,
+    #[serde(default)]
+    content: Option<String>,
 }
 
 fn default_stdio() -> String {
@@ -1179,11 +1306,22 @@ async fn upsert_mcp(
             &user.id,
         )
         .await?;
+    if let Some(content) = body.content.as_deref() {
+        state.service.set_mcp_content(&dto.id, content).await?;
+    }
     if let Some(tag_ids) = &body.tag_ids {
         set_resource_tags_if_wired(&state, "mcp", &dto.id, tag_ids).await?;
     }
-    audit(&state, &user.id, "devops.mcp.upsert", Some(&dto.id)).await;
-    Ok(Json(ApiResponse::ok(dto)))
+    let mut rows = vec![state
+        .service
+        .list_mcp_registry(&user.id)
+        .await?
+        .into_iter()
+        .find(|row| row.id == dto.id)
+        .unwrap_or(dto)];
+    attach_mcp_pack_meta(&mut rows, &extra_scan_needles(&state).await);
+    audit(&state, &user.id, "devops.mcp.upsert", Some(&rows[0].id)).await;
+    Ok(Json(ApiResponse::ok(rows.remove(0))))
 }
 
 async fn delete_mcp(
@@ -1205,6 +1343,51 @@ async fn publish_mcp(
     require_registry_admin(&state, &user.id).await?;
     state.service.set_mcp_published(&body.ids, body.published).await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+async fn scan_mcp(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<McpRegistryDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    let mut rows = state.service.list_mcp_registry(&user.id).await?;
+    let Some(mut dto) = rows.drain(..).find(|row| row.id == id) else {
+        return Err(DevopsError::NotFound(format!("mcp {id}")));
+    };
+    attach_mcp_pack_meta(std::slice::from_mut(&mut dto), &extra_scan_needles(&state).await);
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScanPolicyBody {
+    #[serde(default)]
+    block_on_warning: bool,
+    #[serde(default)]
+    extra_needles: String,
+}
+
+async fn get_scan_policy(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<ScanPolicyDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    Ok(Json(ApiResponse::ok(state.service.get_scan_policy().await?)))
+}
+
+async fn put_scan_policy(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<ScanPolicyBody>,
+) -> Result<Json<ApiResponse<ScanPolicyDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .set_scan_policy(body.block_on_warning, &body.extra_needles)
+            .await?,
+    )))
 }
 
 // -- company model channels ------------------------------------------------
@@ -1479,6 +1662,63 @@ async fn dlp_summary(
     )))
 }
 
+async fn list_rag_libraries(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<RagLibraryDto>>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    Ok(Json(ApiResponse::ok(state.service.list_rag_libraries().await?)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpsertRagLibraryBody {
+    #[serde(default)]
+    id: Option<String>,
+    name: String,
+    #[serde(default)]
+    description: String,
+}
+
+async fn upsert_rag_library(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<UpsertRagLibraryBody>,
+) -> Result<Json<ApiResponse<RagLibraryDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .upsert_rag_library(body.id.as_deref(), &body.name, &body.description, &user.id)
+            .await?,
+    )))
+}
+
+async fn update_rag_library(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(body): Json<UpsertRagLibraryBody>,
+) -> Result<Json<ApiResponse<RagLibraryDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .upsert_rag_library(Some(&id), &body.name, &body.description, &user.id)
+            .await?,
+    )))
+}
+
+async fn delete_rag_library(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    state.service.delete_rag_library(&id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
 async fn list_rag(
     State(state): State<OneDevopsRouterState>,
     Extension(user): Extension<CurrentUser>,
@@ -1503,6 +1743,8 @@ struct RegisterRagBody {
     team_id: Option<String>,
     #[serde(default = "default_visibility_all")]
     visibility: String,
+    #[serde(default)]
+    library_id: Option<String>,
 }
 
 async fn register_rag(
@@ -1522,6 +1764,7 @@ async fn register_rag(
             body.team_id.as_deref(),
             &body.visibility,
             &user.id,
+            body.library_id.as_deref(),
         )
         .await?;
     Ok(Json(ApiResponse::ok(dto)))
@@ -2242,6 +2485,10 @@ mod tests {
                 category_id: Some("cat_1".into()),
                 category_name: None,
                 tags: Vec::new(),
+                fingerprint: String::new(),
+                scan_status: String::new(),
+                scan_findings: Vec::new(),
+                package_files: Vec::new(),
                 published: true,
                 created_by: "admin1".into(),
                 created_at: 0,
@@ -2261,6 +2508,10 @@ mod tests {
                 category_id: None,
                 category_name: None,
                 tags: Vec::new(),
+                fingerprint: String::new(),
+                scan_status: String::new(),
+                scan_findings: Vec::new(),
+                package_files: Vec::new(),
                 published: true,
                 created_by: "admin1".into(),
                 created_at: 0,

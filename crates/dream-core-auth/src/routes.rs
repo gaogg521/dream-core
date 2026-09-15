@@ -42,6 +42,15 @@ const BOOTSTRAP_SECRET_HEADER: &str = "x-dreamcore-bootstrap-secret";
 
 pub type SessionRevokedHook = dyn Fn(&str) + Send + Sync;
 
+/// Tenant console risk policy applied at password login (lockout + JWT TTL).
+#[async_trait::async_trait]
+pub trait LoginRiskGate: Send + Sync {
+    async fn assert_not_locked(&self, username: &str) -> Result<(), String>;
+    async fn record_failure(&self, username: &str);
+    async fn record_success(&self, username: &str);
+    async fn session_ttl(&self) -> Option<Duration>;
+}
+
 impl From<AuthError> for ApiError {
     fn from(err: AuthError) -> Self {
         match err {
@@ -83,6 +92,32 @@ pub struct AuthRouterState {
     pub aionpro_mode: bool,
     /// 登录二次认证（MFA · TOTP）。None —— 单机/测试组装未接 —— 退化为无 MFA。
     pub mfa: Option<Arc<crate::mfa::MfaService>>,
+    /// Optional enterprise console risk policy (lockout + session TTL).
+    pub login_risk: Option<Arc<dyn LoginRiskGate>>,
+}
+
+async fn mint_session(
+    state: &AuthRouterState,
+    user_id: &str,
+    username: &str,
+    session_generation: i64,
+) -> Result<(String, String), ApiError> {
+    let ttl = if let Some(gate) = &state.login_risk {
+        gate.session_ttl().await
+    } else {
+        None
+    };
+    let token = state
+        .jwt_service
+        .sign_with_session_generation_and_ttl(user_id, username, session_generation, ttl)
+        .map_err(|e| ApiError::Internal(format!("Token signing error: {e}")))?;
+    let cookie = match ttl {
+        Some(d) if d.as_secs() > 0 => state
+            .cookie_config
+            .build_session_cookie_with_max_age(&token, d.as_secs().max(60)),
+        _ => state.cookie_config.build_session_cookie(&token),
+    };
+    Ok((token, cookie))
 }
 
 #[derive(Debug, Deserialize)]
@@ -496,6 +531,12 @@ async fn login_handler(
         return Err(ApiError::BadRequest("Password must not exceed 128 characters".into()));
     }
 
+    if let Some(gate) = &state.login_risk {
+        if let Err(msg) = gate.assert_not_locked(&req.username).await {
+            return Err(ApiError::Forbidden(msg));
+        }
+    }
+
     // Look up user; run dummy verify on miss to prevent timing attacks
     let user = state
         .user_repo
@@ -527,10 +568,16 @@ async fn login_handler(
     };
 
     if !password_valid {
+        if let Some(gate) = &state.login_risk {
+            gate.record_failure(&req.username).await;
+        }
         return Err(ApiError::Unauthorized("Invalid username or password".into()));
     }
 
     let user = found_user.ok_or_else(|| ApiError::Unauthorized("Invalid username or password".into()))?;
+    if let Some(gate) = &state.login_risk {
+        gate.record_success(&req.username).await;
+    }
 
     // 登录二次认证闸（判定矩阵见 mfa.rs）：需要第二步时签发一次性挑战，
     // 不带 Set-Cookie —— 正式登录态只在 MFA 通过后签发。
@@ -554,21 +601,19 @@ async fn login_handler(
         }
     }
 
-    let token = state
-        .jwt_service
-        .sign_with_session_generation(
-            &user.id,
-            user.username.as_deref().unwrap_or("external_user"),
-            user.session_generation,
-        )
-        .map_err(|e| ApiError::Internal(format!("Token signing error: {e}")))?;
+    let (token, cookie) = mint_session(
+        &state,
+        &user.id,
+        user.username.as_deref().unwrap_or("external_user"),
+        user.session_generation,
+    )
+    .await?;
 
     // Update last login (best-effort)
     if let Err(e) = state.user_repo.update_last_login(&user.id).await {
         tracing::warn!("Failed to update last login for {}: {e}", user.id);
     }
 
-    let cookie = state.cookie_config.build_session_cookie(&token);
     let resp = LoginResponse::new(
         PublicUser {
             id: user.id,
@@ -674,22 +719,18 @@ async fn mfa_verify_handler(
         Err(e) => return Err(ApiError::BadRequest(e.message())),
     };
 
-    let token = state
-        .jwt_service
-        .sign_with_session_generation(&user.0, user.1.as_str(), {
-            // 挑战签发时的 session_generation 已在 create/verify 期间未变；
-            // 读取最新代次防止登录前发生的会话吊销被绕过。
-            state
-                .user_repo
-                .find_by_id(&user.0)
-                .await
-                .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?
-                .map(|u| u.session_generation)
-                .unwrap_or(0)
-        })
-        .map_err(|e| ApiError::Internal(format!("Token signing error: {e}")))?;
-
-    let cookie = state.cookie_config.build_session_cookie(&token);
+    let session_generation = {
+        // 挑战签发时的 session_generation 已在 create/verify 期间未变；
+        // 读取最新代次防止登录前发生的会话吊销被绕过。
+        state
+            .user_repo
+            .find_by_id(&user.0)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?
+            .map(|u| u.session_generation)
+            .unwrap_or(0)
+    };
+    let (token, cookie) = mint_session(&state, &user.0, user.1.as_str(), session_generation).await?;
     let resp = LoginResponse::new(
         PublicUser {
             id: user.0,
@@ -1041,14 +1082,13 @@ async fn refresh_handler(
         return Err(ApiError::Unauthorized("Invalid authentication session".into()));
     }
 
-    let new_token = state
-        .jwt_service
-        .sign_with_session_generation(
-            &user.id,
-            user.username.as_deref().unwrap_or("external_user"),
-            user.session_generation,
-        )
-        .map_err(|e| ApiError::Internal(format!("Token signing error: {e}")))?;
+    let (new_token, _cookie) = mint_session(
+        &state,
+        &user.id,
+        user.username.as_deref().unwrap_or("external_user"),
+        user.session_generation,
+    )
+    .await?;
 
     Ok(Json(RefreshResponse {
         success: true,
@@ -1121,21 +1161,18 @@ async fn qr_login_handler(
         ));
     }
 
-    let token = state
-        .jwt_service
-        .sign_with_session_generation(
-            &user.id,
-            user.username.as_deref().unwrap_or("external_user"),
-            user.session_generation,
-        )
-        .map_err(|e| ApiError::Internal(format!("Token signing error: {e}")))?;
+    let (token, cookie) = mint_session(
+        &state,
+        &user.id,
+        user.username.as_deref().unwrap_or("external_user"),
+        user.session_generation,
+    )
+    .await?;
 
     // Update last login (best-effort)
     if let Err(e) = state.user_repo.update_last_login(&user.id).await {
         tracing::warn!("Failed to update last login for {}: {e}", user.id);
     }
-
-    let cookie = state.cookie_config.build_session_cookie(&token);
     let resp = LoginResponse::new(
         PublicUser {
             id: user.id,

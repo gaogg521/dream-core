@@ -29,8 +29,14 @@ impl CookieConfig {
     /// Attributes: HttpOnly, SameSite, Secure (if HTTPS), Max-Age=30d.
     pub fn build_session_cookie(&self, token: &str) -> String {
         let max_age = u64::from(COOKIE_MAX_AGE_DAYS) * 24 * 60 * 60;
+        self.build_session_cookie_with_max_age(token, max_age)
+    }
+
+    /// Session cookie with an explicit Max-Age (seconds), used when console
+    /// risk policy shortens JWT lifetime below the default 30-day cookie.
+    pub fn build_session_cookie_with_max_age(&self, token: &str, max_age_secs: u64) -> String {
         format!(
-            "{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite={}{}; Max-Age={max_age}",
+            "{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite={}{}; Max-Age={max_age_secs}",
             self.same_site,
             if self.secure { "; Secure" } else { "" },
         )

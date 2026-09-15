@@ -55,10 +55,7 @@ fn normalize_probe_url(raw: &str) -> String {
 /// TCP connect to `host[:port]` (default port supplied by the caller).
 pub fn probe_tcp_host(endpoint: Option<&str>, default_port: u16) -> (String, String) {
     let Some(raw) = endpoint.map(str::trim).filter(|s| !s.is_empty()) else {
-        return (
-            "not_configured".to_owned(),
-            "No endpoint configured.".to_owned(),
-        );
+        return ("not_configured".to_owned(), "No endpoint configured.".to_owned());
     };
     let stripped = raw
         .split_once("://")

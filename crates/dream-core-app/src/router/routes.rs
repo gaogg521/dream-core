@@ -24,7 +24,7 @@ use dream_core_assistant::assistant_routes;
 #[cfg(feature = "enterprise")]
 use dream_core_auth::CurrentUser;
 use dream_core_auth::{
-    AuthIdentityMode, AuthRouterState, AuthState, IRuntimeTokenVerifier, SystemDefaultFilesystemAdopter,
+    AuthIdentityMode, AuthRouterState, AuthState, IRuntimeTokenVerifier, LoginRiskGate, SystemDefaultFilesystemAdopter,
     auth_middleware, auth_routes, csrf_middleware, security_headers_middleware,
 };
 use dream_core_channel::channel_routes;
@@ -551,6 +551,63 @@ impl PlatformIpAllowlistGate {
         }
         tracing::error!(user_id, error, "ip allowlist unreachable beyond grace window");
         Err(error.to_owned())
+    }
+}
+
+#[cfg(feature = "enterprise")]
+struct ConsoleLoginRiskGate {
+    platform: std::sync::Arc<dream_domain_platform::PlatformService>,
+    failures: dashmap::DashMap<String, (u32, i64)>,
+}
+
+#[cfg(feature = "enterprise")]
+const LOGIN_LOCKOUT_MS: i64 = 15 * 60 * 1000;
+
+#[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
+impl LoginRiskGate for ConsoleLoginRiskGate {
+    async fn assert_not_locked(&self, username: &str) -> Result<(), String> {
+        let key = username.to_ascii_lowercase();
+        let now = dream_core_common::now_ms();
+        if let Some(entry) = self.failures.get(&key) {
+            let locked_until = entry.1;
+            if locked_until > now {
+                return Err("登录失败次数过多，账号已暂时锁定，请稍后再试。".into());
+            }
+        }
+        Ok(())
+    }
+
+    async fn record_failure(&self, username: &str) {
+        let threshold = self.platform.latest_console_risk().await.lockout_after_failures;
+        if threshold <= 0 {
+            return;
+        }
+        let key = username.to_ascii_lowercase();
+        let now = dream_core_common::now_ms();
+        let mut entry = self.failures.entry(key).or_insert((0, 0));
+        if entry.1 > now {
+            return;
+        }
+        if entry.1 > 0 && entry.1 <= now {
+            *entry = (0, 0);
+        }
+        entry.0 = entry.0.saturating_add(1);
+        if i64::from(entry.0) >= threshold {
+            entry.1 = now + LOGIN_LOCKOUT_MS;
+        }
+    }
+
+    async fn record_success(&self, username: &str) {
+        self.failures.remove(&username.to_ascii_lowercase());
+    }
+
+    async fn session_ttl(&self) -> Option<std::time::Duration> {
+        let minutes = self.platform.latest_console_risk().await.session_timeout_minutes;
+        if minutes <= 0 {
+            return None;
+        }
+        Some(std::time::Duration::from_secs((minutes as u64).saturating_mul(60)))
     }
 }
 
@@ -3096,6 +3153,7 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
         .merge(governance.sso_public)
         .merge(governance.sso_admin)
         .merge(admin_devops_authenticated)
+        .merge(crate::router::admin_web::admin_console_router())
         .layer(middleware::from_fn_with_state(
             services.cookie_config.clone(),
             csrf_middleware,
@@ -3151,6 +3209,17 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         services.mfa_store.clone(),
         crate::config::derive_encryption_key(&services.data_secret_raw),
     ));
+
+    #[cfg(feature = "enterprise")]
+    let login_risk: Option<std::sync::Arc<dyn LoginRiskGate>> = Some(std::sync::Arc::new(ConsoleLoginRiskGate {
+        platform: std::sync::Arc::new(dream_domain_platform::PlatformService::new(
+            services.db.clone(),
+            crate::config::derive_encryption_key(&services.data_secret_raw),
+        )),
+        failures: dashmap::DashMap::new(),
+    }));
+    #[cfg(not(feature = "enterprise"))]
+    let login_risk: Option<std::sync::Arc<dyn LoginRiskGate>> = None;
 
     let auth_state = AuthRouterState {
         mfa: Some(mfa_service.clone()),
@@ -3224,6 +3293,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         },
         local: services.local,
         aionpro_mode: services.identity_mode == crate::config::IdentityMode::DreamPro,
+        login_risk,
     };
 
     // one-platform service (IP allowlist among other deployment-infra config)
@@ -3676,8 +3746,10 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     .merge(office_proxy)
     .merge(public_assets)
     .merge(codex_bridge_public)
-    .merge(model_proxy_public)
-    .layer(middleware::from_fn(security_headers_middleware));
+    .merge(model_proxy_public);
+    #[cfg(feature = "enterprise")]
+    let router = router.merge(crate::router::admin_web::admin_console_router());
+    let router = router.layer(middleware::from_fn(security_headers_middleware));
 
     // Raise the default request body limit from axum's 2MB default to
     // `BODY_LIMIT` (10MB). Routes that need a larger cap (e.g. `/api/fs/upload`)

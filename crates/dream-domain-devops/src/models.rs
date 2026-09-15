@@ -1,7 +1,7 @@
 //! one-devops row types + wire DTOs (camelCase, matching the other one-*
 //! crates' convention).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
 pub const REQUIREMENT_TYPES: &[&str] = &["epic", "feature", "story", "bug", "task"];
@@ -119,6 +119,21 @@ pub struct SkillRegistryDto {
     /// `category_name`. Empty when untagged.
     #[sqlx(skip)]
     pub tags: Vec<String>,
+    /// SHA-256 of normalized `content` (resource-pack fingerprint).
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub fingerprint: String,
+    /// `clean` or `warning` — heuristic scan of packaged text, not a full sandbox.
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub scan_status: String,
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub scan_findings: Vec<String>,
+    /// Extra pack file paths besides SKILL.md.
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub package_files: Vec<String>,
     /// Whether this shows up in a non-admin member's listing at all — an
     /// unpublished row exists but is a draft (P1-1 round 1).
     pub published: bool,
@@ -140,6 +155,9 @@ pub struct McpRegistryDto {
     /// stdio `env` / sse `headers` JSON object, distributed to members so the
     /// connector actually authenticates locally (D5). May be null.
     pub secrets_json: Option<String>,
+    /// Resource-pack text (README.md + trailing extra files), same shape as skills.
+    #[serde(default)]
+    pub content: String,
     pub scope: String,
     pub team_id: Option<String>,
     /// Read visibility (P0-4): `'all'` | `'admin'`.
@@ -154,6 +172,21 @@ pub struct McpRegistryDto {
     pub created_by: String,
     pub created_at: i64,
     pub updated_at: i64,
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub fingerprint: String,
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub scan_status: String,
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub scan_findings: Vec<String>,
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub package_files: Vec<String>,
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// A company-provisioned model channel, as seen by anyone.
@@ -208,6 +241,9 @@ pub struct RagDocumentDto {
     pub visibility: String,
     pub created_by: String,
     pub created_at: i64,
+    /// Knowledge-library container (018). Older rows backfill to `oraglib_default`.
+    #[serde(default)]
+    pub library_id: String,
 }
 
 // -- test plans -----------------------------------------------------------
@@ -292,6 +328,26 @@ pub struct RagSearchHit {
     pub chunk_index: i64,
     pub content: String,
     pub score: f32,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RagLibraryDto {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanPolicyDto {
+    pub id: String,
+    pub block_on_warning: bool,
+    pub extra_needles: String,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]

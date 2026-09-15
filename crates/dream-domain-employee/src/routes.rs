@@ -44,6 +44,8 @@ pub fn one_employee_routes(state: OneEmployeeRouterState) -> Router {
         // registry writes (`require_registry_admin`) — direct SQL against
         // one-org's table, not a shared trait (see `EmployeeService::user_org_role`).
         .route("/api/one/employee/admin/agents", get(list_agents_for_admin))
+        .route("/api/one/employee/admin/agents/pack-preview", post(preview_employee_pack))
+        .route("/api/one/employee/admin/agents/upload", post(upload_employee_pack))
         .route("/api/one/employee/admin/agents/{agent_id}", put(update_agent_for_admin))
         .route("/api/one/employee/admin/agents/publish", put(publish_agents))
         .route(
@@ -445,6 +447,10 @@ struct AdminUpdateAgentBody {
     description: Option<String>,
     #[serde(default)]
     automation_config: serde_json::Value,
+    #[serde(default)]
+    category_id: Option<String>,
+    #[serde(default)]
+    tag_ids: Option<Vec<String>>,
 }
 
 async fn update_agent_for_admin(
@@ -455,18 +461,138 @@ async fn update_agent_for_admin(
 ) -> Result<Json<ApiResponse<PersonalAgentDto>>, EmployeeError> {
     require_registry_admin(&state, &user.id).await?;
     let tenant = state.tenant_of(&user.id).await;
-    Ok(Json(ApiResponse::ok(
+    let updated = state
+        .service
+        .admin_update_identity(
+            &tenant,
+            &agent_id,
+            &body.name,
+            body.description.as_deref(),
+            body.automation_config,
+            body.category_id.as_deref(),
+        )
+        .await?;
+    if let Some(tag_ids) = body.tag_ids {
         state
             .service
-            .admin_update_identity(
-                &tenant,
-                &agent_id,
-                &body.name,
-                body.description.as_deref(),
-                body.automation_config,
-            )
-            .await?,
-    )))
+            .set_resource_tags("employee", &agent_id, &tag_ids)
+            .await?;
+    }
+    Ok(Json(ApiResponse::ok(updated)))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EmployeePackPreviewDto {
+    name: String,
+    description: Option<String>,
+    agent_type: String,
+    readme: Option<String>,
+    icon_data_url: Option<String>,
+    mcp_servers: Option<serde_json::Value>,
+    pack_id: Option<String>,
+    pack_files: std::collections::BTreeMap<String, String>,
+}
+
+impl From<crate::employee_pack::EmployeePack> for EmployeePackPreviewDto {
+    fn from(pack: crate::employee_pack::EmployeePack) -> Self {
+        Self {
+            name: pack.name,
+            description: pack.description,
+            agent_type: pack.agent_type,
+            readme: pack.readme,
+            icon_data_url: pack.icon_data_url,
+            mcp_servers: pack.mcp_servers,
+            pack_id: pack.pack_id,
+            pack_files: pack.pack_files,
+        }
+    }
+}
+
+async fn read_multipart_file(mut multipart: axum::extract::Multipart) -> Result<Vec<u8>, EmployeeError> {
+    let mut file_data = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| EmployeeError::BadRequest(format!("multipart error: {e}")))?
+    {
+        if field.name().unwrap_or("") == "file" {
+            file_data = Some(
+                field
+                    .bytes()
+                    .await
+                    .map_err(|e| EmployeeError::BadRequest(format!("failed to read file: {e}")))?
+                    .to_vec(),
+            );
+        }
+    }
+    file_data.ok_or_else(|| EmployeeError::BadRequest("missing 'file' field".into()))
+}
+
+async fn preview_employee_pack(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    multipart: axum::extract::Multipart,
+) -> Result<Json<ApiResponse<EmployeePackPreviewDto>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    let bytes = read_multipart_file(multipart).await?;
+    let pack = crate::employee_pack::parse_employee_zip(&bytes)?;
+    Ok(Json(ApiResponse::ok(pack.into())))
+}
+
+async fn upload_employee_pack(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    multipart: axum::extract::Multipart,
+) -> Result<Json<ApiResponse<PersonalAgentDto>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    let bytes = read_multipart_file(multipart).await?;
+    let pack = crate::employee_pack::parse_employee_zip(&bytes)?;
+    let mut automation = serde_json::Map::new();
+    if let Some(icon) = &pack.icon_data_url {
+        automation.insert("avatarUrl".into(), serde_json::Value::String(icon.clone()));
+    }
+    if let Some(readme) = &pack.readme {
+        automation.insert("readme".into(), serde_json::Value::String(readme.clone()));
+        automation.insert("persona".into(), serde_json::Value::String(readme.clone()));
+    }
+    if let Some(mcp) = &pack.mcp_servers {
+        automation.insert("mcpServers".into(), mcp.clone());
+    }
+    if !pack.pack_files.is_empty() {
+        automation.insert(
+            "packFiles".into(),
+            serde_json::to_value(&pack.pack_files).unwrap_or(serde_json::json!({})),
+        );
+    }
+    if let Some(pack_id) = &pack.pack_id {
+        automation.insert("packId".into(), serde_json::Value::String(pack_id.clone()));
+    }
+    let created = state
+        .service
+        .create(
+            &user.id,
+            &tenant,
+            CreateEmployeeInput {
+                name: pack.name.clone(),
+                description: pack.description.clone(),
+                agent_type: pack.agent_type.clone(),
+                custom_agent_id: None,
+                cli_path: None,
+                assistant_id: None,
+                agent_id_override: None,
+                model_id: None,
+                model: None,
+                automation_config: Some(serde_json::Value::Object(automation)),
+            },
+        )
+        .await?;
+    let shared = state
+        .service
+        .set_visibility(&user.id, &created.id, "shared")
+        .await?;
+    Ok(Json(ApiResponse::ok(shared)))
 }
 
 #[derive(Deserialize)]

@@ -35,11 +35,7 @@ pub struct NoopSiemExporter;
 #[async_trait]
 impl SiemExporter for NoopSiemExporter {
     async fn probe(&self, settings: SiemSettings<'_>) -> SiemStatus {
-        if settings
-            .kind
-            .map(|k| k.eq_ignore_ascii_case("syslog"))
-            .unwrap_or(false)
-        {
+        if settings.kind.map(|k| k.eq_ignore_ascii_case("syslog")).unwrap_or(false) {
             let (status, message) = probe_tcp_host(settings.endpoint, 514);
             return SiemStatus { status, message };
         }
