@@ -47,6 +47,8 @@ pub fn platform_has_no_base_url(platform: &str) -> bool {
     )
 }
 
+pub mod backup;
+pub mod backup_routes;
 pub mod bedrock_probe;
 pub mod client_pref;
 pub mod content_inspection;
@@ -71,6 +73,8 @@ pub mod tool_security;
 pub mod trial_key;
 pub mod version;
 
+pub use backup::{BackupScope, BackupService};
+pub use backup_routes::{BackupRouterState, backup_routes};
 pub use bedrock_probe::{ConnectionTestRouterState, ConnectionTestService, connection_test_routes};
 pub use client_pref::ClientPrefService;
 pub use content_inspection::{ContentBlock, ContentInspectionService, PendingFinding};

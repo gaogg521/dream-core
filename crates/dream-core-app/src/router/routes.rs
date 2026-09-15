@@ -44,7 +44,7 @@ use dream_core_office::{office_proxy_routes, office_routes};
 use dream_core_project::project_routes;
 use dream_core_realtime::{NoopMessageRouter, WebSocketManager, WsHandlerState, ws_upgrade_handler};
 use dream_core_shell::shell_routes;
-use dream_core_system::{ClientPrefService, connection_test_routes, system_routes};
+use dream_core_system::{ClientPrefService, backup_routes, connection_test_routes, system_routes};
 use dream_core_team::{TeamSessionService, team_routes};
 
 use crate::services::AppServices;
@@ -3483,6 +3483,12 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let connection_test_authenticated = connection_test_routes(states.connection_test)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
+    // Backup / restore routes protected by auth middleware. An export contains
+    // `users.jwt_secret` and therefore every provider key derived from it, so
+    // this must never be reachable unauthenticated.
+    let backup_authenticated =
+        backup_routes(states.backup).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
     // File routes protected by auth middleware
     let file_authenticated =
         file_routes(states.file).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
@@ -3688,6 +3694,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(remote_agent_authenticated)
         .merge(agent_authenticated)
         .merge(connection_test_authenticated)
+        .merge(backup_authenticated)
         .merge(file_authenticated)
         .merge(project_authenticated)
         .merge(mcp_authenticated)
