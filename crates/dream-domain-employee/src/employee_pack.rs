@@ -4,7 +4,7 @@
 use std::io::{Cursor, Read};
 use std::path::{Component, Path};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::EmployeeError;
@@ -27,6 +27,14 @@ pub struct EmployeePackConfig {
     pub mcp_servers_camel: Option<Value>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NestedSkillPack {
+    pub filename: String,
+    pub name: String,
+    pub content: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct EmployeePack {
     pub name: String,
@@ -37,6 +45,7 @@ pub struct EmployeePack {
     pub mcp_servers: Option<Value>,
     pub pack_id: Option<String>,
     pub pack_files: std::collections::BTreeMap<String, String>,
+    pub nested_skills: Vec<NestedSkillPack>,
 }
 
 pub fn parse_employee_zip(bytes: &[u8]) -> Result<EmployeePack, EmployeeError> {
@@ -75,6 +84,7 @@ pub fn parse_employee_zip(bytes: &[u8]) -> Result<EmployeePack, EmployeeError> {
     let mut readme = None;
     let mut icon = None;
     let mut pack_files = std::collections::BTreeMap::new();
+    let mut nested_skills = Vec::new();
     for (path, buf) in files {
         let rel = path.strip_prefix(&prefix).unwrap_or(path.as_str());
         if rel.eq_ignore_ascii_case("config.json") {
@@ -94,6 +104,10 @@ pub fn parse_employee_zip(bytes: &[u8]) -> Result<EmployeePack, EmployeeError> {
                 "data:image/png;base64,{}",
                 base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &buf)
             ));
+        } else if rel.to_ascii_lowercase().ends_with("skill.zip") {
+            if let Ok(skill) = parse_nested_skill_zip(&rel, &buf) {
+                nested_skills.push(skill);
+            }
         } else if is_text_pack_path(rel) {
             if let Ok(text) = String::from_utf8(buf) {
                 pack_files.insert(rel.to_owned(), text);
@@ -125,6 +139,59 @@ pub fn parse_employee_zip(bytes: &[u8]) -> Result<EmployeePack, EmployeeError> {
         mcp_servers: config.mcp_servers.or(config.mcp_servers_camel),
         pack_id: config.id,
         pack_files,
+        nested_skills,
+    })
+}
+
+fn parse_nested_skill_zip(filename: &str, bytes: &[u8]) -> Result<NestedSkillPack, EmployeeError> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|e| EmployeeError::BadRequest(format!("skill.zip: {e}")))?;
+    let mut skill_md = String::new();
+    let mut extras = std::collections::BTreeMap::new();
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| EmployeeError::BadRequest(format!("skill.zip entry: {e}")))?;
+        if entry.is_dir() {
+            continue;
+        }
+        let name = entry.name().replace('\\', "/");
+        let base = name.rsplit('/').next().unwrap_or(name.as_str());
+        let mut buf = Vec::new();
+        entry
+            .read_to_end(&mut buf)
+            .map_err(|e| EmployeeError::BadRequest(format!("skill.zip read: {e}")))?;
+        if base.eq_ignore_ascii_case("skill.md") {
+            skill_md = String::from_utf8(buf)
+                .map_err(|_| EmployeeError::BadRequest("nested SKILL.md must be UTF-8".into()))?;
+        } else if is_text_pack_path(base) {
+            if let Ok(text) = String::from_utf8(buf) {
+                extras.insert(base.to_owned(), text);
+            }
+        }
+    }
+    if skill_md.trim().is_empty() {
+        return Err(EmployeeError::BadRequest("skill.zip must contain SKILL.md".into()));
+    }
+    let mut content = skill_md.clone();
+    if !extras.is_empty() {
+        if let Ok(json) = serde_json::to_string_pretty(&extras) {
+            content = format!("{}\n<!--ONE_PACK_FILES\n{json}\n-->", skill_md.trim_end());
+        }
+    }
+    let name = skill_md
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("name:")
+                .map(|v| v.trim().trim_matches('"').to_owned())
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| filename.rsplit('/').next().unwrap_or(filename).to_owned());
+    Ok(NestedSkillPack {
+        filename: filename.to_owned(),
+        name,
+        content,
     })
 }
 

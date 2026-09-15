@@ -492,6 +492,7 @@ struct EmployeePackPreviewDto {
     mcp_servers: Option<serde_json::Value>,
     pack_id: Option<String>,
     pack_files: std::collections::BTreeMap<String, String>,
+    nested_skills: Vec<crate::employee_pack::NestedSkillPack>,
 }
 
 impl From<crate::employee_pack::EmployeePack> for EmployeePackPreviewDto {
@@ -505,6 +506,7 @@ impl From<crate::employee_pack::EmployeePack> for EmployeePackPreviewDto {
             mcp_servers: pack.mcp_servers,
             pack_id: pack.pack_id,
             pack_files: pack.pack_files,
+            nested_skills: pack.nested_skills,
         }
     }
 }
