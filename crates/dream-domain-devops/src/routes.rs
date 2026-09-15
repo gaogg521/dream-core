@@ -97,6 +97,7 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
             axum::routing::post(sync_market_source),
         )
         .route("/api/one/devops/mcp-registry", get(list_mcp).post(upsert_mcp))
+        .route("/api/one/devops/mcp-registry/upload", axum::routing::post(upload_mcp))
         .route("/api/one/devops/mcp-registry/{id}", axum::routing::delete(delete_mcp))
         .route("/api/one/devops/mcp-registry/publish", axum::routing::put(publish_mcp))
         .route("/api/one/devops/mcp-registry/{id}/scan", axum::routing::post(scan_mcp))
@@ -1321,6 +1322,82 @@ async fn upsert_mcp(
         .unwrap_or(dto)];
     attach_mcp_pack_meta(&mut rows, &extra_scan_needles(&state).await);
     audit(&state, &user.id, "devops.mcp.upsert", Some(&rows[0].id)).await;
+    Ok(Json(ApiResponse::ok(rows.remove(0))))
+}
+
+fn pack_display_name(markdown: &str, filename: &str) -> String {
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("# ") {
+            let name = rest.trim();
+            if !name.is_empty() {
+                return name.to_owned();
+            }
+        }
+        if let Some(rest) = trimmed.strip_prefix("name:") {
+            let name = rest.trim().trim_matches('"').trim_matches('\'');
+            if !name.is_empty() {
+                return name.to_owned();
+            }
+        }
+    }
+    std::path::Path::new(filename)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("MCP pack")
+        .to_owned()
+}
+
+async fn upload_mcp(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    mut multipart: axum::extract::Multipart,
+) -> Result<Json<ApiResponse<McpRegistryDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    let mut file_data: Option<Vec<u8>> = None;
+    let mut filename = String::new();
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| DevopsError::BadRequest(format!("multipart error: {e}")))?
+    {
+        if field.name().unwrap_or("") == "file" {
+            filename = field.file_name().unwrap_or("README.md").to_owned();
+            file_data = Some(
+                field
+                    .bytes()
+                    .await
+                    .map_err(|e| DevopsError::BadRequest(format!("failed to read file: {e}")))?
+                    .to_vec(),
+            );
+        }
+    }
+    let file_data = file_data.ok_or_else(|| DevopsError::BadRequest("missing 'file' field".into()))?;
+    let pack = crate::resource_pack::ingest_mcp_upload(&filename, &file_data)?;
+    let content = crate::resource_pack::join_pack(&pack.skill_md, &pack.files)?;
+    let name = pack_display_name(&pack.skill_md, &filename);
+    let dto = state
+        .service
+        .upsert_mcp_registry(
+            None,
+            &name,
+            "sse",
+            "",
+            true,
+            false,
+            None,
+            "org",
+            None,
+            "all",
+            None,
+            &user.id,
+        )
+        .await?;
+    state.service.set_mcp_content(&dto.id, &content).await?;
+    let mut rows = vec![dto];
+    attach_mcp_pack_meta(&mut rows, &extra_scan_needles(&state).await);
+    audit(&state, &user.id, "devops.mcp.upload", Some(&rows[0].id)).await;
     Ok(Json(ApiResponse::ok(rows.remove(0))))
 }
 

@@ -89,12 +89,20 @@ pub fn scan_findings_with(content: &str, extra: &[String]) -> Vec<String> {
 }
 
 pub fn ingest_upload(filename: &str, bytes: &[u8]) -> Result<SkillPack, DevopsError> {
+    ingest_named_upload(filename, bytes, &["skill.md"])
+}
+
+pub fn ingest_mcp_upload(filename: &str, bytes: &[u8]) -> Result<SkillPack, DevopsError> {
+    ingest_named_upload(filename, bytes, &["readme.md", "skill.md"])
+}
+
+fn ingest_named_upload(filename: &str, bytes: &[u8], roots: &[&str]) -> Result<SkillPack, DevopsError> {
     let lower = filename.to_ascii_lowercase();
     if lower.ends_with(".zip") || looks_like_zip(bytes) {
-        return ingest_zip(bytes);
+        return ingest_zip_with_root(bytes, roots);
     }
     let text = String::from_utf8(bytes.to_vec())
-        .map_err(|_| DevopsError::BadRequest("SKILL.md must be UTF-8 text".into()))?;
+        .map_err(|_| DevopsError::BadRequest("pack markdown must be UTF-8 text".into()))?;
     Ok(SkillPack {
         skill_md: text,
         files: BTreeMap::new(),
@@ -105,7 +113,7 @@ fn looks_like_zip(bytes: &[u8]) -> bool {
     bytes.len() >= 4 && bytes[0] == 0x50 && bytes[1] == 0x4b
 }
 
-fn ingest_zip(bytes: &[u8]) -> Result<SkillPack, DevopsError> {
+fn ingest_zip_with_root(bytes: &[u8], roots: &[&str]) -> Result<SkillPack, DevopsError> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|e| DevopsError::BadRequest(format!("invalid zip: {e}")))?;
     let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
@@ -134,8 +142,16 @@ fn ingest_zip(bytes: &[u8]) -> Result<SkillPack, DevopsError> {
     let skill_path = entries
         .iter()
         .map(|(p, _)| p.as_str())
-        .find(|p| p.eq_ignore_ascii_case("skill.md") || p.to_ascii_lowercase().ends_with("/skill.md"))
-        .ok_or_else(|| DevopsError::BadRequest("zip must contain SKILL.md".into()))?
+        .find(|p| {
+            let name = p.rsplit('/').next().unwrap_or(p).to_ascii_lowercase();
+            roots.iter().any(|root| name == *root)
+        })
+        .ok_or_else(|| {
+            DevopsError::BadRequest(format!(
+                "zip must contain {}",
+                roots.iter().map(|r| r.to_ascii_uppercase()).collect::<Vec<_>>().join(" or ")
+            ))
+        })?
         .to_owned();
     let prefix = skill_path
         .rsplit_once('/')
@@ -156,7 +172,10 @@ fn ingest_zip(bytes: &[u8]) -> Result<SkillPack, DevopsError> {
         if total > MAX_TOTAL_BYTES {
             return Err(DevopsError::BadRequest("zip is larger than 1 MB unpacked".into()));
         }
-        if rel.eq_ignore_ascii_case("skill.md") {
+        if roots
+            .iter()
+            .any(|root| rel.eq_ignore_ascii_case(root))
+        {
             skill_md = String::from_utf8(buf)
                 .map_err(|_| DevopsError::BadRequest("SKILL.md must be UTF-8 text".into()))?;
             continue;
