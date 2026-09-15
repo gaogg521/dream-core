@@ -192,6 +192,10 @@ pub struct DreamEngineResolvedConfig {
     /// generic "add a vision model in Settings" advice, which is wrong (and
     /// unactionable) for a member whose admin banned every candidate.
     pub vision_unavailable_reason: Option<String>,
+    /// On-device OCR command `ReadImage` tries before the vision model when
+    /// text is what was asked for. Resolved only for a session whose model
+    /// cannot see images; `None` leaves the vision-only behaviour intact.
+    pub local_ocr: Option<dream_engine_config::config::LocalOcrConfig>,
     /// Directory for dream session persistence files.
     pub session_directory: PathBuf,
     /// Session mode (default, auto_edit, yolo).

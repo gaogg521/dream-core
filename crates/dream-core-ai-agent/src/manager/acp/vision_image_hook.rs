@@ -15,11 +15,8 @@ use dream_engine_config::config::VisionModelConfig;
 use dream_engine_types::message::{TokenUsage, extension_to_image_media_type};
 
 use crate::capability::image_description::describe_image_via_delegate;
-use crate::capability::local_ocr_skill::{
-    host_local_ocr_skill_name, is_bundled_local_ocr_skill, with_host_local_ocr_skill,
-};
+use crate::capability::local_ocr_skill::resolve_host_local_ocr;
 use crate::capability::prompt_pipeline::{PreSendHook, PromptCtx};
-use crate::capability::skill_manager::SkillDefinition;
 use crate::capability::vision_delegate::AcpVisionPolicy;
 use crate::manager::acp::hooks::emit_hook_warning;
 use crate::protocol::events::{AgentStreamEvent, DelegateUsageEventData};
@@ -119,51 +116,13 @@ async fn find_host_local_ocr_skill_in(
     user_id: &str,
     configured_skills: &[String],
 ) -> Result<Option<LocalOcrSkill>, String> {
-    let Some(expected_name) = host_local_ocr_skill_name() else {
-        return Ok(None);
-    };
-    let selected = with_host_local_ocr_skill(configured_skills);
-    let discovered = skill_manager
-        .discover_skills_for_user(user_id, Some(&selected), None)
-        .await;
-    if !discovered.iter().any(|skill| skill.name == expected_name) {
-        return Ok(None);
-    }
-
-    let Some(definition) = skill_manager.get_skill(expected_name).await else {
-        return Err(format!(
-            "The default local OCR skill '{expected_name}' could not be read."
-        ));
-    };
-    local_ocr_from_definition(definition, expected_name).map(Some)
-}
-
-fn local_ocr_from_definition(definition: SkillDefinition, expected_name: &str) -> Result<LocalOcrSkill, String> {
-    if definition.name != expected_name || !is_bundled_local_ocr_skill(&definition.name) {
-        return Err(format!(
-            "The default local OCR skill '{expected_name}' was replaced by an unexpected skill."
-        ));
-    }
-    if definition.source != dream_core_extension::SkillSource::Builtin {
-        return Err(format!(
-            "The default local OCR skill '{expected_name}' is not a bundled skill."
-        ));
-    }
-    let script_dir = definition
-        .location
-        .parent()
-        .ok_or_else(|| format!("The default local OCR skill '{expected_name}' has no skill directory."))?
-        .to_string_lossy()
-        .into_owned();
-    let instructions = definition
-        .body
-        .filter(|body| !body.trim().is_empty())
-        .ok_or_else(|| format!("The default local OCR skill '{expected_name}' has no instructions."))?;
-    Ok(LocalOcrSkill {
-        name: definition.name,
-        script_dir,
-        instructions,
-    })
+    Ok(resolve_host_local_ocr(skill_manager, user_id, configured_skills)
+        .await?
+        .map(|resolved| LocalOcrSkill {
+            name: resolved.name,
+            script_dir: resolved.script_dir.to_string_lossy().into_owned(),
+            instructions: resolved.instructions,
+        }))
 }
 
 /// Rewrite only paths that the structured attachment list confirms positionally.
@@ -292,6 +251,7 @@ mod tests {
     use dream_engine_config::config::ProviderType;
 
     use super::*;
+    use crate::capability::local_ocr_skill::host_local_ocr_skill_name;
 
     struct ScriptedDescriber {
         responses: Mutex<VecDeque<Result<(String, TokenUsage), String>>>,

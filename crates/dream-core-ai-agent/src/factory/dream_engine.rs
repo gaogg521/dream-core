@@ -21,6 +21,7 @@ use serde_json::{Map, Value};
 use tracing::{debug, info, warn};
 
 use crate::agent_task::AgentInstance;
+use crate::capability::local_ocr_skill::{host_ocr_command, resolve_host_local_ocr};
 use crate::capability::vision_delegate::{VisionDelegate, resolve_vision_delegate};
 use crate::error::AgentError;
 use crate::factory::AgentFactoryDeps;
@@ -176,6 +177,20 @@ pub(super) async fn build(
     let vision_unavailable_reason = vision.unavailable_reason();
     let vision_model = vision.config;
 
+    // On-device OCR for `ReadImage`. Resolved only for a session whose model
+    // cannot see images — the same condition as the vision delegate, and for
+    // the same reason: a model that reads the image itself has no use for a
+    // transcription, and handing it one would displace what it does better.
+    //
+    // A failure here is logged and dropped. OCR makes image reading cheaper
+    // and more exact, but the session works without it, and refusing to build
+    // an agent over a missing bundled script would be a far worse outcome.
+    let local_ocr = if image_input_capability.supports_images() {
+        None
+    } else {
+        resolve_local_ocr(&deps, &ctx, &resolved_skills).await
+    };
+
     let session_directory = dream_core_common::agent_sessions_dir(&deps.data_dir);
 
     let resume_session = resolve_build_session(
@@ -199,6 +214,7 @@ pub(super) async fn build(
         compat_overrides,
         vision_model,
         vision_unavailable_reason,
+        local_ocr,
         session_directory,
         session_mode: overrides.session_mode,
         skills: resolved_skills,
@@ -422,6 +438,44 @@ fn resolve_dream_engine_url_and_compat(
 /// `x-dream-conversation-id` to stamp the usage rows with the conversation the
 /// member actually ran. The proxy forwards nothing in the `x-dream-*`
 /// namespace upstream, and a personal provider gets no headers at all.
+/// The host's on-device OCR command, if this install has the bundled skill.
+///
+/// Returns `None` for every ordinary reason it might be absent — an
+/// unsupported platform, a corpus without it — because the session is
+/// perfectly usable without OCR and must not fail to build over it.
+async fn resolve_local_ocr(
+    deps: &AgentFactoryDeps,
+    ctx: &FactoryContext,
+    skills: &[String],
+) -> Option<dream_engine_config::config::LocalOcrConfig> {
+    let resolved = match resolve_host_local_ocr(&deps.skill_manager, &ctx.user_id, skills).await {
+        Ok(Some(resolved)) => resolved,
+        Ok(None) => return None,
+        Err(error) => {
+            // The skill is present but unusable, which means a damaged install
+            // rather than a minimal one. Worth saying so.
+            warn!(
+                conversation_id = %ctx.conversation_id,
+                %error,
+                "Bundled local OCR skill could not be used; ReadImage will call the vision model instead"
+            );
+            return None;
+        }
+    };
+
+    let command = host_ocr_command(&resolved.script_dir)?;
+    info!(
+        conversation_id = %ctx.conversation_id,
+        ocr = %command.label,
+        "ReadImage will try on-device OCR before the vision model"
+    );
+    Some(dream_engine_config::config::LocalOcrConfig {
+        program: command.program,
+        args: command.args,
+        label: command.label,
+    })
+}
+
 fn resolve_extra_headers(
     provider_id: &str,
     conversation_id: &str,

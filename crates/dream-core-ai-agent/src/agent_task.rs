@@ -662,6 +662,7 @@ mod dream_engine_config_option_tests {
             compat_overrides: Default::default(),
             vision_model: None,
             vision_unavailable_reason: None,
+            local_ocr: None,
             session_directory: std::env::temp_dir().join("dream-engine-agent-task-test-sessions"),
             session_mode: None,
             skills: Vec::new(),
