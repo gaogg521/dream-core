@@ -549,6 +549,12 @@
         "yi-vision-v2"
       ]
     },
+    "agnes": {
+      "api": "https://api.agnes-ai.cn/v1",
+      "models": [
+        "agnes-3.0-flash"
+      ]
+    },
     "poe": {
       "api": "https://api.poe.com/v1",
       "models": []

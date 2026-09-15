@@ -91,6 +91,44 @@ fn embedded_allowlist_resolves_regression_models_without_network() {
     );
 }
 
+/// Agnes 3.0 Flash reads images, and being absent from this catalog meant we
+/// never let it. An unlisted model resolves to `Unknown`, which routes an
+/// attached image to a vision delegate or to local OCR — so the user's own
+/// multimodal model sat idle while a second model, or an OCR pass that
+/// misreads characters, answered a question it could have answered itself.
+///
+/// Measured 2026-09-15 against `api.agnes-ai.cn`, both spellings our pipeline
+/// can produce for `image_url.url`, each answering with an accurate
+/// description of the picture:
+///
+///   https:// URL         -> 200
+///   data:image/png;base64 -> 200
+///
+/// The second one matters more than it looks: the model page lists the input
+/// modality as "文本、图像 URL" and its only worked example passes a URL,
+/// while every local file we send becomes a data URI. Had that been taken at
+/// its word this entry would have been withheld for a limit the service does
+/// not actually impose.
+#[test]
+fn embedded_allowlist_resolves_agnes_vision_model() {
+    // Both Agnes hosts: `.cn` matches the catalog's api root directly, `.com`
+    // falls to the custom-gateway path and is recognised by model id.
+    for base_url in ["https://api.agnes-ai.cn/v1", "https://apihub.agnes-ai.com/v1"] {
+        assert_eq!(
+            resolve_image_input_capability("openai", Some(base_url), "agnes-3.0-flash"),
+            ImageInputCapability::Supported,
+            "{base_url} serves a model that reads images"
+        );
+    }
+
+    // Only what was measured. The video and image models are not chat models
+    // at all, and no other Agnes text model has been checked.
+    assert_eq!(
+        resolve_image_input_capability("openai", Some("https://api.agnes-ai.cn/v1"), "agnes-video-2.5-flash"),
+        ImageInputCapability::Unknown
+    );
+}
+
 #[test]
 fn embedded_allowlist_resolves_official_kimi_k2_7_code() {
     for base_url in ["https://api.moonshot.cn/v1", "https://api.moonshot.ai/v1"] {
