@@ -18,9 +18,16 @@ fn sqlite_url(path: &Path) -> String {
 
 /// A catalog in WAL mode holding one row per category, none of it
 /// checkpointed — the state a running app is normally in.
+///
+/// The pool size matches production (`MAX_CONNECTIONS` in dream-core-db) and
+/// that is load-bearing, not incidental. `ATTACH DATABASE` is per-connection:
+/// with a pool of one, an attach issued against the pool and a query issued
+/// against the pool necessarily land on the same connection, and a restore
+/// that only works by that accident passes. It shipped that way once — the
+/// first real run returned "Internal server error" while every test was green.
 async fn seeded_catalog(path: &Path) -> SqlitePool {
     let pool = SqlitePoolOptions::new()
-        .max_connections(1)
+        .max_connections(5)
         .connect(&sqlite_url(path))
         .await
         .unwrap();

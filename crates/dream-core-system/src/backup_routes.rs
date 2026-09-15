@@ -99,7 +99,23 @@ async fn restore_backup(
             from_dto(request.scope),
         )
         .await
+        .inspect_err(|error| {
+            // An internal error reaches the client as a bare "Internal server
+            // error", by design. Without this line the cause is gone: the
+            // per-connection ATTACH bug presented as exactly that response and
+            // nothing in the log said why.
+            tracing::error!(
+                source = %request.source,
+                %error,
+                "Backup restore failed"
+            );
+        })
         .map_err(ApiError::from)?;
+    tracing::info!(
+        tables = outcome.rows_by_table.len(),
+        files = outcome.files_restored,
+        "Backup restore applied"
+    );
     Ok(Json(ApiResponse::ok(RestoreBackupResponse {
         rows_by_table: outcome.rows_by_table,
         files_restored: outcome.files_restored,
