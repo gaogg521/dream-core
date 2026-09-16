@@ -1,5 +1,6 @@
 use dream_engine_agent::output::OutputSink;
 use dream_engine_types::message::TokenUsage;
+use serde_json::Value;
 use tokio::sync::broadcast;
 
 use crate::protocol::events::{
@@ -195,6 +196,22 @@ impl OutputSink for BackendOutputSink {
             tip_type: TipType::Success,
             code: None,
             params: None,
+            supersedes_key: None,
+        }));
+    }
+
+    /// Forward the code and its variables so the renderer can look the message
+    /// up in its own catalogue.
+    ///
+    /// `content` still carries the engine's English text: it is what the tip
+    /// renderer falls back to when the app has no entry for this code yet,
+    /// which is the difference between a missing translation and a blank card.
+    fn emit_info_coded(&self, code: &str, params: Value, fallback: &str) {
+        let _ = self.event_tx.send(AgentStreamEvent::Tips(TipsEventData {
+            content: fallback.to_owned(),
+            tip_type: TipType::Success,
+            code: Some(code.to_owned()),
+            params: Some(params),
             supersedes_key: None,
         }));
     }
@@ -400,6 +417,30 @@ mod tests {
         match event {
             AgentStreamEvent::Error(data) => assert_eq!(data.message, "something went wrong"),
             other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn emit_info_coded_carries_the_code_and_its_variables() {
+        // Without these the renderer has only English prose to show, which is
+        // what compaction used to announce itself with inside a translated UI.
+        let (sink, mut rx) = make_sink();
+        sink.emit_info_coded(
+            "AUTOCOMPACT_DONE",
+            serde_json::json!({ "count": 3, "tokens": 170_101 }),
+            "Autocompact: summarized 3 message(s)",
+        );
+        let event = rx.try_recv().unwrap();
+        match event {
+            AgentStreamEvent::Tips(data) => {
+                assert_eq!(data.code.as_deref(), Some("AUTOCOMPACT_DONE"));
+                assert_eq!(data.params.as_ref().unwrap()["count"], serde_json::json!(3));
+                assert_eq!(
+                    data.content, "Autocompact: summarized 3 message(s)",
+                    "the English text is the fallback for an app with no entry for this code yet"
+                );
+            }
+            other => panic!("expected Tips, got {other:?}"),
         }
     }
 
