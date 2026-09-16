@@ -4,6 +4,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use dream_engine_agent::compact::auto::should_autocompact;
+use dream_engine_agent::compact::emergency::is_at_emergency_limit;
 use dream_engine_config::config::{McpServerConfig, TransportType};
 use tokio::sync::broadcast::error::TryRecvError;
 use tokio::time::timeout;
@@ -699,4 +701,102 @@ async fn a_personal_install_sends_exactly_what_was_typed() {
     .unwrap();
 
     assert_eq!(agent.with_recalled_memory("hello").await, "hello");
+}
+
+#[test]
+fn context_window_policy_defaults_to_one_million_when_nothing_declares_one() {
+    let project = tempfile::tempdir().unwrap();
+    let cli_args = make_cli_args(project.path().to_path_buf(), "openai", "gpt-test");
+    let mut config = resolve_engine_config(&cli_args).unwrap();
+    assert_eq!(
+        config.compact.context_window,
+        CompactConfig::default().context_window,
+        "precondition: the engine's own default is what an undeclared model starts from"
+    );
+
+    apply_context_window_policy(&mut config, None);
+
+    assert_eq!(config.compact.context_window, DEFAULT_CONTEXT_WINDOW_TOKENS);
+    assert_eq!(
+        config.compat.transport.num_ctx, None,
+        "num_ctx asks a local daemon to allocate a window; it must never be guessed"
+    );
+    assert_eq!(
+        config.compact.autocompact_threshold_pct,
+        Some(AUTOCOMPACT_THRESHOLD_PCT)
+    );
+}
+
+#[test]
+fn context_window_policy_prefers_the_declared_window() {
+    let project = tempfile::tempdir().unwrap();
+    let cli_args = make_cli_args(project.path().to_path_buf(), "openai", "gpt-test");
+    let mut config = resolve_engine_config(&cli_args).unwrap();
+
+    apply_context_window_policy(&mut config, Some(8_192));
+
+    assert_eq!(
+        config.compact.context_window, 8_192,
+        "a declared window is the only honest number; the 1M default must not override it"
+    );
+    assert_eq!(config.compat.transport.num_ctx, Some(8_192));
+}
+
+#[test]
+fn context_window_policy_keeps_workspace_config_overrides() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join(".dream.toml"),
+        r#"
+[compact]
+context_window = 60000
+autocompact_threshold_pct = 10
+"#,
+    )
+    .unwrap();
+    let cli_args = make_cli_args(project.path().to_path_buf(), "openai", "gpt-test");
+    let mut config = resolve_engine_config(&cli_args).unwrap();
+
+    apply_context_window_policy(&mut config, None);
+
+    // Both are how compaction is exercised without waiting for a real session
+    // to climb to 80% of a million tokens. Overwriting either would make the
+    // file silently inert.
+    assert_eq!(config.compact.context_window, 60_000);
+    assert_eq!(config.compact.autocompact_threshold_pct, Some(10));
+}
+
+#[test]
+fn autocompact_threshold_stays_under_the_emergency_block_at_every_window_size() {
+    // The regression this guards: `autocompact_buffer` / `output_reserve` /
+    // `emergency_buffer` are absolute counts tuned for a 200k window. At 1M
+    // they put autocompact at ~96.7%, within one large tool result of the
+    // emergency block; at an 8k local window the block itself lands at 5192,
+    // BELOW the 6553 where autocompact would fire, so the turn is refused
+    // before compaction ever runs and the only way forward is a new
+    // conversation. Either way the user sees "context window nearly full"
+    // instead of a summary.
+    let project = tempfile::tempdir().unwrap();
+    let cli_args = make_cli_args(project.path().to_path_buf(), "openai", "gpt-test");
+
+    for window in [4_096usize, 8_192, 60_000, 200_000, DEFAULT_CONTEXT_WINDOW_TOKENS] {
+        let mut config = resolve_engine_config(&cli_args).unwrap();
+        apply_context_window_policy(&mut config, Some(window as u32));
+
+        let trigger = window * AUTOCOMPACT_THRESHOLD_PCT as usize / 100;
+        let emergency = window.saturating_sub(config.compact.emergency_buffer);
+
+        assert!(
+            trigger < emergency,
+            "window {window}: autocompact must get a chance before the emergency block              (trigger {trigger}, emergency {emergency})"
+        );
+        assert!(
+            should_autocompact(trigger as u64, &config.compact),
+            "window {window}: the engine must actually fire at its own trigger point"
+        );
+        assert!(
+            !is_at_emergency_limit(trigger as u64, &config.compact),
+            "window {window}: the trigger point must not already be a hard block"
+        );
+    }
 }
