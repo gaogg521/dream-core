@@ -19,8 +19,8 @@ use crate::error::DevopsError;
 use crate::market_sync::{MarketSourceDto, MarketSyncReportDto};
 use crate::models::{
     McpRegistryDto, MilestoneDto, PipelineDto, PipelineRunDto, ProviderChannelDto, RagConfigDto, RagDocumentDto,
-    RagLibraryDto, RagSearchHit, RequirementCommentDto, RequirementDto, ScanPolicyDto, SkillRegistryDto, TestCaseDto,
-    TestPlanDto,
+    RagHealthDto, RagLibraryDto, RagRebuildDto, RagSearchHit, RequirementCommentDto, RequirementDto, ScanPolicyDto,
+    SkillRegistryDto, TestCaseDto, TestPlanDto,
 };
 use crate::service::{CreateRequirementInput, UpdateRequirementInput};
 use crate::state::OneDevopsRouterState;
@@ -154,6 +154,8 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
             axum::routing::post(process_rag),
         )
         .route("/api/one/devops/rag/config", get(get_rag_config).put(set_rag_config))
+        .route("/api/one/devops/rag/health", get(rag_health))
+        .route("/api/one/devops/rag/rebuild", axum::routing::post(rag_rebuild))
         .route("/api/one/devops/rag/search", axum::routing::post(search_rag))
         // P1-2 offboarding: inspect and hand over a departing member's assets.
         .route("/api/one/devops/ownership/{user_id}/count", get(count_owned_resources))
@@ -808,6 +810,7 @@ fn apply_category_and_tags(
 fn attach_pack_meta(skills: &mut [SkillRegistryDto], extra: &[String]) {
     for skill in skills.iter_mut() {
         skill.fingerprint = crate::resource_pack::fingerprint(&skill.content);
+        skill.md5_fingerprint = crate::resource_pack::md5_fingerprint(&skill.content);
         let findings = crate::resource_pack::scan_findings_with(&skill.content, extra);
         skill.scan_status = if findings.is_empty() {
             "clean".into()
@@ -826,6 +829,7 @@ fn attach_pack_meta(skills: &mut [SkillRegistryDto], extra: &[String]) {
 fn attach_mcp_pack_meta(rows: &mut [McpRegistryDto], extra: &[String]) {
     for row in rows.iter_mut() {
         row.fingerprint = crate::resource_pack::fingerprint(&row.content);
+        row.md5_fingerprint = crate::resource_pack::md5_fingerprint(&row.content);
         let findings = crate::resource_pack::scan_findings_with(&row.content, extra);
         row.scan_status = if findings.is_empty() {
             "clean".into()
@@ -1976,6 +1980,24 @@ async fn set_rag_config(
     Ok(Json(ApiResponse::ok(dto)))
 }
 
+async fn rag_health(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<RagHealthDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    Ok(Json(ApiResponse::ok(state.service.check_rag_health().await?)))
+}
+
+async fn rag_rebuild(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<RagRebuildDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    Ok(Json(ApiResponse::ok(
+        state.service.rebuild_rag_documents(&user.id).await?,
+    )))
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SearchRagBody {
@@ -2621,6 +2643,7 @@ mod tests {
                 category_name: None,
                 tags: Vec::new(),
                 fingerprint: String::new(),
+                md5_fingerprint: String::new(),
                 scan_status: String::new(),
                 scan_findings: Vec::new(),
                 package_files: Vec::new(),
@@ -2644,6 +2667,7 @@ mod tests {
                 category_name: None,
                 tags: Vec::new(),
                 fingerprint: String::new(),
+                md5_fingerprint: String::new(),
                 scan_status: String::new(),
                 scan_findings: Vec::new(),
                 package_files: Vec::new(),

@@ -493,6 +493,10 @@ struct EmployeePackPreviewDto {
     pack_id: Option<String>,
     pack_files: std::collections::BTreeMap<String, String>,
     nested_skills: Vec<crate::employee_pack::NestedSkillPack>,
+    /// Deterministic parser selected for this preview. External model parsing
+    /// is opt-in and never silently invoked by the upload path.
+    parser_provider: &'static str,
+    parser_status: &'static str,
 }
 
 impl From<crate::employee_pack::EmployeePack> for EmployeePackPreviewDto {
@@ -507,6 +511,8 @@ impl From<crate::employee_pack::EmployeePack> for EmployeePackPreviewDto {
             pack_id: pack.pack_id,
             pack_files: pack.pack_files,
             nested_skills: pack.nested_skills,
+            parser_provider: "rules",
+            parser_status: "deterministic",
         }
     }
 }

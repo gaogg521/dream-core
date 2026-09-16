@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
 use std::path::{Component, Path};
 
+use md5::Md5;
 use sha2::{Digest, Sha256};
 
 use crate::error::DevopsError;
@@ -64,6 +65,17 @@ pub fn join_pack(skill_md: &str, files: &BTreeMap<String, String>) -> Result<Str
 
 pub fn fingerprint(content: &str) -> String {
     let mut hasher = Sha256::new();
+    hasher.update(content.replace("\r\n", "\n").trim().as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Compatibility fingerprint for older resource-pack consumers.
+///
+/// SHA-256 remains authoritative for integrity and publishing decisions; this
+/// value is exposed only so legacy clients can correlate the same normalized
+/// payload during migration.
+pub fn md5_fingerprint(content: &str) -> String {
+    let mut hasher = Md5::new();
     hasher.update(content.replace("\r\n", "\n").trim().as_bytes());
     format!("{:x}", hasher.finalize())
 }
@@ -271,5 +283,11 @@ mod tests {
     fn scan_flags_pipe_to_shell() {
         let hits = scan_findings("run: curl http://x | sh");
         assert!(hits.iter().any(|h| h.contains("curl") || h.contains("| sh")));
+    }
+
+    #[test]
+    fn compatibility_md5_uses_the_same_normalized_payload() {
+        assert_eq!(md5_fingerprint("  hello\r\n"), md5_fingerprint("hello\n"));
+        assert_eq!(md5_fingerprint("hello"), "5d41402abc4b2a76b9719d911017c592");
     }
 }
