@@ -303,6 +303,8 @@ fn split_fixed(text: &str, size: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
 
     #[test]
     fn pack_unpack_roundtrip() {
@@ -361,6 +363,34 @@ mod tests {
         assert!(resolve_embedding_config(None, Some("http://embedding:80/v1".to_owned()), None, None).is_none());
         // blank env values are treated as absent.
         assert!(resolve_embedding_config(None, Some("  ".to_owned()), Some("m".to_owned()), None).is_none());
+    }
+
+    #[tokio::test]
+    async fn fake_openai_provider_returns_and_validates_dimensions() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake embedding provider");
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept embedding request");
+            let mut request = [0_u8; 4096];
+            let size = stream.read(&mut request).expect("read request");
+            assert!(String::from_utf8_lossy(&request[..size]).contains("/v1/embeddings"));
+            let body = r#"{"data":[{"embedding":[0.1,0.2,0.3]}]}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("write fake response");
+        });
+        let config = EmbeddingConfig {
+            base_url: format!("http://{address}/v1"),
+            api_key: String::new(),
+            model: "fake-embedding".into(),
+        };
+        let vectors = embed(&config, &[String::from("hello")]).await.unwrap();
+        assert_eq!(vectors, vec![vec![0.1, 0.2, 0.3]]);
+        server.join().unwrap();
     }
 
     #[test]

@@ -123,6 +123,11 @@ pub struct SkillRegistryDto {
     #[sqlx(skip)]
     #[serde(default)]
     pub fingerprint: String,
+    /// MD5 compatibility fingerprint of normalized `content`; SHA-256 remains
+    /// the authoritative integrity fingerprint.
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub md5_fingerprint: String,
     /// `clean` or `warning` — heuristic scan of packaged text, not a full sandbox.
     #[sqlx(skip)]
     #[serde(default)]
@@ -175,6 +180,11 @@ pub struct McpRegistryDto {
     #[sqlx(skip)]
     #[serde(default)]
     pub fingerprint: String,
+    /// MD5 compatibility fingerprint of normalized `content`; SHA-256 remains
+    /// the authoritative integrity fingerprint.
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub md5_fingerprint: String,
     #[sqlx(skip)]
     #[serde(default)]
     pub scan_status: String,
@@ -318,6 +328,26 @@ pub struct RagConfigDto {
     pub has_key: bool,
     pub dimensions: Option<i64>,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RagHealthDto {
+    pub ok: bool,
+    pub dimensions: Option<i64>,
+    pub configured_dimensions: Option<i64>,
+    pub model: String,
+    pub latency_ms: i64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RagRebuildDto {
+    pub total: i64,
+    pub processed: i64,
+    pub failed: i64,
+    pub failures: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

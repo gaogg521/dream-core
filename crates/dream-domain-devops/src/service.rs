@@ -10,8 +10,8 @@ use crate::error::DevopsError;
 use crate::models::{
     MILESTONE_STATUSES, McpRegistryDto, MilestoneDto, PIPELINE_RUN_STATUSES, PIPELINE_STATUSES, PIPELINE_TRIGGERS,
     PipelineDto, PipelineRunDto, REQUIREMENT_PRIORITIES, REQUIREMENT_STATUSES, REQUIREMENT_TYPES, RagConfigDto,
-    RagDocumentDto, RagSearchHit, RequirementCommentDto, RequirementDto, RequirementRow, SkillRegistryDto,
-    TEST_CASE_STATUSES, TEST_PLAN_STATUSES, TestCaseDto, TestPlanDto,
+    RagDocumentDto, RagHealthDto, RagRebuildDto, RagSearchHit, RequirementCommentDto, RequirementDto, RequirementRow,
+    SkillRegistryDto, TEST_CASE_STATUSES, TEST_PLAN_STATUSES, TestCaseDto, TestPlanDto,
 };
 
 pub struct DevopsService {
@@ -1942,6 +1942,58 @@ impl DevopsService {
         let (env_base, env_model, env_key) = crate::embedding::env_embedding_config();
         crate::embedding::resolve_embedding_config(row, env_base, env_model, env_key)
             .ok_or_else(|| DevopsError::BadRequest("RAG embedding endpoint not configured".into()))
+    }
+
+    pub async fn check_rag_health(&self) -> Result<RagHealthDto, DevopsError> {
+        let config = self.load_embedding_config().await?;
+        let configured_dimensions: Option<i64> = self
+            .db
+            .fetch_optional_scalar("SELECT dimensions FROM one_rag_config WHERE id = 'default'", &[])
+            .await?;
+        let started = now_ms();
+        match crate::embedding::embed(&config, &[String::from("health check")]).await {
+            Ok(vectors) => {
+                let dimensions = vectors.first().map(|v| v.len() as i64);
+                Ok(RagHealthDto {
+                    ok: configured_dimensions.is_none() || configured_dimensions == dimensions,
+                    dimensions,
+                    configured_dimensions,
+                    model: config.model,
+                    latency_ms: now_ms() - started,
+                    error: None,
+                })
+            }
+            Err(error) => Ok(RagHealthDto {
+                ok: false,
+                dimensions: None,
+                configured_dimensions,
+                model: config.model,
+                latency_ms: now_ms() - started,
+                error: Some(error.to_string()),
+            }),
+        }
+    }
+
+    pub async fn rebuild_rag_documents(&self, actor_user_id: &str) -> Result<RagRebuildDto, DevopsError> {
+        let ids: Vec<String> = self
+            .db
+            .fetch_all_scalar("SELECT id FROM one_rag_documents ORDER BY updated_at ASC", &[])
+            .await?;
+        let total = ids.len() as i64;
+        let mut processed = 0;
+        let mut failures = Vec::new();
+        for id in ids {
+            match self.process_rag_document(actor_user_id, &id).await {
+                Ok(_) => processed += 1,
+                Err(error) => failures.push(format!("{id}: {error}")),
+            }
+        }
+        Ok(RagRebuildDto {
+            total,
+            processed,
+            failed: failures.len() as i64,
+            failures,
+        })
     }
 
     /// Set a document's inline content (the text to embed on process).
