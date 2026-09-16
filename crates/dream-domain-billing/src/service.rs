@@ -16,7 +16,8 @@ use dream_core_db::{DbPool, day_bucket_expr, db_params};
 
 use crate::error::BillingError;
 use crate::models::{
-    AgentSessionDto, AgentSessionPageDto, CheckoutResultDto, DepartmentBudgetDto, EnterpriseReportDto, EntitlementDto,
+    AgentSessionDetailDto, AgentSessionDto, AgentSessionPageDto, CheckoutResultDto, DepartmentBudgetDto,
+    EnterpriseReportDto, EntitlementDto,
     KeyUsageDto, LatencyTrendPointDto, LicenseInfoDto, LlmCallDto, LlmCallPageDto, MediaAssetDto, PlanDto, TopUserDto,
     UsageBucketDto, UsageEventDto, UsageEventPageDto, UsageSummaryDto,
 };
@@ -1981,6 +1982,86 @@ impl BillingService {
         }
 
         Ok(AgentSessionPageDto { sessions, total })
+    }
+
+    /// Load one session's aggregate metadata for the standalone observability
+    /// detail route. Message content stays behind the audited read endpoint.
+    pub async fn get_session(
+        &self,
+        scope: &AuditScope,
+        conversation_id: &str,
+    ) -> Result<Option<AgentSessionDetailDto>, BillingError> {
+        type Row = (String, String, i64, i64, i64, i64, i64);
+        let row: Option<Row> = self
+            .db
+            .fetch_optional_as::<Row>(
+                &format!(
+                    "SELECT conversation_id, MIN(user_id), COUNT(*), \
+                     CAST(COALESCE(SUM(total_tokens), 0) AS SIGNED), \
+                     CAST(COALESCE(SUM(estimated_cost_micros), 0) AS SIGNED), \
+                     MIN(created_at), MAX(created_at) \
+                     FROM one_usage_events \
+                     WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} \
+                       AND conversation_id = ? GROUP BY conversation_id"
+                ),
+                &db_params![
+                    scope.enterprise_id(),
+                    scope.tenant_bind(),
+                    scope.tenant_bind(),
+                    conversation_id
+                ],
+            )
+            .await?;
+        let Some((conversation_id, user_id, turn_count, total_tokens, cost, first_seen_at, last_seen_at)) = row else {
+            return Ok(None);
+        };
+        let models: Vec<String> = self
+            .db
+            .fetch_all_scalar(
+                &format!(
+                    "SELECT DISTINCT model FROM one_usage_events \
+                     WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} \
+                       AND conversation_id = ? AND model IS NOT NULL"
+                ),
+                &db_params![
+                    scope.enterprise_id(),
+                    scope.tenant_bind(),
+                    scope.tenant_bind(),
+                    &conversation_id
+                ],
+            )
+            .await?;
+        let usage_event_ids: Vec<String> = self
+            .db
+            .fetch_all_scalar(
+                &format!(
+                    "SELECT id FROM one_usage_events \
+                     WHERE enterprise_id = ?{AUDIT_TENANT_CLAUSE} \
+                       AND conversation_id = ? ORDER BY created_at ASC"
+                ),
+                &db_params![
+                    scope.enterprise_id(),
+                    scope.tenant_bind(),
+                    scope.tenant_bind(),
+                    &conversation_id
+                ],
+            )
+            .await?;
+        let session = AgentSessionDto {
+            conversation_id,
+            user_id,
+            models: models.clone(),
+            turn_count,
+            total_tokens,
+            estimated_cost_micros: cost,
+            first_seen_at,
+            last_seen_at,
+        };
+        Ok(Some(AgentSessionDetailDto {
+            session,
+            models,
+            usage_event_ids,
+        }))
     }
 
     /// Begin a checkout (stubbed by the manual provider).

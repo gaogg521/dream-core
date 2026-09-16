@@ -20,7 +20,8 @@ use crate::service::{AuditMessageInput, AuditedConversationDto, ConversationAudi
 
 use crate::error::BillingError;
 use crate::models::{
-    AgentSessionPageDto, CheckoutResultDto, ConversationCostDto, DepartmentBudgetDto, EnterpriseReportDto, KeyUsageDto,
+    AgentSessionDetailDto, AgentSessionPageDto, CheckoutResultDto, ConversationCostDto, DepartmentBudgetDto,
+    EnterpriseReportDto, KeyUsageDto,
     LicenseInfoDto, LlmCallPageDto, LlmCallPurgeResultDto, MediaAssetDto, MediaLedgerSettingsDto, PlanDto,
     UsageEventPageDto, UsageSummaryDto,
 };
@@ -38,6 +39,10 @@ pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
         .route("/api/one/billing/key-usage", get(billing_key_usage))
         .route("/api/one/billing/llm-calls/purge", post(billing_purge_llm_calls))
         .route("/api/one/billing/sessions", get(billing_sessions))
+        .route(
+            "/api/one/billing/sessions/{conversation_id}",
+            get(billing_session_detail),
+        )
         .route("/api/one/billing/conversation-cost", get(billing_conversation_cost))
         .route("/api/one/billing/tier", put(billing_set_tier))
         .route("/api/one/billing/model-control", put(billing_set_model_control))
@@ -626,6 +631,25 @@ async fn billing_sessions(
     Ok(Json(ApiResponse::ok(
         state.service.list_sessions(&scope, since, q.limit, q.offset).await?,
     )))
+}
+
+/// Standalone metadata page for one observable agent session.
+async fn billing_session_detail(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(conversation_id): Path<String>,
+) -> Result<Json<ApiResponse<AgentSessionDetailDto>>, BillingError> {
+    let scope = state
+        .service
+        .resolve_audit_scope(&user.id)
+        .await?
+        .ok_or_else(|| BillingError::Forbidden("agent sessions are admin-only".into()))?;
+    let detail = state
+        .service
+        .get_session(&scope, &conversation_id)
+        .await?
+        .ok_or(BillingError::NotFound)?;
+    Ok(Json(ApiResponse::ok(detail)))
 }
 
 #[derive(Deserialize)]

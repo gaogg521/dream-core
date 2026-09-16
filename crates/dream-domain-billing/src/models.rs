@@ -335,6 +335,17 @@ pub struct AgentSessionPageDto {
     pub total: i64,
 }
 
+/// Full metadata for one observable agent session. Message content remains
+/// behind the existing audited-conversation endpoint; this DTO is safe to
+/// load when opening a standalone detail page.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionDetailDto {
+    pub session: AgentSessionDto,
+    pub models: Vec<String>,
+    pub usage_event_ids: Vec<String>,
+}
+
 /// One department's spend cap and usage this window (T7). `department_id` is
 /// opaque here — one-billing does not depend on one-org, so it never resolves
 /// a name; the caller (an admin UI that already fetched the department list
