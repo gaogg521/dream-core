@@ -115,7 +115,7 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
         )
         .route(
             "/api/one/devops/model-channels/{id}",
-            axum::routing::delete(delete_model_channel),
+            get(get_model_channel).delete(delete_model_channel),
         )
         .route(
             "/api/one/devops/model-channels/{id}/token",
@@ -218,7 +218,7 @@ pub fn admin_devops_routes(state: OneDevopsRouterState) -> Router {
         .route("/api/one/devops/dlp/rules/{id}", axum::routing::delete(delete_dlp_rule))
         .route(
             "/api/one/devops/model-channels/{id}",
-            axum::routing::delete(delete_model_channel),
+            get(get_model_channel).delete(delete_model_channel),
         )
         .route("/api/one/devops/ownership/{user_id}/count", get(count_owned_resources))
         .route(
@@ -1588,6 +1588,23 @@ async fn upsert_model_channel(
         .await?;
     audit(&state, &user.id, "devops.modelChannel.upsert", Some(&dto.id)).await;
     Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn get_model_channel(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<ApiResponse<ProviderChannelDto>>, DevopsError> {
+    reject_if_machine_blocked(&state, &headers, &user.id).await?;
+    let channel = state
+        .service
+        .list_provider_channels(&user.id)
+        .await?
+        .into_iter()
+        .find(|channel| channel.id == id)
+        .ok_or_else(|| DevopsError::NotFound(format!("model channel not found: {id}")))?;
+    Ok(Json(ApiResponse::ok(channel)))
 }
 
 async fn delete_model_channel(
