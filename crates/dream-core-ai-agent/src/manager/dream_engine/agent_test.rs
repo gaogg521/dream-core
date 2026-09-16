@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use dream_engine_agent::compact::auto::should_autocompact;
-use dream_engine_agent::compact::emergency::is_at_emergency_limit;
+use dream_engine_agent::compact::emergency::{emergency_limit, is_at_emergency_limit};
 use dream_engine_config::config::{McpServerConfig, TransportType};
 use tokio::sync::broadcast::error::TryRecvError;
 use tokio::time::timeout;
@@ -703,32 +703,35 @@ async fn a_personal_install_sends_exactly_what_was_typed() {
     assert_eq!(agent.with_recalled_memory("hello").await, "hello");
 }
 
+/// Share of the window at which the engine compacts, mirrored from
+/// `CompactConfig`'s default so these tests read as arithmetic rather than
+/// magic numbers. The desktop's context-usage reminder uses the same figure.
+const EXPECTED_AUTOCOMPACT_PCT: usize = 80;
+
 #[test]
-fn context_window_policy_defaults_to_one_million_when_nothing_declares_one() {
+fn a_model_that_declares_no_window_gets_the_engine_default() {
+    // The reported failure: an undeclared model inherited a 200k window and the
+    // session stopped at 197k tokens with "context window nearly full" while
+    // the model still had most of its window free.
     let project = tempfile::tempdir().unwrap();
     let cli_args = make_cli_args(project.path().to_path_buf(), "openai", "gpt-test");
     let mut config = resolve_engine_config(&cli_args).unwrap();
-    assert_eq!(
-        config.compact.context_window,
-        CompactConfig::default().context_window,
-        "precondition: the engine's own default is what an undeclared model starts from"
-    );
 
     apply_context_window_policy(&mut config, None);
 
-    assert_eq!(config.compact.context_window, DEFAULT_CONTEXT_WINDOW_TOKENS);
+    assert_eq!(config.compact.context_window, 1_000_000);
+    assert_eq!(
+        config.compact.autocompact_threshold_pct,
+        Some(EXPECTED_AUTOCOMPACT_PCT as u8)
+    );
     assert_eq!(
         config.compat.transport.num_ctx, None,
         "num_ctx asks a local daemon to allocate a window; it must never be guessed"
     );
-    assert_eq!(
-        config.compact.autocompact_threshold_pct,
-        Some(AUTOCOMPACT_THRESHOLD_PCT)
-    );
 }
 
 #[test]
-fn context_window_policy_prefers_the_declared_window() {
+fn a_declared_window_wins_over_the_default() {
     let project = tempfile::tempdir().unwrap();
     let cli_args = make_cli_args(project.path().to_path_buf(), "openai", "gpt-test");
     let mut config = resolve_engine_config(&cli_args).unwrap();
@@ -737,13 +740,17 @@ fn context_window_policy_prefers_the_declared_window() {
 
     assert_eq!(
         config.compact.context_window, 8_192,
-        "a declared window is the only honest number; the 1M default must not override it"
+        "a declared window is the only honest number; the default must not override it"
     );
-    assert_eq!(config.compat.transport.num_ctx, Some(8_192));
+    assert_eq!(
+        config.compat.transport.num_ctx,
+        Some(8_192),
+        "Ollama answers inside 4k unless the window is sent as num_ctx"
+    );
 }
 
 #[test]
-fn context_window_policy_keeps_workspace_config_overrides() {
+fn a_workspace_config_can_override_both_window_and_trigger() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
         project.path().join(".dream.toml"),
@@ -759,36 +766,33 @@ autocompact_threshold_pct = 10
 
     apply_context_window_policy(&mut config, None);
 
-    // Both are how compaction is exercised without waiting for a real session
-    // to climb to 80% of a million tokens. Overwriting either would make the
-    // file silently inert.
+    // This pair is how compaction is exercised end to end without waiting for a
+    // session to climb to 80% of a million tokens. Overwriting either on this
+    // side would make the file silently inert.
     assert_eq!(config.compact.context_window, 60_000);
     assert_eq!(config.compact.autocompact_threshold_pct, Some(10));
 }
 
 #[test]
-fn autocompact_threshold_stays_under_the_emergency_block_at_every_window_size() {
-    // The regression this guards: `autocompact_buffer` / `output_reserve` /
-    // `emergency_buffer` are absolute counts tuned for a 200k window. At 1M
-    // they put autocompact at ~96.7%, within one large tool result of the
-    // emergency block; at an 8k local window the block itself lands at 5192,
-    // BELOW the 6553 where autocompact would fire, so the turn is refused
-    // before compaction ever runs and the only way forward is a new
-    // conversation. Either way the user sees "context window nearly full"
-    // instead of a summary.
+fn autocompact_gets_a_chance_before_the_emergency_block_at_every_window_size() {
+    // Guards the wiring, not the arithmetic — the engine owns and tests the
+    // rule itself. What this pins down is that a desktop session inherits it:
+    // at an 8k window the engine's old fixed 3000-token buffer put the hard
+    // block at 5000, below the 6400 where autocompact fires, so the turn was
+    // refused before compaction could run and the conversation was stuck.
     let project = tempfile::tempdir().unwrap();
     let cli_args = make_cli_args(project.path().to_path_buf(), "openai", "gpt-test");
 
-    for window in [4_096usize, 8_192, 60_000, 200_000, DEFAULT_CONTEXT_WINDOW_TOKENS] {
+    for window in [4_096usize, 8_192, 60_000, 200_000, 1_000_000] {
         let mut config = resolve_engine_config(&cli_args).unwrap();
         apply_context_window_policy(&mut config, Some(window as u32));
 
-        let trigger = window * AUTOCOMPACT_THRESHOLD_PCT as usize / 100;
-        let emergency = window.saturating_sub(config.compact.emergency_buffer);
+        let trigger = window * EXPECTED_AUTOCOMPACT_PCT / 100;
+        let block = emergency_limit(&config.compact);
 
         assert!(
-            trigger < emergency,
-            "window {window}: autocompact must get a chance before the emergency block              (trigger {trigger}, emergency {emergency})"
+            trigger < block,
+            "window {window}: autocompact must get a chance before the block              (trigger {trigger}, block {block})"
         );
         assert!(
             should_autocompact(trigger as u64, &config.compact),

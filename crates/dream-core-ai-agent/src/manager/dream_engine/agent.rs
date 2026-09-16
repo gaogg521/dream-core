@@ -17,7 +17,6 @@ use dream_engine_agent::bootstrap::AgentBootstrap;
 use dream_engine_agent::engine::{AgentEngine, AgentResult};
 use dream_engine_agent::output::OutputSink;
 use dream_engine_agent::session::Session;
-use dream_engine_config::compact::CompactConfig;
 use dream_engine_config::compat::ProviderCompat;
 use dream_engine_config::config::{CliArgs, Config, McpServerConfig, ProviderType};
 use dream_engine_mcp::manager::McpManager;
@@ -55,32 +54,6 @@ use super::error::{engine_error_to_send_error, engine_runtime_error_summary};
 /// nothing and spending tokens the whole time, because the only way out was
 /// the user pressing stop.
 const DEFAULT_MAX_TURNS_PER_TURN: usize = 150;
-
-/// Context window assumed for a model that declares none.
-///
-/// A declaration always wins — per model in the provider's model settings, or
-/// per provider via `context_limit` — and that is still the only way to get an
-/// honest number for a model whose real window is smaller than this. What this
-/// constant decides is what happens in the far more common case of no
-/// declaration at all, where the engine's own 200k default used to stop a
-/// session at 197k tokens with "context window nearly full" no matter how much
-/// room the model actually had.
-///
-/// The trade is deliberate and worth stating: this value is not a measurement,
-/// so on a model whose window really is 200k it moves the failure from dream's
-/// own readable block to the provider's raw prompt-too-long rejection. The
-/// desktop's 80% reminder and autocompact both key off the same number, so a
-/// user on a smaller model should declare it; the default now favours the
-/// large-window models people actually run here over a ceiling none of them
-/// have.
-const DEFAULT_CONTEXT_WINDOW_TOKENS: usize = 1_000_000;
-
-/// Share of the context window at which autocompact runs, as a percentage.
-///
-/// Kept in step with the desktop's context-usage reminder (`ContextUsageIndicator`),
-/// so the point where the user is told to compact is the point where the engine
-/// starts doing it on its own.
-const AUTOCOMPACT_THRESHOLD_PCT: u8 = 80;
 
 /// How long a turn may emit nothing, *with no tool running*, before we call it
 /// stalled.
@@ -203,56 +176,26 @@ fn resolve_engine_config(cli_args: &CliArgs) -> Result<Config, AgentError> {
     Ok(config)
 }
 
-/// Decide the context window the engine compacts against, and when it compacts.
+/// Apply the user's declared context window, if there is one.
 ///
-/// `declared` is the window the user put on file for this model (per model in
-/// the provider's model settings, or per provider via `context_limit`). When it
-/// is present it wins outright, and the Ollama native transport also receives
-/// it as `options.num_ctx` so the daemon actually allocates that much — a
-/// local model otherwise answers inside 4k no matter what it supports.
+/// `declared` is the window on file for this model — per model in the
+/// provider's model settings, or per provider via `context_limit`. It wins
+/// outright, and the Ollama native transport also receives it as
+/// `options.num_ctx` so the daemon actually allocates that much; a local model
+/// otherwise answers inside 4k no matter what it supports.
 ///
-/// When nothing is declared the engine's own 200k default used to apply, which
-/// stopped sessions at 197k tokens with "context window nearly full" on models
-/// whose real window is far larger. [`DEFAULT_CONTEXT_WINDOW_TOKENS`] replaces
-/// it — but only if the resolved config is still sitting on that default, so a
-/// workspace `.dream.toml` that sets `[compact] context_window` is not silently
-/// overwritten. `num_ctx` stays unset on that path: it is an allocation request
-/// to a local daemon, not a ceiling, and must never be guessed.
-///
-/// The trigger becomes a share of the window rather than
-/// `window - output_reserve - autocompact_buffer`. Those two buffers are
-/// absolute token counts tuned for a 200k window: against a 1M window they put
-/// the trigger at ~96.7%, close enough to the emergency block that one large
-/// tool result can jump clean over it, and against a small local window they
-/// underflow to zero and compact every single turn. A percentage tracks
-/// whatever window the session actually has, and [`AUTOCOMPACT_THRESHOLD_PCT`]
-/// is the same point at which the desktop tells the user to compact. It is
-/// inserted rather than assigned so a `.dream.toml` override stays
-/// authoritative — which is also how compaction gets exercised without waiting
-/// for a real session to climb to 80%.
+/// Nothing else is decided here, deliberately. `CompactConfig`'s own defaults
+/// give an undeclared model a 1M window and put autocompact at 80% of whatever
+/// window the session ends up with, and `compact::emergency` keeps the hard
+/// block above that trigger — re-deriving any of it on this side is how the two
+/// copies drift apart. A workspace `.dream.toml` still overrides all of it
+/// through the same config resolution, which is also how compaction gets
+/// exercised without waiting for a session to climb to 80% of a million tokens.
 fn apply_context_window_policy(config: &mut Config, declared: Option<u32>) {
     if let Some(context_window) = declared {
         config.compact.context_window = context_window as usize;
         config.compat.transport.num_ctx = Some(context_window);
-    } else if config.compact.context_window == CompactConfig::default().context_window {
-        config.compact.context_window = DEFAULT_CONTEXT_WINDOW_TOKENS;
     }
-
-    let pct = *config
-        .compact
-        .autocompact_threshold_pct
-        .get_or_insert(AUTOCOMPACT_THRESHOLD_PCT);
-
-    // The emergency block must stay above the autocompact trigger, or the turn
-    // is refused before compaction ever runs and the only way forward is a new
-    // conversation. `emergency_buffer` is another absolute count tuned for
-    // 200k: at an 8k local window its 3000 tokens put the block at 5192, below
-    // the 6553 where autocompact would have fired. Half the headroom above the
-    // trigger keeps the ordering at any window and any threshold, and the
-    // default still wins wherever it is already the smaller of the two.
-    let headroom_pct = 100u64.saturating_sub(pct as u64);
-    let proportional = (config.compact.context_window as u64 * headroom_pct / 200) as usize;
-    config.compact.emergency_buffer = config.compact.emergency_buffer.min(proportional);
 }
 
 #[derive(Clone, Debug)]
