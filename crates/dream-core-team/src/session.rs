@@ -509,15 +509,19 @@ impl TeamSession {
         }
     }
 
-    pub(crate) async fn handle_signal_intents(&self, slot_id: &str, intent_ids: &[String]) {
-        if self.work_coordinator.complete_signals(slot_id, intent_ids) != CommitResult::Committed {
-            warn!(
-                team_id = %self.team.id,
-                slot_id,
-                intent_count = intent_ids.len(),
-                "team signal intents could not be settled"
-            );
+    /// Settle the slot's pending signal intents. Reports whether anything was
+    /// settled, so the caller can stop asking when nothing can be.
+    pub(crate) async fn handle_signal_intents(&self, slot_id: &str, intent_ids: &[String]) -> bool {
+        if self.work_coordinator.complete_signals(slot_id, intent_ids) == CommitResult::Committed {
+            return true;
         }
+        warn!(
+            team_id = %self.team.id,
+            slot_id,
+            intent_count = intent_ids.len(),
+            "team signal intents could not be settled"
+        );
+        false
     }
 
     /// Handle agent Finish/Error events. Delegates to the scheduler's

@@ -1083,30 +1083,59 @@ impl SlotWorkCoordinator {
         }
     }
 
+    /// Settle the slot's signal intents, reporting `Rejected` only when not one
+    /// of them could be.
+    ///
+    /// This used to validate the whole list first and refuse everything if any
+    /// single entry failed. One already-settled intent — a duplicate signal, a
+    /// racing settle — was therefore enough to strand every valid intent beside
+    /// it in the queue permanently, and the slot stayed in `Queued` forever
+    /// with the UI reporting work still in progress. Worse, the caller reacts
+    /// to a rejection by asking again, so the pair span a hot loop that never
+    /// converges.
+    ///
+    /// An intent that is missing or no longer queued is not a failure: it is
+    /// already settled, which is the outcome being asked for. Only one that
+    /// belongs to another slot or carries a mailbox message is skipped, since
+    /// neither is a signal this call may terminalize.
     pub(crate) fn complete_signals(&self, slot_id: &str, intent_ids: &[String]) -> CommitResult {
         let mut state = self.lock_state();
-        let valid = intent_ids.iter().all(|intent_id| {
-            state.intents.get(intent_id).is_some_and(|intent| {
-                intent.slot_id == slot_id
-                    && intent.mailbox_message_id.is_none()
-                    && intent.state == WorkIntentState::Queued
-            })
-        });
-        if !valid {
-            return CommitResult::Rejected;
-        }
-        let run_ids = intent_ids
-            .iter()
-            .filter_map(|intent_id| state.intents.get(intent_id)?.team_run_id.clone())
-            .collect::<BTreeSet<_>>();
+        let mut settled_any = false;
+        let mut run_ids = BTreeSet::new();
+
         for intent_id in intent_ids {
+            let Some(intent) = state.intents.get(intent_id) else {
+                // Gone already — nothing left to settle.
+                settled_any = true;
+                continue;
+            };
+            if intent.slot_id != slot_id || intent.mailbox_message_id.is_some() {
+                warn!(
+                    slot_id,
+                    intent_id, "refusing to settle a work intent that is not this slot's signal"
+                );
+                continue;
+            }
+            if intent.state != WorkIntentState::Queued {
+                settled_any = true;
+                continue;
+            }
+            if let Some(run_id) = intent.team_run_id.clone() {
+                run_ids.insert(run_id);
+            }
             if let Some(intent) = state.intents.get_mut(intent_id) {
                 intent.state = WorkIntentState::Completed;
             }
             if let Some(slot) = state.slots.get_mut(slot_id) {
                 slot.remove_queued(intent_id);
             }
+            settled_any = true;
         }
+
+        if !settled_any {
+            return CommitResult::Rejected;
+        }
+
         let summaries = Self::run_summaries_locked(&state, run_ids);
         drop(state);
         self.publish_run_summaries(summaries);
