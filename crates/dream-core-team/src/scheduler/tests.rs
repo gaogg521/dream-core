@@ -1644,3 +1644,57 @@ async fn notify_shutdown_rejected_noop_when_sender_is_lead() {
     let lead_msgs = mailbox.read_unread("t1", "lead-1").await.unwrap();
     assert!(lead_msgs.is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_finish_events_cannot_both_claim_the_same_turn() {
+    // Duplicate finish events are the ones that arrive together, so the check
+    // and the claim have to be one operation. Reading then inserting left a gap
+    // where two tasks could both see no recent entry and both proceed.
+    //
+    // Needs a real thread pool: on the default single-threaded runtime the
+    // tasks run to completion one after another and never interleave, so the
+    // racy version passes just as happily.
+    let (mgr, _events) = make_manager(&[]);
+    let mgr = Arc::new(mgr);
+
+    for round in 0..50 {
+        let key = format!("conv-racing-{round}");
+        let barrier = Arc::new(tokio::sync::Barrier::new(8));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let mgr = Arc::clone(&mgr);
+            let barrier = Arc::clone(&barrier);
+            let key = key.clone();
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                mgr.begin_finalize(&key)
+            }));
+        }
+
+        let mut claims = 0;
+        for handle in handles {
+            if handle.await.expect("task must not panic") {
+                claims += 1;
+            }
+        }
+        assert_eq!(claims, 1, "exactly one caller may finalize a turn, {claims} did");
+    }
+}
+
+#[tokio::test]
+async fn a_later_claim_keeps_its_own_full_window() {
+    // The first claim schedules its own expiry. That cleanup must not carry off
+    // a claim made after it, or the second finalize loses its dedup protection
+    // early. Compared by identity for a reason: `duration_since` saturates to
+    // zero when the stored claim is the newer one, which would make a fresh
+    // claim indistinguishable from the expiring one.
+    let (mgr, _events) = make_manager(&[]);
+    assert!(mgr.begin_finalize("conv-window"));
+    mgr.clear_finalized_turn("conv-window");
+
+    assert!(mgr.begin_finalize("conv-window"), "a cleared slot may be claimed again");
+    assert!(
+        !mgr.begin_finalize("conv-window"),
+        "the second claim must still hold its window"
+    );
+}
