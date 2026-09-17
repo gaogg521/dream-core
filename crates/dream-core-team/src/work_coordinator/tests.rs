@@ -1239,3 +1239,85 @@ fn command_during_running_batch_queues_without_preemption() {
     assert!(second.is_command);
     assert_eq!(second.mailbox_message_ids, vec!["c2"]);
 }
+
+/// A signal intent is one with no mailbox message behind it — a leader settle
+/// signal, for instance.
+fn enqueue_signal(coordinator: &SlotWorkCoordinator) -> String {
+    let lease = coordinator
+        .acquire_enqueue(EnqueueRequest {
+            slot_id: "lead-1".into(),
+            role: TeamRunTargetRole::Lead,
+            source: WorkSource::IdleNotification,
+            binding: CausalBinding::Background,
+        })
+        .expect("signal enqueues");
+    coordinator
+        .commit_enqueue(&lease, None)
+        .expect("signal commits")
+        .intent_id
+}
+
+#[test]
+fn one_already_settled_signal_does_not_strand_the_rest() {
+    // The reported symptom: the team had finished and the leader had delivered
+    // its output, yet the UI still said work was in progress. A duplicate settle
+    // leaves one intent already `Completed`; the all-or-nothing validation then
+    // refused the whole batch, so every valid intent beside it stayed queued.
+    // And since the caller retries on rejection, the two span a loop that never
+    // converges.
+    let coordinator = coordinator();
+    let first = enqueue_signal(&coordinator);
+    let second = enqueue_signal(&coordinator);
+
+    assert_eq!(
+        coordinator.complete_signals("lead-1", std::slice::from_ref(&first)),
+        CommitResult::Committed
+    );
+
+    assert_eq!(
+        coordinator.complete_signals("lead-1", &[first, second]),
+        CommitResult::Committed,
+        "an already-settled intent must not block the one beside it"
+    );
+
+    let snapshot = coordinator.slot_snapshot("lead-1").expect("slot exists");
+    assert_eq!(
+        snapshot.queued_foreground_count + snapshot.queued_background_count,
+        0,
+        "nothing may stay queued once every signal is settled"
+    );
+}
+
+#[test]
+fn an_intent_that_is_already_gone_counts_as_settled() {
+    // Reporting a rejection here would send the event loop back to asking for
+    // the same intents it can never clear.
+    let coordinator = coordinator();
+    assert_eq!(
+        coordinator.complete_signals("lead-1", &["vanished".to_owned()]),
+        CommitResult::Committed
+    );
+}
+
+#[test]
+fn settling_nothing_reports_rejected_so_the_caller_can_stop() {
+    let coordinator = coordinator();
+    assert_eq!(coordinator.complete_signals("lead-1", &[]), CommitResult::Rejected);
+}
+
+#[test]
+fn a_signal_belonging_to_another_slot_is_refused_not_settled() {
+    // Terminalizing another slot's work from here would lose it silently.
+    let coordinator = coordinator();
+    let intent_id = enqueue_signal(&coordinator);
+    assert_eq!(
+        coordinator.complete_signals("someone-else", std::slice::from_ref(&intent_id)),
+        CommitResult::Rejected
+    );
+    let snapshot = coordinator.slot_snapshot("lead-1").expect("slot exists");
+    assert_eq!(
+        snapshot.queued_foreground_count + snapshot.queued_background_count,
+        1,
+        "the intent stays queued for the slot that owns it"
+    );
+}

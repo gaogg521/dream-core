@@ -163,7 +163,14 @@ async fn run_event_loop(
                     }
                 }
                 Ok(PrepareBatchResult::SettleSignals { intent_ids }) => {
-                    ctx.session.handle_signal_intents(&ctx.slot_id, &intent_ids).await;
+                    // Stop asking when nothing could be settled. `prepare_next_batch`
+                    // is deterministic, so it would hand back the very same intents
+                    // on the next pass: without this the loop spins at full speed,
+                    // burning a core and filling the log, while the slot stays
+                    // `Queued` and the UI reports work still in progress forever.
+                    if !ctx.session.handle_signal_intents(&ctx.slot_id, &intent_ids).await {
+                        break;
+                    }
                 }
                 Ok(
                     PrepareBatchResult::WaitingForCompletion
