@@ -532,6 +532,24 @@ impl TeamSession {
             return Ok(None);
         }
 
+        let outcome = self.finalize_claimed_turn(conversation_id, is_error).await;
+
+        // Unconditional for real. This used to sit at the end of the happy
+        // path, where three `?` operators jumped straight over it: a finalize
+        // that failed left the dedup entry standing for its full five seconds,
+        // so every retry was swallowed as a duplicate and the member stayed in
+        // a non-final state. A failed finalize is exactly when the retry has to
+        // get through.
+        self.scheduler.clear_finalized_turn(conversation_id);
+
+        outcome
+    }
+
+    /// The body of [`Self::on_agent_finish`], after the dedup claim is held.
+    ///
+    /// Split out so the claim is released on every exit path, including the
+    /// error ones.
+    async fn finalize_claimed_turn(&self, conversation_id: &str, is_error: bool) -> Result<Option<String>, TeamError> {
         let slot_id = {
             let agents = self.scheduler.list_agents().await;
             agents
@@ -550,9 +568,6 @@ impl TeamSession {
         }
 
         let wake_target = self.scheduler.finalize_turn(&slot_id).await?;
-
-        // Clear the dedup window unconditionally once finalize has run.
-        self.scheduler.clear_finalized_turn(conversation_id);
 
         // Re-wake self if there are still unread messages in mailbox.
         // This handles the case where messages arrived while the agent was
