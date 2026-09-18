@@ -2160,11 +2160,11 @@ mod tests {
     fn long_paths_still_yield_the_file_name() {
         for (path, expected) in [
             (
-                "/Users/z/Documents/github/AionUi-worktrees/rtl/packages/desktop/src/renderer/components/Markdown/CodeBlock.tsx",
+                "/Users/z/Documents/github/One Work-worktrees/rtl/packages/desktop/src/renderer/components/Markdown/CodeBlock.tsx",
                 "Read CodeBlock.tsx",
             ),
             (
-                "/Users/z/Documents/github/AionUi-worktrees/rtl/packages/desktop/src/renderer/services/i18n/index.ts",
+                "/Users/z/Documents/github/One Work-worktrees/rtl/packages/desktop/src/renderer/services/i18n/index.ts",
                 "Read index.ts",
             ),
         ] {
@@ -2256,7 +2256,7 @@ mod tests {
         // the name claude gave it.
         for name in [
             "mcp__sentry__search_issues",
-            "mcp__aionui-team__team_send_message",
+            "mcp__one-team__team_send_message",
             "AskUserQuestion",
             "TodoWrite",
         ] {

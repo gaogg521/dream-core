@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn registers_the_bridge_without_embedding_any_policy() {
         let dir = tempfile::tempdir().unwrap();
-        write_hooks_json(dir.path(), Path::new("/opt/aionui/backend")).unwrap();
+        write_hooks_json(dir.path(), Path::new("/opt/one/backend")).unwrap();
 
         let raw = std::fs::read_to_string(dir.path().join(".agents/hooks.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -175,7 +175,7 @@ mod tests {
         // launch the whole backend instead of the hook.
         assert_eq!(
             entry["PreToolUse"][0]["hooks"][0]["command"],
-            "\"/opt/aionui/backend\" antigravity-hook"
+            "\"/opt/one/backend\" antigravity-hook"
         );
 
         // The decision must never be baked into the file: Dream UI owns it at
@@ -190,12 +190,12 @@ mod tests {
         // unquoted path like /Applications/Dream UI.app/... would be split into
         // two arguments and the hook would never run.
         let dir = tempfile::tempdir().unwrap();
-        write_hooks_json(dir.path(), Path::new("/Apps/Aion UI/backend")).unwrap();
+        write_hooks_json(dir.path(), Path::new("/Apps/One Work/backend")).unwrap();
         let raw = std::fs::read_to_string(dir.path().join(".agents/hooks.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(
             v[AntigravityHookConfig::HOOK_NAME]["PreToolUse"][0]["hooks"][0]["command"],
-            "\"/Apps/Aion UI/backend\" antigravity-hook"
+            "\"/Apps/One Work/backend\" antigravity-hook"
         );
     }
 
@@ -205,7 +205,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".agents")).unwrap();
         std::fs::write(dir.path().join(".agents/hooks.json"), r#"{"old":{"enabled":true}}"#).unwrap();
 
-        write_hooks_json(dir.path(), Path::new("/opt/aionui/backend")).unwrap();
+        write_hooks_json(dir.path(), Path::new("/opt/one/backend")).unwrap();
         let raw = std::fs::read_to_string(dir.path().join(".agents/hooks.json")).unwrap();
         assert!(!raw.contains("\"old\""), "a stale hook must not survive");
     }
@@ -215,7 +215,7 @@ mod tests {
         // A conversation that becomes a teammate must not keep calling back for
         // approval nobody is there to give.
         let dir = tempfile::tempdir().unwrap();
-        write_hooks_json(dir.path(), std::path::Path::new("/opt/aionui/aioncore")).unwrap();
+        write_hooks_json(dir.path(), std::path::Path::new("/opt/one/dreamcore")).unwrap();
         assert!(dir.path().join(".agents/hooks.json").exists());
 
         remove_hooks_json(dir.path());

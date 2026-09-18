@@ -374,7 +374,7 @@ fn si_7_builtin_image_gen_injection() {
     let mut session_servers = build_session_mcp_servers(&user_servers, &caps);
 
     // Inject builtin image gen server
-    if let Some(builtin) = build_builtin_image_gen_server(&caps, "/usr/local/bin/aionui-img-gen", &img_config) {
+    if let Some(builtin) = build_builtin_image_gen_server(&caps, "/usr/local/bin/one-img-gen", &img_config) {
         session_servers.push(builtin);
     }
 
@@ -384,8 +384,8 @@ fn si_7_builtin_image_gen_injection() {
     let builtin = &session_servers[1];
     match builtin {
         AcpSessionMcpServer::Stdio { name, command, env, .. } => {
-            assert_eq!(name, "aionui-image-generation");
-            assert_eq!(command, "/usr/local/bin/aionui-img-gen");
+            assert_eq!(name, "one-image-generation");
+            assert_eq!(command, "/usr/local/bin/one-img-gen");
 
             // Verify all 6 env vars are present
             assert_eq!(env.len(), 6);

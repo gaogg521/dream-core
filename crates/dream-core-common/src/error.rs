@@ -482,7 +482,7 @@ mod tests {
     async fn public_message_does_not_expose_internal_details() {
         let cases = [
             (
-                ApiError::Forbidden("Asset path escapes extension root: /tmp/aionui/private/icon.png".into()),
+                ApiError::Forbidden("Asset path escapes extension root: /tmp/one/private/icon.png".into()),
                 StatusCode::FORBIDDEN,
                 "Forbidden.",
                 "FORBIDDEN",
@@ -590,7 +590,7 @@ mod tests {
 
     #[test]
     fn test_validate_workspace_path_availability() {
-        let dir = std::env::temp_dir().join(format!("aionui-common-{}", crate::generate_short_id()));
+        let dir = std::env::temp_dir().join(format!("one-common-{}", crate::generate_short_id()));
         std::fs::create_dir_all(&dir).unwrap();
         let workspace = dir.join("my project");
         std::fs::create_dir_all(&workspace).unwrap();

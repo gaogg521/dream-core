@@ -455,9 +455,9 @@ mod tests {
     }
 
     #[test]
-    fn test_reserved_prefix_aion() {
+    fn test_reserved_prefix_dream() {
         let manifest = ExtensionManifest {
-            name: "aion-my-ext".into(),
+            name: "dream-my-ext".into(),
             version: "1.0.0".into(),
             display_name: None,
             description: None,
@@ -477,7 +477,7 @@ mod tests {
         let err = validate_manifest(&manifest).unwrap_err();
         assert!(matches!(
             err,
-            ExtensionError::ReservedNamePrefix { ref prefix, .. } if prefix == "aion-"
+            ExtensionError::ReservedNamePrefix { ref prefix, .. } if prefix == "dream-"
         ));
     }
 
@@ -513,7 +513,7 @@ mod tests {
     #[test]
     fn test_reserved_prefix_case_insensitive() {
         let manifest = ExtensionManifest {
-            name: "AION-upper".into(),
+            name: "DREAM-upper".into(),
             version: "1.0.0".into(),
             display_name: None,
             description: None,

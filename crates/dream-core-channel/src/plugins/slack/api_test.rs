@@ -48,8 +48,8 @@ fn api_constructs_with_both_tokens() {
 fn slack_identity_holds_user_id() {
     let id = SlackIdentity {
         user_id: "U0BOT".into(),
-        user: Some("aion".into()),
+        user: Some("dream".into()),
     };
     assert_eq!(id.user_id, "U0BOT");
-    assert_eq!(id.user.as_deref(), Some("aion"));
+    assert_eq!(id.user.as_deref(), Some("dream"));
 }

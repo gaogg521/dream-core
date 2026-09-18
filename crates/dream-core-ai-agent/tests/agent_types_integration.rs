@@ -104,7 +104,7 @@ fn make_engine_config() -> DreamEngineResolvedConfig {
         vision_model: None,
         vision_unavailable_reason: None,
         local_ocr: None,
-        session_directory: std::env::temp_dir().join("aionrs-test-sessions"),
+        session_directory: std::env::temp_dir().join("dream-engine-test-sessions"),
         session_mode: None,
         skills: Vec::new(),
         extra_headers: None,
@@ -116,7 +116,7 @@ fn make_engine_config() -> DreamEngineResolvedConfig {
 }
 
 #[tokio::test]
-async fn aionrs_agent_kill_succeeds() {
+async fn dream_engine_agent_kill_succeeds() {
     let agent = DreamEngineAgentManager::new("conv-1".into(), "/proj".into(), make_engine_config(), None, None, None)
         .await
         .unwrap();
@@ -125,7 +125,7 @@ async fn aionrs_agent_kill_succeeds() {
 }
 
 #[tokio::test]
-async fn aionrs_agent_confirm_succeeds() {
+async fn dream_engine_agent_confirm_succeeds() {
     let agent = DreamEngineAgentManager::new("conv-1".into(), "/proj".into(), make_engine_config(), None, None, None)
         .await
         .unwrap();
@@ -137,7 +137,7 @@ async fn aionrs_agent_confirm_succeeds() {
 }
 
 #[tokio::test]
-async fn aionrs_agent_metadata() {
+async fn dream_engine_agent_metadata() {
     let agent = DreamEngineAgentManager::new(
         "conv-abc".into(),
         "/work".into(),
@@ -172,7 +172,7 @@ fn agent_session_kind_is_limited_to_runnable_runtimes() {
 }
 
 #[tokio::test]
-async fn collect_idle_ignores_aionrs_agent_type() {
+async fn collect_idle_ignores_dream_engine_agent_type() {
     use futures_util::FutureExt;
     let old_ts = now_ms() - 600_000; // 10 min ago
 
@@ -241,7 +241,7 @@ async fn collect_idle_ignores_aionrs_agent_type() {
     mgr.get_or_build_task("acp-1", make_opts(AgentType::Acp, "acp-1"))
         .await
         .unwrap();
-    mgr.get_or_build_task("aionrs-1", make_opts(AgentType::DreamEngine, "aionrs-1"))
+    mgr.get_or_build_task("dream-engine-1", make_opts(AgentType::DreamEngine, "dream-engine-1"))
         .await
         .unwrap();
 

@@ -331,8 +331,8 @@ async fn verify_installation_catches_invalid_manifest() {
 #[tokio::test]
 async fn verify_installation_catches_reserved_name() {
     let h = setup();
-    let ext_dir = h.hub_dir.path().join("aion-bad");
-    write_extension_manifest(&ext_dir, "aion-bad", "1.0.0");
+    let ext_dir = h.hub_dir.path().join("dream-bad");
+    write_extension_manifest(&ext_dir, "dream-bad", "1.0.0");
 
     let result = h.installer.verify_installation(&ext_dir);
     assert!(result.is_err());

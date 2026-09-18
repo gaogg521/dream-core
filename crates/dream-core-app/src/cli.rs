@@ -87,7 +87,7 @@ pub(crate) enum ManagedResourcesModeArg {
 pub(crate) enum IdentityModeArg {
     Local,
     Webui,
-    /// CLI value stays `dreampro`; `aionpro` accepted as a deploy-script alias.
+    /// CLI value stays `dreampro`; the legacy `aionpro` is accepted as a deploy-script alias.
     #[value(alias = "aionpro")]
     DreamPro,
 }

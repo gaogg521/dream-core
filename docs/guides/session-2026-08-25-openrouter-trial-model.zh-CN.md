@@ -54,10 +54,10 @@ dream-ui 直接调用已有的普通 `POST /api/providers`，生成一条用户�
 - **broker 已部署**：`43.163.105.71`，systemd（非 Docker），公网入口
   `https://work.1oneclaw.com/trial-broker`。完整细节见 dream-ui 仓库同名文档的
   "2026-08-28 补充"一节，以及 `dream-trial-broker` 仓库的 `deploy/DEPLOY.md`。
-- **`DREAM_TRIAL_BROKER_URL` 已接线**：由 dream-ui `packages/web-host` 在 spawn aioncore 时
+- **`DREAM_TRIAL_BROKER_URL` 已接线**：由 dream-ui `packages/web-host` 在 spawn dreamcore 时
   注入默认值 `https://work.1oneclaw.com/trial-broker`。dream-core 这一侧代码**未改动**，
   仍然是"env 有值就用、没值就报未配置"的原有逻辑。
-- **真实链路已验证**：当天用真实 Management Key + 打包用的 bundled aioncore 二进制跑通
+- **真实链路已验证**：当天用真实 Management Key + 打包用的 bundled dreamcore 二进制跑通
   `POST /api/providers/trial-key` → 真实签发 → 二次 409；测试 key 已清理。
 - dream-core 侧后续无待办；剩下的是 dream-ui 发版 + 真实 UI 冒烟。
 
@@ -86,7 +86,7 @@ dream-ui 直接调用已有的普通 `POST /api/providers`，生成一条用户�
 界面上一点没变，仍然是 PERMISSION_DENIED 加完整原文。
 
 因为 **1ONE CLI 会话走的是另一条路**：`manager::dream_engine::error` 里的
-`aionrs_provider_status_to_send_error` **只按 HTTP 状态码分类**，并且直接构造
+`dream-engine_provider_status_to_send_error` **只按 HTTP 状态码分类**，并且直接构造
 `AgentSendError`，绕过了我加抑制的那个函数。
 
 现在的结构避免了再次分叉：

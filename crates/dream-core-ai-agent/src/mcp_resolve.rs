@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use dream_core_api_types::{SessionMcpServer, SessionMcpTransport, TEAM_MCP_SERVER_NAME};
+use dream_core_api_types::{SessionMcpServer, SessionMcpTransport, TEAM_MCP_SERVER_NAME, is_team_mcp_server_name};
 use dream_core_db::IMcpServerRepository;
 use dream_core_db::models::McpServerRow;
 use dream_core_realtime::EventBroadcaster;
@@ -60,7 +60,7 @@ pub async fn resolve_session_mcp_servers(
         // `dream-team` is a reserved wire-level name: the team coordination MCP
         // must win, so a user row that collides with it is skipped (never
         // injected), regardless of selection state.
-        if !selected || row.builtin || row.name == TEAM_MCP_SERVER_NAME {
+        if !selected || row.builtin || is_team_mcp_server_name(&row.name) {
             continue;
         }
         match row_to_session_mcp_server(&row).await {

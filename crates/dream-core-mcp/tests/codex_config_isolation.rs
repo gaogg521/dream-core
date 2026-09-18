@@ -16,7 +16,7 @@ use dream_core_mcp::{CodexAdapter, McpAgentAdapter, McpServerTransport};
 
 /// Name used for the throwaway server. Distinctive so a stray leftover is
 /// obvious and greppable.
-const PROBE_SERVER: &str = "aionui-codex-isolation-probe-do-not-keep";
+const PROBE_SERVER: &str = "one-codex-isolation-probe-do-not-keep";
 
 fn real_codex_config_toml() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".codex").join("config.toml"))

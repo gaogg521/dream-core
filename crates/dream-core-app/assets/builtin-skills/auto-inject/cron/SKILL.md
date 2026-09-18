@@ -13,7 +13,7 @@ agent-facing config CLI.
 1. Each conversation can have at most one scheduled task.
 2. Always query existing tasks before creating or updating.
 3. Do not ask for extra confirmation after the user has already requested the scheduling change.
-4. Never pass, inline, export, echo, or set any `AIONUI_...` environment variable.
+4. Never pass, inline, export, echo, or set any `ONE_...` environment variable.
 5. Commands must directly call `"$ONE_HELPER_BIN" config cron current ...`.
 6. Pass create and update payloads through stdin heredocs attached to the command. Do not write payload JSON files to disk.
 7. Put `job_id` in the update JSON payload, not in a command flag.

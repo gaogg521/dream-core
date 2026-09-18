@@ -33,7 +33,7 @@ const NOISE_SUPPRESSIONS: &[&str] = &[
 
 // The dream-engine tracing targets whose output belongs in the dedicated
 // engine log file, not the main backend one. Must be the crates' real module
-// paths: the rebrand renamed the crates `aion_* -> dream_engine_*` but left
+// paths: the rebrand renamed the crates to `dream_engine_*` but left the legacy
 // `aion_compact` / `aion_tools` / `aion_skills` / `aion_memory` here, so those
 // four crates' logs were neither suppressed from `dreamcore.log` nor leveled
 // into the engine file — a silent string mismatch `cargo build` can't catch.
@@ -148,7 +148,7 @@ fn logging_dir_error(active_log_dir: &Path, error: io::Error) -> BootstrapError 
 /// Pick the log root directory, creating today's dated partition.
 ///
 /// A custom directory that cannot be created (permissions, AV interference,
-/// path occupied by a file — Jira AIONUI-231) must not permanently brick
+/// path occupied by a file — Jira ONE-231) must not permanently brick
 /// bootstrap: fall back to the default directory instead. Failure to create
 /// the default directory itself remains fatal.
 fn select_log_root(custom_log_dir: Option<&Path>, default_log_dir: &Path) -> Result<LogDirSelection, BootstrapError> {
@@ -270,7 +270,7 @@ pub fn init_tracing(
         })?;
 
     if let Some(fallback) = &selection.fallback {
-        // Production-visible degradation marker (AIONUI-231): the requested
+        // Production-visible degradation marker (ONE-231): the requested
         // custom log dir was unusable and logging continues in the default dir.
         tracing::warn!(
             code = "BOOTSTRAP_DEGRADED_LOG_DIR",
@@ -463,7 +463,7 @@ mod tests {
         assert!(level.contains("dream_engine_providers=info"), "{level}");
         // Everything else in ENGINE_TARGETS follows the requested level — and the
         // targets must be the crates' real module paths (post-rebrand
-        // `dream_engine_*`), not the stale `aion_*` names.
+        // `dream_engine_*`), not the stale legacy names.
         assert!(level.contains("dream_engine_tools=debug"), "{level}");
         assert!(level.contains("dream_engine_skills=debug"), "{level}");
         assert!(level.contains("dream_engine_memory=debug"), "{level}");
@@ -544,7 +544,7 @@ mod tests {
     fn select_log_root_falls_back_to_default_when_custom_dir_is_unusable() {
         let tmp = tempfile::tempdir().expect("temp dir");
         // A file occupying the custom path makes create_dir_all fail the same
-        // way an unwritable path does (AIONUI-231 repro without root).
+        // way an unwritable path does (ONE-231 repro without root).
         let custom = tmp.path().join("occupied");
         std::fs::write(&custom, b"not a directory").expect("occupy custom path");
         let default = tmp.path().join("default-logs");

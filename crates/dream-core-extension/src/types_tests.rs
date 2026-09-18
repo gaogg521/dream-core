@@ -265,7 +265,7 @@ fn test_manifest_full_roundtrip() {
         homepage: Some("https://example.com".into()),
         icon: Some("icon.png".into()),
         engine: Some(EngineConfig {
-            aionui: Some("^1.0.0".into()),
+            one: Some("^1.0.0".into()),
         }),
         api_version: Some("1.0.0".into()),
         dependencies: HashMap::from([("dep-ext".into(), "^1.0.0".into())]),

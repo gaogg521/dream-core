@@ -191,7 +191,7 @@ async fn get_config_path() -> Result<String, McpError> {
     let path = stdout.trim().to_owned();
     if path.is_empty() {
         return Err(McpError::AgentOperationFailed(
-            "aionrs config path returned empty output".into(),
+            "dream-engine config path returned empty output".into(),
         ));
     }
     Ok(path)
@@ -344,7 +344,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn source_is_aionrs() {
+    fn source_is_dream_engine() {
         assert_eq!(DreamEngineAdapter.source(), McpSource::DreamEngine);
     }
 

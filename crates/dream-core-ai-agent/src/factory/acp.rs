@@ -18,7 +18,9 @@ use crate::session_context::AcpSessionBuildContext;
 use agent_client_protocol::schema::v1::{
     EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerSse, McpServerStdio,
 };
-use dream_core_api_types::{AgentMetadata, SessionMcpServer, SessionMcpTransport, TEAM_MCP_SERVER_NAME};
+use dream_core_api_types::{
+    AgentMetadata, SessionMcpServer, SessionMcpTransport, TEAM_MCP_SERVER_NAME, is_team_mcp_server_name,
+};
 use dream_core_common::CommandSpec;
 use dream_core_db::IMcpServerRepository;
 use dream_core_db::models::McpServerRow;
@@ -483,7 +485,7 @@ pub(super) async fn build(
     let mut session_mcp_servers = user_mcp_servers;
     for server in &config.session_mcp_servers {
         // Reserved name defense: the team coordination MCP must win.
-        if server.name == TEAM_MCP_SERVER_NAME {
+        if is_team_mcp_server_name(&server.name) {
             warn!(
                 ctx.conversation_id,
                 server_name = %server.name,
@@ -753,7 +755,7 @@ async fn load_user_mcp_servers(
         // `dream-team` is the reserved team coordination MCP name; a user row
         // that collides with it is never injected here (the team bridge is
         // folded in separately and must win).
-        if row.name == TEAM_MCP_SERVER_NAME {
+        if is_team_mcp_server_name(&row.name) {
             continue;
         }
         if !row_supported_by_capabilities(&row, capabilities) {

@@ -1,7 +1,7 @@
 //! Serde types for the `agy -p --output-format stream-json` NDJSON stream.
 //!
 //! Shapes verified against captured samples in
-//! `~/aion/protocols/samples/antigravity-cli/1.1.8/`.
+//! `~/dream/protocols/samples/antigravity-cli/1.1.8/`.
 //!
 //! Everything here is tolerant by design: every field is optional or guarded by
 //! `#[serde(other)]`. agy ships new step types and fields between releases (it
@@ -289,12 +289,12 @@ mod tests {
     fn parses_mcp_tool_call_parameters() {
         // agy routes every MCP tool through the single `call_mcp_tool` tool and
         // puts the real target in the parameters.
-        let line = r#"{"event":"step_update","step_update":{"step_index":6,"state":"ACTIVE","step_type":"tool","tool_name":"call_mcp_tool","tool_info":{"name":"call_mcp_tool","parameters":{"ServerName":"aionui-team","ToolName":"dream_core_team_ping","Arguments":{}}}}}"#;
+        let line = r#"{"event":"step_update","step_update":{"step_index":6,"state":"ACTIVE","step_type":"tool","tool_name":"call_mcp_tool","tool_info":{"name":"call_mcp_tool","parameters":{"ServerName":"one-team","ToolName":"dream_core_team_ping","Arguments":{}}}}}"#;
         let AgyEvent::StepUpdate(su) = parse_line(line).expect("parsed") else {
             panic!("expected step_update");
         };
         let params = su.tool_info.expect("tool_info").parameters.expect("parameters");
-        assert_eq!(params["ServerName"], "aionui-team");
+        assert_eq!(params["ServerName"], "one-team");
         assert_eq!(params["ToolName"], "dream_core_team_ping");
     }
 

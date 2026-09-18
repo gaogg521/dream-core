@@ -1,4 +1,4 @@
-//! Hard shutdown watchdog (AIONUI-16).
+//! Hard shutdown watchdog (ONE-16).
 //!
 //! The data-dir instance `flock` is only released by the kernel when this
 //! process exits (`dream-db/src/instance_lock.rs`). Sentry evidence shows the

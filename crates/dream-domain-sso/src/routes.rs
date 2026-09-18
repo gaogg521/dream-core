@@ -163,6 +163,9 @@ fn is_safe_local_redirect(target: &str) -> bool {
 }
 
 fn sanitize_deep_link_scheme(raw: Option<&str>) -> &'static str {
+    // The last two are the legacy schemes and the legacy fallback. A client that
+    // sends nothing is an older build that only ever registered the old scheme with
+    // the OS, so handing it anything else drops its SSO callback on the floor.
     match raw {
         Some("dream") => "dream",
         Some("dream-dev") => "dream-dev",
@@ -929,6 +932,7 @@ mod tests {
 
     #[test]
     fn desktop_callback_page_embeds_deep_link_for_script_redirect_and_manual_fallback() {
+        // legacy scheme: this is what the no-`scheme` fallback hands an older client
         let deep_link = "aionui://sso-callback?token=abc&userId=u1&username=sso_12345678";
         let page = desktop_callback_page(deep_link);
 

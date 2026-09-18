@@ -129,7 +129,7 @@ mod dream_ui {
     }
 
     #[tokio::test]
-    async fn source_is_aionui() {
+    async fn source_is_one() {
         let repo = Arc::new(MockRepo::new(vec![]));
         let adapter = DreamUiAdapter::new(repo);
         assert_eq!(adapter.source(), McpSource::DreamUi);
@@ -250,7 +250,7 @@ mod dream_engine {
     use dream_core_mcp::DreamEngineAdapter;
 
     #[test]
-    fn source_is_aionrs() {
+    fn source_is_dream_engine() {
         assert_eq!(DreamEngineAdapter.source(), McpSource::DreamEngine);
     }
 

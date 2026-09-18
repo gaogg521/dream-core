@@ -124,7 +124,9 @@ async fn build_agent(deps: Arc<AgentFactoryDeps>, options: BuildTaskOptions) -> 
     let model = context.model.clone();
     match context.kind {
         AgentSessionKind::Acp(acp_context) => acp::build(deps, *acp_context, ctx).await,
-        AgentSessionKind::DreamEngine(aionrs_context) => dream_engine::build(deps, *aionrs_context, model, ctx).await,
+        AgentSessionKind::DreamEngine(dream_engine_context) => {
+            dream_engine::build(deps, *dream_engine_context, model, ctx).await
+        }
         AgentSessionKind::Antigravity(agy_context) => antigravity::build(deps, *agy_context, ctx).await,
     }
 }

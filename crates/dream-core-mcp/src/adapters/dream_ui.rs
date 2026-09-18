@@ -195,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn source_is_aionui() {
+    fn source_is_one() {
         let repo = Arc::new(MockRepo::new(vec![]));
         let adapter = DreamUiAdapter::new(repo);
         assert_eq!(adapter.source(), McpSource::DreamUi);

@@ -295,7 +295,7 @@ mod tests {
         options.apply_conversation_runtime_context(
             "user-1",
             "conv-1",
-            Some("/Applications/AionUi/aioncore"),
+            Some("/Applications/One Work/dreamcore"),
             Some("http://127.0.0.1:25808"),
             Some("runtime-token-1"),
         );
@@ -325,7 +325,7 @@ mod tests {
             options
                 .context
                 .runtime_env
-                .contains(&(HELPER_BIN_ENV.to_owned(), "/Applications/AionUi/aioncore".to_owned()))
+                .contains(&(HELPER_BIN_ENV.to_owned(), "/Applications/One Work/dreamcore".to_owned()))
         );
         assert!(
             options
@@ -453,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn aionrs_build_extra_serde_defaults() {
+    fn dream_engine_build_extra_serde_defaults() {
         let json = json!({});
         let extra: DreamEngineBuildExtra = serde_json::from_value(json).unwrap();
         assert!(extra.system_prompt.is_none());
@@ -464,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn aionrs_build_extra_serde_with_overrides() {
+    fn dream_engine_build_extra_serde_with_overrides() {
         let json = json!({
             "system_prompt": "You are a helpful assistant.",
             "max_tokens": 4096,
@@ -481,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn aionrs_build_extra_serde_with_preset_rules() {
+    fn dream_engine_build_extra_serde_with_preset_rules() {
         let json = json!({
             "preset_rules": "You are a data analyst."
         });
@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn aionrs_build_extra_accepts_frozen_skills_snapshot() {
+    fn dream_engine_build_extra_accepts_frozen_skills_snapshot() {
         let json = json!({
             "preset_rules": "Rules",
             "skills": ["pdf", "cron"]

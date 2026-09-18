@@ -3250,7 +3250,7 @@ mod tests {
                 .with_last_activity(now_ms() - 600_000)
         }
 
-        fn idle_pending_aionrs(conversation_id: &str) -> Self {
+        fn idle_pending_dream_engine(conversation_id: &str) -> Self {
             Self::accepts_mode(conversation_id)
                 .with_agent_type(AgentType::DreamEngine)
                 .with_status(Some(ConversationStatus::Pending))
@@ -3401,10 +3401,10 @@ mod tests {
             );
         }
 
-        fn insert_idle_pending_aionrs_agent(&self, conversation_id: &str) {
+        fn insert_idle_pending_dream_engine_agent(&self, conversation_id: &str) {
             self.tasks.lock().unwrap().insert(
                 conversation_id.to_owned(),
-                AgentInstance::Mock(Arc::new(ModeSettingAgent::idle_pending_aionrs(conversation_id))),
+                AgentInstance::Mock(Arc::new(ModeSettingAgent::idle_pending_dream_engine(conversation_id))),
             );
         }
 
@@ -3446,7 +3446,7 @@ mod tests {
         }
     }
 
-    fn team_with_aionrs_worker_request(name: &str) -> dream_core_api_types::CreateTeamRequest {
+    fn team_with_dream_engine_worker_request(name: &str) -> dream_core_api_types::CreateTeamRequest {
         let mut request = two_agent_team_request(name);
         request.agents.push(dream_core_api_types::TeamAgentInput {
             name: "Butler".into(),
@@ -4208,12 +4208,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clear_agent_context_rejects_wrong_owner_and_aionrs_before_kill() {
+    async fn clear_agent_context_rejects_wrong_owner_and_dream_engine_before_kill() {
         let task_manager = Arc::new(MutableTaskManager::new());
         let (svc, _repo, _task_manager, _conv_repo, _broadcaster) =
             setup_with_factory_metadata_team_repo_conversation_repo_broadcaster_and_task_manager(task_manager.clone());
         let created = svc
-            .create_team("user-test", team_with_aionrs_worker_request("Clear Unsupported"))
+            .create_team("user-test", team_with_dream_engine_worker_request("Clear Unsupported"))
             .await
             .unwrap();
         let butler = created.assistants.iter().find(|agent| agent.name == "Butler").unwrap();
@@ -4493,16 +4493,18 @@ mod tests {
     }
 
     #[test]
-    fn idle_collectable_team_member_accepts_idle_pending_aionrs_runtime() {
-        let task = AgentInstance::Mock(Arc::new(ModeSettingAgent::idle_pending_aionrs("aionrs-idle")));
+    fn idle_collectable_team_member_accepts_idle_pending_dream_engine_runtime() {
+        let task = AgentInstance::Mock(Arc::new(ModeSettingAgent::idle_pending_dream_engine(
+            "dream-engine-idle",
+        )));
 
         assert!(super::is_idle_collectable_team_member(&task, now_ms(), 300_000));
     }
 
     #[test]
-    fn idle_collectable_team_member_rejects_running_aionrs_runtime() {
+    fn idle_collectable_team_member_rejects_running_dream_engine_runtime() {
         let task = AgentInstance::Mock(Arc::new(
-            ModeSettingAgent::accepts_mode("aionrs-running")
+            ModeSettingAgent::accepts_mode("dream-engine-running")
                 .with_agent_type(AgentType::DreamEngine)
                 .with_status(Some(ConversationStatus::Running))
                 .with_last_activity(now_ms() - 600_000),
@@ -4512,20 +4514,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn idle_cleanup_stops_team_session_when_aionrs_member_is_idle_pending() {
+    async fn idle_cleanup_stops_team_session_when_dream_engine_member_is_idle_pending() {
         let task_manager = Arc::new(MutableTaskManager::new());
         let (svc, _repo, _task_manager, _conv_repo, _broadcaster) =
             setup_with_factory_metadata_team_repo_conversation_repo_broadcaster_and_task_manager(task_manager.clone());
         let created = svc
-            .create_team("user-test", team_with_aionrs_worker_request("Idle DreamEngine Cleanup"))
+            .create_team(
+                "user-test",
+                team_with_dream_engine_worker_request("Idle DreamEngine Cleanup"),
+            )
             .await
             .unwrap();
         let lead = created.assistants.iter().find(|agent| agent.role == "lead").unwrap();
         let acp_worker = created.assistants.iter().find(|agent| agent.name == "Worker").unwrap();
-        let aionrs_worker = created.assistants.iter().find(|agent| agent.name == "Butler").unwrap();
+        let dream_engine_worker = created.assistants.iter().find(|agent| agent.name == "Butler").unwrap();
         task_manager.insert_idle_finished_agent(&lead.conversation_id);
         task_manager.insert_idle_finished_agent(&acp_worker.conversation_id);
-        task_manager.insert_idle_pending_aionrs_agent(&aionrs_worker.conversation_id);
+        task_manager.insert_idle_pending_dream_engine_agent(&dream_engine_worker.conversation_id);
 
         svc.ensure_session("user-test", &created.id).await.unwrap();
 

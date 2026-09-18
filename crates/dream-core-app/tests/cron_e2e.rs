@@ -200,7 +200,7 @@ fn cron_skill_does_not_instruct_agents_to_write_payload_files() {
 
     assert!(!skill.contains("--input"));
     assert!(!skill.contains("cat >"));
-    assert!(!skill.contains("/tmp/aionui-cron"));
+    assert!(!skill.contains("/tmp/one-cron"));
     assert!(!skill.contains("python3"));
     assert!(!skill.contains("dream_core_cron.py"));
     assert!(skill.contains("$ONE_HELPER_BIN"));

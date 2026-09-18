@@ -30,7 +30,7 @@ const READY_EVENT_MARKER: &str = "DREAMCORE_READY";
 const DYNAMIC_BACKEND_BIND_MAX_ATTEMPTS: usize = 50;
 const WORKER_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
-// Bounded graceful-shutdown tail (AIONUI-16). The data-dir instance flock is
+// Bounded graceful-shutdown tail (ONE-16). The data-dir instance flock is
 // only released when this process exits, so every await between the shutdown
 // signal and process exit must be bounded — otherwise a restarting Dream UI
 // keeps hitting BOOTSTRAP_PEER_ALREADY_RUNNING against a zombie backend.
@@ -362,7 +362,7 @@ pub(crate) async fn run_server(
     emit_ready_event();
     info!("startup: server ready, emitted DREAMCORE_READY");
 
-    // Last-resort bound on the whole shutdown tail (AIONUI-16): armed when the
+    // Last-resort bound on the whole shutdown tail (ONE-16): armed when the
     // shutdown signal fires, disarmed once the tail below completes. See
     // `bootstrap::shutdown_watchdog` for rationale.
     let shutdown_watchdog = ShutdownWatchdog::spawn(SHUTDOWN_WATCHDOG_TIMEOUT);
@@ -576,7 +576,7 @@ enum ServeOutcome {
 /// axum's `with_graceful_shutdown` waits for every connection task with no
 /// upper bound (axum-0.8.9 serve/mod.rs: `close_tx.closed().await`); a hung
 /// in-flight response would otherwise block process exit — and therefore the
-/// data-dir instance flock release — forever (AIONUI-16). Once `drain_started`
+/// data-dir instance flock release — forever (ONE-16). Once `drain_started`
 /// observes the graceful-shutdown callback completing, the remaining drain
 /// gets `drain_timeout` before being abandoned.
 async fn await_serve_with_bounded_drain<F>(
@@ -726,7 +726,7 @@ mod tests {
         tx.send(true).expect("drain marker should be delivered");
 
         // A serve future that never completes models axum waiting forever on a
-        // connection task that will not exit (the AIONUI-16 hang).
+        // connection task that will not exit (the ONE-16 hang).
         let outcome = await_serve_with_bounded_drain(
             std::future::pending::<std::io::Result<()>>(),
             rx,

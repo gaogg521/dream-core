@@ -319,7 +319,7 @@ async fn get_sessions_empty() {
 // ===========================================================================
 
 #[tokio::test]
-async fn get_channel_settings_defaults_to_generated_aionrs_assistant() {
+async fn get_channel_settings_defaults_to_generated_dream_engine_assistant() {
     let (mut app, services) = build_app().await;
     let (token, _csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
 
@@ -335,7 +335,7 @@ async fn get_channel_settings_defaults_to_generated_aionrs_assistant() {
     // only the assistant_id is canonical, legacy fields are omitted.
     let assistant_id = json["data"]["assistant"]["assistant_id"]
         .as_str()
-        .expect("default channel assistant should be the generated aionrs bare assistant");
+        .expect("default channel assistant should be the generated dream-engine bare assistant");
     assert!(
         assistant_id.starts_with("bare:"),
         "expected bare assistant id, got {assistant_id}"

@@ -1476,7 +1476,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn team_tool_transport_prefers_mcp_for_builtin_aionrs_backend() {
+    async fn team_tool_transport_prefers_mcp_for_builtin_dream_engine_backend() {
         let provisioner = test_provisioner(Arc::new(Mutex::new(Vec::new())));
         let mut agent = test_agent();
         agent.backend = "dream".into();

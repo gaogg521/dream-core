@@ -67,7 +67,7 @@ pub trait IUserRepository: Send + Sync {
     ) -> Result<Option<User>, DbError>;
 
     /// One-time adoption of the machine's pre-multi-account data: while
-    /// `owner_id` is the ONLY external (aionpro) user in this database,
+    /// `owner_id` is the ONLY external (dreampro) user in this database,
     /// re-own every user-scoped row currently held by `system_default_user`
     /// to `owner_id`. Returns the number of rows moved.
     ///

@@ -131,7 +131,7 @@ async fn assistant_definition_table_rejects_extension_source_and_owner_type() {
             created_at, updated_at
         ) VALUES (
             'd-ext-source', 'ext-source', 'extension', 'system', 'ext-source',
-            'Ext Source', '{}', '{}', 'none', 'aionrs',
+            'Ext Source', '{}', '{}', 'none', 'dream_engine',
             'none', '[]', '{}',
             'auto', 'auto', 'fixed', '[]',
             '[]', '[]', 'auto', '[]',
@@ -155,7 +155,7 @@ async fn assistant_definition_table_rejects_extension_source_and_owner_type() {
             created_at, updated_at
         ) VALUES (
             'd-ext-owner', 'ext-owner', 'builtin', 'extension', 'ext-owner',
-            'Ext Owner', '{}', '{}', 'none', 'aionrs',
+            'Ext Owner', '{}', '{}', 'none', 'dream_engine',
             'none', '[]', '{}',
             'auto', 'auto', 'fixed', '[]',
             '[]', '[]', 'auto', '[]',

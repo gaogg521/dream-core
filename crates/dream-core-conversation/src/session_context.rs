@@ -460,7 +460,7 @@ fn build_engine_context(
         }
     };
     config.user_id = Some(row.user_id.clone());
-    apply_team_seed_to_aionrs_config(&team, &mut config);
+    apply_team_seed_to_dream_engine_config(&team, &mut config);
     let belongs_to_team = team.is_some();
     // Team-bound sessions keep the team seed / create-time value; runtime
     // resolved permission is intentionally NOT read back (centralized team
@@ -519,7 +519,7 @@ fn apply_team_seed_to_acp_config(team: &Option<TeamSessionBinding>, config: &mut
     }
 }
 
-fn apply_team_seed_to_aionrs_config(team: &Option<TeamSessionBinding>, config: &mut DreamEngineBuildExtra) {
+fn apply_team_seed_to_dream_engine_config(team: &Option<TeamSessionBinding>, config: &mut DreamEngineBuildExtra) {
     let Some(team) = team else {
         return;
     };
@@ -883,9 +883,9 @@ mod tests {
         }
     }
 
-    fn aionrs_context(context: AgentSessionContext) -> DreamEngineSessionBuildContext {
+    fn dream_engine_context(context: AgentSessionContext) -> DreamEngineSessionBuildContext {
         match context.kind {
-            AgentSessionKind::DreamEngine(aionrs) => *aionrs,
+            AgentSessionKind::DreamEngine(dream_engine) => *dream_engine,
             other => panic!("expected DreamEngine context, got {other:?}"),
         }
     }
@@ -1163,7 +1163,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn aionrs_team_extra_is_exposed_as_typed_context() {
+    async fn dream_engine_team_extra_is_exposed_as_typed_context() {
         let repos = setup().await;
         let row = row(
             "aionrs",
@@ -1194,23 +1194,23 @@ mod tests {
         assert_eq!(team.runtime_seed.backend.as_deref(), Some("aionrs"));
         assert_eq!(team.mcp.as_ref().unwrap().stdio.port, 5252);
 
-        let aionrs = aionrs_context(context);
-        assert!(aionrs.belongs_to_team);
-        assert_eq!(aionrs.config.team_mcp_stdio_config.unwrap().port, 5252);
+        let dream_engine = dream_engine_context(context);
+        assert!(dream_engine.belongs_to_team);
+        assert_eq!(dream_engine.config.team_mcp_stdio_config.unwrap().port, 5252);
     }
 
     #[tokio::test]
-    async fn aionrs_extra_user_id_is_overridden_by_conversation_owner() {
+    async fn dream_engine_extra_user_id_is_overridden_by_conversation_owner() {
         let repos = setup().await;
         let row = row("aionrs", serde_json::json!({ "user_id": "other-user" }), None);
 
         let context = repos.builder().build(&row).await.unwrap();
-        let aionrs = aionrs_context(context);
-        assert_eq!(aionrs.config.user_id.as_deref(), Some("user-1"));
+        let ctx = dream_engine_context(context);
+        assert_eq!(ctx.config.user_id.as_deref(), Some("user-1"));
     }
 
     #[tokio::test]
-    async fn aionrs_uses_conversation_model_and_ignores_legacy_extra_model() {
+    async fn dream_engine_uses_conversation_model_and_ignores_legacy_extra_model() {
         let repos = setup().await;
         let row = row(
             "aionrs",
@@ -1389,7 +1389,7 @@ mod tests {
         }
     }
 
-    fn aionrs_seed(mode: &str, resolved: Option<&str>) -> DreamEngineRuntimePermissionSeed {
+    fn dream_engine_seed(mode: &str, resolved: Option<&str>) -> DreamEngineRuntimePermissionSeed {
         DreamEngineRuntimePermissionSeed {
             default_permission_mode: mode.to_owned(),
             resolved_permission_value: resolved.map(ToOwned::to_owned),
@@ -1397,46 +1397,46 @@ mod tests {
     }
 
     #[test]
-    fn aionrs_auto_mode_rebuild_adopts_resolved_permission_value() {
+    fn dream_engine_auto_mode_rebuild_adopts_resolved_permission_value() {
         // AC#1: auto happy path — runtime yolo survives rebuild.
         let row = row("aionrs", serde_json::json!({ "session_mode": "default" }), None);
         let ctx = build_engine_context(
             &row,
             serde_json::json!({ "session_mode": "default" }),
             None,
-            Some(aionrs_seed("auto", Some("yolo"))),
+            Some(dream_engine_seed("auto", Some("yolo"))),
         );
         assert_eq!(ctx.config.session_mode.as_deref(), Some("yolo"));
     }
 
     #[test]
-    fn aionrs_auto_mode_resolved_overrides_create_time_seed() {
+    fn dream_engine_auto_mode_resolved_overrides_create_time_seed() {
         // AC#2: existing-data compat — create-time non-yolo seed is overridden.
         let row = row("aionrs", serde_json::json!({ "session_mode": "auto_edit" }), None);
         let ctx = build_engine_context(
             &row,
             serde_json::json!({ "session_mode": "auto_edit" }),
             None,
-            Some(aionrs_seed("auto", Some("yolo"))),
+            Some(dream_engine_seed("auto", Some("yolo"))),
         );
         assert_eq!(ctx.config.session_mode.as_deref(), Some("yolo"));
     }
 
     #[test]
-    fn aionrs_fixed_mode_ignores_resolved_permission_value() {
+    fn dream_engine_fixed_mode_ignores_resolved_permission_value() {
         // AC#3: fixed safety gate — runtime residue must NOT escalate.
         let row = row("aionrs", serde_json::json!({ "session_mode": "default" }), None);
         let ctx = build_engine_context(
             &row,
             serde_json::json!({ "session_mode": "default" }),
             None,
-            Some(aionrs_seed("fixed", Some("yolo"))),
+            Some(dream_engine_seed("fixed", Some("yolo"))),
         );
         assert_eq!(ctx.config.session_mode.as_deref(), Some("default"));
     }
 
     #[test]
-    fn aionrs_team_bound_session_ignores_resolved_permission_value() {
+    fn dream_engine_team_bound_session_ignores_resolved_permission_value() {
         // Team-bound governance: keep team seed, never read resolved runtime value.
         let team = TeamSessionBinding::from_extra_value(&serde_json::json!({
             "teamId": "team-1",
@@ -1450,7 +1450,7 @@ mod tests {
             &row,
             serde_json::json!({ "session_mode": "auto_edit" }),
             team,
-            Some(aionrs_seed("auto", Some("yolo"))),
+            Some(dream_engine_seed("auto", Some("yolo"))),
         );
         assert_eq!(ctx.config.session_mode.as_deref(), Some("auto_edit"));
     }

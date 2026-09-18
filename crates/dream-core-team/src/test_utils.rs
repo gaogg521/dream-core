@@ -920,7 +920,7 @@ pub(crate) mod workspace_harness {
             Self {
                 repo,
                 workspace_root: std::env::temp_dir().join(format!(
-                    "aionui-team-workspace-harness-{}",
+                    "one-team-workspace-harness-{}",
                     dream_core_common::generate_id()
                 )),
             }

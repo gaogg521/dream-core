@@ -469,7 +469,7 @@ async fn management_rows_project_runtime_catalogs_from_agent_metadata() {
 }
 
 #[tokio::test]
-async fn management_rows_include_aionrs_builtin_mode_catalog() {
+async fn management_rows_include_dream_engine_builtin_mode_catalog() {
     let db = init_database_memory().await.unwrap();
     let repo: Arc<dyn IAgentMetadataRepository> = Arc::new(SqliteAgentMetadataRepository::new(db.pool().clone()));
     let registry = AgentRegistry::new(repo);

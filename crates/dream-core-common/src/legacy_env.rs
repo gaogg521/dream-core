@@ -17,7 +17,7 @@
 //! silently preferring the value they are moving away from would be the wrong
 //! way to break the tie.
 
-/// Suffixes shared by both spellings — `AIONUI_<S>` is adopted as `ONE_<S>`.
+/// Suffixes shared by both spellings — the legacy `AIONUI_<S>` is adopted as `ONE_<S>`.
 ///
 /// Deliberately explicit rather than derived: this list is what an operator's
 /// old configuration is matched against, so a name missing here fails silently

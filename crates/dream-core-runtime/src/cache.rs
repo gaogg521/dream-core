@@ -45,7 +45,7 @@ pub fn runtime_root() -> Option<PathBuf> {
     if let Some(p) = RUNTIME_ROOT_OVERRIDE.get() {
         return Some(p.clone());
     }
-    dirs::cache_dir().map(|d| d.join("aionui").join("runtime"))
+    dirs::cache_dir().map(|d| d.join("one").join("runtime"))
 }
 
 pub fn node_runtime_root() -> Option<PathBuf> {
@@ -72,7 +72,7 @@ mod tests {
             .take(2)
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(tail, vec!["runtime".to_string(), "aionui".to_string()]);
+        assert_eq!(tail, vec!["runtime".to_string(), "one".to_string()]);
     }
 
     #[test]
@@ -84,10 +84,7 @@ mod tests {
             .take(3)
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(
-            tail,
-            vec!["node".to_string(), "runtime".to_string(), "aionui".to_string()]
-        );
+        assert_eq!(tail, vec!["node".to_string(), "runtime".to_string(), "one".to_string()]);
     }
 
     #[test]
@@ -105,7 +102,7 @@ mod tests {
                 "acp".to_string(),
                 "managed-tools".to_string(),
                 "runtime".to_string(),
-                "aionui".to_string()
+                "one".to_string()
             ]
         );
     }

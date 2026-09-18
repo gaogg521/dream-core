@@ -973,28 +973,38 @@ mod tests {
         assert_eq!(claude.icon.as_deref(), Some("/api/assets/logos/ai-major/claude.svg"));
 
         let rows = repo.list_all().await.unwrap();
-        let aionrs = rows
+        let dream_engine = rows
             .iter()
             .find(|row| row.agent_type == "dream" && row.agent_source == "internal")
-            .expect("seeded aion cli row");
+            .expect("seeded Aion CLI row");
         // Fork: migration 021 rebrands the dream row icon to the 1ONE logo.
-        assert_eq!(aionrs.icon.as_deref(), Some("/api/assets/logos/brand/1one.png"));
-        let aionrs_modes: serde_json::Value =
-            serde_json::from_str(aionrs.available_modes.as_deref().expect("aionrs modes catalog")).unwrap();
-        assert_eq!(aionrs_modes["current_mode_id"].as_str(), Some("default"));
+        assert_eq!(dream_engine.icon.as_deref(), Some("/api/assets/logos/brand/1one.png"));
+        let dream_engine_modes: serde_json::Value = serde_json::from_str(
+            dream_engine
+                .available_modes
+                .as_deref()
+                .expect("dream-engine modes catalog"),
+        )
+        .unwrap();
+        assert_eq!(dream_engine_modes["current_mode_id"].as_str(), Some("default"));
         assert_eq!(
-            aionrs_modes["available_modes"]
+            dream_engine_modes["available_modes"]
                 .as_array()
-                .expect("aionrs available modes")
+                .expect("dream-engine available modes")
                 .iter()
                 .filter_map(|item| item.get("id").and_then(serde_json::Value::as_str))
                 .collect::<Vec<_>>(),
             vec!["default", "auto_edit", "yolo"]
         );
-        let aionrs_config_options: serde_json::Value =
-            serde_json::from_str(aionrs.config_options.as_deref().expect("aionrs config options")).unwrap();
+        let dream_engine_config_options: serde_json::Value = serde_json::from_str(
+            dream_engine
+                .config_options
+                .as_deref()
+                .expect("dream-engine config options"),
+        )
+        .unwrap();
         assert_eq!(
-            aionrs_config_options["config_options"][0]["options"][1]["value"].as_str(),
+            dream_engine_config_options["config_options"][0]["options"][1]["value"].as_str(),
             Some("auto_edit")
         );
 

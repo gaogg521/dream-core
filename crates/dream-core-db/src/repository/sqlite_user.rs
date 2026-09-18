@@ -828,7 +828,7 @@ mod tests {
     async fn ensure_external_user_is_idempotent_and_has_no_password() {
         let (repo, _db) = setup().await;
         let projection = ExternalUserProjection {
-            username: Some("AionPro User".to_string()),
+            username: Some("DreamPro User".to_string()),
             email: Some("user@example.com".to_string()),
             avatar_path: Some("/avatar.png".to_string()),
         };
@@ -856,7 +856,7 @@ mod tests {
         assert_eq!(first.status, UserStatus::Active);
         assert_eq!(first.session_generation, 0);
         assert!(first.password_hash.is_none());
-        assert!(repo.find_by_username("AionPro User").await.unwrap().is_none());
+        assert!(repo.find_by_username("DreamPro User").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -900,7 +900,7 @@ mod tests {
         let now = dream_core_common::now_ms();
         sqlx::query(
             "INSERT INTO conversations (id, user_id, name, type, created_at, updated_at) \
-             VALUES (?, 'system_default_user', 'legacy', 'aionrs', ?, ?)",
+             VALUES (?, 'system_default_user', 'legacy', 'dream-engine', ?, ?)",
         )
         .bind(id)
         .bind(now)

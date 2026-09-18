@@ -4,7 +4,7 @@
 >
 > **事实来源**：
 > - [backend-audit.md](./backend-audit.md) §1.10 / §1.11 / §4.1–§4.8
-> - [aionui-audit.md](./aionui-audit.md) §2.1 / §3.1 / §4 / §7
+> - [one-audit.md](./one-audit.md) §2.1 / §3.1 / §4 / §7
 > - [mcp.md](../mcp.md) §4.5 / §4.6
 >
 > **相关文档**：[README.md](./README.md) · [modules.md](./modules.md) · [milestones.md](./milestones.md)
@@ -32,7 +32,7 @@
 | 修改 | `dream-core-conversation::service::ConversationService::update_extra(conv_id, patch)` 【新增接口】供 `ensure_session` 写 `team_mcp_stdio_config`（extra 是 JSON 字符串列，不需 schema 迁移） |
 | 修改 | `dream-core-app::state_builders::build_team_state` 传 worker_task_manager |
 
-以下按模块给出签名。**字段命名对齐 aionui-backend Rust 规则（snake_case）；对外 JSON 字段按 backend-audit §1.10 的事实保持 snake_case（rebase 后已经全面去 `rename_all=camelCase`，见 commit `dae96f8`）。**
+以下按模块给出签名。**字段命名对齐 dreamcore Rust 规则（snake_case）；对外 JSON 字段按 backend-audit §1.10 的事实保持 snake_case（rebase 后已经全面去 `rename_all=camelCase`，见 commit `dae96f8`）。**
 
 ---
 
@@ -53,7 +53,7 @@ pub struct TeamMcpStdioConfig {
 }
 
 impl TeamMcpStdioConfig {
-    /// stdio bridge 读到的 env 名（固定常量，不可改；aionui-audit §3.1 列出）
+    /// stdio bridge 读到的 env 名（固定常量，不可改；one-audit §3.1 列出）
     pub const ENV_PORT: &'static str = "TEAM_MCP_PORT";
     pub const ENV_TOKEN: &'static str = "TEAM_MCP_TOKEN";
     pub const ENV_SLOT_ID: &'static str = "TEAM_AGENT_SLOT_ID";
@@ -103,7 +103,7 @@ use dream_core_api_types::TeamMcpStdioConfig;
 #[derive(Debug, Clone)]
 pub struct TeamMcpStdioServerSpec {
     pub name: String,          // 固定 "dream-core-team-<team_id>"
-    pub command: String,       // aionui-backend 的绝对路径，由调用方传入（见 §7）
+    pub command: String,       // dreamcore 的绝对路径，由调用方传入（见 §7）
     pub args: Vec<String>,     // 固定 vec!["mcp-bridge".into()]
     pub env: Vec<(String, String)>, // 三个 env，见 §1 的常量
 }
@@ -129,7 +129,7 @@ impl TeamMcpStdioServerSpec {
 
 ```rust
 // descriptor 文本必须原样复用 team-prompts.md §5.2 的 team_list_models / team_describe_assistant
-// （aionui-audit §8 硬约束：prompt/tool description 原样复用，禁改写）
+// （one-audit §8 硬约束：prompt/tool description 原样复用，禁改写）
 pub fn team_list_models_descriptor() -> ToolDescriptor { /* ... */ }
 pub fn team_describe_assistant_descriptor() -> ToolDescriptor { /* ... */ }
 ```
@@ -137,7 +137,7 @@ pub fn team_describe_assistant_descriptor() -> ToolDescriptor { /* ... */ }
 **handler 签名**（server.rs dispatch 层调用）：
 
 ```rust
-// phase1 最小实现：返回固定 backend 列表（claude / codex / gemini / aionrs）
+// phase1 最小实现：返回固定 backend 列表（claude / codex / gemini / dream-engine）
 // Wave 2 再接 agent_registry / assistants 配置
 pub fn handle_team_list_models(args: &serde_json::Value) -> ToolResult { /* ... */ }
 
@@ -146,7 +146,7 @@ pub fn handle_team_list_models(args: &serde_json::Value) -> ToolResult { /* ... 
 pub fn handle_team_describe_assistant(args: &serde_json::Value) -> ToolResult { /* ... */ }
 ```
 
-**`all_tool_descriptors()`** 扩展为返回 **10 条**，顺序与 aionui-audit §3.2 表格一致。
+**`all_tool_descriptors()`** 扩展为返回 **10 条**，顺序与 one-audit §3.2 表格一致。
 
 ---
 
@@ -154,14 +154,14 @@ pub fn handle_team_describe_assistant(args: &serde_json::Value) -> ToolResult { 
 
 **文件**：`crates/dream-core-team/src/prompts.rs`（现有 3 个 builder 重写）
 
-**新增常量**（原样复用 AionUi 英文，**不翻译不改写**，见 team-prompts.md §5 / §3 / §4）：
+**新增常量**（原样复用 One Work 英文，**不翻译不改写**，见 team-prompts.md §5 / §3 / §4）：
 
 ```rust
 /// teamGuidePrompt.ts 的 Rust 端完整等价，面向 solo ACP agent
 /// phase1 仅定义；Layer-1 注入由 Wave 2 模块 D7 的 send 路径接到 AcpBuildExtra.preset_context（或 wake payload）
-pub const TEAM_GUIDE_PROMPT_TEMPLATE: &str = r#"..."#; // 108 行 AionUi 原文
-pub const LEAD_PROMPT_TEMPLATE: &str = r#"..."#;        // 188 行 AionUi 原文
-pub const TEAMMATE_PROMPT_TEMPLATE: &str = r#"..."#;    // 114 行 AionUi 原文
+pub const TEAM_GUIDE_PROMPT_TEMPLATE: &str = r#"..."#; // 108 行 One Work 原文
+pub const LEAD_PROMPT_TEMPLATE: &str = r#"..."#;        // 188 行 One Work 原文
+pub const TEAMMATE_PROMPT_TEMPLATE: &str = r#"..."#;    // 114 行 One Work 原文
 pub const TEAM_SPAWN_AGENT_DESCRIPTION: &str = r#"..."#; // toolDescriptions.ts 19 行
 ```
 
@@ -218,7 +218,7 @@ pub struct AvailableAssistant {
 }
 ```
 
-**硬约束**（aionui-audit §8 #5、team-prompts.md §5）：模板常量一旦定义，Wave 2 只能填 param，**不得改模板文本**。
+**硬约束**（one-audit §8 #5、team-prompts.md §5）：模板常量一旦定义，Wave 2 只能填 param，**不得改模板文本**。
 
 ---
 
@@ -265,7 +265,7 @@ pub struct WakeInput {
 
 **文件**：`crates/dream-core-team/src/scheduler.rs`
 
-D8 负责把 scheduler 的已有方法**接上生产路径**。以下签名 AionUi 参考实现已全部实现（`TeammateManager.ts`），后端代码里方法存在但行为不完整。
+D8 负责把 scheduler 的已有方法**接上生产路径**。以下签名 One Work 参考实现已全部实现（`TeammateManager.ts`），后端代码里方法存在但行为不完整。
 
 ```rust
 impl TeammateManager {
@@ -285,7 +285,7 @@ impl TeammateManager {
 
     /// maybe_wake_leader_when_all_idle 扩展：
     /// 现有只看 Idle，需扩展为 settled = {Idle, Completed, Failed, Pending}
-    /// （AionUi TeammateManager.ts:440-452 的判定逻辑）
+    /// （One Work TeammateManager.ts:440-452 的判定逻辑）
     pub fn maybe_wake_leader_when_all_idle(&self) -> Option<String>;
     // 签名不变，内部逻辑改
 
@@ -303,7 +303,7 @@ impl TeammateManager {
     // ── 新增方法 ──
 
     /// activeWakes 去重：防止同一 agent 被并发 wake 两次
-    /// （AionUi TeammateManager.ts:94-100 的 activeWakes Map）
+    /// （One Work TeammateManager.ts:94-100 的 activeWakes Map）
     /// 返回 true = 获得锁可以 wake；false = 已有 wake 在跑，skip
     pub async fn acquire_wake_lock(&self, slot_id: &str) -> bool;
 
@@ -323,7 +323,7 @@ fn is_settled(status: &TeammateStatus) -> bool {
     matches!(status,
         TeammateStatus::Idle
         | TeammateStatus::Completed
-        | TeammateStatus::Error      // 对应 AionUi 的 Failed
+        | TeammateStatus::Error      // 对应 One Work 的 Failed
         | TeammateStatus::Pending    // 注意：后端 Pending 目前 serde alias 映射到 Idle，
                                      // phase1 需要恢复独立 Pending variant
     )
@@ -412,7 +412,7 @@ pub async fn run_mcp_bridge() -> !;
 - bridge **不做 caller 身份判定**：只负责透传 + 在每条 TCP 请求里附 `auth_token` + `slot_id`（或 `from_slot_id`）。
 - bridge 错误即退出（exit code 非零），ACP CLI 会把 MCP server 标为 broken，agent 继续跑只是 team_* 不可用（mcp.md §4.4 "稳定性保证 #3"）。
 
-**phase1 范围**：mcp_ready 握手"简化"为"tcp 连接建立成功即认为 ready"，不强制 phase1 做完整握手 —— AionUi 侧 waitForMcpReady 超时 graceful resolve（aionui-audit §8 #11），所以后端 phase1 先不接 server 端等待，后续 P1 再补。
+**phase1 范围**：mcp_ready 握手"简化"为"tcp 连接建立成功即认为 ready"，不强制 phase1 做完整握手 —— One Work 侧 waitForMcpReady 超时 graceful resolve（one-audit §8 #11），所以后端 phase1 先不接 server 端等待，后续 P1 再补。
 
 ---
 
@@ -909,7 +909,7 @@ let _ = self.stream_tx.send(AgentStreamChunk::ToolUse { ... });
 let _ = self.stream_tx.send(AgentStreamChunk::Finish { agent_crash: false, stop_reason: ... });
 ```
 
-**broadcast channel 大小**：256 足够 agent stream 高峰（AionUi 参考按 in-process 事件 bus 无上限，后端用 broadcast 限定避免 OOM）。
+**broadcast channel 大小**：256 足够 agent stream 高峰（One Work 参考按 in-process 事件 bus 无上限，后端用 broadcast 限定避免 OOM）。
 
 ---
 
@@ -930,7 +930,7 @@ impl TeammateManager {
         self.active_wakes.insert(slot_id.to_string())
     }
 
-    /// 消息发出成功后立即调用（不等 finish）—— aionui-audit §8 #2
+    /// 消息发出成功后立即调用（不等 finish）—— one-audit §8 #2
     pub fn release_wake_lock(&self, slot_id: &str) {
         self.active_wakes.remove(slot_id);
     }
@@ -1011,7 +1011,7 @@ impl TeammateManager {
     }
 
     /// re-wake 前调用（W4-D18 的 try_acquire_wake_lock 成功后立即）
-    /// aionui-audit §8 #3：不清这个 dedup 会吞掉新 turn 的 finish
+    /// one-audit §8 #3：不清这个 dedup 会吞掉新 turn 的 finish
     pub fn clear_finalized_turn(&self, conversation_id: &str) {
         self.finalized_turns.remove(conversation_id);
     }
@@ -1256,7 +1256,7 @@ impl TeamMcpServer {
             _ = notify.notified() => Ok(()),
             _ = tokio::time::sleep(timeout) => {
                 tracing::warn!("mcp_ready timeout for slot_id={}, degrading gracefully", slot_id);
-                Ok(())  // aionui-audit §8 #11
+                Ok(())  // one-audit §8 #11
             }
         }
     }
@@ -1313,17 +1313,17 @@ pub struct GuideStdioConfig {
 }
 
 impl GuideStdioConfig {
-    pub const ENV_PORT: &'static str = "AION_MCP_PORT";
-    pub const ENV_TOKEN: &'static str = "AION_MCP_TOKEN";
-    pub const ENV_BACKEND: &'static str = "AION_MCP_BACKEND";
-    pub const ENV_CONVERSATION_ID: &'static str = "AION_MCP_CONVERSATION_ID";
+    pub const ENV_PORT: &'static str = "ONE_MCP_PORT";
+    pub const ENV_TOKEN: &'static str = "ONE_MCP_TOKEN";
+    pub const ENV_BACKEND: &'static str = "ONE_MCP_BACKEND";
+    pub const ENV_CONVERSATION_ID: &'static str = "ONE_MCP_CONVERSATION_ID";
 }
 ```
 
 **文件**：`crates/dream-core-team/src/guide/handlers.rs`
 
 ```rust
-pub async fn handle_aion_create_team(
+pub async fn handle_one_create_team(
     service: &TeamSessionService,
     broadcaster: &dyn EventBroadcaster,
     args: &serde_json::Value,
@@ -1339,15 +1339,15 @@ pub async fn handle_aion_create_team(
     // 7. 返回 {team_id, name, route:"/team/<id>", lead_agent, status:"team_created", next_step:"..."}
 }
 
-pub async fn handle_aion_list_models(
+pub async fn handle_one_list_models(
     args: &serde_json::Value,
 ) -> Result<ToolResult, AppError> {
     // 复用 Wave 1 D4 的 team_list_models handler（硬编码 backend × model 表）
 }
 ```
 
-**用户常量**：`const MCP_SPAWN_USER_ID: &str = "system_default_user";`（aionui-audit §8 #15，后端 multi-tenant 时替换）。
-**MCP spawn 默认值**：`workspace_mode = "shared"`, `session_mode = "yolo"`（aionui-audit §8 #16）。
+**用户常量**：`const MCP_SPAWN_USER_ID: &str = "system_default_user";`（one-audit §8 #15，后端 multi-tenant 时替换）。
+**MCP spawn 默认值**：`workspace_mode = "shared"`, `session_mode = "yolo"`（one-audit §8 #16）。
 
 ---
 
@@ -1372,7 +1372,7 @@ async fn run_guide_bridge() -> ! {
 
     // 每条 tools/call 请求往 params 里追加 backend + conversation_id
     // 然后走 TCP 发给 GuideMcpServer
-    // （Guide server 用这两个字段做业务判断，比如 aion_create_team 的 caller 复用）
+    // （Guide server 用这两个字段做业务判断，比如 one_create_team 的 caller 复用）
 }
 ```
 
@@ -1385,7 +1385,7 @@ async fn run_guide_bridge() -> ! {
 **文件**：`crates/dream-core-team/src/guide/capability.rs`（新增）
 
 ```rust
-const TEAM_CAPABLE_BACKENDS: &[&str] = &["claude", "codex", "gemini", "aionrs"];
+const TEAM_CAPABLE_BACKENDS: &[&str] = &["claude", "codex", "gemini", "dream-engine"];
 
 pub fn is_team_capable_backend(backend: &str, mcp_stdio_capable: bool) -> bool {
     TEAM_CAPABLE_BACKENDS.contains(&backend) || mcp_stdio_capable
@@ -1430,7 +1430,7 @@ if config.team_mcp_stdio_config.is_none()
 
 ```rust
 impl TeamSession {
-    /// MCP spawn 闭环（AionUi TeamSessionService.ts:763-787 等价）
+    /// MCP spawn 闭环（One Work TeamSessionService.ts:763-787 等价）
     pub async fn spawn_agent(
         &self,
         caller_slot_id: &str,
@@ -1460,7 +1460,7 @@ pub struct SpawnAgentRequest {
 10. `wake(new_slot_id)` 触发首次 role prompt 注入（经 W2 D7 的 compute_wake_input → W4-D18 锁 → send_message）
 11. emit WS `team.listChanged{action: 'agent_added'}` + `team.agentSpawned`
 
-**错误回滚**：任一步失败需回滚前面的副作用（agent remove + conversation delete + task kill）；phase1 最小实现：若步 9/10 失败只 log + set_status(Failed) 不回滚 agents 数组（AionUi 参考实现也不回滚）。
+**错误回滚**：任一步失败需回滚前面的副作用（agent remove + conversation delete + task kill）；phase1 最小实现：若步 9/10 失败只 log + set_status(Failed) 不回滚 agents 数组（One Work 参考实现也不回滚）。
 
 ---
 
@@ -1477,7 +1477,7 @@ fn handle_send_message(
     let to = /*...*/;
     let message = /*...*/;
 
-    // shutdown 协议拦截（aionui-audit §2.1 shutdown）
+    // shutdown 协议拦截（one-audit §2.1 shutdown）
     if message.trim() == "shutdown_approved" {
         return self.handle_shutdown_approved(caller_slot_id).await;
     }
@@ -1519,7 +1519,7 @@ impl TeammateManager {
         Ok(())
     }
 
-    /// Wave 5 改造：target role 校验（aionui-audit §2.1 "Leader 不可 shutdown"）
+    /// Wave 5 改造：target role 校验（one-audit §2.1 "Leader 不可 shutdown"）
     pub async fn shutdown_agent(&self, caller_slot_id: &str, target: &str) -> Result<(), TeamError> {
         let caller = self.get_agent(caller_slot_id).ok_or(...)?;
         if caller.role != TeammateRole::Lead { return Err(TeamError::LeaderOnly); }

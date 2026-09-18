@@ -224,5 +224,5 @@ team paused: the model provider refused on spend grounds; waiting for the user
 - `DEFAULT_CHAR_BUDGET` 那句 "2% of 200k × 4" 的注释已过时（`bootstrap.rs` 传的是 `None`，
   固定 16k 字符），**别照着它改成 80_000**。
 - 队长自动下线不用的专家：用户明确说先不做。
-- 团队不活动看门狗（inactivity watchdog）：上游 `iOfficeAI/AionCore` 也只有定义没接线
-  （58 个 `aionui-team/*.rs` 全扫过），用户决定跟着不做。
+- 团队不活动看门狗（inactivity watchdog）：上游 `gaogg521/dream-core` 也只有定义没接线
+  （58 个 `dream-core-team/*.rs` 全扫过），用户决定跟着不做。

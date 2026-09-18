@@ -1,18 +1,18 @@
 # Image input model allowlist
 
-`image_input_models.json` is a hand-maintained AionCore asset. It is embedded at compile time and is never downloaded or refreshed at runtime. Its API roots mirror the fixed `base_url` presets in AionUi's `modelPlatforms.ts`; model IDs are maintained independently from `models.dev`.
+`image_input_models.json` is a hand-maintained One Work asset. It is embedded at compile time and is never downloaded or refreshed at runtime. Its API roots mirror the fixed `base_url` presets in One Work's `modelPlatforms.ts`; model IDs are maintained independently from `models.dev`.
 
 The catalog is intentionally a positive allowlist:
 
 - Match both the provider API root and the model ID (fork: IDs are compared with **loose keys**, not byte-exact equality — case / `.` `_` `-` / spaces / `vendor/` basename / `K2`↔`2` edition letter / trailing `YYYYMMDD` dates).
-- Add a model only when the provider's own documentation confirms image input on the API protocol used by AionCore.
+- Add a model only when the provider's own documentation confirms image input on the API protocol used by One Work.
 - Treat an absent provider or model as `Unknown`, not as proof that image input is unsupported.
 - Do not copy a first-party model entry to an aggregator or a custom gateway. Those endpoints may expose different model IDs or capabilities.
 - **Fork:** when the base URL is a custom/private OpenAI-compatible gateway (no catalog API hit), if the model ID loosely matches **any** allowlisted vision model ID, treat as `Supported` so LiteLLM-style proxies are not fail-closed. This still does **not** invent vision for text-only SKUs (e.g. DeepSeek V4 Flash, MiniMax M2.7).
-- Keep an empty `models` array when the preset endpoint is known but no stable model ID can be positively verified for that endpoint. This still records the AionUi preset without claiming image support.
-- Aggregator entries may be refreshed manually from that aggregator's own catalog. The reviewed result must be committed as a static snapshot; AionCore never fetches it at runtime.
+- Keep an empty `models` array when the preset endpoint is known but no stable model ID can be positively verified for that endpoint. This still records the One Work preset without claiming image support.
+- Aggregator entries may be refreshed manually from that aggregator's own catalog. The reviewed result must be committed as a static snapshot; One Work never fetches it at runtime.
 
-Poe bot names and Ctyun deployment model IDs are account- or deployment-specific, so they intentionally have no static model entries. DeepSeek does not currently expose a positively verified image-input chat model on the corresponding AionUi preset endpoint.
+Poe bot names and Ctyun deployment model IDs are account- or deployment-specific, so they intentionally have no static model entries. DeepSeek does not currently expose a positively verified image-input chat model on the corresponding One Work preset endpoint.
 
 The list was last reviewed on 2026-07-15 against these provider-owned references:
 
@@ -20,7 +20,7 @@ The list was last reviewed on 2026-07-15 against these provider-owned references
 - Anthropic and Bedrock model IDs: https://platform.claude.com/docs/en/about-claude/models/overview
 - Amazon Bedrock image messages: https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages.html
 - Gemini: https://ai.google.dev/gemini-api/docs/models
-- AionUi provider presets: https://github.com/iOfficeAI/AionUi/blob/main/packages/desktop/src/renderer/utils/model/modelPlatforms.ts
+- One Work provider presets: https://github.com/gaogg521/dream-ui/blob/main/packages/desktop/src/renderer/utils/model/modelPlatforms.ts
 - Novita model library and vision guide: https://novita.ai/models and https://novita.ai/docs/guides/llm-vision
 - OpenRouter model catalog and image inputs: https://openrouter.ai/api/v1/models and https://openrouter.ai/docs/guides/overview/multimodal/image-understanding
 - MiniMax OpenAI-compatible Chat Completions schema: https://platform.minimaxi.com/docs/api-reference/text/api/openapi-chat-openai.json

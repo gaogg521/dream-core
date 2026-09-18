@@ -54,7 +54,7 @@ async fn test_non_local_mode_requires_auth() {
 }
 
 #[tokio::test]
-async fn test_local_mode_aionpro_requires_session_and_allows_bootstrap_provision_without_csrf() {
+async fn test_local_mode_dreampro_requires_session_and_allows_bootstrap_provision_without_csrf() {
     let db = dream_core_db::init_database_memory().await.unwrap();
     let config = dream_core_app::AppConfig {
         identity_mode: dream_core_app::IdentityMode::DreamPro,

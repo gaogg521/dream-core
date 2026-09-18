@@ -261,8 +261,8 @@ async fn marketplace_avatar(Path(id): Path<String>) -> Result<Response, ApiError
 }
 
 /// Serve the raw avatar bytes for an assistant. Content-Type inferred from the
-/// file extension (png/jpg/svg default). Extensions return 404 — the frontend
-/// serves those via `aion-asset://`.
+/// file extension (png/jpg/svg default). Extensions return 404 — their avatars
+/// are served by the frontend, not by this route.
 async fn get_avatar(
     State(state): State<AssistantRouterState>,
     Extension(current_user): Extension<CurrentUser>,

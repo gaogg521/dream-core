@@ -67,14 +67,14 @@ fn is_deterministic() {
 
 #[test]
 fn casing_folds_per_platform() {
-    let mixed = canonicalize(&uri("/Users/Me/Aion")).unwrap();
-    let lower = canonicalize(&uri("/users/me/aion")).unwrap();
+    let mixed = canonicalize(&uri("/Users/Me/Dream")).unwrap();
+    let lower = canonicalize(&uri("/users/me/dream")).unwrap();
     if IGNORE_PATH_CASING {
         // macOS / Windows: same folder.
         assert_eq!(mixed, lower);
         // Case folding lowercases the path; on Windows `Url::from_file_path`
         // then re-normalizes the drive letter back to upper case.
-        assert_eq!(mixed.as_str(), uri("/users/me/aion"));
+        assert_eq!(mixed.as_str(), uri("/users/me/dream"));
     } else {
         // Linux: two distinct folders.
         assert_ne!(mixed, lower);
@@ -107,13 +107,13 @@ fn parse_scheme_accepts_file_rejects_others() {
 
 #[test]
 fn basename_is_final_segment() {
-    let c = canonicalize(&uri("/Users/me/aion")).unwrap();
-    assert_eq!(basename(&c), "aion");
+    let c = canonicalize(&uri("/Users/me/dream")).unwrap();
+    assert_eq!(basename(&c), "dream");
 }
 
 #[test]
 fn fs_path_roundtrips_canonical() {
-    let c = canonicalize(&uri("/Users/me/aion")).unwrap();
+    let c = canonicalize(&uri("/Users/me/dream")).unwrap();
     let p = fs_path(&c).unwrap();
     // Re-deriving the file uri from the path reproduces the canonical string.
     assert_eq!(to_file_uri(&p).unwrap(), c.as_str());
@@ -123,17 +123,17 @@ fn fs_path_roundtrips_canonical() {
 fn to_file_uri_does_not_fold_casing() {
     // to_file_uri is raw capture, not identity: casing is preserved.
     let input = if cfg!(windows) {
-        r"C:\Users\Me\Aion"
+        r"C:\Users\Me\Dream"
     } else {
-        "/Users/Me/Aion"
+        "/Users/Me/Dream"
     };
     let captured = to_file_uri(std::path::Path::new(input)).unwrap();
     assert_eq!(
         captured,
         if cfg!(windows) {
-            "file:///C:/Users/Me/Aion"
+            "file:///C:/Users/Me/Dream"
         } else {
-            "file:///Users/Me/Aion"
+            "file:///Users/Me/Dream"
         }
     );
 }

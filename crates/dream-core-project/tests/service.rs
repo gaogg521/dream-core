@@ -249,9 +249,9 @@ async fn create_standard_missing_dir_is_folder_not_found() {
     // like `/nonexistent` is not a Windows path, so `to_file_uri` fails there
     // and the test would assert on the wrong error.
     let missing_path = if cfg!(windows) {
-        std::path::PathBuf::from(r"C:\nonexistent-aionui-xyz-8f3a2b1c")
+        std::path::PathBuf::from(r"C:\nonexistent-one-xyz-8f3a2b1c")
     } else {
-        std::path::PathBuf::from("/nonexistent-aionui-xyz-8f3a2b1c")
+        std::path::PathBuf::from("/nonexistent-one-xyz-8f3a2b1c")
     };
     let missing = uri_of(&missing_path);
     let err = svc.create_standard("system_default_user", missing).await.unwrap_err();

@@ -10,7 +10,7 @@ fn unique_temp_dir(label: &str) -> std::path::PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    std::env::temp_dir().join(format!("aionui-cron-{label}-{}-{nanos}", std::process::id()))
+    std::env::temp_dir().join(format!("one-cron-{label}-{}-{nanos}", std::process::id()))
 }
 
 #[test]

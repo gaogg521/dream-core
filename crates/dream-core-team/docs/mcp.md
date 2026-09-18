@@ -114,7 +114,7 @@ Tool 业务错误 **不走** JSON-RPC error，而是返回 `result.isError=true`
 
 ## 4. Agent MCP 注入机制
 
-后端（aionui-backend）负责 agent 进程的完整生命周期：启动 agent、注入 MCP 连接配置、管理 stdio bridge。这是前后端分离架构下后端的职责。
+后端（dreamcore）负责 agent 进程的完整生命周期：启动 agent、注入 MCP 连接配置、管理 stdio bridge。这是前后端分离架构下后端的职责。
 
 ### 4.1 后端两套 MCP 注入机制
 
@@ -128,7 +128,7 @@ Tool 业务错误 **不走** JSON-RPC error，而是返回 `result.isError=true`
 | 生命周期 | 跟用户配置走，持久化 | 跟 team session 走，session 停止即失效 |
 | 类型 | stdio / http / sse（取决于 ACP backend 能力） | 仅 stdio（TCP bridge） |
 
-AionUi 参考实现中，两套在 agent 建 session 时合并注入（`userServers + presetServers + teamServer`）。后端需要在 `ConversationService.send_message` → agent factory → `session/new` 路径上做同样的合并。
+快照时点的前端参考实现中，两套在 agent 建 session 时合并注入（`userServers + presetServers + teamServer`）。后端需要在 `ConversationService.send_message` → agent factory → `session/new` 路径上做同样的合并。
 
 ### 4.2 Team MCP 注入流程
 
@@ -184,11 +184,11 @@ resume 逻辑已在 `AcpAgentManager::session_resume_and_send`（`acp_agent.rs`�
 ### 4.4 ACP 注入链路（stdio 注入方式）
 
 > **⚠️ 4.4 – 4.6 是 phase 1 的设计稿，子进程部分已过时。**
-> 当时设计的 `aioncore mcp-bridge`（stdio ↔ TCP 裸管道）已被 `aioncore mcp-team-stdio`
+> 当时设计的 `dreamcore mcp-bridge`（stdio ↔ TCP 裸管道）已被 `dreamcore mcp-team-stdio`
 > 取代，前者已删除。现在 agent spawn 的是一个 rmcp server
 > （`dream-core-app/src/commands/cmd_team_stdio.rs`），它自己声明工具并向 TCP 转发调用，
 > 而不是原样转发字节。注入点见 `dream-core-ai-agent/src/factory/acp_assembler.rs`
-> 的 `team_mcp_server()`、`session_agent.rs`、`factory/aionrs.rs`。
+> 的 `team_mcp_server()`、`session_agent.rs`、`factory/dream-engine.rs`。
 > 下文的 env 三元组（`TEAM_MCP_PORT` / `TEAM_MCP_TOKEN` / `TEAM_AGENT_SLOT_ID`）
 > 和 `session/new.mcpServers` 注入方式仍然准确，只有 `args` 从
 > `["mcp-bridge"]` 变成了 `["mcp-team-stdio"]`。
@@ -213,7 +213,7 @@ session_new() 构造 payload                    ← 需要改
     │    payload["data"]["mcpServers"] = [{
     │      "type": "stdio",
     │      "name": "dream-core-team",
-    │      "command": "aionui-backend",
+    │      "command": "dreamcore",
     │      "args": ["mcp-bridge"],
     │      "env": [
     │        { "name": "TEAM_MCP_PORT", "value": "<port>" },
@@ -225,7 +225,7 @@ session_new() 构造 payload                    ← 需要改
 ACP CLI (claude / codex / ...) 收到 session/new
     │  读 mcpServers → spawn stdio bridge 子进程
     ▼
-aionui-backend mcp-bridge (子进程)
+dreamcore mcp-bridge (子进程)
     │  stdin/stdout ↔ ACP CLI (JSON-RPC 2.0)
     │  TCP ↔ TeamMcpServer (127.0.0.1:<port>)
     ▼
@@ -261,17 +261,17 @@ pub struct TeamMcpStdioConfig {
 
 ### 4.6 stdio bridge 方案：打进主二进制
 
-stdio bridge 作为 `aionui-backend` 的 subcommand 实现，不单独出二进制：
+stdio bridge 作为 `dreamcore` 的 subcommand 实现，不单独出二进制：
 
 ```
-aionui-backend mcp-bridge
+dreamcore mcp-bridge
 ```
 
 agent CLI spawn 时的 MCP server 配置：
 ```json
 {
   "name": "dream-core-team",
-  "command": "aionui-backend",
+  "command": "dreamcore",
   "args": ["mcp-bridge"],
   "env": [
     { "name": "TEAM_MCP_PORT", "value": "<port>" },
@@ -292,9 +292,9 @@ bridge 职责（代码量极小）：
 
 ---
 
-## 5. 后端 vs AionUi GAP 分析
+## 5. 后端 vs One Work GAP 分析
 
-| # | 能力 | AionUi | 后端 | 备注 |
+| # | 能力 | One Work | 后端 | 备注 |
 |---|------|:---:|:---:|------|
 | 1 | Team 内 MCP TCP server | ✅ | ✅ | `TeamMcpServer` 已就绪 |
 | 2 | JSON-RPC 2.0 + initialize 鉴权 | ✅ | ✅ | 协议一致 |

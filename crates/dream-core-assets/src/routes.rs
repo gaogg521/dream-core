@@ -123,7 +123,7 @@ mod tests {
         let response = router
             .oneshot(
                 Request::builder()
-                    .uri("/api/assets/logos/%2E%2E%2Fbrand%2Faion.svg")
+                    .uri("/api/assets/logos/%2E%2E%2Fbrand%2Fdroid.svg")
                     .body(Body::empty())
                     .unwrap(),
             )

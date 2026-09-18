@@ -53,14 +53,14 @@ async fn known_good_team_whitelist_survives() {
         );
     }
 
-    let aionrs = repo
+    let dream_engine = repo
         .list_all()
         .await
         .unwrap()
         .into_iter()
         .find(|row| row.agent_type == "dream")
-        .expect("aionrs row is seeded");
-    let policy: serde_json::Value = serde_json::from_str(aionrs.behavior_policy.as_deref().unwrap()).unwrap();
+        .expect("dream-engine row is seeded");
+    let policy: serde_json::Value = serde_json::from_str(dream_engine.behavior_policy.as_deref().unwrap()).unwrap();
     assert_eq!(policy.get("supports_team"), Some(&serde_json::Value::Bool(true)));
 }
 

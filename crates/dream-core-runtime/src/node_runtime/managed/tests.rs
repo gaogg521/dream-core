@@ -277,7 +277,7 @@ fn managed_runtime_support_reports_current_platform() {
 #[test]
 fn classify_error_detects_bundled_node_runtime_missing() {
     let err = NodeRuntimeError::managed_invalid(
-        "bundled Node runtime missing under C:\\Program Files\\AionUi\\resources\\bundled-aioncore\\win32-x64\\managed-resources\\node\\node-v24.11.0-win-x64",
+        "bundled Node runtime missing under C:\\Program Files\\One Work\\resources\\bundled-dreamcore\\win32-x64\\managed-resources\\node\\node-v24.11.0-win-x64",
     );
     let (kind, status) = classify_error(&err);
 
@@ -408,7 +408,7 @@ async fn bundled_runtime_missing_reports_bundled_resource_missing() {
 
 #[test]
 fn managed_runtime_install_lock_path_uses_runtime_root() {
-    let root = PathBuf::from("/tmp/aionui/runtime/node");
+    let root = PathBuf::from("/tmp/one/runtime/node");
     assert_eq!(install_lock_path(&root), root.join("node-runtime-install.lock"));
 }
 
@@ -576,7 +576,7 @@ async fn bundled_runtime_validation_failure_does_not_fallback_to_remote_download
 
 #[test]
 fn windows_managed_cli_paths_use_node_modules_under_archive_root() {
-    let root = PathBuf::from(r"C:\AionUi\node-v24.11.0-win-x64");
+    let root = PathBuf::from(r"C:\One Work\node-v24.11.0-win-x64");
     let npm = managed_npm_cli_path_for_layout(&root, ManagedNodeArchiveLayout::Windows);
     let npx = managed_npx_cli_path_for_layout(&root, ManagedNodeArchiveLayout::Windows);
 
@@ -592,7 +592,7 @@ fn windows_managed_cli_paths_use_node_modules_under_archive_root() {
 
 #[test]
 fn unix_managed_cli_paths_use_lib_node_modules() {
-    let root = PathBuf::from("/opt/aionui/node-v24.11.0-darwin-arm64");
+    let root = PathBuf::from("/opt/one/node-v24.11.0-darwin-arm64");
     let npm = managed_npm_cli_path_for_layout(&root, ManagedNodeArchiveLayout::Unix);
     let npx = managed_npx_cli_path_for_layout(&root, ManagedNodeArchiveLayout::Unix);
 

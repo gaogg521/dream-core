@@ -210,14 +210,14 @@ mod tests {
             "logging.init",
             "failed to initialize logging",
         )
-        .with_source(anyhow::anyhow!("secret log path /tmp/aion.log"));
+        .with_source(anyhow::anyhow!("secret log path /tmp/dream.log"));
 
         err.log_source();
 
         let stderr = err.stderr_line();
         assert!(stderr.contains("BOOTSTRAP_LOGGING_INIT_FAILED"));
         assert!(!stderr.contains("secret log path"));
-        assert!(!stderr.contains("/tmp/aion.log"));
+        assert!(!stderr.contains("/tmp/dream.log"));
         assert!(
             std::error::Error::source(&err)
                 .expect("source should be preserved")

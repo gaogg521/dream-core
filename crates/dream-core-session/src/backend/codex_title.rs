@@ -516,7 +516,7 @@ mod tests {
     }
 
     /// Frame shapes are the captured ones, not invented:
-    /// `~/aion/protocols/samples/codex-cli/0.144.6/ephemeral_title_thread_roundtrip.jsonl`
+    /// `~/dream/protocols/samples/codex-cli/0.144.6/ephemeral_title_thread_roundtrip.jsonl`
     /// (`thread/start` → `result.thread.id`; the title rides
     /// `item/completed.params.item.text` on a `type:"agentMessage"`).
     fn scripted_codex() -> Vec<u8> {

@@ -866,7 +866,7 @@ mod tests {
     #[test]
     fn stale_provider_binding_maps_to_friendly_invalid_request() {
         let err = map_conversation_update_error(ConversationError::BadRequest {
-            reason: "Provider 'aionrs' not found".into(),
+            reason: "Provider 'dream_engine' not found".into(),
         });
 
         let TeamError::InvalidRequest(message) = err else {
@@ -877,7 +877,7 @@ mod tests {
             "expected an actionable message, got: {message}"
         );
         assert!(
-            !message.contains("Provider 'aionrs' not found"),
+            !message.contains("Provider 'dream_engine' not found"),
             "internal error detail should not leak to the user, got: {message}"
         );
     }

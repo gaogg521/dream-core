@@ -7,7 +7,7 @@
 //! which agy resumes from its own on-disk conversation store.
 //!
 //! Wire shapes here are verified against captured samples in
-//! `~/aion/protocols/samples/antigravity-cli/1.1.8/`.
+//! `~/dream/protocols/samples/antigravity-cli/1.1.8/`.
 
 mod argv;
 /// i18n key for the "some steps in this turn did not take effect" notice,

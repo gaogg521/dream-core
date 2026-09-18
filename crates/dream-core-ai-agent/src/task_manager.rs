@@ -939,9 +939,9 @@ mod tests {
 
         // Non-ACP (DreamEngine) + Finished + old activity → should NOT be collected
         insert(
-            "conv-aionrs",
+            "conv-dream-engine",
             mock_instance(
-                MockAgent::new("conv-aionrs", Some(ConversationStatus::Finished))
+                MockAgent::new("conv-dream-engine", Some(ConversationStatus::Finished))
                     .with_agent_type(AgentType::DreamEngine)
                     .with_last_activity(now_ms() - 600_000),
             ),

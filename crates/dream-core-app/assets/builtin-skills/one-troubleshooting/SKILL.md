@@ -189,7 +189,7 @@ explicitly:
 ```bash
 "$ONE_HELPER_BIN" diagnose logs tail <<'JSON'
 {
-  "log_dir": "/Users/alex/Library/Logs/AionUi",
+  "log_dir": "/Users/alex/Library/Logs/One Work",
   "lines": 100,
   "errors_only": true,
   "conversation_id": "conv_123"

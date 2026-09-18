@@ -38,7 +38,7 @@ impl AgentType {
             AgentType::OpenclawGateway => "OpenClaw Gateway",
             AgentType::Nanobot => "Nanobot",
             AgentType::Remote => "Remote",
-            // Fork brand: upstream says "Dream CLI" here.
+            // Fork brand: the upstream project uses its own product name here.
             AgentType::DreamEngine => "1ONE CLI",
             AgentType::Antigravity => "Antigravity",
             AgentType::Gemini => "Gemini (legacy)",
@@ -170,6 +170,10 @@ pub enum ConversationStatus {
 }
 
 /// Origin of a conversation.
+///
+/// `DreamUi` keeps the legacy alias: `conversations.source` is a persisted column
+/// (an older SQLite CHECK constraint even spells the old value out), so dropping it
+/// makes every pre-rebrand row fail to deserialize.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConversationSource {
@@ -337,6 +341,7 @@ pub enum McpSource {
     #[serde(rename = "dream", alias = "aionrs")]
     DreamEngine,
     Nanobot,
+    // Legacy alias: this value is persisted on MCP server rows.
     #[serde(rename = "dream-ui", alias = "aionui")]
     DreamUi,
 }

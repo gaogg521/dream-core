@@ -708,7 +708,7 @@ mod tests {
     fn subagent_card_says_subagent_not_bg_task() {
         // Post-#870 shape: the Task call's step label IS its own description,
         // so the dedupe drops it from the headline and only the word + id stay.
-        let label = "修复 AIONUI-151 桌面 401 恢复";
+        let label = "修复 ONE-151 桌面 401 恢复";
         let mut c = WorkflowCard::new_subagent(
             "toolu_task".into(),
             label.into(),

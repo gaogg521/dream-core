@@ -94,6 +94,11 @@ impl Default for AppConfig {
 }
 
 /// Derive a 32-byte encryption key from the JWT secret using SHA-256.
+///
+/// The domain-separation prefix is a legacy value and MUST NOT be renamed: it is an
+/// input to the key, so changing a single byte makes every credential already stored
+/// on every existing install undecryptable — providers, channel configs, remote
+/// agents, all of it, with no way back.
 pub fn derive_encryption_key(jwt_secret: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"aionui-encryption-key:");
@@ -152,6 +157,7 @@ mod tests {
     /// SQLite would create it, the catalog would come up empty, and the user
     /// would open the app to find every conversation gone.
     #[test]
+    /// The legacy catalog file name is what exists on disk for upgrade users.
     fn database_path_keeps_using_a_pre_rebrand_catalog() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("aionui-backend.db"), b"existing catalog").unwrap();

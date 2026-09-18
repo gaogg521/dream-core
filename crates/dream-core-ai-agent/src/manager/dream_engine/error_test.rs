@@ -3,7 +3,7 @@ use dream_core_api_types::{AgentErrorCode, AgentErrorOwnership};
 use super::*;
 
 #[test]
-fn aionrs_structured_malformed_tool_call_error_is_provider_error() {
+fn dream_engine_structured_malformed_tool_call_error_is_provider_error() {
     let error = DreamEngineAgentError::ToolCallMalformed { count: 3, limit: 3 };
     let send_error = engine_error_to_send_error(&error);
 
@@ -13,7 +13,7 @@ fn aionrs_structured_malformed_tool_call_error_is_provider_error() {
 }
 
 #[test]
-fn aionrs_provider_rate_limited_appends_response_body_to_detail() {
+fn dream_engine_provider_rate_limited_appends_response_body_to_detail() {
     let error = DreamEngineAgentError::Provider(ProviderError::RateLimited {
         retry_after_ms: 5000,
         body: Some(r#"{"error":{"code":"insufficient_quota","message":"You exceeded your current quota"}}"#.to_owned()),
@@ -37,7 +37,7 @@ fn aionrs_provider_rate_limited_appends_response_body_to_detail() {
 }
 
 #[test]
-fn aionrs_provider_rate_limited_without_body_falls_back_to_bare_detail() {
+fn dream_engine_provider_rate_limited_without_body_falls_back_to_bare_detail() {
     let error = DreamEngineAgentError::Provider(ProviderError::RateLimited {
         retry_after_ms: 5000,
         body: None,
@@ -60,7 +60,7 @@ fn aionrs_provider_rate_limited_without_body_falls_back_to_bare_detail() {
 }
 
 #[test]
-fn aionrs_provider_rate_limited_ignores_whitespace_only_body() {
+fn dream_engine_provider_rate_limited_ignores_whitespace_only_body() {
     let error = DreamEngineAgentError::Provider(ProviderError::RateLimited {
         retry_after_ms: 5000,
         body: Some("   \n\t  ".to_owned()),
@@ -79,7 +79,7 @@ fn aionrs_provider_rate_limited_ignores_whitespace_only_body() {
 }
 
 #[test]
-fn aionrs_provider_connection_error_is_user_llm_provider_error() {
+fn dream_engine_provider_connection_error_is_user_llm_provider_error() {
     let error = DreamEngineAgentError::Provider(ProviderError::Connection(
         "Signable request error: failed to create canonical request".to_owned(),
     ));
@@ -111,7 +111,7 @@ fn tool_call_failure_summary_classifies_loop() {
 }
 
 #[test]
-fn aionrs_api_connection_error_is_user_llm_provider_network_error() {
+fn dream_engine_api_connection_error_is_user_llm_provider_network_error() {
     let error = DreamEngineAgentError::Provider(ProviderError::Connection("error decoding response body".to_owned()));
     let send_error = engine_error_to_send_error(&error);
 
@@ -121,7 +121,7 @@ fn aionrs_api_connection_error_is_user_llm_provider_network_error() {
 }
 
 #[test]
-fn aionrs_provider_status_error_uses_status_instead_of_message_text() {
+fn dream_engine_provider_status_error_uses_status_instead_of_message_text() {
     let error = DreamEngineAgentError::Provider(ProviderError::Api {
         status: 401,
         message: "credentials failed".to_owned(),
@@ -134,7 +134,7 @@ fn aionrs_provider_status_error_uses_status_instead_of_message_text() {
 }
 
 #[test]
-fn aionrs_context_too_long_is_provider_context_error() {
+fn dream_engine_context_too_long_is_provider_context_error() {
     let error = DreamEngineAgentError::ContextTooLong {
         input_tokens: 120_000,
         limit: 100_000,
@@ -147,7 +147,7 @@ fn aionrs_context_too_long_is_provider_context_error() {
 }
 
 #[test]
-fn aionrs_repeated_malformed_tool_call_is_user_llm_provider_error() {
+fn dream_engine_repeated_malformed_tool_call_is_user_llm_provider_error() {
     let error = DreamEngineAgentError::ToolCallMalformed { count: 3, limit: 3 };
     let send_error = engine_error_to_send_error(&error);
 
@@ -157,7 +157,7 @@ fn aionrs_repeated_malformed_tool_call_is_user_llm_provider_error() {
 }
 
 #[test]
-fn aionrs_tool_call_failures_are_agent_tool_call_loop_error() {
+fn dream_engine_tool_call_failures_are_agent_tool_call_loop_error() {
     // Fork: consecutive tool-failure breaker is a known local agent condition,
     // not UnknownUpstream (see tool_call_failure_send_error).
     let error = DreamEngineAgentError::ToolCallFailures { count: 3, limit: 3 };

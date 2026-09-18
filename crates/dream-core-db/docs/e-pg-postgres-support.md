@@ -94,7 +94,7 @@ personal-edition path** — nothing in the SQLite path was touched.
 45 of `dream-core-db`'s 52 SQLite migrations are incremental fixes on top of
 001 — bug fixes, renamed columns, one-off data backfills accumulated over
 the personal edition's history (e.g. "fix cursor agent CLI command", "clear
-internal aion CLI command override", "drop unused assistant definition
+internal Dream CLI command override", "drop unused assistant definition
 fields"). A fresh Postgres install has no data to backfill and doesn't need
 to replay that history — it only needs the **current final schema state**.
 Porting incrementally, one currently-needed table at a time, verified

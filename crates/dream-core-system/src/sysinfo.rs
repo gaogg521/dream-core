@@ -130,7 +130,7 @@ mod tests {
         assert!(!info.arch.is_empty());
     }
 
-    /// Asserting the literal `aionui` here is what let the hardcoded path
+    /// Asserting the literal `one` here is what let the hardcoded path
     /// survive the rebrand — the test agreed with the bug. What actually
     /// matters is that a directory is resolved under one of the two brands.
     #[test]

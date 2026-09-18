@@ -156,7 +156,7 @@ pub fn build_builtin_image_gen_server(
     let env = build_image_gen_env(config);
 
     Some(AcpSessionMcpServer::Stdio {
-        name: "aionui-image-generation".into(),
+        name: "one-image-generation".into(),
         command: command.to_owned(),
         args: Vec::new(),
         env,
@@ -536,7 +536,7 @@ mod tests {
                 args,
                 env,
             } => {
-                assert_eq!(name, "aionui-image-generation");
+                assert_eq!(name, "one-image-generation");
                 assert_eq!(command, "/usr/bin/img-gen");
                 assert!(args.is_empty());
                 assert_eq!(env.len(), 6);

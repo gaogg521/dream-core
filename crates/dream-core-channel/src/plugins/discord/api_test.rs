@@ -39,8 +39,8 @@ fn retry_after_is_capped() {
 fn discord_identity_holds_id() {
     let id = DiscordIdentity {
         id: "BOT1".into(),
-        display_name: Some("aion".into()),
+        display_name: Some("dream".into()),
     };
     assert_eq!(id.id, "BOT1");
-    assert_eq!(id.display_name.as_deref(), Some("aion"));
+    assert_eq!(id.display_name.as_deref(), Some("dream"));
 }

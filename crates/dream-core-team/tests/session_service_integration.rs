@@ -382,10 +382,8 @@ struct FakePresetAssistantSnapshot {
 
 impl FakeConversationPorts {
     fn new(repo: Arc<MockConversationRepo>) -> Self {
-        let workspace_root = std::env::temp_dir().join(format!(
-            "aionui-team-fake-workspaces-{}",
-            dream_core_common::generate_id()
-        ));
+        let workspace_root =
+            std::env::temp_dir().join(format!("one-team-fake-workspaces-{}", dream_core_common::generate_id()));
         Self {
             repo,
             workspace_root,
@@ -2460,7 +2458,7 @@ async fn teammate_first_wake_uses_canonical_prompt_at_service_boundary() {
             "user1",
             CreateTeamRequest {
                 name: "Recover Teammate".into(),
-                agents: aionrs_two_agent_input(),
+                agents: dream_engine_two_agent_input(),
                 workspace: None,
             },
         )
@@ -2773,7 +2771,7 @@ fn two_agent_input() -> Vec<TeamAgentInput> {
     ]
 }
 
-fn aionrs_two_agent_input() -> Vec<TeamAgentInput> {
+fn dream_engine_two_agent_input() -> Vec<TeamAgentInput> {
     two_agent_input()
         .into_iter()
         .map(|mut agent| {
@@ -3032,10 +3030,8 @@ async fn create_team_with_workspace_writes_same_workspace_to_team_and_initial_ag
     let agent_metadata_repo: Arc<dyn IAgentMetadataRepository> = Arc::new(StubAgentMetadataRepo::empty());
     let (svc, _, conv_repo) =
         setup_with_factory_and_metadata_and_conversation_repo(success_factory(), agent_metadata_repo);
-    let workspace_dir = std::env::temp_dir().join(format!(
-        "aionui-team-user-workspace-{}",
-        dream_core_common::generate_id()
-    ));
+    let workspace_dir =
+        std::env::temp_dir().join(format!("one-team-user-workspace-{}", dream_core_common::generate_id()));
     std::fs::create_dir_all(&workspace_dir).unwrap();
     let workspace = workspace_dir.to_string_lossy().into_owned();
 
@@ -3086,10 +3082,10 @@ async fn create_team_side_branch_backfills_project_binding_when_injected() {
     std::mem::forget(db);
     svc.with_project_service(Arc::new(dream_core_project::ProjectService::new(
         store,
-        std::env::temp_dir().join("aionui-team-bind-test-conversations"),
+        std::env::temp_dir().join("one-team-bind-test-conversations"),
     )));
 
-    let workspace_dir = std::env::temp_dir().join(format!("aionui-team-bind-{}", dream_core_common::generate_id()));
+    let workspace_dir = std::env::temp_dir().join(format!("one-team-bind-{}", dream_core_common::generate_id()));
     std::fs::create_dir_all(&workspace_dir).unwrap();
 
     let created = svc
@@ -5412,7 +5408,7 @@ async fn aa_add_agent_inherits_team_workspace() {
     let agent_metadata_repo: Arc<dyn IAgentMetadataRepository> = Arc::new(StubAgentMetadataRepo::empty());
     let (svc, _, conv_repo) =
         setup_with_factory_and_metadata_and_conversation_repo(success_factory(), agent_metadata_repo);
-    let workspace = std::env::temp_dir().join(format!("aionui-team-workspace-{}", dream_core_common::generate_id()));
+    let workspace = std::env::temp_dir().join(format!("one-team-workspace-{}", dream_core_common::generate_id()));
     std::fs::create_dir_all(&workspace).unwrap();
     let workspace = workspace.to_string_lossy().into_owned();
     let created = svc
@@ -5538,7 +5534,7 @@ async fn add_agent_uses_team_temp_workspace_when_team_and_leader_workspaces_are_
     conv_repo
         .patch_extra(
             &created.assistants[0].conversation_id,
-            serde_json::json!({ "workspace": "/tmp/aionui-team-missing-leader-workspace" }),
+            serde_json::json!({ "workspace": "/tmp/one-team-missing-leader-workspace" }),
         )
         .unwrap();
 
@@ -5644,7 +5640,7 @@ async fn add_agent_continues_when_team_temp_leader_patch_fails() {
     conv_repo
         .patch_extra(
             &created.assistants[0].conversation_id,
-            serde_json::json!({ "workspace": "/tmp/aionui-team-missing-leader-workspace" }),
+            serde_json::json!({ "workspace": "/tmp/one-team-missing-leader-workspace" }),
         )
         .unwrap();
     conversation_ports
@@ -7235,7 +7231,7 @@ async fn d9_ensure_session_persists_team_mcp_stdio_config() {
             "user1",
             CreateTeamRequest {
                 name: "T".into(),
-                agents: aionrs_two_agent_input(),
+                agents: dream_engine_two_agent_input(),
                 workspace: None,
             },
         )

@@ -81,10 +81,10 @@ dream-domain-platform = { path = "crates/dream-domain-platform" }
 dream-domain-workflow = { path = "crates/dream-domain-workflow" }
 dream-domain-memory = { path = "crates/dream-domain-memory" }
 
-# Pinned to fork gaogg521/aionrs (master) = upstream v0.2.8 + fork-only patches
+# Pinned to fork gaogg521/dream_engine (master) = upstream v0.2.8 + fork-only patches
 # (textualize tool replay, empty tool_call args, deferred schema promote, GLM
 # guidance, bounded output-truncation continuation).
-# Never switch to iOfficeAI/aionrs tag. Sync only upstream -> fork.
+# Never switch to iOfficeAI/dream_engine tag. Sync only upstream -> fork.
 dream-engine-agent = { git = "https://github.com/gaogg521/dream-engine.git", branch = "main" }
 dream-engine-providers = { git = "https://github.com/gaogg521/dream-engine.git", branch = "main" }
 dream-engine-types = { git = "https://github.com/gaogg521/dream-engine.git", branch = "main" }

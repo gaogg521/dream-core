@@ -88,7 +88,7 @@ pub async fn prepare_managed_cli_to_root(name: &str, out_root: &Path) -> Result<
 
     // Deterministic build-time staging dir (this runs on the build machine, one
     // CLI at a time). Cleared first so a re-run starts from a clean install tree.
-    let staging = std::env::temp_dir().join(format!("aionui-cli-prepare-{name}-{version}-{target}"));
+    let staging = std::env::temp_dir().join(format!("one-cli-prepare-{name}-{version}-{target}"));
     if staging.exists() {
         std::fs::remove_dir_all(&staging).map_err(ManagedCliError::io)?;
     }
@@ -98,7 +98,7 @@ pub async fn prepare_managed_cli_to_root(name: &str, out_root: &Path) -> Result<
     std::fs::create_dir_all(&npm_cache_dir).map_err(ManagedCliError::io)?;
 
     let package_json = DevPackageJson {
-        name: "aionui-managed-cli-dev",
+        name: "one-managed-cli-dev",
         private: true,
     };
     std::fs::write(

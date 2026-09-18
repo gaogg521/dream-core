@@ -152,9 +152,12 @@ impl ChannelMessageService {
             agent_config.backend.as_deref()
         });
         let name = assistant_name.unwrap_or_else(|| {
+            // The CANONICAL name, not `agent_config.agent_type`: that column still holds
+            // the pre-rebrand wire value on channels configured before the rename, and it
+            // goes straight into a conversation title the user reads.
             channel_conversation_name(
                 platform,
-                &agent_config.agent_type,
+                agent_type.serde_name(),
                 agent_config.backend.as_deref(),
                 session.chat_id.as_deref(),
             )
@@ -481,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn platform_to_source_reserved_defaults_to_aionui() {
+    fn platform_to_source_reserved_defaults_to_one() {
         assert_eq!(platform_to_source(PluginType::Slack), ConversationSource::DreamUi);
         assert_eq!(platform_to_source(PluginType::Discord), ConversationSource::DreamUi);
     }
@@ -686,7 +689,7 @@ mod tests {
     }
 
     #[test]
-    fn aionrs_model_stays_at_top_level() {
+    fn dream_engine_model_stays_at_top_level() {
         let agent_type = AgentType::DreamEngine;
         let model = ProviderWithModel {
             provider_id: "prov2".into(),
@@ -702,7 +705,7 @@ mod tests {
             None
         };
 
-        assert!(top_level_model.is_some(), "aionrs must use top-level model");
+        assert!(top_level_model.is_some(), "dream-engine must use top-level model");
         assert!(extra.get("model").is_none() || extra["model"].is_null());
     }
 
@@ -715,9 +718,19 @@ mod tests {
     }
 
     #[test]
-    fn conv_name_telegram_aionrs() {
-        let name = channel_conversation_name(PluginType::Telegram, "aionrs", None, Some("70880480"));
-        assert_eq!(name, "tg-aionrs-70880480");
+    fn conv_name_telegram_dream_engine() {
+        let name = channel_conversation_name(PluginType::Telegram, "dream", None, Some("70880480"));
+        assert_eq!(name, "tg-dream-70880480");
+    }
+
+    /// The caller passes `AgentType::serde_name()`, so a channel still storing the
+    /// legacy wire value never leaks it into a conversation title.
+    #[test]
+    fn conv_name_uses_the_canonical_agent_type_not_the_stored_one() {
+        let legacy_stored = "aionrs";
+        let canonical = parse_agent_type(legacy_stored).unwrap();
+        let name = channel_conversation_name(PluginType::Telegram, canonical.serde_name(), None, Some("70880480"));
+        assert_eq!(name, "tg-dream-70880480");
     }
 
     #[test]
@@ -740,7 +753,7 @@ mod tests {
 
     #[test]
     fn conv_name_non_acp_ignores_backend() {
-        let name = channel_conversation_name(PluginType::Telegram, "aionrs", Some("claude"), Some("70880480"));
-        assert_eq!(name, "tg-aionrs-70880480");
+        let name = channel_conversation_name(PluginType::Telegram, "dream", Some("claude"), Some("70880480"));
+        assert_eq!(name, "tg-dream-70880480");
     }
 }

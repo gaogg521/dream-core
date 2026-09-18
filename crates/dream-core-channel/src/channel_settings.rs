@@ -440,14 +440,14 @@ impl ChannelSettingsService {
             }
         }
 
-        let mut any_aionrs = None;
+        let mut any_dream_engine = None;
         for definition in &definitions {
             if self.effective_assistant_backend(user_id, definition, &overlays).await? == DEFAULT_AGENT_TYPE {
-                any_aionrs = Some(definition);
+                any_dream_engine = Some(definition);
                 break;
             }
         }
-        if let Some(definition) = any_aionrs {
+        if let Some(definition) = any_dream_engine {
             return Ok(Some(definition.assistant_id.clone()));
         }
 
@@ -894,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn aionrs_backends_map_to_aionrs() {
+    fn dream_engine_backends_map_to_dream_engine() {
         assert_eq!(backend_to_agent_type("aionrs"), "dream");
         assert_eq!(backend_to_agent_type("aion-cli"), "dream");
     }
@@ -952,7 +952,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_config_aionrs_has_no_backend() {
+    async fn agent_config_dream_engine_has_no_backend() {
         let repo = Arc::new(MockPrefRepo::with_data(vec![(
             "assistant.lark.agent",
             r#"{"backend":"aionrs","name":"Aion CLI"}"#,
@@ -980,7 +980,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_config_reads_new_format_aionrs() {
+    async fn agent_config_reads_new_format_dream_engine() {
         let repo = Arc::new(MockPrefRepo::with_data(vec![(
             "assistant.lark.agent",
             r#"{"agent_type":"aionrs","name":"Aion CLI"}"#,
@@ -1181,12 +1181,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_assistant_setting_defaults_to_generated_aionrs_assistant() {
+    async fn get_assistant_setting_defaults_to_generated_dream_engine_assistant() {
         let repo = Arc::new(MockPrefRepo::new());
         let definition_repo = Arc::new(MockAssistantDefinitionRepo {
             rows: vec![
                 make_definition("bare-claude", "claude"),
-                make_definition("bare-aionrs", "dream"),
+                make_definition("bare-dream-engine", "dream"),
             ],
         });
         let overlay_repo = Arc::new(MockAssistantOverlayRepo { rows: vec![] });
@@ -1198,7 +1198,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(setting.assistant_id.as_deref(), Some("bare-aionrs"));
+        assert_eq!(setting.assistant_id.as_deref(), Some("bare-dream-engine"));
         assert!(setting.custom_agent_id.is_none());
         assert!(setting.backend.is_none());
         assert!(setting.agent_type.is_none());
@@ -1273,12 +1273,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_platform_settings_defaults_to_generated_aionrs_assistant() {
+    async fn get_platform_settings_defaults_to_generated_dream_engine_assistant() {
         let repo = Arc::new(MockPrefRepo::new());
         let definition_repo = Arc::new(MockAssistantDefinitionRepo {
             rows: vec![
                 make_definition("bare-claude", "claude"),
-                make_definition("bare-aionrs", "dream"),
+                make_definition("bare-dream-engine", "dream"),
             ],
         });
         let overlay_repo = Arc::new(MockAssistantOverlayRepo { rows: vec![] });
@@ -1290,7 +1290,7 @@ mod tests {
             .unwrap();
         let assistant = settings.assistant.expect("assistant settings");
 
-        assert_eq!(assistant.assistant_id.as_deref(), Some("bare-aionrs"));
+        assert_eq!(assistant.assistant_id.as_deref(), Some("bare-dream-engine"));
         assert!(assistant.custom_agent_id.is_none());
         assert!(assistant.backend.is_none());
         assert!(assistant.agent_type.is_none());

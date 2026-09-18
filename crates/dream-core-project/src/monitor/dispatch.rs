@@ -146,7 +146,7 @@ impl FsMonitorActor {
         // watch, so one target can fail for reasons that say nothing about the
         // others (watch-descriptor limit exhausted on a large tree, a directory
         // removed between resolve and mount). Failing the whole batch there left
-        // the client with an entirely blank explorer (AIONUI-236). Skip the
+        // the client with an entirely blank explorer (ONE-236). Skip the
         // failed target, keep every snapshot that did mount, and fall back to the
         // error reply only when nothing mounted at all.
         let now = self.now();

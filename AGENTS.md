@@ -14,19 +14,19 @@ Project-specific rules and conventions for AI assistants and contributors.
 ### NEVER guess an agent CLI's behavior — only assert what an approved source proves
 
 Absolutely forbidden: inferring, guessing, or "reasoning about likely behavior" of any agent CLI
-(claude, codex, gemini, opencode, hermes, aionrs, …) — its wire protocol, message shapes, field
+(claude, codex, gemini, opencode, hermes, dream-engine, …) — its wire protocol, message shapes, field
 semantics, timing, defaults, or capabilities — from a CLI's name, a plausible mental model, prior
 training knowledge, or how you *think* it probably works. Every claim about an agent CLI's behavior
 MUST be backed by one of these approved sources, cited explicitly by path:
 
 1. **Captured real data** — actual sampled wire traffic under
-   `~/aion/protocols/samples/` (e.g. `codex-cli/<ver>/`, `claude-cli/<ver>/`, `codex-acp/`,
+   `~/dream/protocols/samples/` (e.g. `codex-cli/<ver>/`, `claude-cli/<ver>/`, `codex-acp/`,
    `opencode/`, `capture/`). This is ground truth for what the CLI actually emitted.
 2. **The ACP library source** — `agent-client-protocol` (main crate + `agent-client-protocol-schema`),
    vendored at `~/.cargo/registry/src/*/agent-client-protocol-*` — for the canonical ACP wire types
    and semantics we translate to.
 3. **An official adapter's code** — the codex `app-server` machine-generated JSON schema under
-   `~/aion/protocols/samples/codex-cli/<ver>/schema-full/` (ground truth from the codex binary
+   `~/dream/protocols/samples/codex-cli/<ver>/schema-full/` (ground truth from the codex binary
    itself), the official claude-code / claude-code-acp adapter source, or an equivalent
    first-party adapter — for inferring a CLI's contract from the reference implementation.
 
@@ -55,7 +55,7 @@ Enforced behaviors:
 4. **Trace to the break, don't guess the layer.** For a cross-layer bug (backend→wire→frontend), follow the actual data through every link and locate where it diverges from expected. Do not attribute the break to a layer by plausibility.
 5. **Calibrate language to evidence.** Say "verified: <file:line>", "not yet checked", or "a sub-agent claims X (unverified)". Never launder an unverified lead into a flat assertion.
 
-See also the standing discipline in the root `AGENTS.md` / memory `aioncore-verification-blindspot-g6`: self-consistent-all-green ≠ correct — verify outward (against a real agent) AND against the old/reference implementation, not just against your own happy path.
+See also the standing discipline in the root `AGENTS.md` / memory `backend-verification-blindspot-g6`: self-consistent-all-green ≠ correct — verify outward (against a real agent) AND against the old/reference implementation, not just against your own happy path.
 
 ## Logging
 

@@ -3038,10 +3038,10 @@ mod tests {
                 { "kind": "allow_always", "optionId": "allow_always", "name": "Always Allow" },
                 { "kind": "reject_once", "optionId": "reject" },
             ],
-            "toolCall": { "title": "mcp__aionui-team__team_members", "rawInput": {} },
+            "toolCall": { "title": "mcp__one-team__team_members", "rawInput": {} },
         });
         let meta = parse_permission_metadata(Some(&params)).expect("metadata present");
-        assert_eq!(meta["server_name"], "aionui-team");
+        assert_eq!(meta["server_name"], "one-team");
         assert_eq!(meta["options"][0]["option_id"], "allow_always");
         assert_eq!(meta["options"][0]["kind"], "allow_always");
         // CT-PERM-OPTIONS: the human label rides through for the card.
@@ -3057,10 +3057,10 @@ mod tests {
         // Codex-acp shape: server name in toolCall.rawInput.server_name (wins over title).
         let params = json!({
             "options": [{ "kind": "allow_once", "optionId": "allow" }],
-            "toolCall": { "title": "mcp__other__x", "rawInput": { "server_name": "aionui-team-guide" } },
+            "toolCall": { "title": "mcp__other__x", "rawInput": { "server_name": "one-team-guide" } },
         });
         let meta = parse_permission_metadata(Some(&params)).expect("metadata present");
-        assert_eq!(meta["server_name"], "aionui-team-guide", "rawInput.server_name wins");
+        assert_eq!(meta["server_name"], "one-team-guide", "rawInput.server_name wins");
     }
 
     #[test]

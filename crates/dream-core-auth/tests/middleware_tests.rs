@@ -341,7 +341,7 @@ async fn auth_middleware_session_generation_mismatch_returns_unauthorized_code()
 }
 
 #[tokio::test]
-async fn auth_middleware_aionpro_rejects_local_user_token() {
+async fn auth_middleware_dreampro_rejects_local_user_token() {
     let jwt_service = Arc::new(JwtService::new("middleware_test_secret".into()));
     let token = jwt_service
         .sign_with_session_generation("system_default_user", "system_default_user", 0)
@@ -674,7 +674,7 @@ async fn runtime_token_channel_authenticates_helper_and_injects_bound_user() {
 }
 
 #[tokio::test]
-async fn runtime_token_channel_aionpro_authenticates_external_user() {
+async fn runtime_token_channel_dreampro_authenticates_external_user() {
     let jwt_service = Arc::new(JwtService::new("middleware_test_secret".into()));
     let db = init_database_memory().await.unwrap();
     let repo = Arc::new(SqliteUserRepository::new(db.pool().clone()));
@@ -811,7 +811,7 @@ async fn runtime_token_channel_disabled_when_verifier_absent() {
 }
 
 #[tokio::test]
-async fn runtime_token_channel_aionpro_rejects_local_user_token_binding() {
+async fn runtime_token_channel_dreampro_rejects_local_user_token_binding() {
     let jwt_service = Arc::new(JwtService::new("middleware_test_secret".into()));
     let db = init_database_memory().await.unwrap();
     let repo = Arc::new(SqliteUserRepository::new(db.pool().clone())) as Arc<dyn IUserRepository>;

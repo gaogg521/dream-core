@@ -419,7 +419,7 @@ async fn send_to_agent_rejects_unresolvable_channel_assistant_binding() {
 }
 
 #[tokio::test]
-async fn send_to_agent_without_saved_binding_defaults_to_bare_aionrs_assistant() {
+async fn send_to_agent_without_saved_binding_defaults_to_bare_dream_engine_assistant() {
     let db = init_database_memory().await.unwrap();
     let pool = db.pool().clone();
 
@@ -446,8 +446,8 @@ async fn send_to_agent_without_saved_binding_defaults_to_bare_aionrs_assistant()
     conversation_svc.with_assistant_preference_repo(assistant_preference_repo);
     definition_repo
         .upsert(&bare_assistant_definition_params(
-            "asstdef-channel-aionrs",
-            "bare-aionrs",
+            "asstdef-channel-dream-engine",
+            "bare-dream-engine",
             "dream",
         ))
         .await
@@ -457,7 +457,7 @@ async fn send_to_agent_without_saved_binding_defaults_to_bare_aionrs_assistant()
     let message_svc = ChannelMessageService::new(conversation_svc, Arc::clone(&task_manager), settings);
 
     let session = AssistantSessionRow {
-        id: "session-assisted-default-aionrs".to_owned(),
+        id: "session-assisted-default-dream-engine".to_owned(),
         user_id: "channel-user-default".to_owned(),
         agent_type: "dream".to_owned(),
         conversation_id: None,
@@ -483,7 +483,7 @@ async fn send_to_agent_without_saved_binding_defaults_to_bare_aionrs_assistant()
         .unwrap()
         .unwrap();
 
-    assert_eq!(snapshot.assistant_id, "bare-aionrs");
+    assert_eq!(snapshot.assistant_id, "bare-dream-engine");
     assert_eq!(snapshot.agent_id, "632f31d2");
     assert_eq!(conversation.r#type, AgentType::DreamEngine.serde_name());
     assert_eq!(conversation.name, "tg-dream-70880480");

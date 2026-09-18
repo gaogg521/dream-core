@@ -67,7 +67,7 @@ pub type UpdateClientPreferencesRequest = HashMap<String, Value>;
 
 /// Query parameters for `GET /api/system/diagnostics/feedback-report`.
 ///
-/// The UI sends only routing and explicit context. aionCore owns profile
+/// The UI sends only routing and explicit context. dream-core owns profile
 /// resolution, SQL selection, and redaction.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FeedbackDiagnosticsQuery {

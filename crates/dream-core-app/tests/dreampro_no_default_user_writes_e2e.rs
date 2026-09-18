@@ -18,7 +18,7 @@
 use sqlx::Row;
 
 #[tokio::test]
-async fn aionpro_startup_writes_no_system_default_user_rows() {
+async fn dreampro_startup_writes_no_system_default_user_rows() {
     let db = dream_core_db::init_database_memory().await.unwrap();
     let config = dream_core_app::AppConfig {
         identity_mode: dream_core_app::IdentityMode::DreamPro,

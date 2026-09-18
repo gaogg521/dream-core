@@ -115,7 +115,7 @@ async fn setup() -> (ConversationService, Arc<TestBroadcaster>, Arc<dyn IWorkerT
 const USER_ID: &str = "system_default_user";
 
 fn ensure_test_workspace_path() -> String {
-    let workspace = std::env::temp_dir().join("aionui-conversation-crud-test-project");
+    let workspace = std::env::temp_dir().join("one-conversation-crud-test-project");
     std::fs::create_dir_all(&workspace).unwrap();
     workspace.to_string_lossy().to_string()
 }
@@ -183,7 +183,7 @@ async fn t1_2_create_each_agent_type() {
         let resp = svc.create(USER_ID, req).await.unwrap();
         assert_eq!(resp.r#type, expected_type, "Type mismatch for {type_str}");
         if type_str == "dream" {
-            assert!(resp.model.is_some(), "aionrs should keep top-level model");
+            assert!(resp.model.is_some(), "dream-engine should keep top-level model");
         } else {
             assert!(resp.model.is_none(), "{type_str} should have no top-level model");
         }
@@ -438,7 +438,7 @@ async fn t4_3_unpin_clears_pinned_at() {
 #[tokio::test]
 async fn t4_4_extra_merge_preserves_existing_keys() {
     let (svc, _, task_mgr) = setup().await;
-    let dir = std::env::temp_dir().join("aionui-conversation-crud-extra-merge");
+    let dir = std::env::temp_dir().join("one-conversation-crud-extra-merge");
     let old_workspace = dir.join("old-workspace");
     let new_workspace = dir.join("new-workspace");
     std::fs::create_dir_all(&old_workspace).unwrap();
@@ -661,7 +661,7 @@ async fn t12_3_concurrent_creates() {
 #[tokio::test]
 async fn full_lifecycle_create_get_update_delete() {
     let (svc, broadcaster, task_mgr) = setup().await;
-    let updated_workspace = std::env::temp_dir().join("aionui-conversation-crud-updated-workspace");
+    let updated_workspace = std::env::temp_dir().join("one-conversation-crud-updated-workspace");
     std::fs::create_dir_all(&updated_workspace).unwrap();
 
     // Create
@@ -743,7 +743,7 @@ async fn create_rejects_deprecated_remote_runtime() {
 }
 
 #[tokio::test]
-async fn create_accepts_top_level_model_for_aionrs() {
+async fn create_accepts_top_level_model_for_dream_engine() {
     let (svc, _, _task_mgr) = setup().await;
 
     let req: CreateConversationRequest = serde_json::from_value(json!({
@@ -755,13 +755,13 @@ async fn create_accepts_top_level_model_for_aionrs() {
 
     let resp = svc.create(USER_ID, req).await.unwrap();
     assert_eq!(resp.r#type, AgentType::DreamEngine);
-    let model = resp.model.expect("aionrs response should carry top-level model");
+    let model = resp.model.expect("dream-engine response should carry top-level model");
     assert_eq!(model.provider_id, "p1");
     assert_eq!(model.model, "gpt-4o");
 }
 
 #[tokio::test]
-async fn create_aionrs_strips_extra_model_field() {
+async fn create_dream_engine_strips_extra_model_field() {
     let (svc, _, _task_mgr) = setup().await;
     let workspace = ensure_test_workspace_path();
 
@@ -778,7 +778,7 @@ async fn create_aionrs_strips_extra_model_field() {
     let resp = svc.create(USER_ID, req).await.unwrap();
     assert!(
         !resp.extra.as_object().unwrap().contains_key("model"),
-        "aionrs create must strip extra.model to avoid dual source of truth; got {:?}",
+        "dream-engine create must strip extra.model to avoid dual source of truth; got {:?}",
         resp.extra
     );
     // Top-level model is still present and wins.
@@ -803,7 +803,7 @@ async fn update_rejects_top_level_model_for_acp() {
 }
 
 #[tokio::test]
-async fn update_accepts_top_level_model_for_aionrs() {
+async fn update_accepts_top_level_model_for_dream_engine() {
     let (svc, _, task_mgr) = setup().await;
 
     let create_req: CreateConversationRequest = serde_json::from_value(json!({
@@ -855,7 +855,7 @@ async fn update_rejects_acp_runtime_current_extra_fields() {
 }
 
 #[tokio::test]
-async fn update_aionrs_strips_extra_model_from_patch() {
+async fn update_dream_engine_strips_extra_model_from_patch() {
     let (svc, _, task_mgr) = setup().await;
 
     let create_req: CreateConversationRequest = serde_json::from_value(json!({
@@ -876,7 +876,7 @@ async fn update_aionrs_strips_extra_model_from_patch() {
 
     assert!(
         !updated.extra.as_object().unwrap().contains_key("model"),
-        "aionrs PATCH must strip extra.model; got {:?}",
+        "dream-engine PATCH must strip extra.model; got {:?}",
         updated.extra
     );
     // Other extra keys from the patch are merged as usual.

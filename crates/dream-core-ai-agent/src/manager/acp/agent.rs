@@ -306,7 +306,7 @@ async fn spawn_and_connect_acp_once(
                 // before the exit is observed. The `wait_for_exit` arm above then
                 // never runs, and its `peek_stderr_tail` — the only record of WHY
                 // — is lost, leaving the user a bare "upstream error"
-                // (AIONUI-DESKTOP-9D). Peek here too.
+                // (ONE-DESKTOP-9D). Peek here too.
                 //
                 // stderr is for OUR logs only — never folded into the error that
                 // reaches the client ("stderr intentionally NOT included — may
@@ -324,7 +324,7 @@ async fn spawn_and_connect_acp_once(
                 // into a string, and `classify_upstream_detail` then has to guess
                 // the cause back out of that string by substring match — which
                 // fails for a transport close and lands on the catch-all
-                // UNKNOWN_UPSTREAM_ERROR (AIONUI-DESKTOP-9D). We already KNOW the
+                // UNKNOWN_UPSTREAM_ERROR (ONE-DESKTOP-9D). We already KNOW the
                 // structural fact: the handshake did not complete. Say so, and
                 // `from_acp_error_ref` maps it to USER_AGENT_STARTUP_FAILED with
                 // UserAgent ownership and a CheckAgentInstallation resolution.

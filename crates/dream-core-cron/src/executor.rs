@@ -1741,7 +1741,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_model_returns_none_for_non_aionrs_type() {
+    fn resolve_model_returns_none_for_non_dream_engine_type() {
         let job = CronJob {
             agent_type: "claude".into(),
             ..sample_job()
@@ -1771,7 +1771,7 @@ mod tests {
             }),
             ..sample_job()
         };
-        let model = resolve_model(&job).expect("aionrs + full config returns Some");
+        let model = resolve_model(&job).expect("dream-engine + full config returns Some");
         assert_eq!(model.provider_id, "4056cdea");
         assert_eq!(model.model, "gpt-5");
     }
@@ -1798,7 +1798,7 @@ mod tests {
             }),
             ..sample_job()
         };
-        let model = resolve_model(&job).expect("aionrs model payload returns Some");
+        let model = resolve_model(&job).expect("dream-engine model payload returns Some");
         assert_eq!(model.provider_id, "4056cdea");
         assert_eq!(model.model, "gpt-5");
     }

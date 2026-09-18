@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
-use crate::constants::{CUSTOM_SKILL_PATHS_FILE, SKILLS_MARKET_NAME, SKILLS_MARKET_PATH};
+use crate::constants::{CUSTOM_SKILL_PATHS_FILE, LEGACY_SKILLS_MARKET_PATH, SKILLS_MARKET_NAME, SKILLS_MARKET_PATH};
 use crate::error::ExtensionError;
 use crate::skill_service::NamedPath;
 
@@ -103,8 +103,13 @@ impl ExternalPathsManager {
     }
 
     /// Disable the dream skills market by removing it from external paths.
+    ///
+    /// Removes the legacy identifier too — an install that enabled the market before the
+    /// rename persisted that string, and dropping only the current one would leave the
+    /// stale row behind as a source the user cannot turn off.
     pub async fn disable_skills_market(&self) -> Result<(), ExtensionError> {
-        self.remove_custom_external_path(SKILLS_MARKET_PATH).await
+        self.remove_custom_external_path(SKILLS_MARKET_PATH).await?;
+        self.remove_custom_external_path(LEGACY_SKILLS_MARKET_PATH).await
     }
 }
 

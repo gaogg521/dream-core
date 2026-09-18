@@ -321,10 +321,14 @@ fn default_i18n_directory() -> String {
 }
 
 /// Engine compatibility declaration.
+///
+/// The legacy key stays readable: extensions already installed on disk declare
+/// `engine.aionui`, and silently deserializing that to `None` turns the version
+/// gate into a no-op instead of a check.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct EngineConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub aionui: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "aionui")]
+    pub one: Option<String>,
 }
 
 /// Lifecycle hook declarations (paths relative to extension root).

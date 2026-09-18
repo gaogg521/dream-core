@@ -142,7 +142,7 @@ async fn system_resume(
     // after any rename. Accepting only the current name would make system-resume
     // silently 403 for every such install — cron jobs would simply stop waking
     // up after sleep, with nothing in the UI to say why.
-    let is_internal = ["x-dream-internal", "x-aionui-internal"]
+    let is_internal = ["x-dream-internal", "x-one-internal"]
         .iter()
         .any(|name| headers.get(*name).and_then(|value| value.to_str().ok()) == Some("1"));
     if !is_internal {

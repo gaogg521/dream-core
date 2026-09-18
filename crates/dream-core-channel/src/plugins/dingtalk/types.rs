@@ -833,7 +833,7 @@ mod tests {
     fn create_card_instance_request_serializes() {
         let req = CreateCardInstanceRequest {
             card_template_id: "382e4302-551d-4880-bf29-a30acfab2e71.schema".into(),
-            out_track_id: "aion_123_0".into(),
+            out_track_id: "dream_123_0".into(),
             callback_type: "STREAM".into(),
             card_data: CardData {
                 card_param_map: Some(json!({})),
@@ -843,7 +843,7 @@ mod tests {
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["cardTemplateId"], "382e4302-551d-4880-bf29-a30acfab2e71.schema");
-        assert_eq!(json["outTrackId"], "aion_123_0");
+        assert_eq!(json["outTrackId"], "dream_123_0");
         assert_eq!(json["callbackType"], "STREAM");
         assert_eq!(json["imGroupOpenSpaceModel"]["supportForward"], true);
         assert_eq!(json["imRobotOpenSpaceModel"]["supportForward"], true);

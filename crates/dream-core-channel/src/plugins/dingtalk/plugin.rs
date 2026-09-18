@@ -381,7 +381,7 @@ fn generate_out_track_id() -> String {
         .unwrap_or_default()
         .as_millis();
     let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("aion_{}_{}", ts, seq)
+    format!("dream_{}_{}", ts, seq)
 }
 
 /// Generate a unique GUID for streaming write operations.

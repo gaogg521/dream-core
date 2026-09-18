@@ -6,7 +6,7 @@ use dream_core_realtime::EventBroadcaster;
 use serde_json::json;
 use tracing::{debug, info, warn};
 
-use crate::constants::EXTENSION_MANIFEST_FILE;
+use crate::constants::resolve_manifest_path;
 use crate::error::ExtensionError;
 use crate::manifest::{parse_manifest, validate_manifest};
 use crate::registry::ExtensionRegistry;
@@ -233,7 +233,7 @@ impl HubInstaller {
     /// Verify that an extension directory contains a valid manifest
     /// and that its contributions can be resolved without errors.
     pub fn verify_installation(&self, ext_dir: &Path) -> Result<(), ExtensionError> {
-        let manifest_path = ext_dir.join(EXTENSION_MANIFEST_FILE);
+        let manifest_path = resolve_manifest_path(ext_dir);
 
         if !manifest_path.exists() {
             return Err(ExtensionError::ManifestValidation(format!(
@@ -313,6 +313,7 @@ fn is_newer(index_version: &str, installed_version: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::EXTENSION_MANIFEST_FILE;
     use dream_core_realtime::BroadcastEventBus;
 
     #[test]
@@ -397,7 +398,7 @@ mod tests {
     fn verify_installation_reserved_name_fails() {
         let tmp = tempfile::TempDir::new().unwrap();
         let manifest = serde_json::json!({
-            "name": "aion-internal-ext",
+            "name": "dream-internal-ext",
             "version": "1.0.0"
         });
         std::fs::write(

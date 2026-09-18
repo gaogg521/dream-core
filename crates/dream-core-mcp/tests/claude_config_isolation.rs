@@ -16,7 +16,7 @@ use dream_core_mcp::{ClaudeAdapter, McpAgentAdapter, McpServerTransport};
 
 /// Name used for the throwaway server. Distinctive so a stray leftover is
 /// obvious and greppable.
-const PROBE_SERVER: &str = "aionui-isolation-probe-do-not-keep";
+const PROBE_SERVER: &str = "one-isolation-probe-do-not-keep";
 
 fn real_claude_json() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".claude.json"))

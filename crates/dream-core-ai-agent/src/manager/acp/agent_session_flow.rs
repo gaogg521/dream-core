@@ -1560,7 +1560,7 @@ mod tests {
 
     #[tokio::test]
     async fn prompt_blocks_stay_single_text_without_caps() {
-        let dir = std::env::temp_dir().join("aionui-acp-prompt-tests");
+        let dir = std::env::temp_dir().join("one-acp-prompt-tests");
         std::fs::create_dir_all(&dir).unwrap();
         let img = dir.join("plain.png");
         std::fs::write(&img, b"fakepng").unwrap();
@@ -1584,7 +1584,7 @@ mod tests {
     #[tokio::test]
     async fn prompt_blocks_carry_native_image_when_capable() {
         use base64::Engine as _;
-        let dir = std::env::temp_dir().join("aionui-acp-prompt-tests");
+        let dir = std::env::temp_dir().join("one-acp-prompt-tests");
         std::fs::create_dir_all(&dir).unwrap();
         let img = dir.join("native.png");
         std::fs::write(&img, b"fakepng").unwrap();
@@ -1636,7 +1636,7 @@ mod tests {
     // `uri`, another invented a file size). Keep every media path in the text.
     #[tokio::test]
     async fn prompt_blocks_keep_media_paths_in_text() {
-        let dir = std::env::temp_dir().join("aionui-acp-prompt-tests");
+        let dir = std::env::temp_dir().join("one-acp-prompt-tests");
         std::fs::create_dir_all(&dir).unwrap();
         let img = dir.join("keep-path.png");
         std::fs::write(&img, b"fakepng").unwrap();
@@ -1668,7 +1668,7 @@ mod tests {
 
     #[tokio::test]
     async fn prompt_blocks_fall_back_to_paths_when_read_fails() {
-        let dir = std::env::temp_dir().join("aionui-acp-prompt-tests");
+        let dir = std::env::temp_dir().join("one-acp-prompt-tests");
         std::fs::create_dir_all(&dir).unwrap();
         let img = dir.join("vanishing.png");
         std::fs::write(&img, b"fakepng").unwrap();

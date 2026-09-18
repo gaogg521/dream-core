@@ -60,7 +60,7 @@ Team 创建是显式行为：用户通过 Team UI 或 `POST /api/teams` 创建�
 
 | 模块 | 状态 | 说明 |
 |------|:---:|------|
-| D28a `is_team_capable_backend` 白名单 | ✅ | `capability.rs`，白名单 `claude / codex / gemini / aionrs` |
+| D28a `is_team_capable_backend` 白名单 | ✅ | `capability.rs`，白名单 `claude / codex / gemini / dream-engine` |
 | D29a-1 `SpawnAgentRequest` + 方法骨架 | ✅ | |
 | D29a-2 caller role==Lead 校验 | ✅ | |
 | D29a-3 name normalize + 唯一性 | ✅ | |

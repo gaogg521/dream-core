@@ -103,13 +103,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_skill(
             dir.path(),
-            "aionui-probe",
-            "---\nname: aionui-probe\ndescription: Probe skill.\n---\n\n# body\n",
+            "one-probe",
+            "---\nname: one-probe\ndescription: Probe skill.\n---\n\n# body\n",
         );
 
         let cmds = scan_skill_commands(dir.path());
         assert_eq!(cmds.len(), 1);
-        assert_eq!(cmds[0].name, "aionui-probe");
+        assert_eq!(cmds[0].name, "one-probe");
         assert_eq!(cmds[0].description.as_deref(), Some("Probe skill."));
     }
 

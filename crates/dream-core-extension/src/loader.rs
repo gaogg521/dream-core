@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::{debug, warn};
 
-use crate::constants::{EXTENSION_API_VERSION, EXTENSION_MANIFEST_FILE, EXTENSIONS_DIR_NAME};
+use crate::constants::{EXTENSION_API_VERSION, EXTENSIONS_DIR_NAME, resolve_manifest_path};
 use crate::manifest::parse_manifest_in_dir;
 use crate::types::{ExtensionSource, ExtensionState, LoadedExtension};
 
@@ -180,7 +180,7 @@ fn scan_directory(dir: &Path, source: ExtensionSource) -> Vec<LoadedExtension> {
             continue;
         }
 
-        let manifest_path = entry_path.join(EXTENSION_MANIFEST_FILE);
+        let manifest_path = resolve_manifest_path(&entry_path);
         match load_single_extension(&manifest_path, &entry_path, source) {
             Ok(ext) => {
                 debug!(name = %ext.manifest.name, dir = %entry_path.display(), "loaded extension");
@@ -258,7 +258,7 @@ fn is_engine_compatible(ext: &LoadedExtension, app_version: &semver::Version) ->
     let Some(engine) = &ext.manifest.engine else {
         return true; // no engine constraint
     };
-    let Some(required) = &engine.aionui else {
+    let Some(required) = &engine.one else {
         return true; // no dream constraint
     };
 
@@ -269,7 +269,7 @@ fn is_engine_compatible(ext: &LoadedExtension, app_version: &semver::Version) ->
                 name = %ext.manifest.name,
                 required = %required,
                 actual = %app_version,
-                "extension filtered out: engine.aionui incompatible"
+                "extension filtered out: engine.one incompatible"
             );
             false
         }
@@ -278,7 +278,7 @@ fn is_engine_compatible(ext: &LoadedExtension, app_version: &semver::Version) ->
                 name = %ext.manifest.name,
                 required = %required,
                 error = %e,
-                "extension filtered out: invalid engine.aionui version requirement"
+                "extension filtered out: invalid engine.one version requirement"
             );
             false
         }
@@ -334,6 +334,34 @@ fn is_e2e_test_mode() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::EXTENSION_MANIFEST_FILE;
+    use crate::constants::LEGACY_EXTENSION_MANIFEST_FILE;
+
+    /// An extension installed before the rename still has the old manifest name on
+    /// disk. Discovery has to keep finding it, or the user's extensions silently
+    /// vanish from the list after an upgrade.
+    #[test]
+    fn resolve_manifest_path_accepts_the_pre_rebrand_filename() {
+        use crate::constants::resolve_manifest_path;
+        let dir = tempfile::tempdir().unwrap();
+
+        // Neither present: report the current name, so the error names what to write.
+        assert_eq!(
+            resolve_manifest_path(dir.path()),
+            dir.path().join(EXTENSION_MANIFEST_FILE)
+        );
+
+        // Only the legacy name present: it is found.
+        let legacy = dir.path().join(LEGACY_EXTENSION_MANIFEST_FILE);
+        std::fs::write(&legacy, b"{}").unwrap();
+        assert_eq!(resolve_manifest_path(dir.path()), legacy);
+
+        // Both present: the current name wins.
+        let current = dir.path().join(EXTENSION_MANIFEST_FILE);
+        std::fs::write(&current, b"{}").unwrap();
+        assert_eq!(resolve_manifest_path(dir.path()), current);
+    }
+
     use crate::types::{EngineConfig, ExtensionManifest};
     use std::fs;
     use tempfile::TempDir;
@@ -344,19 +372,13 @@ mod tests {
     }
 
     /// Helper: create a manifest with optional engine and apiVersion fields.
-    fn write_manifest_full(
-        dir: &Path,
-        name: &str,
-        version: &str,
-        engine_aionui: Option<&str>,
-        api_version: Option<&str>,
-    ) {
+    fn write_manifest_full(dir: &Path, name: &str, version: &str, engine_one: Option<&str>, api_version: Option<&str>) {
         let mut manifest = serde_json::json!({
             "name": name,
             "version": version,
         });
-        if let Some(eng) = engine_aionui {
-            manifest["engine"] = serde_json::json!({ "aionui": eng });
+        if let Some(eng) = engine_one {
+            manifest["engine"] = serde_json::json!({ "one": eng });
         }
         if let Some(api) = api_version {
             manifest["apiVersion"] = serde_json::json!(api);
@@ -569,7 +591,7 @@ mod tests {
     fn make_loaded_ext(
         name: &str,
         version: &str,
-        engine_aionui: Option<&str>,
+        engine_one: Option<&str>,
         api_version: Option<&str>,
     ) -> LoadedExtension {
         LoadedExtension {
@@ -582,8 +604,8 @@ mod tests {
                 license: None,
                 homepage: None,
                 icon: None,
-                engine: engine_aionui.map(|v| EngineConfig {
-                    aionui: Some(v.to_string()),
+                engine: engine_one.map(|v| EngineConfig {
+                    one: Some(v.to_string()),
                 }),
                 api_version: api_version.map(|v| v.to_string()),
                 dependencies: HashMap::new(),
@@ -709,6 +731,8 @@ mod tests {
     #[test]
     fn resolve_scan_paths_for_data_dir_prefers_env_then_data_dir_then_appdata() {
         let tmp = tempfile::TempDir::new().unwrap();
+        // The legacy layout this path exists for: `derive_legacy_appdata_extensions_dir`
+        // only fires when the data dir's leaf is the pre-rebrand name.
         let app_root = tmp.path().join("AionUi-Dev");
         let data_dir = app_root.join("aionui");
         std::fs::create_dir_all(&data_dir).unwrap();

@@ -227,7 +227,7 @@ async fn update_team_can_patch_workspace() {
         "system_default_user",
         "t1",
         &UpdateTeamParams {
-            workspace: Some("/tmp/aionui-team-shared-workspace".into()),
+            workspace: Some("/tmp/one-team-shared-workspace".into()),
             ..Default::default()
         },
     )
@@ -235,7 +235,7 @@ async fn update_team_can_patch_workspace() {
     .unwrap();
 
     let updated = repo.get_team("system_default_user", "t1").await.unwrap().unwrap();
-    assert_eq!(updated.workspace, "/tmp/aionui-team-shared-workspace");
+    assert_eq!(updated.workspace, "/tmp/one-team-shared-workspace");
 }
 
 #[tokio::test]

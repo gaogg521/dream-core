@@ -133,7 +133,7 @@ async fn run_backend_parity(backend: &str, prompt: &str) {
     // Workspace with a known file for a read-only tool call.
     let ws_dir = std::env::temp_dir().join(format!("live-parity-{backend}-{}", dream_core_common::now_ms()));
     std::fs::create_dir_all(&ws_dir).unwrap();
-    std::fs::write(ws_dir.join("hello.txt"), "AION_PARITY_42\n").unwrap();
+    std::fs::write(ws_dir.join("hello.txt"), "DREAM_PARITY_42\n").unwrap();
 
     let created = http_json(
         &app,
@@ -824,7 +824,7 @@ async fn run_backend_session_title(backend: &str) {
 /// what "it" refers to, which is exactly what the secret word catches.
 async fn run_backend_resume(backend: &str) {
     let db = dream_core_db::init_database_memory().await.unwrap();
-    let secret = format!("AION-{}", dream_core_common::now_ms() % 100_000);
+    let secret = format!("DREAM-{}", dream_core_common::now_ms() % 100_000);
 
     let ws_dir = std::env::temp_dir().join(format!("live-resume-{backend}-{}", dream_core_common::now_ms()));
     std::fs::create_dir_all(&ws_dir).unwrap();
@@ -946,7 +946,7 @@ async fn run_backend_mcp_provisioning(backend: &str) {
         json!({
             "name": format!("live-probe-{}", dream_core_common::now_ms()),
             "description": "unlaunchable on purpose — proves a failure is reported, not swallowed",
-            "transport": {"type": "stdio", "command": "aionui-no-such-mcp-server", "args": []}
+            "transport": {"type": "stdio", "command": "one-no-such-mcp-server", "args": []}
         }),
     )
     .await;
@@ -1012,7 +1012,7 @@ async fn run_backend_mcp_provisioning(backend: &str) {
 /// answer by itself is insufficient: the streamed tool cards must also name the
 /// Team MCP tool and a shell tool.
 async fn run_direct_backend_team_mcp_and_runtime_env(backend: &str, agent_id: &str) {
-    const SENTINEL: &str = "AIONUI_DIRECT_CLI_E2E_42";
+    const SENTINEL: &str = "ONE_DIRECT_CLI_E2E_42";
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(
             "dream_core_app=info,dream_core_ai_agent=info,dream_core_session=info,dream_core_team=info",
@@ -1020,9 +1020,9 @@ async fn run_direct_backend_team_mcp_and_runtime_env(backend: &str, agent_id: &s
         .with_test_writer()
         .try_init();
     assert_eq!(
-        std::env::var("AIONUI_E2E_SENTINEL").as_deref(),
+        std::env::var("ONE_E2E_SENTINEL").as_deref(),
         Ok(SENTINEL),
-        "run this ignored release gate with AIONUI_E2E_SENTINEL={SENTINEL}"
+        "run this ignored release gate with ONE_E2E_SENTINEL={SENTINEL}"
     );
 
     let app = start_live_app().await;
@@ -1086,7 +1086,7 @@ async fn run_direct_backend_team_mcp_and_runtime_env(backend: &str, agent_id: &s
         &messages_uri,
         "Now use your real shell/command-execution tool to run exactly: \
          printf '{}\\n' | \"$ONE_HELPER_BIN\" team members >/dev/null && \
-         test \"$AIONUI_E2E_SENTINEL\" = \"AIONUI_DIRECT_CLI_E2E_42\" && echo ONE_ENV_OK. \
+         test \"$ONE_E2E_SENTINEL\" = \"ONE_DIRECT_CLI_E2E_42\" && echo ONE_ENV_OK. \
          Only after the Team CLI fallback helper and sentinel check both succeed, reply with exactly: ONE_ENV_OK",
         300,
     )
@@ -1097,7 +1097,7 @@ async fn run_direct_backend_team_mcp_and_runtime_env(backend: &str, agent_id: &s
             Some("tool_call") | Some("acp_tool_call")
         )
     };
-    let mcp_prompt = "Call the team_members MCP tool from the aionui-team MCP server now. \
+    let mcp_prompt = "Call the team_members MCP tool from the one-team MCP server now. \
          Do not use ONE_HELPER_BIN or any CLI fallback for that call. \
          Only after the MCP tool succeeds, reply with exactly: TEAM_MCP_OK";
     let mut mcp_frames = Vec::new();
@@ -1157,7 +1157,7 @@ async fn run_direct_backend_team_mcp_and_runtime_env(backend: &str, agent_id: &s
     }
     assert!(
         shell_tool_evidence.contains("ONE_HELPER_BIN")
-            && (shell_tool_evidence.contains("AIONUI_E2E_SENTINEL") || shell_tool_evidence.contains("ONE_ENV_OK")),
+            && (shell_tool_evidence.contains("ONE_E2E_SENTINEL") || shell_tool_evidence.contains("ONE_ENV_OK")),
         "[{backend}] no streamed shell/command-execution evidence for the Team CLI fallback and sentinel check; \
          tool names={tool_names:?}"
     );
@@ -1234,7 +1234,7 @@ async fn run_backend_permission_prompt(backend: &str) {
     // under codex's default `workspace-write` sandbox, so an in-workspace path
     // makes the test's own premise false for that backend — the first draft did
     // exactly that and read codex's correct silence as "the CLI stopped asking".
-    let outside = std::env::temp_dir().join(format!("aion-approval-{}.txt", dream_core_common::now_ms()));
+    let outside = std::env::temp_dir().join(format!("dream-approval-{}.txt", dream_core_common::now_ms()));
     let frames = connect_ws_recorder(app.addr, &app.token).await;
     http_json(
         &app,
@@ -1242,7 +1242,7 @@ async fn run_backend_permission_prompt(backend: &str) {
         &format!("/api/conversations/{conv_id}/messages"),
         json!({
             "content": format!(
-                "Run the shell command `echo AION_APPROVED > {}` using your command-execution tool. \
+                "Run the shell command `echo DREAM_APPROVED > {}` using your command-execution tool. \
                  Then reply with exactly: DONE.",
                 outside.display()
             )
@@ -2076,7 +2076,7 @@ async fn live_codex_full_access_writes_without_approval() {
         &format!("/api/conversations/{conv_id}/messages"),
         json!({
             "content": "Create a file named written_by_agent.txt in this workspace \
-                containing exactly AION_FULL_ACCESS_OK, then reply DONE."
+                containing exactly DREAM_FULL_ACCESS_OK, then reply DONE."
         }),
     )
     .await;
@@ -2119,7 +2119,7 @@ async fn live_codex_full_access_writes_without_approval() {
     );
     let written = std::fs::read_to_string(&target).unwrap_or_default();
     assert!(
-        written.contains("AION_FULL_ACCESS_OK"),
+        written.contains("DREAM_FULL_ACCESS_OK"),
         "[full-access] wrote unexpected content: {written:?}"
     );
 }

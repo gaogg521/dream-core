@@ -27,11 +27,11 @@ fn mv1_valid_manifest_parses_and_validates() {
 // -- MV-2: reserved name prefix rejected --
 
 #[test]
-fn mv2_reserved_prefix_aion_rejected() {
-    let json = serde_json::json!({"name": "aion-my-ext", "version": "1.0.0"});
+fn mv2_reserved_prefix_dream_rejected() {
+    let json = serde_json::json!({"name": "dream-my-ext", "version": "1.0.0"});
     let bytes = serde_json::to_vec(&json).unwrap();
     let err = parse_manifest(&bytes).unwrap_err();
-    assert!(matches!(err, ExtensionError::ReservedNamePrefix { ref prefix, .. } if prefix == "aion-"));
+    assert!(matches!(err, ExtensionError::ReservedNamePrefix { ref prefix, .. } if prefix == "dream-"));
 }
 
 #[test]
@@ -102,7 +102,7 @@ fn manifest_with_all_optional_fields() {
         "license": "MIT",
         "homepage": "https://example.com",
         "icon": "icon.png",
-        "engine": { "aionui": "^1.0.0" },
+        "engine": { "one": "^1.0.0" },
         "api_version": "1.0.0",
         "dependencies": { "other-ext": "^1.0.0" },
         "entry_point": "main.js",

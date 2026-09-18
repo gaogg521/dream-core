@@ -14,7 +14,9 @@ pub(super) fn engine_error_to_send_error(error: &DreamEngineAgentError) -> Agent
     // selector call it elsewhere in the desktop UI).
     let detail = format!("1ONE CLI agent error: {error}");
     match error {
-        DreamEngineAgentError::Provider(provider_error) => aionrs_provider_error_to_send_error(provider_error, detail),
+        DreamEngineAgentError::Provider(provider_error) => {
+            dream_engine_provider_error_to_send_error(provider_error, detail)
+        }
         DreamEngineAgentError::ToolCallMalformed { .. } => provider_send_error(
             "The model provider repeatedly returned malformed tool calls",
             AgentErrorCode::UserLlmProviderInvalidRequest,
@@ -99,9 +101,9 @@ pub(super) fn engine_runtime_error_summary(error: &DreamEngineAgentError) -> Dre
     }
 }
 
-fn aionrs_provider_error_to_send_error(error: &ProviderError, detail: String) -> AgentSendError {
+fn dream_engine_provider_error_to_send_error(error: &ProviderError, detail: String) -> AgentSendError {
     match error {
-        ProviderError::Api { status, .. } => aionrs_provider_status_to_send_error(*status, detail),
+        ProviderError::Api { status, .. } => dream_engine_provider_status_to_send_error(*status, detail),
         ProviderError::RateLimited { body, .. } => provider_send_error(
             "The model provider rate limited the request",
             AgentErrorCode::UserLlmProviderRateLimited,
@@ -137,7 +139,7 @@ fn aionrs_provider_error_to_send_error(error: &ProviderError, detail: String) ->
     }
 }
 
-fn aionrs_provider_status_to_send_error(status: u16, detail: String) -> AgentSendError {
+fn dream_engine_provider_status_to_send_error(status: u16, detail: String) -> AgentSendError {
     // Status alone cannot tell "your key is not allowed to do this" from "your
     // key's allowance is spent" — OpenRouter reports both as 403, the trial
     // broker's mode-B proxy reports the latter as a structured 402 — and the

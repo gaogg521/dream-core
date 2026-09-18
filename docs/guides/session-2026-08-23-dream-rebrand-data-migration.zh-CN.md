@@ -12,9 +12,9 @@ CodeMirror 排查、验证记录）见 dream-ui 的
 | `crates/dream-core-common/src/enums.rs` | `AgentType::DreamEngine`/`ConversationSource::DreamUi`/`McpSource::DreamEngine`/`McpSource::DreamUi` 加 `#[serde(rename="dream", alias="旧值")]`；`AgentType::id()` 对 `DreamEngine` 分支硬编码冻结返回历史哈希 `"632f31d2"` |
 | `crates/dream-core-db/migrations/052_dream_rebrand_persisted_values.sql` | 新增正向迁移：UPDATE `conversations.type`/`conversations.source`/`agent_metadata.agent_type`/`assistant_sessions.agent_type` 四处旧值→`dream` |
 | `crates/dream-domain-employee/migrations/005_dream_rebrand_agent_type.sql` | 新增正向迁移：UPDATE `one_personal_agents.agent_type` |
-| `crates/dream-core-auth/src/middleware.rs` | `WEBUI_PROXY_HEADER`/`CLIENT_IP_HEADER` 两个内部 HTTP 头常量值从 `x-aionui-*` 改为 `x-dream-*`（真实 bug，见下节 2.1；`RUNTIME_TOKEN_HEADER` 等其余三个头常量确认无需改动，未动） |
-| `crates/dream-core-conversation/src/service.rs` | `aionrs_capability_agent_id()` 内部硬编码的查找 key `"aionrs"` → `"dream"`（真实 bug，见 2.2） |
-| 约 10 个 crate 的测试文件 | fixture/断言里写死的旧字符串值（`"aionrs"`/`.aionrs/skills`/`bare-aionrs` 等）改成 `"dream"`/`.dream/skills`/`bare-dream`，详见二节列表 |
+| `crates/dream-core-auth/src/middleware.rs` | `WEBUI_PROXY_HEADER`/`CLIENT_IP_HEADER` 两个内部 HTTP 头常量值从 `x-dream-ui-*` 改为 `x-dream-*`（真实 bug，见下节 2.1；`RUNTIME_TOKEN_HEADER` 等其余三个头常量确认无需改动，未动） |
+| `crates/dream-core-conversation/src/service.rs` | `dream-engine_capability_agent_id()` 内部硬编码的查找 key `"dream-engine"` → `"dream"`（真实 bug，见 2.2） |
+| 约 10 个 crate 的测试文件 | fixture/断言里写死的旧字符串值（`"dream-engine"`/`.dream-engine/skills`/`bare-dream-engine` 等）改成 `"dream"`/`.dream/skills`/`bare-dream`，详见二节列表 |
 
 ## 二、本仓库特有的两个真实 bug（不是测试断言过时）
 
@@ -24,8 +24,8 @@ CodeMirror 排查、验证记录）见 dream-ui 的
 
 ```rust
 // crates/dream-core-auth/src/middleware.rs
-pub const WEBUI_PROXY_HEADER: &str = "x-dream-forwarded-origin"; // was x-aionui-forwarded-origin
-pub const CLIENT_IP_HEADER: &str = "x-dream-client-ip";          // was x-aionui-client-ip
+pub const WEBUI_PROXY_HEADER: &str = "x-dream-forwarded-origin"; // was x-dream-ui-forwarded-origin
+pub const CLIENT_IP_HEADER: &str = "x-dream-client-ip";          // was x-dream-ui-client-ip
 ```
 
 同文件里 `RUNTIME_TOKEN_HEADER`/`RUNTIME_USER_ID_HEADER`/`RUNTIME_CONVERSATION_ID_HEADER`
@@ -38,9 +38,9 @@ pub const CLIENT_IP_HEADER: &str = "x-dream-client-ip";          // was x-aionui
 
 ```rust
 // crates/dream-core-conversation/src/service.rs
-async fn aionrs_capability_agent_id(&self, user_id: &str, conversation_id: &str) -> Result<String, ConversationError> {
+async fn dream-engine_capability_agent_id(&self, user_id: &str, conversation_id: &str) -> Result<String, ConversationError> {
     Ok(self
-        .resolve_assistant_agent_binding(user_id, "dream") // was "aionrs"
+        .resolve_assistant_agent_binding(user_id, "dream") // was "dream-engine"
         .await?
         .map(|binding| binding.agent_id)
         .unwrap_or_default())
@@ -54,22 +54,22 @@ async fn aionrs_capability_agent_id(&self, user_id: &str, conversation_id: &str)
 测不出来，只能靠跑完整的集成测试暴露。除了这处 `service.rs`，
 `crates/dream-core-db/tests/agent_binding_resolver.rs` 里
 `resolves_internal_agent_type_when_backend_is_null` 测试本身也一度还在用
-`resolve_agent_binding(db.pool(), "aionrs")` 当调用参数，同一类错误在测试代码里
-又复现了一次，一并改成 `"dream"`（连同 `.expect("aionrs should resolve")` 的消息文本
+`resolve_agent_binding(db.pool(), "dream-engine")` 当调用参数，同一类错误在测试代码里
+又复现了一次，一并改成 `"dream"`（连同 `.expect("dream-engine should resolve")` 的消息文本
 和两处断言 `resolved.agent_type`/`resolved.runtime_backend` 也改成 `"dream"`）。
 
 ## 三、测试断言/fixture 修复清单（过时值，非真实 bug）
 
 以下改动都是"生产逻辑本来就是对的，只是测试写死了迁移前的旧值"，按 crate 分组：
 
-- `dream-core-assistant/src/service.rs`：`assistant_lineage_extracts_aionrs_preset_id` 里 `lineage.agent_type` 断言、`mk_agent_row`/`builtin.agent_ref` 构造参数
-- `dream-core-channel/src/channel_settings.rs`：`make_definition("bare-aionrs", "aionrs")` 两处调用
-- `dream-core-channel/src/action.rs`、`dream-core-channel/tests/session_action_integration.rs`：`assert!(text.contains("aionrs"))` → `"dream"`
-- `dream-core-channel/tests/message_service_integration.rs`：`bare_assistant_definition_params(...)` 第三参、`agent_type` 字面量、会话名断言 `tg-aionrs-70880480` → `tg-dream-70880480`
-- `dream-core-conversation/src/service_test.rs`：`seed_aionrs_conversation_with_snapshot` 里 `r#type: "aionrs".into()`；`warmup_restores_skill_links_for_recreated_auto_workspace` 里三处 `.aionrs/skills/cron` 路径断言
-- `dream-core-conversation/src/session_context.rs`：`workspace_empty_uses_auto_path_and_is_not_custom` 里工作区路径断言 `aionrs-temp-conv-1` → `dream-temp-conv-1`（根因是 `conversation_label()` 现在解析出 "dream"）
+- `dream-core-assistant/src/service.rs`：`assistant_lineage_extracts_dream-engine_preset_id` 里 `lineage.agent_type` 断言、`mk_agent_row`/`builtin.agent_ref` 构造参数
+- `dream-core-channel/src/channel_settings.rs`：`make_definition("bare-dream-engine", "dream-engine")` 两处调用
+- `dream-core-channel/src/action.rs`、`dream-core-channel/tests/session_action_integration.rs`：`assert!(text.contains("dream-engine"))` → `"dream"`
+- `dream-core-channel/tests/message_service_integration.rs`：`bare_assistant_definition_params(...)` 第三参、`agent_type` 字面量、会话名断言 `tg-dream-engine-70880480` → `tg-dream-70880480`
+- `dream-core-conversation/src/service_test.rs`：`seed_dream-engine_conversation_with_snapshot` 里 `r#type: "dream-engine".into()`；`warmup_restores_skill_links_for_recreated_auto_workspace` 里三处 `.dream-engine/skills/cron` 路径断言
+- `dream-core-conversation/src/session_context.rs`：`workspace_empty_uses_auto_path_and_is_not_custom` 里工作区路径断言 `dream-engine-temp-conv-1` → `dream-temp-conv-1`（根因是 `conversation_label()` 现在解析出 "dream"）
 - `dream-core-cron/tests/service_integration.rs`：两处 `job.agent_type` 断言（`seeded_agent_id()` 测试专用字典本身不改，那是纯测试标签映射）
-- `dream-core-db/tests/aionrs_fork_capability_migration.rs`、`agent_binding_resolver.rs`：见二节
+- `dream-core-db/tests/dream-engine_fork_capability_migration.rs`、`agent_binding_resolver.rs`：见二节
 
 ## 四、迁移文件生命周期踩坑记录
 
@@ -94,7 +94,7 @@ fail-fast，所以不加 `--no-fail-fast` 报出来的失败数会偏小、误�
 修完了"。改用 `cargo nextest run --workspace --no-fail-fast` 后，一轮就能拿到全 workspace
 的完整失败列表，收尾效率明显更高。
 
-最后两个测试文件（`aionrs_fork_capability_migration.rs`、`agent_binding_resolver.rs`）
+最后两个测试文件（`dream-engine_fork_capability_migration.rs`、`agent_binding_resolver.rs`）
 修复后已提交推送；随后又跑了一轮 `cargo nextest run --workspace --no-fail-fast` 做
 最终确认，结果见本次提交历史里紧随其后的验证记录（如仍有失败，按本文档第四节的方法论
 ——先查是测试断言过时还是 strict-match 查找函数踩坑——继续修复，不要假设"应该没问题了"）。
@@ -104,13 +104,13 @@ fail-fast，所以不加 `--no-fail-fast` 报出来的失败数会偏小、误�
 下一个会话按上一节的建议，完整跑了一次 `cargo nextest run --workspace --no-fail-fast`，
 第一次跑出 11 个失败（此前从未有过完整结果，这是第一次拿到全量列表）：
 
-- **7 个**是测试固件里残留的旧值字面量（`"aionrs"`/`"aionui"`），分布在
-  `dream-core-team::provisioning`（5 处，`agent.backend = "aionrs"` 之类）、
-  `dream-core-team::service`（`team_with_aionrs_worker_request` 里的 Butler 测试 agent）、
+- **7 个**是测试固件里残留的旧值字面量（`"dream-engine"`/`"dream-ui"`），分布在
+  `dream-core-team::provisioning`（5 处，`agent.backend = "dream-engine"` 之类）、
+  `dream-core-team::service`（`team_with_dream-engine_worker_request` 里的 Butler 测试 agent）、
   `dream-core-team::service::spawn_support`（`team_assistant_entry(...)` 第三参 + 对应断言）、
-  `dream-domain-employee::service`（`agent_row("aionrs")`）、
+  `dream-domain-employee::service`（`agent_row("dream-engine")`）、
   `dream-core-db::tests::conversation_schema`（`conversation_row_from_row` 的 SQL INSERT
-  语句里手写了 `'aionui'`，但断言早已改成检查 `"dream"`，插入值和断言值对不上）。
+  语句里手写了 `'dream-ui'`，但断言早已改成检查 `"dream"`，插入值和断言值对不上）。
   **全部确认是生产逻辑本来就对**（比如 `provisioning.rs` 里真正做判断的
   `TestCapabilityPort::resolve` 已经是 `backend == "dream"`），单纯是测试固件没跟上。
 - **4 个**（`dream-core-channel` 的 dingtalk/lark `token_cache_expired`/

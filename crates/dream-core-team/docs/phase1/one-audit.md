@@ -1,10 +1,10 @@
-# AionUi Team 模块后端能力审计（Phase 1）
+# One Work Team 模块后端能力审计（Phase 1）
 
-> **目的**：对照 AionUi 前端 main 分支（`/Volumes/Macintosh HD/Users/zhuqingyu/project/AionUi/`，commit `ed8a6bcd3`），列出 aionui-backend 后端需要复刻的所有 team 能力。
+> **目的**：对照快照时点的前端 main 分支，列出 dreamcore 后端需要复刻的所有 team 能力。
 >
 > **范围约束**：
 > - 只关注后端需要实现的能力，不关注前端渲染（例如 React 页面、SWR 缓存、ipcBridge 事件消费）。
-> - 只考虑 ACP agent type（范围内：claude / codex / aionrs / 其他 ACP MCP stdio-capable backend；Gemini 非 ACP 但也出现在 team-capable 白名单里，本文档按原样记录不剔除）。
+> - 只考虑 ACP agent type（范围内：claude / codex / dream-engine / 其他 ACP MCP stdio-capable backend；Gemini 非 ACP 但也出现在 team-capable 白名单里，本文档按原样记录不剔除）。
 > - 禁止推测。源码未覆盖到的字段在表格中标 "未在源码找到"。
 >
 > **相关文档**：
@@ -12,7 +12,7 @@
 > - [内部调度说明（旧版）](../internals.md)（参考价值，未逐字验证）
 > - [MCP 通信（旧版）](../mcp.md)（参考价值，未逐字验证）
 >
-> **AionUi 源码路径索引**（下文中所有路径均相对前端根目录 `/Volumes/Macintosh HD/Users/zhuqingyu/project/AionUi/`）：
+> **One Work 源码路径索引**（下文中所有路径均相对前端根目录 `<前端仓库>`）：
 >
 > | 模块 | 路径 | 行数 |
 > |------|------|------|
@@ -48,10 +48,10 @@
 
 ### 1.1 能力清单
 
-| 能力 | AionUi 实现 | 关键代码路径 |
+| 能力 | One Work 实现 | 关键代码路径 |
 |------|-------------|--------------|
 | 创建 team（REST） | `TeamSessionService.createTeam({userId, name, workspace, workspaceMode, agents, sessionMode})`：生成 teamId、逐个 agent 创建对应 conversation（或复用已有 conversationId 实现单聊→team），回填 workspace，落库到 `repo.create(team)` | `TeamSessionService.ts:475-559` |
-| 创建 team（MCP spawn） | `TeamGuideMcpServer.handleCreateTeam(args, backend, callerConversationId)`：1) 从 `AION_MCP_BACKEND` env 拿 agent type 2) 校验 team-capable 3) 复用 callerConversationId 作为 leader 4) 调 `teamSessionService.createTeam` 5) emit `team.listChanged` + `conversation.listChanged` + `deepLink.received` 6) 异步 `getOrStartSession` 并向 leader 发 summary message | `TeamGuideMcpServer.ts:165-261` |
+| 创建 team（MCP spawn） | `TeamGuideMcpServer.handleCreateTeam(args, backend, callerConversationId)`：1) 从 `ONE_MCP_BACKEND` env 拿 agent type 2) 校验 team-capable 3) 复用 callerConversationId 作为 leader 4) 调 `teamSessionService.createTeam` 5) emit `team.listChanged` + `conversation.listChanged` + `deepLink.received` 6) 异步 `getOrStartSession` 并向 leader 发 summary message | `TeamGuideMcpServer.ts:165-261` |
 | 单聊→team 的 conversation 复用 | `createTeam` 内如果 `agent.conversationId` 存在且 `getConversation` 找到就复用，只更新 `extra.teamId`（和可选 workspace）；否则按 `buildConversationParams` 新建 conversation | `TeamSessionService.ts:488-528` |
 | 列出 team | `listTeams(userId) → repo.findAll(userId)` | `TeamSessionService.ts:567-569` |
 | 获取 team（带 agent 修复） | `getTeam(id)`：先 `repo.findById` 再 `repairTeamAgentsIfMissing`。后者在 `agents` 为空但能从 conversation `extra.teamId` 反推出 agent 时，根据 `teamMcpStdioConfig.env[TEAM_AGENT_SLOT_ID]` 和 conversation `type/extra` 回填 `TeamAgent`，保证升级后仍能恢复 | `TeamSessionService.ts:392-473, 561-565` |
@@ -67,10 +67,10 @@
 
 ```
 solo agent (claude/codex)
-   │ aion_create_team(summary, [name], [workspace])
+   │ one_create_team(summary, [name], [workspace])
    ▼
 [team-guide-mcp-stdio.js]
-   │ TCP → { tool:"aion_create_team", args, backend, conversation_id, auth_token }
+   │ TCP → { tool:"one_create_team", args, backend, conversation_id, auth_token }
    ▼
 TeamGuideMcpServer.handleCreateTeam
    │ 1. backend 白名单校验
@@ -154,7 +154,7 @@ deleteTeam(id)
 
 ### 2.1 能力清单
 
-| 能力 | AionUi 实现 | 关键代码路径 |
+| 能力 | One Work 实现 | 关键代码路径 |
 |------|-------------|--------------|
 | REST addAgent | `TeamSessionService.addAgent(teamId, agent)`：每个 teamId 用 `addAgentLocks` 串行化（防止并发 spawn 时 agents 数组 read-modify-write 竞态）；调 `addAgentUnsafe`：继承 workspace + sessionMode，`buildConversationParams` 造 conversation，生成 `slotId = 'slot-' + uuid(8)`，更新 `repo.update({agents, updatedAt})`，调 `session.addAgent(newAgent)` 写入内存。emit `team.listChanged { action:'agent_added' }` | `TeamSessionService.ts:613-678` |
 | MCP spawn | `TeamMcpServer.handleSpawnAgent(args, callerSlotId)`：1) 校验 caller 必须是 leader（非 leader 直接抛错） 2) 若提供 `custom_agent_id`，从 `assistants` 配置查 preset，校验 enabled，`agent_type` 被 preset.backend 覆盖 3) `isTeamCapableBackend(agentType)` 校验 4) 若提供 `model`，校验在 `acp.cachedModels[agentType].availableModels` 内（不在只 warn，不拒绝） 5) 调外部 `spawnAgent(name, agentType, model, customAgentId)` 6) 向新 agent mailbox 写入 "You have been spawned as X" 7) `safeWake(newAgent.slotId)` | `TeamMcpServer.ts:373-450` |
@@ -203,14 +203,14 @@ deleteTeam(id)
 
 ### 3.1 能力清单
 
-| 能力 | AionUi 实现 | 关键代码路径 |
+| 能力 | One Work 实现 | 关键代码路径 |
 |------|-------------|--------------|
 | Team Guide MCP 生命周期 | App 启动时 `initTeamGuideService(teamSessionService)` 新建 `TeamGuideMcpServer` 并 `start()`（TCP listen 随机端口、auth token=`crypto.randomUUID()`）；`getTeamGuideStdioConfig()` 暴露给 ACP agent；app quit `stopTeamGuideService()` | `teamGuideSingleton.ts:24-45`, `TeamGuideMcpServer.ts:45-77`, `initBridge.ts:40-43` |
-| Team Guide 工具集 | 2 个：`aion_create_team`、`aion_list_models`（共享 `handleListModels`） | `TeamGuideMcpServer.ts:155-163` |
-| Team Guide 注入时机 | ACP agent `loadBuiltinSessionMcpServers()` 里：**不在 team 里** 且 `shouldInjectTeamGuideMcp(backend)` 通过时，取 `getTeamGuideStdioConfig()`，追加 env `AION_MCP_BACKEND` + `AION_MCP_CONVERSATION_ID` 然后 `buildTeamMcpServer` 包装注入 | `acp/index.ts:1623-1640` |
-| Gemini / Aionrs 路径 | Gemini 有独立 `GeminiAgentManager.getMcpServers`；Aionrs 有 `AionrsManager` 额外字段 `awaitReady:true` + `notifyMcpReady(slotId)` | `GeminiAgentManager.ts:341-391`, `AionrsManager.ts:149-201` |
-| Team Guide 能力判断 | `shouldInjectTeamGuideMcp(backend)` → `isTeamCapableBackend(backend, cachedInitResults)`：硬编码白名单 `{gemini, claude, codex, aionrs}`，其他 backend 靠 `cachedInitResults.capabilities.mcpCapabilities.stdio===true` | `teamGuideCapability.ts:18-21`, `teamTypes.ts:16-30` |
-| Team Guide Prompt 注入 | ACP / Gemini / Aionrs 的 `AgentManager` 在构建 system instructions 时检查 `!isInTeam && shouldInjectTeamGuideMcp(backend)` → `getTeamGuidePrompt({ backend, leaderLabel })` 拼到 `instructions` 数组 | `AcpAgentManager.ts:1024-1052`, `GeminiAgentManager.ts:248-254`, `task/agentUtils.ts:61/165/219` |
+| Team Guide 工具集 | 2 个：`one_create_team`、`one_list_models`（共享 `handleListModels`） | `TeamGuideMcpServer.ts:155-163` |
+| Team Guide 注入时机 | ACP agent `loadBuiltinSessionMcpServers()` 里：**不在 team 里** 且 `shouldInjectTeamGuideMcp(backend)` 通过时，取 `getTeamGuideStdioConfig()`，追加 env `ONE_MCP_BACKEND` + `ONE_MCP_CONVERSATION_ID` 然后 `buildTeamMcpServer` 包装注入 | `acp/index.ts:1623-1640` |
+| Gemini / DreamEngine 路径 | Gemini 有独立 `GeminiAgentManager.getMcpServers`；DreamEngine 有 `DreamEngineManager` 额外字段 `awaitReady:true` + `notifyMcpReady(slotId)` | `GeminiAgentManager.ts:341-391`, `DreamEngineManager.ts:149-201` |
+| Team Guide 能力判断 | `shouldInjectTeamGuideMcp(backend)` → `isTeamCapableBackend(backend, cachedInitResults)`：硬编码白名单 `{gemini, claude, codex, dream-engine}`，其他 backend 靠 `cachedInitResults.capabilities.mcpCapabilities.stdio===true` | `teamGuideCapability.ts:18-21`, `teamTypes.ts:16-30` |
+| Team Guide Prompt 注入 | ACP / Gemini / DreamEngine 的 `AgentManager` 在构建 system instructions 时检查 `!isInTeam && shouldInjectTeamGuideMcp(backend)` → `getTeamGuidePrompt({ backend, leaderLabel })` 拼到 `instructions` 数组 | `AcpAgentManager.ts:1024-1052`, `GeminiAgentManager.ts:248-254`, `task/agentUtils.ts:61/165/219` |
 | Team Guide Prompt 参数 | `backend`、`leaderLabel`（preset assistant 显示名，由 `resolveLeaderAssistantLabel(presetAssistantId)` 解析，从 `assistants` 配置或 `ASSISTANT_PRESETS` 取按 locale 本地化后的名字） | `teamGuidePrompt.ts:26-50`, `teamGuideAssistant.ts:25-48` |
 | Team 内部 MCP 启动 | `TeamSession` 构造时 new `TeamMcpServer({ teamId, getAgents, mailbox, taskManager, spawnAgent, renameAgent, removeAgent, wakeAgent })`；`startMcpServer` 调 `start()` 起 TCP server 并返回 `StdioMcpConfig`；每次 `getStdioConfig(slotId)` 返回带 `TEAM_AGENT_SLOT_ID` env 的 config | `TeamSession.ts:45-92`, `TeamMcpServer.ts:56-118` |
 | `StdioMcpConfig` 形状 | `{ name: 'dream-core-team-<teamId>', command: 'node', args: [scriptPath], env: [{name:'TEAM_MCP_PORT',value},{name:'TEAM_MCP_TOKEN',value},{name:'TEAM_AGENT_SLOT_ID',value}] }` | `TeamMcpServer.ts:44-49, 101-118` |
@@ -239,7 +239,7 @@ deleteTeam(id)
 ### 3.3 stdio ↔ TCP 桥架构
 
 ```
-                  AionUi Electron main 进程
+                  One Work Electron main 进程
 ┌────────────────────────────────────────────────────────────────┐
 │  TeamGuideMcpServer (单例)             TeamMcpServer (每 team) │
 │  net.createServer('127.0.0.1', *)      net.createServer(...)   │
@@ -255,9 +255,9 @@ deleteTeam(id)
 │ mcp-stdio.js   │                │ stdio.js      │
 │  McpServer     │                │  McpServer    │
 │  stdio transport                │  stdio transport
-│  env: AION_MCP_PORT/TOKEN       │  env: TEAM_MCP_PORT/TOKEN
-│       AION_MCP_BACKEND          │       TEAM_AGENT_SLOT_ID
-│       AION_MCP_CONVERSATION_ID  │
+│  env: ONE_MCP_PORT/TOKEN       │  env: TEAM_MCP_PORT/TOKEN
+│       ONE_MCP_BACKEND          │       TEAM_AGENT_SLOT_ID
+│       ONE_MCP_CONVERSATION_ID  │
 └───────▲────────┘                └──────▲────────┘
         │ stdio (JSON-RPC)               │ stdio (JSON-RPC)
 ┌───────┴────────┐                ┌──────┴────────┐
@@ -268,7 +268,7 @@ deleteTeam(id)
 └────────────────┘                └───────────────┘
 ```
 
-注意：同一个 agent 进入 team 后，**Team Guide MCP 不再注入**（`!this.extra.teamMcpStdioConfig` 才注入），避免 team 成员把 `aion_create_team` 当工具再次建团。
+注意：同一个 agent 进入 team 后，**Team Guide MCP 不再注入**（`!this.extra.teamMcpStdioConfig` 才注入），避免 team 成员把 `one_create_team` 当工具再次建团。
 
 ---
 
@@ -368,8 +368,8 @@ responseStream { type:'finish' | 'error' }
 
 ### 5.3 Team Guide MCP 工具描述来源
 
-- `aion_create_team` description：**动态**由 `getCreateTeamToolDescription()` 返回（`teamGuidePrompt.ts:88-108`），被 stdio bridge 在 import 时引用。
-- `aion_list_models` description：**静态**写在 `teamGuideMcpStdio.ts:109-112` inline。
+- `one_create_team` description：**动态**由 `getCreateTeamToolDescription()` 返回（`teamGuidePrompt.ts:88-108`），被 stdio bridge 在 import 时引用。
+- `one_list_models` description：**静态**写在 `teamGuideMcpStdio.ts:109-112` inline。
 - `team_spawn_agent` description：`TEAM_SPAWN_AGENT_DESCRIPTION` 常量（`toolDescriptions.ts:1-18`），既被 stdio bridge 引用也被后端 prompt 引用（不，只有 stdio bridge 引用）。
 - 其他 9 个 team_* 工具 description：**静态**写在 `teamMcpStdio.ts:83-283` inline。
 
@@ -409,12 +409,12 @@ Task 依赖是双向链（`blockedBy` + `blocks`）。
 
 ### 7.1 REST / IPC 等价入口（backend 需要暴露的 API）
 
-> AionUi 走 ipcBridge；后端要包掉这些 team 逻辑意味着提供等价 HTTP/WebSocket 端点。具体 endpoint 命名/路径由后端决定，此处只列能力。
+> One Work 走 ipcBridge；后端要包掉这些 team 逻辑意味着提供等价 HTTP/WebSocket 端点。具体 endpoint 命名/路径由后端决定，此处只列能力。
 
 | 能力 | 参数 | 行为契约 |
 |------|------|----------|
 | 创建 team（后台 REST） | `{userId, name, workspace, workspaceMode, agents[], sessionMode?}` | 对每个 agent 创建或复用 conversation，写 `extra.teamId`；落 team 表；返回 `TTeam` |
-| 创建 team（agent 调 MCP） | `aion_create_team(summary, name?, workspace?)` + system-injected `backend` + `conversation_id` | 复用 caller conversation 作 leader；`sessionMode='yolo'`, `workspaceMode='shared'`；返回 `{teamId, route, leadAgent, next_step}` |
+| 创建 team（agent 调 MCP） | `one_create_team(summary, name?, workspace?)` + system-injected `backend` + `conversation_id` | 复用 caller conversation 作 leader；`sessionMode='yolo'`, `workspaceMode='shared'`；返回 `{teamId, route, leadAgent, next_step}` |
 | 列 team | `userId` | `TTeam[]` |
 | 获取 team（含 agent 修复） | `id` | 从 conversation `extra.teamId/teamMcpStdioConfig` 反推补 agents |
 | 删除 team（级联） | `id` | kill 所有 agent 进程 → dispose session → 删 conversation → 删 mailbox → 删 tasks → 删 team |
@@ -434,8 +434,8 @@ Task 依赖是双向链（`blockedBy` + `blocks`）。
 后端必须同时实现：
 
 **Team Guide MCP（solo agent 用，对应 backend 白名单 agent 注入）**
-1. `aion_create_team(summary, name?, workspace?)` — `system.backend`、`system.conversation_id` 由 bridge 注入
-2. `aion_list_models(agent_type?)`
+1. `one_create_team(summary, name?, workspace?)` — `system.backend`、`system.conversation_id` 由 bridge 注入
+2. `one_list_models(agent_type?)`
 
 **Team 内部 MCP（team 成员用，带 `from_slot_id`）**
 3. `team_send_message(to, message, summary?)` — 含 `*` 广播、`shutdown_approved/rejected` 拦截
@@ -475,11 +475,11 @@ Task 依赖是双向链（`blockedBy` + `blocks`）。
 - `getTeamGuidePrompt({backend, leaderLabel})` — 完整 7 步流程
 - `buildLeaderPrompt({teammates, availableAgentTypes, availableAssistants, renamedAgents, teamWorkspace})` — 动态节 4 段
 - `buildTeammatePrompt({agent, leader, teammates, renamedAgents, teamWorkspace})` — Standing By + Shutdown 协议原文
-- `getCreateTeamToolDescription()` — `aion_create_team` 工具描述（3 PRECONDITIONS + STRICT 流程）
+- `getCreateTeamToolDescription()` — `one_create_team` 工具描述（3 PRECONDITIONS + STRICT 流程）
 - `TEAM_SPAWN_AGENT_DESCRIPTION` 常量 — `team_spawn_agent` 工具描述
 - 10 个 team_* 工具的描述原文（见 team-prompts.md §5.2）
 - `resolveLeaderAssistantLabel(presetAssistantId)` — 按 locale 解析 preset 显示名
-- `shouldInjectTeamGuideMcp(backend)` — 复用 `isTeamCapableBackend` 白名单 `{gemini, claude, codex, aionrs}` + `cachedInitResults.capabilities.mcpCapabilities.stdio`
+- `shouldInjectTeamGuideMcp(backend)` — 复用 `isTeamCapableBackend` 白名单 `{gemini, claude, codex, dream-engine}` + `cachedInitResults.capabilities.mcpCapabilities.stdio`
 - `formatMessages(messages, agents)` — mailbox messages 格式化
 
 ### 7.5 数据层必须实现
@@ -494,7 +494,7 @@ Task 依赖是双向链（`blockedBy` + `blocks`）。
 
 ### 7.6 事件 / IPC（后端等价需提供 WebSocket 或 SSE）
 
-AionUi `ipcBridge.team.*` 集合（前端消费）：
+One Work `ipcBridge.team.*` 集合（前端消费）：
 - `team.listChanged { teamId, action: 'created' | 'removed' | 'agent_added' | 'agent_removed' }`
 - `team.agentSpawned { teamId, agent }`
 - `team.agentStatusChanged { teamId, slotId, status, lastMessage? }`
@@ -508,7 +508,7 @@ AionUi `ipcBridge.team.*` 集合（前端消费）：
 
 ## 8. 源码中发现的硬约束（agent 行为易坏点）
 
-这些是 AionUi 代码里写死的、前后端分离必须保留的行为契约：
+这些是 One Work 代码里写死的、前后端分离必须保留的行为契约：
 
 1. **wake 并发去重**：同一 slotId 正在 wake 时再次 wake 必须跳过（log debug 即可），否则 mailbox 会被双读。
 2. **wake 锁释放时机**：消息发出后立即 delete activeWakes（不等 finish），否则 finish 事件丢失会永久死锁。
@@ -532,7 +532,7 @@ AionUi `ipcBridge.team.*` 集合（前端消费）：
 
 ## 9. 未在源码找到的事项
 
-- AionUi 没有显式 REST 端点做 "aion_create_team"——它完全依赖 MCP + ipcBridge。后端要暴露 REST 需要后端自己设计。
+- One Work 没有显式 REST 端点做 "one_create_team"——它完全依赖 MCP + ipcBridge。后端要暴露 REST 需要后端自己设计。
 - `TeammateStatus.completed` 状态在代码里没有显式 setter（仅 type 里有）；`completed` 只被 `maybeWakeLeaderWhenAllIdle` 当 "settled" 条件之一读。后端是否要实现这个状态需要业务决策。
 - `workspaceMode: 'shared' | 'isolated'` 中 `isolated` 的实际分支行为未在源码中找到（只有 `shared` 路径）；看 `buildAgentConversationParams` 可能按 `customWorkspace` 差异化处理，但本次审计未追踪到。
 
@@ -540,6 +540,6 @@ AionUi `ipcBridge.team.*` 集合（前端消费）：
 
 ## 10. 版本锚定
 
-- AionUi 源码 commit：`ed8a6bcd3 fix(bundled-bun): add baseline variant for linux-x64 to support non-AVX2 CPUs (#2654)`（main 分支，2026-04-29 拉取）
-- aionui-backend 所在 worktree：`/Users/zhuqingyu/.superset/worktrees/aionui-backend/repeated-algebra`，分支 `docs/api-for-frontend`
+- One Work 源码 commit：`ed8a6bcd3 fix(bundled-bun): add baseline variant for linux-x64 to support non-AVX2 CPUs (#2654)`（main 分支，2026-04-29 拉取）
+- 后端所在 worktree：`<后端仓库的一个 worktree>/repeated-algebra`，分支 `docs/api-for-frontend`
 

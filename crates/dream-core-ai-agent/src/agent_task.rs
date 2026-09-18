@@ -674,7 +674,7 @@ mod dream_engine_config_option_tests {
         }
     }
 
-    async fn aionrs_instance() -> AgentInstance {
+    async fn dream_engine_instance() -> AgentInstance {
         let manager = DreamEngineAgentManager::new(
             "conv-dream-config".into(),
             "/project".into(),
@@ -684,13 +684,13 @@ mod dream_engine_config_option_tests {
             None,
         )
         .await
-        .expect("aionrs manager should start in tests");
+        .expect("dream-engine manager should start in tests");
         AgentInstance::DreamEngine(Arc::new(manager))
     }
 
     #[tokio::test]
-    async fn aionrs_exposes_mode_as_config_option() {
-        let instance = aionrs_instance().await;
+    async fn dream_engine_exposes_mode_as_config_option() {
+        let instance = dream_engine_instance().await;
 
         let response = instance.get_config_options().await.unwrap();
 
@@ -698,7 +698,7 @@ mod dream_engine_config_option_tests {
             .config_options
             .iter()
             .find(|option| option.id == "mode")
-            .expect("aionrs should expose a mode config option");
+            .expect("dream-engine should expose a mode config option");
         assert_eq!(mode.category.as_deref(), Some("mode"));
         assert_eq!(mode.option_type, "select");
         assert_eq!(mode.current_value.as_deref(), Some("default"));
@@ -712,8 +712,8 @@ mod dream_engine_config_option_tests {
     }
 
     #[tokio::test]
-    async fn aionrs_set_config_option_mode_switches_session_mode() {
-        let instance = aionrs_instance().await;
+    async fn dream_engine_set_config_option_mode_switches_session_mode() {
+        let instance = dream_engine_instance().await;
 
         let response = instance.set_config_option("mode", "yolo").await.unwrap();
 
@@ -730,8 +730,8 @@ mod dream_engine_config_option_tests {
     }
 
     #[tokio::test]
-    async fn aionrs_set_config_option_rejects_invalid_mode() {
-        let instance = aionrs_instance().await;
+    async fn dream_engine_set_config_option_rejects_invalid_mode() {
+        let instance = dream_engine_instance().await;
 
         let error = instance.set_config_option("mode", "invalid").await.unwrap_err();
 
@@ -742,8 +742,8 @@ mod dream_engine_config_option_tests {
     }
 
     #[tokio::test]
-    async fn aionrs_set_config_option_rejects_unavailable_option() {
-        let instance = aionrs_instance().await;
+    async fn dream_engine_set_config_option_rejects_unavailable_option() {
+        let instance = dream_engine_instance().await;
 
         let error = instance.set_config_option("thought_level", "high").await.unwrap_err();
 

@@ -32,7 +32,7 @@ If `officecli` is missing:
 - **macOS / Linux**: `curl -fsSL https://d.officecli.ai/install.sh | bash`
 - **Windows (PowerShell)**: `irm https://d.officecli.ai/install.ps1 | iex`
 
-Verify with `officecli --version` (open a new terminal if PATH hasn't picked up). If install fails, download a binary from https://github.com/iOfficeAI/OfficeCLI/releases.
+Verify with `officecli --version` (open a new terminal if PATH hasn't picked up). If install fails, download a binary from https://officecli.ai.
 
 ## ⚠️ Help-First Rule
 

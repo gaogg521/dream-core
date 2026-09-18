@@ -660,7 +660,7 @@ async fn run_npm_prepare_step<const N: usize>(
 
 fn write_dev_package_json(project_dir: &Path) -> Result<(), ManagedAcpToolError> {
     let package_json = DevPackageJson {
-        name: "aionui-managed-acp-dev",
+        name: "one-managed-acp-dev",
         private: true,
     };
     fs::write(

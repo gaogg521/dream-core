@@ -726,7 +726,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_explicit_path_requires_existing_file() {
-        let missing = PathBuf::from("/tmp/aionui-missing-node-runtime-command");
+        let missing = PathBuf::from("/tmp/one-missing-node-runtime-command");
         let error = ensure_runtime_command(missing.to_string_lossy().as_ref())
             .await
             .expect_err("missing explicit path should fail");

@@ -89,7 +89,7 @@ pub struct AuthRouterState {
     pub bootstrap_secret: Option<Arc<str>>,
     pub session_revoked_hook: Option<Arc<SessionRevokedHook>>,
     pub local: bool,
-    pub aionpro_mode: bool,
+    pub dreampro_mode: bool,
     /// 登录二次认证（MFA · TOTP）。None —— 单机/测试组装未接 —— 退化为无 MFA。
     pub mfa: Option<Arc<crate::mfa::MfaService>>,
     /// Optional enterprise console risk policy (lockout + session TTL).
@@ -309,7 +309,7 @@ pub fn auth_routes(state: AuthRouterState) -> Router {
     let auth_state = AuthState {
         jwt_service: state.jwt_service.clone(),
         user_repo: state.user_repo.clone(),
-        identity_mode: if state.aionpro_mode {
+        identity_mode: if state.dreampro_mode {
             AuthIdentityMode::DreamPro
         } else {
             AuthIdentityMode::UserSession
@@ -517,7 +517,7 @@ async fn login_handler(
     headers: HeaderMap,
     body: Result<Json<LoginRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    if state.aionpro_mode {
+    if state.dreampro_mode {
         return Err(user_context_required());
     }
 
@@ -1074,7 +1074,7 @@ async fn refresh_handler(
         })?
         .ok_or_else(|| ApiError::Unauthorized("Invalid authentication subject".into()))?;
 
-    if state.aionpro_mode && user.user_type != dream_core_db::UserType::DreamPro {
+    if state.dreampro_mode && user.user_type != dream_core_db::UserType::DreamPro {
         return Err(user_context_required());
     }
 
@@ -1134,7 +1134,7 @@ async fn qr_login_handler(
     State(state): State<AuthRouterState>,
     body: Result<Json<QrLoginRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    if state.aionpro_mode {
+    if state.dreampro_mode {
         return Err(user_context_required());
     }
 

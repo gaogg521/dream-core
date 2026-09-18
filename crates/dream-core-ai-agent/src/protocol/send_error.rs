@@ -462,7 +462,7 @@ fn classify_acp_error(err: &AcpError) -> AgentSendError {
                 // explanation matters most. Dropping it left the user (and
                 // triage) with a bare "Agent internal error (code -32603)" while
                 // the answer sat in the JSON-RPC `data` we had already parsed
-                // (AIONUI-DESKTOP-9D: "No API key found. Set the Z_AI_API_KEY
+                // (ONE-DESKTOP-9D: "No API key found. Set the Z_AI_API_KEY
                 // environment variable, or run `glm-acp-agent --setup`").
                 //
                 // Safe by the same rule the classified branch relies on:
@@ -1133,7 +1133,7 @@ fn openclaw_gateway_unreachable_send_error() -> AgentSendError {
 /// `authorization:` and replaced the WHOLE line, so OpenAI's own help text
 /// ("You need to provide your API key in an Authorization header using Bearer
 /// auth") was erased down to a placeholder, leaving support with nothing to go
-/// on (live: conversation 04ec3221 / AIONUI-DESKTOP-9D). Meanwhile the word-level
+/// on (live: conversation 04ec3221 / ONE-DESKTOP-9D). Meanwhile the word-level
 /// rule that was supposed to catch real tokens could never fire — it tested
 /// `word.starts_with("bearer ")` against whitespace-split words, which never
 /// contain a space — so it protected nothing it claimed to.
@@ -1345,7 +1345,7 @@ mod tests {
         assert!(err.stream_error().resolution.is_none());
     }
 
-    /// Verbatim payload from AIONUI-DESKTOP-9D. `glm-acp-agent` answers
+    /// Verbatim payload from ONE-DESKTOP-9D. `glm-acp-agent` answers
     /// `session/prompt` with a bare -32603 whose only actionable content is in
     /// `data`. No classifier recognises it, but the text must still reach the
     /// user instead of being replaced by the code alone.
@@ -1508,7 +1508,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_runtime_workspace_validation_as_structured_aionui_error() {
+    fn preserves_runtime_workspace_validation_as_structured_one_error() {
         let err =
             AgentSendError::from_agent_error(AgentError::workspace_path_runtime_unavailable("/Users/test/Archive "));
 
@@ -1864,8 +1864,8 @@ mod tests {
         );
 
         for managed_binary_missing in [
-            "expected managed Claude ACP platform binary missing: C:\\Users\\user\\AppData\\Roaming\\AionUi\\aionui\\runtime\\acp\\claude-agent-acp\\0.58.1\\win32-x64\\node_modules\\@anthropic-ai\\claude-agent-sdk-win32-x64\\claude.exe",
-            "expected managed Codex ACP platform binary missing: C:\\Users\\user\\AppData\\Roaming\\AionUi\\aionui\\runtime\\acp\\codex-acp\\1.1.2\\win32-x64\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
+            "expected managed Claude ACP platform binary missing: C:\\Users\\user\\AppData\\Roaming\\One Work\\one\\runtime\\acp\\claude-agent-acp\\0.58.1\\win32-x64\\node_modules\\@anthropic-ai\\claude-agent-sdk-win32-x64\\claude.exe",
+            "expected managed Codex ACP platform binary missing: C:\\Users\\user\\AppData\\Roaming\\One Work\\one\\runtime\\acp\\codex-acp\\1.1.2\\win32-x64\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
         ] {
             assert_classification(
                 managed_binary_missing,

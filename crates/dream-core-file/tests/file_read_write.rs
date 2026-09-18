@@ -183,7 +183,7 @@ async fn read_file_returns_none_for_missing_file_in_sandbox() {
 #[tokio::test]
 async fn read_file_rejects_directory() {
     let dir = tempfile::tempdir().unwrap();
-    let folder = dir.path().join("aionui-skills");
+    let folder = dir.path().join("one-skills");
     fs::create_dir(&folder).unwrap();
 
     let svc = make_service(dir.path());
