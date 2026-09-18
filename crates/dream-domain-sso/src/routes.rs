@@ -972,4 +972,69 @@ mod tests {
         assert_eq!(sanitize_deep_link_scheme(Some("javascript")), "aionui");
         assert_eq!(sanitize_deep_link_scheme(Some("aionui\"; alert(1); //")), "aionui");
     }
+
+    /// The scheme does not travel on the query string across the IdP round
+    /// trip — it is stored in the OAuth state entry at `authorize` time and
+    /// read back at `callback` time. So `sanitize_deep_link_scheme` being
+    /// correct is only half of it: if the state store dropped or defaulted the
+    /// field, every desktop login would come back on the wrong scheme and the
+    /// OS would hand the callback to nothing. That is silent — no error, the
+    /// browser tab just sits there — so it gets its own test.
+    ///
+    /// This walks the whole path a real login takes, minus the IdP: the token
+    /// exchange never reads or writes `deep_link_scheme`, so nothing between
+    /// `issue` and `consume` can affect it, and the test needs no credentials,
+    /// no network and no database.
+    #[tokio::test]
+    async fn deep_link_scheme_survives_the_state_round_trip_for_every_allowed_scheme() {
+        // `None` is in here on purpose: an old build sends no `scheme` param at
+        // all, and its callback must still come back on `aionui://`.
+        let cases = [
+            (Some("dream"), "dream"),
+            (Some("dream-dev"), "dream-dev"),
+            (Some("aionui-dev"), "aionui-dev"),
+            (Some("aionui"), "aionui"),
+            (None, "aionui"),
+            (Some("javascript"), "aionui"),
+        ];
+
+        for (sent, expected) in cases {
+            let store = crate::service::OAuthStateStore::new();
+
+            // authorize: sanitize, then park it in the state entry.
+            let scheme = sanitize_deep_link_scheme(sent);
+            let state = store.issue(SsoProviderKind::Feishu, None, true, scheme).await;
+
+            // callback: the IdP hands back the opaque `state`, we read the
+            // scheme out of it.
+            let entry = store.consume(&state).await.expect("state must be live");
+            assert_eq!(entry.deep_link_scheme, expected, "sent={sent:?}");
+            assert!(entry.desktop);
+
+            // ...and it is the scheme the landing page actually fires.
+            let deep_link = format!("{}://sso-callback?token=t&userId=u1", entry.deep_link_scheme);
+            let page = desktop_callback_page(&deep_link);
+            assert!(
+                page.contains(&format!("location.href = \"{expected}://sso-callback?")),
+                "sent={sent:?} did not fire {expected}://"
+            );
+            assert!(
+                page.contains(&format!("href=\"{expected}://sso-callback?")),
+                "sent={sent:?} manual fallback link is not {expected}://"
+            );
+        }
+    }
+
+    /// A state nonce is single-use. Worth pinning alongside the round trip
+    /// above: the scheme read is the *second* thing `callback` does with the
+    /// entry, so a store that handed the same entry out twice would make the
+    /// deep link fire twice too.
+    #[tokio::test]
+    async fn state_nonce_cannot_be_consumed_twice() {
+        let store = crate::service::OAuthStateStore::new();
+        let state = store.issue(SsoProviderKind::Feishu, None, true, "dream").await;
+
+        assert!(store.consume(&state).await.is_some());
+        assert!(store.consume(&state).await.is_none());
+    }
 }

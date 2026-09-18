@@ -130,8 +130,29 @@
 | **各设置页无旧品牌** | ✅ Agents / 模型 / 技能 / 系统 / 关于 全部扫描无 `aionui`/`aioncore`/`aionrs` |
 | **日志前缀契约** | ✅ `[dreamcore]` 与 `DREAMCORE_LISTENING` 标记均正常 |
 
-**仍未验证**：SSO 登录回调（需要真实 IdP 往返）。`sanitize_deep_link_scheme` 的还原
-有单测覆盖，但真实 deep-link 往返没走过。
+**SSO 登录回调 —— 当日稍后补掉了大半，状态更新如下。**
+
+原文写的是「`sanitize_deep_link_scheme` 有单测覆盖，但真实 deep-link 往返没走过」。
+补完之后：
+
+- ✅ **整条链路已有测试**：scheme 并不随查询串穿越 IdP —— 它在 `authorize` 时进
+  `OAuthStateEntry`，`callback` 时读回来，而 token 交换**从不读写**这个字段。
+  新增 `deep_link_scheme_survives_the_state_round_trip_for_every_allowed_scheme`
+  走完 sanitize → issue → consume → 落地页 href 全程，6 种输入（含旧客户端的「不传」）逐个断言。
+- ✅ **做过反证**：把 `service.rs` 的 `issue` 硬编码成 `"aionui"`，该测试立刻转红
+  （`routes.rs:1013`），其余 79 条全绿；改回后复绿。
+- ✅ 另补 `state_nonce_cannot_be_consumed_twice`（state 一次性）。
+- ⏳ **仍需人工**：真实 IdP 往返（要填真 App Secret / LDAP bind 密码，代填密钥不是我该做的事）。
+
+> 📌 一处**刻意不改**的东西：SSO 落地页的标题/正文写的是 `1One Work`，
+> 而品牌常量 `BRAND_DISPLAY_NAME` 是 `One Work`。看起来像错字，但**带 `one` 的名字
+> 都是自家品牌，不在 aionui 清理范围内**（用户 2026-09-18 明确）。
+> 本轮一度改成了 `One Work`，已**全部还原**。
+> 本轮要清的只有 `aionui` 家族，别把 `1One`/`1ONE` 顺手也扫了。
+
+完整验证办法（三档：零凭据 / 真后端假密钥 / 真实 IdP，以及 `enterprise` 编译期
+feature 这道最容易踩的闸门）见 dream-ui 的
+`docs/guides/handoff-2026-09-18-enterprise-p0-and-sso-verification.zh-CN.md`。
 
 ### 真机顺带发现的既有缺陷（不是本轮改动）
 
