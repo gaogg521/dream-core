@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use dream_core_api_types::{SessionMcpServer, SessionMcpTransport, TEAM_MCP_SERVER_NAME, is_team_mcp_server_name};
+use dream_core_api_types::{SessionMcpServer, SessionMcpTransport, is_team_mcp_server_name};
 use dream_core_db::IMcpServerRepository;
 use dream_core_db::models::McpServerRow;
 use dream_core_realtime::EventBroadcaster;
@@ -186,6 +186,7 @@ fn parse_headers(value: Option<&serde_json::Value>) -> std::collections::HashMap
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dream_core_api_types::TEAM_MCP_SERVER_NAME;
     use dream_core_db::models::McpServerRow;
 
     const TEST_USER_ID: &str = "user-1";

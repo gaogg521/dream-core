@@ -102,10 +102,41 @@
 
 ## 七、验证
 
+### 自动化
+
 - `cargo test --workspace --no-run` 通过
-- `cargo nextest run --workspace -E 'not binary_id(~e2e)'` 全绿（e2e 交给 CI，
-  见 memory「本地别跑全量 e2e」）
-- `brand_residue` 两个测试绿
-- **没有做真机验证**：本轮改动集中在兼容层还原与构建脚本，改完的运行时行为
-  （SSO 回调、凭据解密）恰恰是需要存量数据才能验证的，建议在有真实 profile 的
-  机器上过一遍登录 + 打开模型设置。
+- `cargo nextest run --workspace -E 'not binary_id(~e2e)'`：**9408 跑 / 9407 过**，
+  唯一一条失败是 `claude mcp list` 在负载下 30s 超时（它 shell 出去调真实 CLI），
+  单独跑 5s 通过。e2e 交给 CI，见 memory「本地别跑全量 e2e」
+- `brand_residue` 两个测试绿；`scripts/migration/check-immutability.{sh,ps1}` 均通过
+- 迁移 057 补了 `brand_logo_reference_migration.rs`（5 条），并做过**回滚验证**：
+  把它的 `WHERE` 人为改窄成 001/021 当初的毛病，2 条测试立刻转红
+
+### 真机（dev + CDP，2026-09-18 夜）
+
+用 `DREAM_DEVTOOLS_CDP_PORT=9230 bun run dev` 起真实 dev，重编并 stage 了新的
+`dreamcore.exe`，对**存量 dev 库**（`%APPDATA%\dream-ui-Dev\1one\one-backend.db`，
+82 个会话、5 个已加密 provider）逐项核对：
+
+| 验证项 | 结果 |
+| ------ | ---- |
+| **凭据解密**（密钥盐还原是否正确） | ✅ 模型设置页列出全部 5 个 provider，每个都是 `API Key（1）`，零 "Decryption failed" |
+| **迁移 057** | ✅ 账本出现 `version=57 success=1`；库里 `icon/avatar_value LIKE '%aion%'` 均为 0 行 |
+| **旧数据反序列化** | ✅ 82 个会话、团队、定时任务、历史全部正常加载 |
+| **已删除资产无悬挂引用** | ✅ `performance.getEntriesByType('resource')` 无任何含 aion 的请求；无坏图 |
+| **团队 MCP 不泄漏给用户** | ✅ MCP 页精确渲染出 7 个服务器名，`one-team`/`aionui-team` 均不在其中（注意 `one-team-knowledge` 会让子串匹配误报） |
+| **旧名内置行仍被识别、不重复显示** | ✅ 库里 `aionui-browser`/`aionui-image-generation` 两条 builtin 行存在，UI 只显示当前名 |
+| **内置技能可读** | ✅ 技能页渲染出完整技能库（改过的 SKILL.md 正常解析） |
+| **各设置页无旧品牌** | ✅ Agents / 模型 / 技能 / 系统 / 关于 全部扫描无 `aionui`/`aioncore`/`aionrs` |
+| **日志前缀契约** | ✅ `[dreamcore]` 与 `DREAMCORE_LISTENING` 标记均正常 |
+
+**仍未验证**：SSO 登录回调（需要真实 IdP 往返）。`sanitize_deep_link_scheme` 的还原
+有单测覆盖，但真实 deep-link 往返没走过。
+
+### 真机顺带发现的既有缺陷（不是本轮改动）
+
+- `channel/routes.rs` 的内置平台清单有 7 个、含 `wecom`，而 `PluginType` 只有 6 个变体
+  （没有 WeCom）。结果：UI 提供 WeCom 渠道，它的设置接口每次都
+  `400 Invalid platform: wecom`。启动日志里能直接看到
+- `AgentType::display_name()` 返回 **`1ONE CLI`**，迁移 019 也把库里写成了这个。
+  真机确认：它显示在 agent 选择器、模型设置说明文字、Agents 列表里，用户天天看见
