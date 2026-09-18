@@ -976,7 +976,7 @@ mod tests {
     async fn state_store_issues_and_consumes() {
         let store = OAuthStateStore::new();
         let state = store
-            .issue(SsoProviderKind::Feishu, Some("/guid".into()), false, "one")
+            .issue(SsoProviderKind::Feishu, Some("/guid".into()), false, "dream")
             .await;
         let entry = store.consume(&state).await.expect("state should be present");
         assert_eq!(entry.provider, SsoProviderKind::Feishu);

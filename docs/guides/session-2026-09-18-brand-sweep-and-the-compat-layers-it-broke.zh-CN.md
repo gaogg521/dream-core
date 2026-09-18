@@ -92,6 +92,9 @@
 
 ## 六、遗留 / 待定
 
+> 📋 **本轮的未竟项总登记在 dream-ui `docs/guides/handoff-2026-09-18-enterprise-p0-and-sso-verification.zh-CN.md` 的 §4** —— 09-18 一轮产出 5 份文档，每份都有自己的这一节，散着看必漏。本节留原文细节，总表在那边。
+
+
 - `AgentType::display_name()` 对 `DreamEngine` 返回 **`1ONE CLI`**，迁移 019 也把
   库里的展示名改成了 `1ONE CLI`。这不是上游品牌，是**我们自己更早的品牌**，
   用户当前在界面上看到的就是它。要不要改成 `Dream CLI` / `One Work CLI` 是产品
@@ -163,7 +166,12 @@ feature 这道最容易踩的闸门）见 dream-ui 的
 ### 真机顺带发现的既有缺陷（不是本轮改动）
 
 - `channel/routes.rs` 的内置平台清单有 7 个、含 `wecom`，而 `PluginType` 只有 6 个变体
-  （没有 WeCom）。结果：UI 提供 WeCom 渠道，它的设置接口每次都
-  `400 Invalid platform: wecom`。启动日志里能直接看到
+  （没有 WeCom）。结果：`GET /api/channel/settings/wecom` 每次
+  `400 Invalid platform: wecom`，启动日志里能直接看到。
+  **影响面别说大了**：真机确认**前端是诚实的** —— 渠道列表里企业微信带「即将上线」
+  标记，并没有诱导用户去配。所以这是"后端清单多了一条永远 400 的死条目"，
+  不是"用户被带进一个配不成的流程"。（我一度写成「UI 提供 WeCom 渠道」，是夸大了。）
+  根因在 PRD：`channels.md` 把它标成 `[已实现]`，有人照着补了后端展示项。
+  已修 + 加 `builtin_ids_all_parse_as_a_plugin_type` 断言防漂移，PRD 也改回 `[未实现]`
 - `AgentType::display_name()` 返回 **`1ONE CLI`**，迁移 019 也把库里写成了这个。
   真机确认：它显示在 agent 选择器、模型设置说明文字、Agents 列表里，用户天天看见
