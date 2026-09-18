@@ -15,6 +15,7 @@ use crate::runtime_completion::RuntimeCompletionPublisher;
 use crate::runtime_persistence::{RuntimePersistenceCoordinator, RuntimeWriteKind};
 use crate::runtime_state::ConversationRuntimeStateService;
 use chrono::Datelike;
+use dream_core_api_types::AgentErrorCode;
 use dream_core_api_types::ChatFileRef;
 use dream_core_api_types::{
     ASSISTANT_MCP_BINDING_CHANGED_EVENT, ApprovalCheckResponse, AssistantConversationOverridesRequest,
@@ -427,6 +428,9 @@ pub struct ConversationAgentTurnOutcome {
     pub turn_id: String,
     pub status: ConversationAgentTurnStatus,
     pub error_message: Option<String>,
+    /// Typed code of the failure that ended the turn. Automated drivers use it
+    /// to tell an agent-level failure from a provider-level refusal.
+    pub error_code: Option<AgentErrorCode>,
     pub runtime: ConversationRuntimeSummary,
 }
 
@@ -4313,6 +4317,7 @@ impl ConversationService {
                     turn_id,
                     status: ConversationAgentTurnStatus::Failed,
                     error_message: Some(send_error_display_message(&send_error)),
+                    error_code: send_error.code(),
                     runtime: self.runtime_summary_for(&request.conversation_id).await,
                 });
             }
@@ -4349,6 +4354,7 @@ impl ConversationService {
                 ConversationTurnStatus::Failed => ConversationAgentTurnStatus::Failed,
             },
             error_message: result.error_message,
+            error_code: result.error_code,
         })
     }
 

@@ -154,6 +154,7 @@ impl SlotWorkCoordinator {
             active_turn_id,
             active_turn_started_at_ms,
             runtime_constraint: slot.runtime_constraint.clone(),
+            provider_spend_blocked_by: state.provider_spend_blocked_by.clone(),
             team_run_id,
         })
     }

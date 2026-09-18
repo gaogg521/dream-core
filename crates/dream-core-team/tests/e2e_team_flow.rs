@@ -31,6 +31,7 @@ use dream_core_ai_agent::agent_task::{AgentInstance, IAgentTask, IMockAgent};
 use dream_core_ai_agent::protocol::events::{AgentStreamEvent, FinishEventData};
 use dream_core_ai_agent::shared_kernel::approval_key;
 use dream_core_ai_agent::types::{BuildTaskOptions, SendMessageData};
+use dream_core_api_types::AgentErrorCode;
 use dream_core_api_types::AgentModeResponse;
 use dream_core_api_types::WebSocketMessage;
 use dream_core_common::{AgentKillReason, AgentType, Confirmation, ConversationStatus, TimestampMs, now_ms};
@@ -92,6 +93,7 @@ impl AgentTurnExecutionPort for RecordingTurnPort {
             conversation_id: request.conversation_id,
             turn_id,
             status: AgentTurnStatus::Completed,
+            error_code: None,
             runtime: None,
         })
     }
@@ -157,6 +159,7 @@ impl AgentTurnExecutionPort for ErrorBeforeStartTurnPort {
             conversation_id: request.conversation_id,
             turn_id,
             status: AgentTurnStatus::Completed,
+            error_code: None,
             runtime: None,
         })
     }
@@ -221,6 +224,56 @@ impl AgentTurnExecutionPort for StartedThenFailedTurnPort {
             } else {
                 AgentTurnStatus::Completed
             },
+            error_code: None,
+            runtime: None,
+        })
+    }
+}
+
+/// Always reports the turn as failed with a provider spend-block code — the
+/// shape of a quota or rate-limit refusal that no amount of retrying can clear.
+struct ProviderSpendBlockedTurnPort {
+    requests: Arc<Mutex<Vec<AgentTurnRequest>>>,
+}
+
+impl Default for ProviderSpendBlockedTurnPort {
+    fn default() -> Self {
+        Self {
+            requests: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl ProviderSpendBlockedTurnPort {
+    fn requests(&self) -> Arc<Mutex<Vec<AgentTurnRequest>>> {
+        self.requests.clone()
+    }
+}
+
+#[async_trait]
+impl AgentTurnExecutionPort for ProviderSpendBlockedTurnPort {
+    async fn run_agent_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutcome, AgentTurnExecutionError> {
+        let attempt = {
+            let mut requests = self.requests.lock().unwrap();
+            requests.push(request.clone());
+            requests.len()
+        };
+        let turn_id = format!("turn-quota-{attempt}");
+        if let Some(on_started) = request.on_started.as_ref() {
+            on_started(AgentTurnStarted {
+                team_run_id: request.team_run_id.clone(),
+                slot_id: request.slot_id.clone(),
+                role: request.role.clone(),
+                conversation_id: request.conversation_id.clone(),
+                turn_id: turn_id.clone(),
+            })
+            .await;
+        }
+        Ok(AgentTurnOutcome {
+            conversation_id: request.conversation_id,
+            turn_id,
+            status: AgentTurnStatus::Failed,
+            error_code: Some(AgentErrorCode::UserLlmProviderRateLimited),
             runtime: None,
         })
     }
@@ -283,6 +336,7 @@ impl AgentTurnExecutionPort for HoldFirstRunningTurnPort {
             conversation_id: request.conversation_id,
             turn_id,
             status: AgentTurnStatus::Completed,
+            error_code: None,
             runtime: None,
         })
     }
@@ -321,6 +375,7 @@ impl AgentTurnExecutionPort for BlockingStartTurnPort {
             conversation_id: request.conversation_id,
             turn_id: "turn-late-start".into(),
             status: AgentTurnStatus::Completed,
+            error_code: None,
             runtime: None,
         })
     }
@@ -2322,5 +2377,95 @@ async fn empty_catalog_logs_warn_and_falls_back_to_wrapped_wake() {
         "warn must carry conversation_id: {logs}"
     );
 
+    session.stop();
+}
+
+/// A provider that refuses on spend grounds (quota exhausted, rate limited,
+/// billing) is not this teammate's failure and no retry can clear it. The
+/// scheduler must halt instead of burning the message's delivery budget —
+/// three passes against an exhausted quota used to mark real queued work read
+/// and drop it, while each failure also wrote a notice into the lead's mailbox
+/// and so grew the very queue that could not drain.
+#[tokio::test]
+async fn provider_spend_block_halts_the_team_and_keeps_the_work() {
+    let broadcaster = Arc::new(RecordingBroadcaster::new());
+    let turn_port = Arc::new(ProviderSpendBlockedTurnPort::default());
+    let requests = turn_port.requests();
+    let session =
+        setup_session_with_runtime_ports(turn_port, Arc::new(NoopCancellationPort), broadcaster.clone()).await;
+
+    session
+        .send_message("user input to team", None)
+        .await
+        .expect("send_message must succeed");
+
+    wait_for_turn_request_count(&requests, 1).await;
+    // Long enough that a retry loop would have produced more attempts.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        requests.lock().unwrap().len(),
+        1,
+        "a spend block must stop the team, not retry against the wall"
+    );
+
+    let unread = session.mailbox().peek_unread("e2e-team", "lead-1").await.unwrap();
+    assert_eq!(
+        unread.len(),
+        1,
+        "the queued work must survive the outage so it runs when the user resumes"
+    );
+
+    assert_eq!(
+        session.scheduler().get_status("lead-1").await.unwrap(),
+        dream_core_team::TeammateStatus::Idle,
+        "the teammate is not broken; the provider is"
+    );
+
+    let blocked = broadcaster
+        .events_named("team.slotWorkChanged")
+        .into_iter()
+        .filter_map(|event| {
+            event
+                .data
+                .get("slot_work")?
+                .get("blocked_reason")?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .any(|reason| reason == "provider_spend_blocked");
+    assert!(blocked, "the user has to be told why the team stopped");
+
+    assert!(
+        broadcaster.events_named("team.runFailed").is_empty(),
+        "a spend block is a pause, not a failed run"
+    );
+
+    session.stop();
+}
+
+/// The block is lifted by the user coming back, and only by that: the work left
+/// unread during the outage is re-derived and delivered on the next pass.
+#[tokio::test]
+async fn a_user_message_lifts_the_provider_spend_block() {
+    let broadcaster = Arc::new(RecordingBroadcaster::new());
+    let turn_port = Arc::new(ProviderSpendBlockedTurnPort::default());
+    let requests = turn_port.requests();
+    let session =
+        setup_session_with_runtime_ports(turn_port, Arc::new(NoopCancellationPort), broadcaster.clone()).await;
+
+    session
+        .send_message("user input to team", None)
+        .await
+        .expect("send_message must succeed");
+    wait_for_turn_request_count(&requests, 1).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(requests.lock().unwrap().len(), 1);
+
+    session
+        .send_message("quota topped up, carry on", None)
+        .await
+        .expect("send_message must succeed");
+
+    wait_for_turn_request_count(&requests, 2).await;
     session.stop();
 }

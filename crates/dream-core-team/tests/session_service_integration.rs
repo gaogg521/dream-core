@@ -305,6 +305,7 @@ impl AgentTurnExecutionPort for NoopTurnPort {
             conversation_id: request.conversation_id,
             turn_id: "turn-test".into(),
             status: AgentTurnStatus::Completed,
+            error_code: None,
             runtime: None,
         })
     }
@@ -333,6 +334,7 @@ impl AgentTurnExecutionPort for RecordingTurnPort {
             conversation_id: request.conversation_id,
             turn_id: "turn-recorded".into(),
             status: AgentTurnStatus::Completed,
+            error_code: None,
             runtime: None,
         })
     }

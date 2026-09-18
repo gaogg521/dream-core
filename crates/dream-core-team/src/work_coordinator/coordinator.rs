@@ -106,6 +106,11 @@ pub(super) struct CoordinatorState {
     pub(super) enqueue_leases: HashMap<String, EnqueueLeaseRecord>,
     interrupted_batches: HashMap<String, BatchInterruptMetadata>,
     next_operation_id: u64,
+    /// Slot whose model provider refused on spend grounds, when the team is
+    /// halted for that reason. Team-wide effect, but the slot is remembered:
+    /// teammates can each be pointed at a different provider, so "your quota is
+    /// limited" is useless unless it says whose.
+    pub(super) provider_spend_blocked_by: Option<String>,
 }
 
 pub(crate) struct SlotWorkCoordinator {
@@ -254,6 +259,26 @@ impl SlotWorkCoordinator {
             state: WorkIntentState::Queued,
         };
         state.intents.insert(intent_id.clone(), intent.clone());
+        // A human came back: lift the team-wide provider block and let every slot
+        // pick up the work that was left unread while the provider was refusing.
+        // Done before the per-slot borrow so the whole team is released together —
+        // resuming only the slot the user typed into would leave the rest waiting
+        // on teammates that are still paused.
+        let cleared_provider_block =
+            state.provider_spend_blocked_by.is_some() && lease.source.clears_provider_spend_block();
+        if cleared_provider_block {
+            state.provider_spend_blocked_by = None;
+            for slot in state.slots.values_mut() {
+                slot.paused = false;
+            }
+            info!(
+                team_id = %self.team_id,
+                session_generation = %self.session_generation,
+                slot_id = %lease.slot_id,
+                source = ?lease.source,
+                "provider spend block lifted by user; team resumed"
+            );
+        }
         let slot = state.slots.get_mut(&lease.slot_id).expect("validated slot exists");
         if lease.source.resumes_paused_slot() {
             slot.paused = false;
@@ -267,8 +292,17 @@ impl SlotWorkCoordinator {
             slot.queue_mut(intent.priority).push_back(intent_id.clone());
         }
         let slot_snapshot = Self::slot_snapshot_locked(&state, &lease.slot_id).expect("committed slot exists");
+        // Lifting the block changed every slot, not just this one.
+        let released_snapshots = if cleared_provider_block {
+            Self::all_slot_snapshots_locked(&state)
+        } else {
+            Vec::new()
+        };
         let summaries = Self::run_summaries_locked(&state, lease.team_run_id.iter().cloned());
         drop(state);
+        for snapshot in released_snapshots {
+            self.publish_slot_work_snapshot(Some(snapshot));
+        }
         self.publish_run_summaries(summaries);
         self.publish_slot_work_snapshot(Some(slot_snapshot.clone()));
 
@@ -1140,6 +1174,80 @@ impl SlotWorkCoordinator {
         drop(state);
         self.publish_run_summaries(summaries);
         CommitResult::Committed
+    }
+
+    /// Halt the whole team because the model provider refused on spend grounds.
+    ///
+    /// Pauses every slot and records the block team-wide. The batch that hit the
+    /// wall is retired WITHOUT charging its mailbox messages a delivery failure:
+    /// nothing was wrong with those messages, so they stay unread and are
+    /// re-derived by `reconcile_mailbox_snapshot` once the user resumes. Charging
+    /// them here is what turned a provider outage into lost work — three passes
+    /// against an exhausted quota and the queue was silently marked read.
+    ///
+    /// Returns the turns that still need cancelling on the other slots.
+    pub(crate) fn block_team_on_provider_spend(&self, batch: &WorkBatch) -> ProviderSpendBlockResult {
+        // Cancelled, not Failed: a spend block is a pause, and `Failed` intents
+        // flip the whole team run to `Failed` and fire `team.runFailed`. This is
+        // the same terminal state a user-initiated pause uses.
+        let failure = self.terminalize_batch(
+            batch,
+            WorkIntentState::Cancelled {
+                classification: "provider_spend_blocked",
+            },
+            "provider_spend_blocked",
+            DeliveryOutcome::NotFailed,
+        );
+
+        let mut state = self.lock_state();
+        // Read and set under one lock: two teammates can hit the wall at the same
+        // moment, and only one of them is the one that halted the team.
+        let already_blocked = state.provider_spend_blocked_by.is_some();
+        state.provider_spend_blocked_by = Some(batch.slot_id.clone());
+        let mut cancel_targets = Vec::new();
+        for (slot_id, slot) in state.slots.iter_mut() {
+            slot.paused = true;
+            if let Some(active) = slot.active.as_ref() {
+                cancel_targets.push((
+                    slot_id.clone(),
+                    slot.role.clone(),
+                    BatchCancelTarget {
+                        batch: active.batch.clone(),
+                        turn_id: active.turn_id.clone(),
+                    },
+                ));
+            }
+        }
+        let snapshots = Self::all_slot_snapshots_locked(&state);
+        drop(state);
+        for snapshot in snapshots {
+            self.publish_slot_work_snapshot(Some(snapshot));
+        }
+        warn!(
+            team_id = %self.team_id,
+            session_generation = %self.session_generation,
+            slot_id = %batch.slot_id,
+            batch_id = %batch.batch_id,
+            already_blocked,
+            cancel_target_count = cancel_targets.len(),
+            "team halted: model provider refused on spend grounds"
+        );
+        ProviderSpendBlockResult {
+            commit_result: failure.commit_result,
+            newly_blocked: !already_blocked,
+            cancel_targets,
+        }
+    }
+
+    fn all_slot_snapshots_locked(state: &CoordinatorState) -> Vec<SlotWorkSnapshot> {
+        state
+            .slots
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter_map(|slot_id| Self::slot_snapshot_locked(state, &slot_id))
+            .collect()
     }
 
     pub(crate) fn pause_slot(&self, slot_id: &str) -> PauseWorkResult {
