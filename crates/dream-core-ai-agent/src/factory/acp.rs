@@ -18,9 +18,7 @@ use crate::session_context::AcpSessionBuildContext;
 use agent_client_protocol::schema::v1::{
     EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerSse, McpServerStdio,
 };
-use dream_core_api_types::{
-    AgentMetadata, SessionMcpServer, SessionMcpTransport, TEAM_MCP_SERVER_NAME, is_team_mcp_server_name,
-};
+use dream_core_api_types::{AgentMetadata, SessionMcpServer, SessionMcpTransport, is_team_mcp_server_name};
 use dream_core_common::CommandSpec;
 use dream_core_db::IMcpServerRepository;
 use dream_core_db::models::McpServerRow;
@@ -1009,6 +1007,7 @@ fn session_server_supported_by_capabilities(server: &SessionMcpServer, capabilit
 mod tests {
     use super::*;
     use dream_core_api_types::AcpBuildExtra;
+    use dream_core_api_types::TEAM_MCP_SERVER_NAME;
     use dream_core_common::encrypt_string;
     use dream_core_db::{
         CreateProviderParams, IAgentMetadataRepository, IProviderRepository, SqliteAgentMetadataRepository,

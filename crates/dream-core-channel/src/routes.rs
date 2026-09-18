@@ -134,6 +134,26 @@ pub fn weixin_login_route(state: ChannelRouterState) -> Router {
 // Plugin management handlers
 // ---------------------------------------------------------------------------
 
+/// The channels this backend implements, with the label the UI shows for each.
+///
+/// Every id here MUST parse as a [`PluginType`]. This list is what emits the
+/// placeholder cards, so an id with no variant behind it gives the user a channel
+/// to click on whose every settings call fails — `("wecom", "WeCom")` sat here
+/// with no `PluginType::WeCom` and no `plugins/wecom/`, and
+/// `GET /api/channel/settings/wecom` answered `400 Invalid platform: wecom` for as
+/// long as it did. `builtin_ids_all_parse_as_a_plugin_type` holds the two together.
+///
+/// A channel we do NOT implement is not listed here: it reaches users as an
+/// extension instead, and the extension registry supplies its own metadata.
+const BUILTIN_PLUGIN_NAMES: [(&str, &str); 6] = [
+    ("telegram", "Telegram"),
+    ("lark", "Lark"),
+    ("dingtalk", "DingTalk"),
+    ("slack", "Slack"),
+    ("discord", "Discord"),
+    ("weixin", "WeChat"),
+];
+
 /// `GET /api/channel/plugins` — get status of all registered plugins.
 async fn get_plugin_status(
     State(state): State<ChannelRouterState>,
@@ -147,16 +167,7 @@ async fn get_plugin_status(
         .map(|plugin| (plugin.id.clone(), plugin))
         .collect();
 
-    let builtin_names: [(&str, &str); 7] = [
-        ("telegram", "Telegram"),
-        ("lark", "Lark"),
-        ("dingtalk", "DingTalk"),
-        ("slack", "Slack"),
-        ("discord", "Discord"),
-        ("weixin", "WeChat"),
-        ("wecom", "WeCom"),
-    ];
-    let builtin_types: std::collections::HashSet<&str> = builtin_names.iter().map(|(id, _)| *id).collect();
+    let builtin_types: std::collections::HashSet<&str> = BUILTIN_PLUGIN_NAMES.iter().map(|(id, _)| *id).collect();
 
     let mut status_map: HashMap<String, ChannelPluginStatusView> = HashMap::new();
 
@@ -185,7 +196,7 @@ async fn get_plugin_status(
             .or_insert_with(|| ChannelPluginStatusView::extension_placeholder(plugin));
     }
 
-    for (plugin_type, display_name) in builtin_names {
+    for (plugin_type, display_name) in BUILTIN_PLUGIN_NAMES {
         status_map
             .entry(plugin_type.to_string())
             .or_insert_with(|| ChannelPluginStatusView::builtin_placeholder(plugin_type, display_name));
@@ -873,6 +884,24 @@ fn field_default_entry(value: &serde_json::Value) -> Option<(&str, serde_json::V
 mod tests {
     use super::*;
     use dream_core_api_types::TestPluginExtraConfig;
+
+    /// The placeholder list and the parser must not drift.
+    ///
+    /// They did: `wecom` was advertised with no `PluginType` variant, so the UI drew
+    /// a WeCom card and every settings request for it came back
+    /// `400 Invalid platform: wecom`. Nothing failed loudly — the card just never
+    /// worked.
+    #[test]
+    fn builtin_ids_all_parse_as_a_plugin_type() {
+        for (id, label) in BUILTIN_PLUGIN_NAMES {
+            assert!(
+                PluginType::from_str_opt(id).is_some(),
+                "builtin channel {label:?} is advertised as {id:?}, but PluginType cannot parse it — \
+                 the UI would show a card whose every settings call 400s. Either add the variant and \
+                 its plugin, or ship the channel as an extension instead of listing it here."
+            );
+        }
+    }
 
     #[test]
     fn plugin_not_found_maps_to_api_not_found() {
