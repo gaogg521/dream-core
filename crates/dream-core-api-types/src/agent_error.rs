@@ -80,6 +80,26 @@ pub enum AgentErrorCode {
     UnknownUpstreamError,
 }
 
+impl AgentErrorCode {
+    /// The provider is refusing on spend grounds and will keep refusing until
+    /// the user does something about it (top up, raise the cap, wait out a
+    /// quota window). Retrying on the caller's own initiative cannot clear it,
+    /// so an automated driver — the team scheduler above all — has to stop
+    /// instead of grinding through its queue against a wall.
+    ///
+    /// Deliberately narrow. Auth and permission failures also need the user,
+    /// but they need a *different* answer than "check your quota", and network
+    /// or timeout failures really can clear on their own.
+    pub fn is_provider_spend_block(self) -> bool {
+        matches!(
+            self,
+            Self::UserLlmProviderRateLimited
+                | Self::UserLlmProviderQuotaExhausted
+                | Self::UserLlmProviderBillingRequired
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentErrorResolutionKind {
@@ -204,6 +224,36 @@ impl AgentStreamErrorData {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// Pins which refusals halt an automated driver. Widening this set stops
+    /// teams on failures that would have cleared on their own; narrowing it puts
+    /// them back to grinding a queue against a wall they cannot pass.
+    #[test]
+    fn only_spend_refusals_halt_an_automated_driver() {
+        for code in [
+            AgentErrorCode::UserLlmProviderRateLimited,
+            AgentErrorCode::UserLlmProviderQuotaExhausted,
+            AgentErrorCode::UserLlmProviderBillingRequired,
+        ] {
+            assert!(code.is_provider_spend_block(), "{code:?} must halt the team");
+        }
+
+        for code in [
+            // Genuinely transient — the existing bounded retry is the right answer.
+            AgentErrorCode::UserLlmProviderNetworkError,
+            AgentErrorCode::UserLlmProviderTimeout,
+            // Needs the user too, but "check your quota" is the wrong thing to say.
+            AgentErrorCode::UserLlmProviderAuthFailed,
+            AgentErrorCode::UserLlmProviderPermissionDenied,
+            // This teammate's own problem, not the provider's.
+            AgentErrorCode::UserAgentToolCallLoop,
+            AgentErrorCode::UserLlmProviderContextTooLarge,
+        ] {
+            assert!(!code.is_provider_spend_block(), "{code:?} must not halt the team");
+        }
+    }
+
     use super::*;
 
     #[test]

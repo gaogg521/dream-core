@@ -51,6 +51,14 @@ impl WorkSource {
         )
     }
 
+    /// Only a human can lift a provider spend block: the team is halted because
+    /// the provider is refusing, and no agent in the team — the lead included —
+    /// can do anything about that. Narrower than [`Self::resumes_paused_slot`],
+    /// which also lets the lead resume a teammate it paused itself.
+    pub(crate) fn clears_provider_spend_block(self) -> bool {
+        matches!(self, Self::UserMessage | Self::UserCommand | Self::UserIntervention)
+    }
+
     pub(crate) fn requires_mailbox_message(self) -> bool {
         matches!(
             self,

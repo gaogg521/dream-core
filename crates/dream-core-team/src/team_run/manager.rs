@@ -293,13 +293,21 @@ impl TeamRunManager {
             active_turn_elapsed_ms,
             active_turn_slow: active_turn_elapsed_ms.map(|elapsed| elapsed >= ACTIVE_TURN_SLOW_THRESHOLD_MS),
             active_turn_slow_threshold_ms: slot.active_turn_id.as_ref().map(|_| ACTIVE_TURN_SLOW_THRESHOLD_MS),
-            blocked_reason: match slot.runtime_constraint {
-                RuntimeConstraint::Ready => None,
-                RuntimeConstraint::Starting { .. } => Some(TeamSlotBlockedReason::RuntimeStarting),
-                RuntimeConstraint::Failed { .. } => Some(TeamSlotBlockedReason::RuntimeFailed),
-                RuntimeConstraint::Removing { .. } => Some(TeamSlotBlockedReason::Removing),
-                RuntimeConstraint::SessionStopped => Some(TeamSlotBlockedReason::SessionStopped),
+            // The provider block outranks the runtime reasons: it halted every
+            // slot, so it is what the user has to act on to get any of them
+            // moving again.
+            blocked_reason: if slot.provider_spend_blocked_by.is_some() {
+                Some(TeamSlotBlockedReason::ProviderSpendBlocked)
+            } else {
+                match slot.runtime_constraint {
+                    RuntimeConstraint::Ready => None,
+                    RuntimeConstraint::Starting { .. } => Some(TeamSlotBlockedReason::RuntimeStarting),
+                    RuntimeConstraint::Failed { .. } => Some(TeamSlotBlockedReason::RuntimeFailed),
+                    RuntimeConstraint::Removing { .. } => Some(TeamSlotBlockedReason::Removing),
+                    RuntimeConstraint::SessionStopped => Some(TeamSlotBlockedReason::SessionStopped),
+                }
             },
+            provider_blocked_slot_id: slot.provider_spend_blocked_by.clone(),
             team_run_id: slot.team_run_id.clone(),
         }
     }

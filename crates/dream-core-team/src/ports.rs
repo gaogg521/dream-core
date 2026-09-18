@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dream_core_api_types::{ConversationRuntimeSummary, TeamRunTargetRole};
+use dream_core_api_types::{AgentErrorCode, ConversationRuntimeSummary, TeamRunTargetRole};
 use dream_core_common::ResolvedBackendCapabilities;
 
 use crate::error::TeamError;
@@ -229,6 +229,11 @@ pub struct AgentTurnOutcome {
     pub conversation_id: String,
     pub turn_id: String,
     pub status: AgentTurnStatus,
+    /// Typed code behind a `Failed` status, when the conversation layer
+    /// classified one. The scheduler reads it to tell an agent-level failure
+    /// (retry it, then give up on that teammate) from a provider-level refusal
+    /// (stop the whole team — retrying cannot help).
+    pub error_code: Option<AgentErrorCode>,
     pub runtime: Option<ConversationRuntimeSummary>,
 }
 

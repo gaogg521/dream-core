@@ -463,6 +463,7 @@ mod tests {
                 active_turn_slow: None,
                 active_turn_slow_threshold_ms: None,
                 blocked_reason: None,
+                provider_blocked_slot_id: None,
                 team_run_id: None,
             },
         });
@@ -499,6 +500,7 @@ mod tests {
                 active_turn_slow: Some(false),
                 active_turn_slow_threshold_ms: Some(3),
                 blocked_reason: None,
+                provider_blocked_slot_id: None,
                 team_run_id: Some("run-1".into()),
             },
         });

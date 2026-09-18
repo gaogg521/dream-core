@@ -241,6 +241,10 @@ pub(crate) struct SlotWorkSnapshot {
     pub(crate) active_turn_id: Option<String>,
     pub(crate) active_turn_started_at_ms: Option<TimestampMs>,
     pub(crate) runtime_constraint: RuntimeConstraint,
+    /// Slot whose provider refused on spend grounds, when the team is halted
+    /// for that reason. Mirrored onto every slot so the UI can explain any of
+    /// them and name the one to go and check; only a user message clears it.
+    pub(crate) provider_spend_blocked_by: Option<String>,
     pub(crate) team_run_id: Option<String>,
 }
 
@@ -312,6 +316,17 @@ pub(crate) struct InterruptBatchResult {
 pub(crate) struct PauseWorkResult {
     pub(crate) cancel_target: Option<BatchCancelTarget>,
     pub(crate) slot: SlotWorkSnapshot,
+}
+
+/// Outcome of halting the team on a provider spend block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderSpendBlockResult {
+    pub(crate) commit_result: CommitResult,
+    /// False when the team was already blocked — the caller uses this to tell
+    /// the user once per outage instead of once per teammate that hits the wall.
+    pub(crate) newly_blocked: bool,
+    /// `(slot_id, role, target)` for every slot still holding an active batch.
+    pub(crate) cancel_targets: Vec<(String, TeamRunTargetRole, BatchCancelTarget)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

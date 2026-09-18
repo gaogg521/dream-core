@@ -1338,6 +1338,75 @@ impl TeamSession {
         Ok(())
     }
 
+    /// Halt the whole team because the model provider refused this batch on
+    /// spend grounds (rate limit, quota, billing).
+    ///
+    /// Retrying cannot clear any of those, so the scheduler must stop rather than
+    /// grind its queue against the wall — which is what produced an overnight
+    /// pile-up of identical provider errors, each one also writing a failure
+    /// notice into the lead's mailbox and so growing the very queue that could
+    /// not drain. Nothing is notified here for that reason: the block reaches the
+    /// user through the slot work snapshot, and the user resumes the team by
+    /// sending a message once they have sorted the quota out.
+    ///
+    /// Returns true when this call is the one that halted the team, so the caller
+    /// can log the outage once instead of once per teammate.
+    pub(crate) async fn halt_team_on_provider_spend_block(&self, batch: &WorkBatch) -> bool {
+        let result = self.work_coordinator.block_team_on_provider_spend(batch);
+        for (slot_id, role, target) in &result.cancel_targets {
+            let Some(turn_id) = target.turn_id.clone() else {
+                self.work_coordinator
+                    .cancel_batch(&target.batch, "provider_spend_blocked");
+                continue;
+            };
+            let conversation_id = match self.scheduler.get_agent(slot_id).await {
+                Ok(agent) => agent.conversation_id,
+                Err(error) => {
+                    warn!(
+                        team_id = %self.team.id,
+                        slot_id = %slot_id,
+                        error = %error,
+                        "provider spend block could not resolve a slot to cancel"
+                    );
+                    continue;
+                }
+            };
+            if let Err(error) = self
+                .cancellation_port
+                .cancel_agent_turn(&self.user_id, &conversation_id, &turn_id)
+                .await
+            {
+                warn!(
+                    team_id = %self.team.id,
+                    slot_id = %slot_id,
+                    turn_id = %turn_id,
+                    error = %error,
+                    "provider spend block turn cancellation failed"
+                );
+                continue;
+            }
+            if let Some(team_run_id) = target.batch.team_run_ids.first().cloned() {
+                self.team_event_emitter().broadcast_child_turn(
+                    TEAM_CHILD_TURN_CANCELLED_EVENT,
+                    TeamChildTurnPayload {
+                        team_id: self.team.id.clone(),
+                        team_run_id,
+                        slot_id: slot_id.clone(),
+                        role: role.clone(),
+                        conversation_id,
+                        turn_id,
+                        status: TeamRunStatus::Cancelled,
+                        reason: None,
+                        replacement_message_id: None,
+                    },
+                );
+            }
+            self.work_coordinator
+                .cancel_batch(&target.batch, "provider_spend_blocked");
+        }
+        result.newly_blocked
+    }
+
     async fn notify_leader_child_interrupted(&self, slot_id: &str, reason: Option<String>) -> Result<(), TeamError> {
         if let Some(lead_slot_id) = self.scheduler.find_lead_slot_id().await {
             let content = reason.unwrap_or_else(|| format!("Agent {slot_id} was interrupted by the user."));
@@ -2515,6 +2584,7 @@ mod tests {
                 conversation_id: request.conversation_id,
                 turn_id: "turn-background".into(),
                 status: crate::ports::AgentTurnStatus::Completed,
+                error_code: None,
                 runtime: None,
             })
         }
@@ -2567,6 +2637,7 @@ mod tests {
                 conversation_id: request.conversation_id,
                 turn_id: "turn-test".into(),
                 status: crate::ports::AgentTurnStatus::Completed,
+                error_code: None,
                 runtime: None,
             })
         }

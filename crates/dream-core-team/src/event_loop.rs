@@ -7,7 +7,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-use dream_core_api_types::{TeamChildTurnPayload, TeamRunStatus};
+use dream_core_api_types::{AgentErrorCode, TeamChildTurnPayload, TeamRunStatus};
 
 use crate::events::{TEAM_CHILD_TURN_CANCELLED_EVENT, TEAM_CHILD_TURN_COMPLETED_EVENT, TEAM_CHILD_TURN_STARTED_EVENT};
 use crate::mailbox::Mailbox;
@@ -356,6 +356,27 @@ async fn execute_and_finalize(ctx: &AgentLoopContext, batch: WorkBatch, input: W
             (completion.commit_result == CommitResult::Committed).then_some(TeamRunStatus::Completed),
             completion.team_run_ids,
         )
+    } else if outcome
+        .error_code
+        .is_some_and(|code: AgentErrorCode| code.is_provider_spend_block())
+    {
+        // Not this teammate's failure: the provider is refusing the whole team.
+        // Halting stops every other slot from queueing up behind the same wall,
+        // and leaves this batch's mailbox messages unread so they are re-derived
+        // when the user resumes.
+        let newly_blocked = ctx.session.halt_team_on_provider_spend_block(&batch).await;
+        if newly_blocked {
+            warn!(
+                team_id = %ctx.team_id,
+                slot_id = %ctx.slot_id,
+                batch_id = %batch.batch_id,
+                error_code = ?outcome.error_code,
+                "team paused: the model provider refused on spend grounds; waiting for the user"
+            );
+        }
+        let _ = ctx.scheduler.set_status(&ctx.slot_id, TeammateStatus::Idle).await;
+        finalize_scheduler_turn(ctx).await;
+        return ExecuteResult::WaitForSignal;
     } else {
         let failure = ctx.session.work_coordinator().fail_batch(&batch, "turn_failed");
         finalize_failed_delivery(ctx, &batch, &failure).await;

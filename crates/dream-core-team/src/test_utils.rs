@@ -1726,6 +1726,7 @@ pub(crate) mod workspace_harness {
                 conversation_id: request.conversation_id,
                 turn_id: "turn-test".into(),
                 status: AgentTurnStatus::Completed,
+                error_code: None,
                 runtime: None,
             })
         }

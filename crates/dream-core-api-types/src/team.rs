@@ -399,6 +399,11 @@ pub enum TeamSlotBlockedReason {
     RuntimeFailed,
     Removing,
     SessionStopped,
+    /// The model provider refused the whole team on spend grounds (rate limit,
+    /// quota, billing). Unlike the runtime reasons above, nothing in the
+    /// product clears this: the user fixes it with their provider and then
+    /// wakes the team by sending a message.
+    ProviderSpendBlocked,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -422,6 +427,11 @@ pub struct TeamSlotWorkPayload {
     pub active_turn_slow: Option<bool>,
     pub active_turn_slow_threshold_ms: Option<u64>,
     pub blocked_reason: Option<TeamSlotBlockedReason>,
+    /// With `blocked_reason: ProviderSpendBlocked`, the slot whose provider did
+    /// the refusing. Teammates can each run on a different provider, so the
+    /// notice has to name the one whose quota to go and check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_blocked_slot_id: Option<String>,
     pub team_run_id: Option<String>,
 }
 
@@ -1715,6 +1725,7 @@ mod tests {
             active_turn_slow: Some(false),
             active_turn_slow_threshold_ms: Some(600_000),
             blocked_reason: None,
+            provider_blocked_slot_id: None,
             team_run_id: Some("run-1".into()),
         }
     }
