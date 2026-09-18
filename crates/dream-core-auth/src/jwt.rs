@@ -10,8 +10,22 @@ use sha2::{Digest, Sha256};
 
 use crate::error::AuthError;
 
-/// JWT token lifetime: 24 hours.
-const TOKEN_EXPIRY: Duration = Duration::from_secs(24 * 60 * 60);
+/// JWT token lifetime: 30 days.
+///
+/// Stop-gap value aligned with the session cookie's `Max-Age`
+/// (`COOKIE_MAX_AGE_DAYS`). The cookie shell used to outlive this JWT, so after
+/// the previous 24h expiry every request carried a dead token — a live cookie
+/// wrapping an expired token — which put a remote WebUI into an unrecoverable
+/// 401 / WebSocket reconnect loop after roughly a day.
+///
+/// Only the DEFAULT path was ever mismatched: when an enterprise
+/// [`LoginRiskGate`] supplies a session TTL, `mint_session` builds the cookie
+/// from that same TTL, so those sessions already agreed.
+///
+/// This stays long until token refresh lands, after which it returns to a short
+/// access-token lifetime. Changing it then is a deliberate contract update —
+/// `token_lifetime_matches_cookie_max_age` makes that explicit.
+const TOKEN_EXPIRY: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// JWT issuer claim value.
 const JWT_ISSUER: &str = "dream";
@@ -60,7 +74,7 @@ impl JwtService {
         }
     }
 
-    /// Sign a new JWT for the given user. The token expires after 24 hours.
+    /// Sign a new JWT for the given user. The token expires after 30 days.
     pub fn sign(&self, user_id: &str, username: &str) -> Result<String, AuthError> {
         self.sign_with_session_generation(user_id, username, 0)
     }
@@ -75,7 +89,7 @@ impl JwtService {
         self.sign_with_session_generation_and_ttl(user_id, username, session_generation, None)
     }
 
-    /// Sign a JWT, optionally shortening the default 24h lifetime.
+    /// Sign a JWT, optionally shortening the default 30d lifetime.
     pub fn sign_with_session_generation_and_ttl(
         &self,
         user_id: &str,
@@ -248,6 +262,30 @@ mod tests {
     }
 
     #[test]
+    fn token_lifetime_matches_cookie_max_age() {
+        // The bug this pins: the default session cookie carries a
+        // COOKIE_MAX_AGE_DAYS Max-Age while the JWT inside it expired after 24h.
+        // A live cookie wrapping a dead token gives the client no way to
+        // recover — it keeps sending a token the server rejects — so a remote
+        // WebUI fell into a 401 / reconnect loop after about a day.
+        //
+        // Assert the relationship, not just the number: the token must outlive
+        // the cookie that carries it. Shortening TOKEN_EXPIRY again (once token
+        // refresh lands) has to shorten the cookie too, or fail here.
+        let cookie_max_age = u64::from(dream_core_common::constants::COOKIE_MAX_AGE_DAYS) * 24 * 60 * 60;
+        assert!(
+            TOKEN_EXPIRY.as_secs() >= cookie_max_age,
+            "JWT lifetime ({}s) must not be shorter than the session cookie Max-Age ({cookie_max_age}s)",
+            TOKEN_EXPIRY.as_secs()
+        );
+
+        let service = test_service();
+        let token = service.sign("user_1", "admin").unwrap();
+        let payload = service.verify(&token).unwrap();
+        assert_eq!(payload.exp - payload.iat, TOKEN_EXPIRY.as_secs());
+    }
+
+    #[test]
     fn sign_and_verify_roundtrip() {
         let service = test_service();
         let token = service.sign("user_1", "admin").unwrap();
@@ -404,7 +442,7 @@ mod tests {
         assert_eq!(service.blacklist_size(), 1);
 
         service.cleanup_blacklist();
-        // Token just signed with 24h expiry should still be in blacklist
+        // Token just signed with 30d expiry should still be in blacklist
         assert_eq!(service.blacklist_size(), 1);
     }
 
