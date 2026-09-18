@@ -17,6 +17,17 @@
 > 跨仓完整叙述（含前端 bug 与 CodeMirror 排查）见 dream-ui 同名文档。本 CLAUDE.md 只保留
 > 长期有效的规则，过程性细节请去读那份文档。
 
+> **2026-09-18**：上下文窗口默认 200k → **1M**、80% 自动压缩，且服务商说"prompt 太长"时
+> 能自愈（收窄→压缩→只重试一次）。**阈值的权威定义在 dream-engine**，先在 dream-core 打
+> 补丁是走了弯路——同一条规则写两处，独立 CLI 还完全没修到。
+> ❗ 三个绝对值缓冲都是按 200k 调的：8k 窗口下**紧急阻断线比 80% 触发点还低**，压缩永远
+> 跑不起来；改任何阈值都要重查 `trigger < emergency`。
+> 同批修了团队调度三个 bug（finalize 去重形同虚设、失败被吞 5 秒、陈旧信号把槽位卡在
+> "正在处理中"），并新增**服务商因额度拒绝时暂停整个团队**——原来它会拿队列撞墙、把真实
+> 排队消息 `mark_read` 丢掉，还往队长信箱灌通知（用户现场：一夜堆了 87 条，活儿已经没了）。
+> 详见
+> [session-2026-09-18-team-provider-spend-block.zh-CN.md](./docs/guides/session-2026-09-18-team-provider-spend-block.zh-CN.md)。
+
 > **2026-09-01**：aion 家族残留全量清理 + `onework.exe` 定名 + moltbook 移除。
 > 运行时契约（READY/LISTENING 标记、`x-dream-*` 头、`[[DREAM_FILES]]`、日志文件名、
 > `DREAMCORE_BOOTSTRAP_SECRET`）全部按「新值写入 + 旧值兼容读」处理；`AionPro` 枚举变体
