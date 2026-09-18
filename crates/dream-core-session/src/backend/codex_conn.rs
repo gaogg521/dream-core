@@ -75,7 +75,7 @@ fn log_codex_runtime_policy(spawn_env: &[dream_core_common::EnvVar]) {
     let mut runtime_env_keys = spawn_env
         .iter()
         .filter_map(|entry| {
-            (entry.name.starts_with("ONE_") || entry.name.starts_with("AIONUI_")).then_some(entry.name.as_str())
+            (entry.name.starts_with("ONE_") || entry.name.starts_with("ONE_")).then_some(entry.name.as_str())
         })
         .collect::<Vec<_>>();
     runtime_env_keys.sort_unstable();
@@ -128,7 +128,7 @@ impl BackendConnection for CodexConnection {
             command: config.cli_program.clone().unwrap_or_else(|| "codex".into()),
             args,
             // #103 (parity with claude_conn): forward the orchestration-filled
-            // spawn env (per-agent overrides + AIONUI_* conversation runtime
+            // spawn env (per-agent overrides + ONE_* conversation runtime
             // context). Empty = inherit the parent env only, as before.
             env: config.spawn_env.clone(),
             cwd: config.cwd.clone(),
@@ -630,7 +630,7 @@ pub fn codex_capabilities() -> Capabilities {
         // `approvalPolicy`/`sandboxPolicy`/`permissions` as "for subsequent turns"
         // (samples/codex-cli/0.146.0/schema/v2/ThreadSettingsUpdateParams.json, identical
         // in 0.147.0). Only `turn/start` can carry a policy for the turn it opens, and
-        // aionCore sends `turn/start` with `{threadId, input}` alone. Not a defect — this
+        // dream-core sends `turn/start` with `{threadId, input}` alone. Not a defect — this
         // is codex's contract; the UI just has to say so.
         mode_switch_effect: crate::capability::ModeSwitchEffect::NextTurn,
         emits: SignalSet {
@@ -3932,7 +3932,7 @@ impl SessionBackend for CodexSessionBackend {
                 // app-server mid-turn (the reader clears it at the terminal).
                 self.turn_in_flight.store(true, Ordering::SeqCst);
                 // REAL codex 0.137.0 turn-driver: `turn/start{threadId, input}`
-                // (verified against the aion-probe transcripts). Needs the bound
+                // (verified against the captured probe transcripts). Needs the bound
                 // threadId (waits briefly for the async thread/started; fails FAST
                 // when the resume was rejected — see `resume_poison`).
                 let tid = match self.bound_thread().await {
@@ -6379,7 +6379,7 @@ mod tests {
     async fn dispatch_send_writes_turn_start_with_thread_id() {
         // dispatch(Send) bumps turn_gen + returns Started, writing the REAL codex
         // wire `turn/start{threadId, input:[{type:text,text}]}` (verified against
-        // the aion-probe transcripts — NOT the fictional `sendUserTurn`). Requires
+        // the captured probe transcripts — NOT the fictional `sendUserTurn`). Requires
         // the bound threadId, which the fake supplies via thread/started.
         let fake = fake_with_binding("th-77", None);
         let captured = fake.captured_stdin();
@@ -8110,7 +8110,7 @@ mod tests {
         );
         assert_eq!(spec.cwd.as_deref(), Some("/tmp/work"), "cwd threaded (workspace)");
         // #103 parity with claude_conn: the orchestration-filled spawn env
-        // (AIONUI_* runtime context + per-agent overrides) reaches the process.
+        // (ONE_* runtime context + per-agent overrides) reaches the process.
         assert_eq!(
             spec.env
                 .iter()

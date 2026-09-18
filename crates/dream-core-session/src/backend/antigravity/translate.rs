@@ -448,10 +448,10 @@ mod tests {
     fn mcp_calls_are_displayed_as_server_slash_tool() {
         // Otherwise every team step reads as a bare "call_mcp_tool".
         let (_, evs) = tr(&[
-            r#"{"event":"step_update","step_update":{"step_index":6,"state":"ACTIVE","step_type":"tool","tool_name":"call_mcp_tool","tool_info":{"name":"call_mcp_tool","parameters":{"ServerName":"aionui-team","ToolName":"dream_core_team_ping","Arguments":{}}}}}"#,
+            r#"{"event":"step_update","step_update":{"step_index":6,"state":"ACTIVE","step_type":"tool","tool_name":"call_mcp_tool","tool_info":{"name":"call_mcp_tool","parameters":{"ServerName":"one-team","ToolName":"dream_core_team_ping","Arguments":{}}}}}"#,
         ]);
         match &evs[0] {
-            SessionEvent::ToolCall { name, .. } => assert_eq!(name, "aionui-team/dream_core_team_ping"),
+            SessionEvent::ToolCall { name, .. } => assert_eq!(name, "one-team/dream_core_team_ping"),
             other => panic!("unexpected {other:?}"),
         }
     }

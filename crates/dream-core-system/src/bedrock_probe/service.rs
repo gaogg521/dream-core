@@ -100,7 +100,7 @@ async fn build_aws_config(config: &BedrockConfig) -> aws_config::SdkConfig {
                 config.secret_access_key.as_deref().unwrap_or_default(),
                 None,
                 None,
-                "aionui-bedrock-test",
+                "one-bedrock-test",
             );
             aws_config::defaults(aws_config::BehaviorVersion::latest())
                 .region(region)

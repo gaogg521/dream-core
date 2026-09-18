@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Reads aionrs commit subject lines (one per line) on stdin and emits a
+# Reads dream_engine commit subject lines (one per line) on stdin and emits a
 # conventional-commit footer block on stdout. Keeps only feat/fix/perf,
 # rewrites the scope to `engine`, drops original sub-scope and breaking "!",
 # dedupes, and groups by type (feat -> fix -> perf). Emits a single

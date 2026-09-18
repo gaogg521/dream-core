@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "lowercase")]
 pub enum UserType {
     Local,
-    /// DB value is frozen at `aionpro` (existing rows); never renumber.
+    /// DB value is frozen at the legacy `aionpro` (existing rows); never renumber.
     #[sqlx(rename = "aionpro")]
     #[serde(rename = "aionpro")]
     DreamPro,

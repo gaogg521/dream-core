@@ -26,7 +26,7 @@ use crate::error::McpError;
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Default OAuth client ID for MCP servers (public client, no secret).
-const DEFAULT_CLIENT_ID: &str = "aionui";
+const DEFAULT_CLIENT_ID: &str = "one";
 
 /// Token expiry safety margin (refresh 5 minutes before expiration).
 const EXPIRY_MARGIN_MS: i64 = 5 * 60 * 1000;
@@ -368,7 +368,7 @@ impl McpOAuthService {
             Content-Type: text/html; charset=utf-8\r\n\
             Connection: close\r\n\r\n\
             <html><body><h1>Authorization successful!</h1>\
-            <p>You can close this window and return to AionUi.</p>\
+            <p>You can close this window and return to One Work.</p>\
             </body></html>";
 
         let _ = stream.write_all(response.as_bytes()).await;

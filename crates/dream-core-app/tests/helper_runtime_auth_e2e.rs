@@ -13,7 +13,7 @@ use dream_core_ai_agent::{RuntimeTokenScope, TEAM_RUNTIME_TOKEN_SESSION_GENERATI
 
 const CONVERSATION_ID: &str = "conv-helper-auth";
 
-async fn build_aionpro_app() -> (axum::Router, dream_core_app::AppServices, String) {
+async fn build_dreampro_app() -> (axum::Router, dream_core_app::AppServices, String) {
     let db = dream_core_db::init_database_memory().await.unwrap();
     let config = dream_core_app::AppConfig {
         identity_mode: dream_core_app::IdentityMode::DreamPro,
@@ -64,7 +64,7 @@ async fn body_json(resp: axum::response::Response) -> Value {
 
 #[tokio::test]
 async fn helper_token_channel_passes_auth_and_reaches_cron_domain() {
-    let (app, services, user_id) = build_aionpro_app().await;
+    let (app, services, user_id) = build_dreampro_app().await;
     let issue = services.runtime_token_service.issue(
         user_id.as_str(),
         CONVERSATION_ID,
@@ -97,7 +97,7 @@ async fn helper_token_channel_passes_auth_and_reaches_cron_domain() {
 
 #[tokio::test]
 async fn helper_token_channel_reads_owned_conversation() {
-    let (app, services, user_id) = build_aionpro_app().await;
+    let (app, services, user_id) = build_dreampro_app().await;
     sqlx::query(
         "INSERT INTO conversations (id, user_id, name, type, extra, status, created_at, updated_at)
          VALUES (?, ?, 'Helper Conversation', 'acp', '{}', 'pending', 1, 1)",
@@ -132,8 +132,8 @@ async fn helper_token_channel_reads_owned_conversation() {
 }
 
 #[tokio::test]
-async fn helper_without_token_is_rejected_in_aionpro_mode() {
-    let (app, services, user_id) = build_aionpro_app().await;
+async fn helper_without_token_is_rejected_in_dreampro_mode() {
+    let (app, services, user_id) = build_dreampro_app().await;
 
     let resp = app
         .oneshot(helper_get(
@@ -154,7 +154,7 @@ async fn helper_without_token_is_rejected_in_aionpro_mode() {
 
 #[tokio::test]
 async fn helper_token_bound_to_other_user_is_rejected() {
-    let (app, services, user_id) = build_aionpro_app().await;
+    let (app, services, user_id) = build_dreampro_app().await;
     let issue = services.runtime_token_service.issue(
         user_id.as_str(),
         CONVERSATION_ID,
@@ -181,7 +181,7 @@ async fn helper_token_bound_to_other_user_is_rejected() {
 
 #[tokio::test]
 async fn helper_token_bound_to_other_conversation_is_rejected() {
-    let (app, services, user_id) = build_aionpro_app().await;
+    let (app, services, user_id) = build_dreampro_app().await;
     let issue = services.runtime_token_service.issue(
         user_id.as_str(),
         "another-conversation",
@@ -208,7 +208,7 @@ async fn helper_token_bound_to_other_conversation_is_rejected() {
 
 #[tokio::test]
 async fn team_scoped_token_cannot_use_helper_channel() {
-    let (app, services, user_id) = build_aionpro_app().await;
+    let (app, services, user_id) = build_dreampro_app().await;
     let issue = services.runtime_token_service.issue(
         user_id.as_str(),
         CONVERSATION_ID,
@@ -235,7 +235,7 @@ async fn team_scoped_token_cannot_use_helper_channel() {
 
 #[tokio::test]
 async fn helper_write_request_is_exempt_from_csrf() {
-    let (app, services, user_id) = build_aionpro_app().await;
+    let (app, services, user_id) = build_dreampro_app().await;
     let issue = services.runtime_token_service.issue(
         user_id.as_str(),
         CONVERSATION_ID,

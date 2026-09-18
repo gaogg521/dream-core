@@ -336,7 +336,7 @@ mod tests {
     }
 
     fn node_npx_cli_command_spec(cache: &Path, args: &[&str]) -> CommandSpec {
-        let mut all_args = vec![r"C:\AionUi\runtime\node\node_modules\npm\bin\npx-cli.js".to_owned()];
+        let mut all_args = vec![r"C:\One Work\runtime\node\node_modules\npm\bin\npx-cli.js".to_owned()];
         all_args.extend(args.iter().map(|arg| (*arg).to_owned()));
         CommandSpec {
             command: PathBuf::from("node.exe"),
@@ -354,7 +354,7 @@ mod tests {
         let stderr = "\
 npm error code ENOENT
 npm error syscall open
-npm error path /tmp/aionui/runtime/node/cache/_npx/c16927192d2e8dc3/package.json
+npm error path /tmp/one/runtime/node/cache/_npx/c16927192d2e8dc3/package.json
 npm error errno -2
 npm error enoent Could not read package.json
 ";
@@ -363,35 +363,35 @@ npm error enoent Could not read package.json
 
         assert_eq!(
             cache_entry,
-            std::path::PathBuf::from("/tmp/aionui/runtime/node/cache/_npx/c16927192d2e8dc3")
+            std::path::PathBuf::from("/tmp/one/runtime/node/cache/_npx/c16927192d2e8dc3")
         );
     }
 
     #[test]
     fn detects_corrupt_npm_npx_cache_entry_from_quoted_enoent_path() {
         let stderr = "\
-Error: ENOENT: no such file or directory, open '/tmp/aionui/runtime/node/cache/_npx/c16927192d2e8dc3/node_modules/@xai/grok-cli/package.json'
+Error: ENOENT: no such file or directory, open '/tmp/one/runtime/node/cache/_npx/c16927192d2e8dc3/node_modules/@xai/grok-cli/package.json'
 ";
 
         let cache_entry = corrupt_npx_cache_entry_from_stderr(stderr).expect("cache entry");
 
         assert_eq!(
             cache_entry,
-            std::path::PathBuf::from("/tmp/aionui/runtime/node/cache/_npx/c16927192d2e8dc3")
+            std::path::PathBuf::from("/tmp/one/runtime/node/cache/_npx/c16927192d2e8dc3")
         );
     }
 
     #[test]
     fn detects_corrupt_npm_npx_cache_entry_from_missing_bin_path() {
         let stderr = "\
-sh: /tmp/aionui/runtime/node/cache/_npx/c16927192d2e8dc3/node_modules/.bin/grok: No such file or directory
+sh: /tmp/one/runtime/node/cache/_npx/c16927192d2e8dc3/node_modules/.bin/grok: No such file or directory
 ";
 
         let cache_entry = corrupt_npx_cache_entry_from_stderr(stderr).expect("cache entry");
 
         assert_eq!(
             cache_entry,
-            std::path::PathBuf::from("/tmp/aionui/runtime/node/cache/_npx/c16927192d2e8dc3")
+            std::path::PathBuf::from("/tmp/one/runtime/node/cache/_npx/c16927192d2e8dc3")
         );
     }
 

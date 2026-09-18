@@ -527,10 +527,8 @@ async fn t1_5c_create_rejects_missing_workspace_path() {
     let (mut app, services) = build_app().await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
 
-    let missing_workspace = std::env::temp_dir().join(format!(
-        "aionui-conv-missing-{}",
-        dream_core_common::generate_short_id()
-    ));
+    let missing_workspace =
+        std::env::temp_dir().join(format!("one-conv-missing-{}", dream_core_common::generate_short_id()));
 
     let body = json!({
         "type": "acp",
@@ -676,7 +674,7 @@ async fn t2_4_list_source_filter() {
 
     // Create 2 dream + 1 telegram
     for _ in 0..2 {
-        let req = json_with_token("POST", "/api/conversations", create_body("Aionui Conv"), &token, &csrf);
+        let req = json_with_token("POST", "/api/conversations", create_body("Dream Conv"), &token, &csrf);
         app.clone().oneshot(req).await.unwrap();
     }
 

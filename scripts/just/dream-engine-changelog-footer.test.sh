@@ -2,7 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-script="$script_dir/aionrs-changelog-footer.sh"
+script="$script_dir/dream-engine-changelog-footer.sh"
 
 assert_transform() {
     local name="$1" input="$2" expected="$3"
@@ -20,11 +20,11 @@ assert_transform() {
 assert_transform "filter+scope+dedup" \
 'feat(agent): persist and report context usage
 fix(agent): preserve emergency watermark after microcompact
-Merge pull request #239 from iOfficeAI/jiahe/feat/context-usage
+Merge pull request #239 from origin/jiahe/feat/context-usage
 feat(agent): persist and report context usage
 chore(main): release 0.2.8
 chore: sync Cargo.lock for release
-Merge pull request #240 from iOfficeAI/release-please--branches--main' \
+Merge pull request #240 from origin/release-please--branches--main' \
 'feat(engine): persist and report context usage
 fix(engine): preserve emergency watermark after microcompact'
 
@@ -51,4 +51,4 @@ fix(config)!: rename field' \
 'feat(engine): drop legacy config
 fix(engine): rename field'
 
-echo "aionrs-changelog-footer script tests passed"
+echo "dream-engine-changelog-footer script tests passed"

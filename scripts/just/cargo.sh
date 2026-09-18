@@ -4,7 +4,7 @@ set -euo pipefail
 cargo_config=()
 restore_cargo_lock=false
 cargo_lock_snapshot=""
-aionrs_root=""
+dream_engine_root=""
 
 restore_local_lockfile() {
     local status=$?
@@ -22,17 +22,17 @@ restore_local_lockfile() {
 }
 trap restore_local_lockfile EXIT
 
-verify_local_aionrs_patch() {
+verify_local_dream_engine_patch() {
     local metadata_file
     metadata_file=$(mktemp)
     cargo "${cargo_config[@]}" metadata --format-version 1 > "$metadata_file"
 
-    python3 - "$aionrs_root" "$metadata_file" "${crates[@]}" <<'PY'
+    python3 - "$dream_engine_root" "$metadata_file" "${crates[@]}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-aionrs_root = Path(sys.argv[1]).resolve()
+dream_engine_root = Path(sys.argv[1]).resolve()
 metadata_path = Path(sys.argv[2])
 crates = sys.argv[3:]
 metadata = json.loads(metadata_path.read_text())
@@ -40,16 +40,16 @@ packages = {package["name"]: package for package in metadata["packages"]}
 
 for crate in crates:
     package = packages.get(crate)
-    expected = (aionrs_root / "crates" / crate).resolve()
+    expected = (dream_engine_root / "crates" / crate).resolve()
     if not package:
-        print(f"AIONRS patch was not used for {crate}.", file=sys.stderr)
+        print(f"DREAM_ENGINE patch was not used for {crate}.", file=sys.stderr)
         print("  resolved: package not found", file=sys.stderr)
         print(f"  expected: {expected}", file=sys.stderr)
         sys.exit(1)
 
     actual = Path(package["manifest_path"]).resolve().parent
     if actual != expected:
-        print(f"AIONRS patch was not used for {crate}.", file=sys.stderr)
+        print(f"DREAM_ENGINE patch was not used for {crate}.", file=sys.stderr)
         print(f"  resolved: {actual}", file=sys.stderr)
         print(f"  expected: {expected}", file=sys.stderr)
         sys.exit(1)
@@ -58,40 +58,40 @@ PY
     rm -f "$metadata_file"
 }
 
-if [[ -n "${AIONRS:-}" ]]; then
-    if [[ ! -d "$AIONRS" ]]; then
-        echo "AIONRS does not exist or is not a directory: $AIONRS" >&2
+if [[ -n "${DREAM_ENGINE:-}" ]]; then
+    if [[ ! -d "$DREAM_ENGINE" ]]; then
+        echo "DREAM_ENGINE does not exist or is not a directory: $DREAM_ENGINE" >&2
         exit 1
     fi
 
-    aionrs_root=$(cd "$AIONRS" && pwd -P)
+    dream_engine_root=$(cd "$DREAM_ENGINE" && pwd -P)
     crates=(
-        aion-agent
-        aion-compact
-        aion-config
-        aion-mcp
-        aion-memory
-        aion-process
-        aion-protocol
-        aion-providers
-        aion-skills
-        aion-tools
-        aion-types
+        dream-engine-agent
+        dream-engine-compact
+        dream-engine-config
+        dream-engine-mcp
+        dream-engine-memory
+        dream-engine-process
+        dream-engine-protocol
+        dream-engine-providers
+        dream-engine-skills
+        dream-engine-tools
+        dream-engine-types
     )
 
     for crate in "${crates[@]}"; do
-        crate_dir="$aionrs_root/crates/$crate"
+        crate_dir="$dream_engine_root/crates/$crate"
         if [[ ! -f "$crate_dir/Cargo.toml" ]]; then
-            echo "AIONRS is missing $crate: $crate_dir/Cargo.toml" >&2
+            echo "DREAM_ENGINE is missing $crate: $crate_dir/Cargo.toml" >&2
             exit 1
         fi
 
         toml_path=${crate_dir//\\/\\\\}
         toml_path=${toml_path//\"/\\\"}
-        cargo_config+=(--config "patch.'https://github.com/iOfficeAI/aionrs.git'.$crate.path = \"$toml_path\"")
+        cargo_config+=(--config "patch.'https://github.com/gaogg521/dream-engine.git'.$crate.path = \"$toml_path\"")
     done
 
-    echo "Using local aionrs SDK: $aionrs_root" >&2
+    echo "Using local dream_engine SDK: $dream_engine_root" >&2
 
     if [[ -f Cargo.lock ]]; then
         cargo_lock_snapshot=$(mktemp)
@@ -100,24 +100,24 @@ if [[ -n "${AIONRS:-}" ]]; then
         if git diff --quiet -- Cargo.lock && git diff --cached --quiet -- Cargo.lock; then
             restore_cargo_lock=true
         else
-            echo "Cargo.lock already has changes; leaving successful AIONRS lockfile updates in place." >&2
+            echo "Cargo.lock already has changes; leaving successful DREAM_ENGINE lockfile updates in place." >&2
         fi
     fi
 
-    echo "Resolving Cargo.lock against local aionrs SDK" >&2
+    echo "Resolving Cargo.lock against local dream_engine SDK" >&2
     cargo "${cargo_config[@]}" update \
-        -p aion-agent \
-        -p aion-compact \
-        -p aion-config \
-        -p aion-mcp \
-        -p aion-memory \
-        -p aion-process \
-        -p aion-protocol \
-        -p aion-providers \
-        -p aion-skills \
-        -p aion-tools \
-        -p aion-types
-    verify_local_aionrs_patch
+        -p dream-engine-agent \
+        -p dream-engine-compact \
+        -p dream-engine-config \
+        -p dream-engine-mcp \
+        -p dream-engine-memory \
+        -p dream-engine-process \
+        -p dream-engine-protocol \
+        -p dream-engine-providers \
+        -p dream-engine-skills \
+        -p dream-engine-tools \
+        -p dream-engine-types
+    verify_local_dream_engine_patch
 fi
 
 if ((${#cargo_config[@]})); then

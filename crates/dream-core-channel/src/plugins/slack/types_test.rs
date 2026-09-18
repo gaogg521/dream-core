@@ -6,11 +6,11 @@ use serde_json::json;
 
 #[test]
 fn auth_test_response_ok() {
-    let raw = json!({ "ok": true, "user": "aion_bot", "user_id": "U0BOT", "bot_id": "B0BOT" });
+    let raw = json!({ "ok": true, "user": "dream_bot", "user_id": "U0BOT", "bot_id": "B0BOT" });
     let resp: AuthTestResponse = serde_json::from_value(raw).unwrap();
     assert!(resp.ok);
     assert_eq!(resp.user_id.as_deref(), Some("U0BOT"));
-    assert_eq!(resp.user.as_deref(), Some("aion_bot"));
+    assert_eq!(resp.user.as_deref(), Some("dream_bot"));
 }
 
 #[test]

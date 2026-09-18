@@ -1273,11 +1273,11 @@ mod tests {
 
     fn channel_state_assistant_definition() -> UpsertAssistantDefinitionParams<'static> {
         UpsertAssistantDefinitionParams {
-            id: "asstdef-channel-state-aionrs",
-            assistant_id: "bare-channel-aionrs",
+            id: "asstdef-channel-state-dream-engine",
+            assistant_id: "bare-channel-dream-engine",
             source: "generated",
             owner_type: "system",
-            source_ref: Some("bare-channel-aionrs"),
+            source_ref: Some("bare-channel-dream-engine"),
             name: "Bare Channel DreamEngine",
             name_i18n: "{}",
             description: Some("Channel state regression assistant"),
@@ -1371,7 +1371,7 @@ mod tests {
                 "system_default_user",
                 &[(
                     "assistant.weixin.agent",
-                    r#"{"assistant_id":"bare-channel-aionrs","name":"Weixin DreamEngine"}"#,
+                    r#"{"assistant_id":"bare-channel-dream-engine","name":"Weixin DreamEngine"}"#,
                 )],
             )
             .await
@@ -1412,7 +1412,7 @@ mod tests {
             .unwrap()
             .expect("channel-created conversation should be persisted");
 
-        assert_eq!(snapshot.assistant_id, "bare-channel-aionrs");
+        assert_eq!(snapshot.assistant_id, "bare-channel-dream-engine");
         assert_eq!(snapshot.agent_id, "632f31d2");
         assert_eq!(conversation.r#type, AgentType::DreamEngine.serde_name());
         assert_eq!(conversation.name, "Weixin DreamEngine");
@@ -1535,7 +1535,7 @@ mod tests {
                 "name": "demo-ext",
                 "version": "1.0.0",
                 "engine": {
-                    "aionui": "^2.0.0"
+                    "one": "^2.0.0"
                 }
             }))
             .unwrap(),

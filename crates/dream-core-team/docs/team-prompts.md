@@ -1,14 +1,14 @@
-# Team 提示词体系（AionUi 参考实现）
+# Team 提示词体系（快照时点的前端参考实现）
 
-> 本文档完整记录 AionUi main 分支中 team 模块的三层提示词设计。
-> 源码路径前缀：`/Volumes/Macintosh HD/Users/zhuqingyu/project/AionUi/src/process/team/prompts/`
+> 本文档完整记录 One Work main 分支中 team 模块的三层提示词设计。
+> 源码路径前缀：`/Volumes/Macintosh HD/Users/zhuqingyu/project/One Work/src/process/team/prompts/`
 
 **相关文档**：
 - [MCP 通信](./mcp.md) — Team 内部 MCP 的 `team_*` 工具定义
 - [内部调度](./internals.md) — scheduler 状态机、wake 机制（prompt 里的 "Standing By" 与 wake 紧密关联）
 - [前端接入指南](./frontend-guide.md) — 前端视角的 team 接入
 - [后端 GAP 分析](./backend-current-state-and-gap.md) — 后端缺失的 prompt 能力清单
-- [AionUi 完整调研](./dream-core-team-complete.md) — team 模块全貌（含 prompt 注入路径）
+- [One Work 完整调研](./dream-core-team-complete.md) — team 模块全貌（含 prompt 注入路径）
 
 ---
 
@@ -100,7 +100,7 @@ Step 10: 分配任务 → team_send_message
 
 ### Shutdown 规则（原文，必须原样复用到后端 prompt）
 
-以下是 AionUi leader prompt 中关于 shutdown 的**原文**，后端实现时应直接复用：
+以下是 One Work leader prompt 中关于 shutdown 的**原文**，后端实现时应直接复用：
 
 ```
 ## Shutting Down Teammates
@@ -182,7 +182,7 @@ Step 6: team_send_message → 向 leader 汇报
 
 ## 4. MCP Tool Description 原文（后端必须原样复用）
 
-以下是 AionUi 每个 MCP 工具的 description + schema 原文。后端在 `tools/list` 返回的 `ToolDescriptor` 里必须使用这些文本，不要改写。
+以下是 One Work 每个 MCP 工具的 description + schema 原文。后端在 `tools/list` 返回的 `ToolDescriptor` 里必须使用这些文本，不要改写。
 
 ### 4.1 Team 内部 MCP（10 个工具）
 
@@ -238,7 +238,7 @@ The new agent will be created and added to the team. You can then assign tasks a
 name: string — Name for the new teammate (e.g., "researcher", "developer", "tester")
 agent_type: string (optional) — Agent type/backend to use for the new teammate. Must be one of the types listed in "Available Agent Types for Spawning". Defaults to the leader type when omitted. Ignored when assistant_id is set.
 assistant_id: string (optional) — Preset assistant ID from "Available Preset Assistants for Spawning" (e.g., "builtin-word-creator"). When set, the teammate inherits that preset's rules and skills; agent_type is derived from the preset.
-model: string (optional) — Model ID to use for this agent (e.g. "claude-sonnet-4", "gemini-2.5-pro"). Defaults to the backend's preferred model when omitted.
+model: string (optional) — Model ID to use for this agent (e.g. "claude-sonnet-4", "gemini-2.5-pro"). Defaults to dreamcore's preferred model when omitted.
 ```
 
 #### team_task_create
@@ -378,7 +378,7 @@ agent_type: string (optional) — Agent type/backend to query (e.g. "gemini", "c
 
 ## 5. 后端实现现状
 
-**后端（aionui-backend）已有**：
+**后端（dreamcore）已有**：
 - `crates/dream-core-team/src/prompts.rs` — leader + teammate prompt 的基础版本
 - `crates/dream-core-team/src/mcp/tools.rs` — `team_spawn_agent` 工具描述
 
@@ -388,15 +388,15 @@ agent_type: string (optional) — Agent type/backend to query (e.g. "gemini", "c
 - ⚠️ Preset Assistant 选择逻辑 — 没有 `team_describe_assistant` 工具
 - ⚠️ `team_list_models` 工具 — 没有
 
-### 后端已有 prompt vs AionUi prompt 对比
+### 后端已有 prompt vs One Work prompt 对比
 
-后端的 `prompts.rs` 需要与 AionUi 对齐的点：
+后端的 `prompts.rs` 需要与 One Work 对齐的点：
 1. Leader prompt 的"先出阵容表、等确认、再 spawn"流程是否已包含
 2. Teammate prompt 的 "Standing By" 超时防护是否已包含
 3. "依赖串行调度"规则是否已包含
 4. Model 选择指引是否已包含
 
-（需要读后端 prompts.rs 做逐项比对，本文档先记录 AionUi 侧事实）
+（需要读后端 prompts.rs 做逐项比对，本文档先记录 One Work 侧事实）
 
 ---
 

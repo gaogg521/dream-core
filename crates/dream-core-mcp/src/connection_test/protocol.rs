@@ -17,7 +17,7 @@ use std::time::Duration;
 // ---------------------------------------------------------------------------
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
-const CLIENT_NAME: &str = "aionui-mcp-test";
+const CLIENT_NAME: &str = "one-mcp-test";
 const CLIENT_VERSION: &str = "1.0.0";
 
 // ---------------------------------------------------------------------------
@@ -487,19 +487,19 @@ fn missing_command_runtime(command: &str) -> &'static str {
 fn command_not_found_message(command: &str) -> String {
     match missing_command_runtime(command) {
         "node" => format!(
-            "Command not found: {command}. AionCore usually provisions its managed Node runtime automatically. Retry the connection test, check backend logs if it still fails, or configure this MCP server to use an absolute command path."
+            "Command not found: {command}. One Work usually provisions its managed Node runtime automatically. Retry the connection test, check backend logs if it still fails, or configure this MCP server to use an absolute command path."
         ),
         "bun" => format!(
-            "Command not found: {command}. Install Bun (which includes bun/bunx), then restart AionUI or configure this MCP server to use an absolute command path."
+            "Command not found: {command}. Install Bun (which includes bun/bunx), then restart One Work or configure this MCP server to use an absolute command path."
         ),
         "uv" => format!(
-            "Command not found: {command}. Install uv, then restart AionUI or configure this MCP server to use an absolute command path."
+            "Command not found: {command}. Install uv, then restart One Work or configure this MCP server to use an absolute command path."
         ),
         "python" => format!(
-            "Command not found: {command}. Install Python, then restart AionUI or configure this MCP server to use an absolute command path."
+            "Command not found: {command}. Install Python, then restart One Work or configure this MCP server to use an absolute command path."
         ),
         "deno" => format!(
-            "Command not found: {command}. Install Deno, then restart AionUI or configure this MCP server to use an absolute command path."
+            "Command not found: {command}. Install Deno, then restart One Work or configure this MCP server to use an absolute command path."
         ),
         _ => format!(
             "Command not found: {command}. Install the command or configure this MCP server to use an absolute command path."

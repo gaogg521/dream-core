@@ -190,7 +190,7 @@ fn dream_engine_final_input_dump_value_contains_raw_split_input_and_context() {
 }
 
 #[tokio::test]
-async fn aionrs_agent_returns_correct_type() {
+async fn dream_engine_agent_returns_correct_type() {
     let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
@@ -200,7 +200,7 @@ async fn aionrs_agent_returns_correct_type() {
 }
 
 #[tokio::test]
-async fn aionrs_agent_initial_status_is_pending() {
+async fn dream_engine_agent_initial_status_is_pending() {
     let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
@@ -208,7 +208,7 @@ async fn aionrs_agent_initial_status_is_pending() {
 }
 
 #[tokio::test]
-async fn aionrs_agent_subscribe_returns_receiver() {
+async fn dream_engine_agent_subscribe_returns_receiver() {
     let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
@@ -216,7 +216,7 @@ async fn aionrs_agent_subscribe_returns_receiver() {
 }
 
 #[tokio::test]
-async fn aionrs_agent_kill_succeeds() {
+async fn dream_engine_agent_kill_succeeds() {
     let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
@@ -226,7 +226,7 @@ async fn aionrs_agent_kill_succeeds() {
 }
 
 #[tokio::test]
-async fn aionrs_agent_kill_with_reason_succeeds() {
+async fn dream_engine_agent_kill_with_reason_succeeds() {
     let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
@@ -234,7 +234,7 @@ async fn aionrs_agent_kill_with_reason_succeeds() {
 }
 
 #[tokio::test]
-async fn aionrs_agent_kill_running_turn_sends_stop_signal() {
+async fn dream_engine_agent_kill_running_turn_sends_stop_signal() {
     let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
@@ -254,7 +254,7 @@ async fn aionrs_agent_kill_running_turn_sends_stop_signal() {
 }
 
 #[tokio::test]
-async fn aionrs_agent_kill_and_wait_waits_for_running_turn_terminal() {
+async fn dream_engine_agent_kill_and_wait_waits_for_running_turn_terminal() {
     let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
@@ -276,7 +276,7 @@ async fn aionrs_agent_kill_and_wait_waits_for_running_turn_terminal() {
 }
 
 #[tokio::test]
-async fn aionrs_agent_kill_idle_turn_does_not_leave_stale_stop_signal() {
+async fn dream_engine_agent_kill_idle_turn_does_not_leave_stale_stop_signal() {
     let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
@@ -289,7 +289,7 @@ async fn aionrs_agent_kill_idle_turn_does_not_leave_stale_stop_signal() {
 }
 
 #[tokio::test]
-async fn aionrs_agent_confirmations_initially_empty() {
+async fn dream_engine_agent_confirmations_initially_empty() {
     let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
@@ -297,7 +297,7 @@ async fn aionrs_agent_confirmations_initially_empty() {
 }
 
 #[tokio::test]
-async fn aionrs_agent_get_slash_commands_does_not_wait_for_engine_lock() {
+async fn dream_engine_agent_get_slash_commands_does_not_wait_for_engine_lock() {
     let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();
@@ -312,7 +312,7 @@ async fn aionrs_agent_get_slash_commands_does_not_wait_for_engine_lock() {
 }
 
 #[tokio::test]
-async fn aionrs_agent_check_approval_returns_false_by_default() {
+async fn dream_engine_agent_check_approval_returns_false_by_default() {
     let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
         .await
         .unwrap();

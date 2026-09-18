@@ -42,7 +42,7 @@ const OLD_DIR_NAME: &str = ".builtin-skills.old";
 /// ride out a peer that is legitimately mid-materialization, and short enough
 /// that a timeout still leaves ~15s for the error to surface on stderr as a
 /// parseable `BOOTSTRAP_DATA_INIT_FAILED stage=data.builtin_skills` boundary
-/// line, instead of the user getting an unexplained SIGKILL (AIONUI-168).
+/// line, instead of the user getting an unexplained SIGKILL (ONE-168).
 const MATERIALIZE_LOCK_BUDGET: Duration = Duration::from_secs(15);
 
 /// Poll interval while a peer holds the materialize lock. 150ms makes the
@@ -296,7 +296,7 @@ impl MaterializeLockGuard {
     ///
     /// A blocking `lock_exclusive` here made a contended startup look like a
     /// hang: the process printed one line and went silent until the parent
-    /// killed it, leaving nothing to diagnose (AIONUI-168).
+    /// killed it, leaving nothing to diagnose (ONE-168).
     ///
     /// `budget` is a parameter so tests can drive the timeout path in
     /// milliseconds rather than waiting out the production budget.
@@ -430,7 +430,7 @@ mod materialize_lock_tests {
         drop(guard);
     }
 
-    /// Regression for AIONUI-168: with the lock held by a peer, acquisition
+    /// Regression for ONE-168: with the lock held by a peer, acquisition
     /// must give up inside its budget with a classifiable timeout instead of
     /// blocking until the parent process kills us.
     ///

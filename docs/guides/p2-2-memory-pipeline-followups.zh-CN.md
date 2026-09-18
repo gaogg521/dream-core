@@ -53,7 +53,7 @@ seam trait 共同规则（`state.rs:6-25,57-63` 注释 + `CLAUDE.md` §改这块
 - `build_task_options` `service.rs:4857` → `SessionContextBuilder::build_options`（`session_context.rs:44`），
   产出 `BuildTaskOptions{ context: AgentSessionContext }`。`preset_context` 落在
   `context.kind` 里：`AcpSessionBuildContext.config.preset_context`（`dream-core-ai-agent/src/session_context.rs:49`，类型 `AcpBuildExtra`），
-  `AntigravitySessionBuildContext.config.preset_context`，`AionrsSessionBuildContext.config.preset_rules`（`DreamEngineBuildExtra`）。
+  `AntigravitySessionBuildContext.config.preset_context`，`DreamEngineSessionBuildContext.config.preset_rules`（`DreamEngineBuildExtra`）。
 - ai-agent 消费：
   - ACP：`AcpSessionParams.preset_context` `crates/dream-core-ai-agent/src/factory/acp_assembler.rs:31`（`compose_preset_context` `:113` 只 trim）
     → `SessionNewPreludeHook` `crates/dream-core-ai-agent/src/manager/acp/hooks.rs:18`（**一次性**，`take_pending_session_new_prelude` `:20`）
@@ -351,7 +351,7 @@ fn prepend_preset_context(ctx: &mut dream_core_ai_agent::session_context::AgentS
 ```
 
 （`AcpSessionBuildContext.config` / `AntigravitySessionBuildContext.config` 都是 `AcpBuildExtra`，
-`AionrsSessionBuildContext.config` 是 `DreamEngineBuildExtra`；`preset_context` / `preset_rules` 字段见
+`DreamEngineSessionBuildContext.config` 是 `DreamEngineBuildExtra`；`preset_context` / `preset_rules` 字段见
 `dream-core-api-types`。核对：`dream-core-ai-agent/src/factory/acp_assembler.rs:80` 读 `config.preset_context`，
 `factory/dream_engine.rs:48` 读 `overrides.preset_rules`。）
 

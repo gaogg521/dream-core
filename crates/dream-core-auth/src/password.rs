@@ -69,7 +69,7 @@ pub fn dummy_password_hash() -> &'static str {
     DUMMY_HASH.get_or_init(|| {
         // bcrypt hash of a fixed dummy input. This cannot fail for valid input;
         // if it does, the bcrypt implementation is fundamentally broken.
-        bcrypt::hash("__aionui_dummy_password__", BCRYPT_COST).expect("bcrypt hash of constant input must succeed")
+        bcrypt::hash("__one_dummy_password__", BCRYPT_COST).expect("bcrypt hash of constant input must succeed")
     })
 }
 
@@ -197,7 +197,7 @@ mod tests {
     #[test]
     fn dummy_hash_matches_dummy_input() {
         let hash = dummy_password_hash();
-        assert!(verify_password("__aionui_dummy_password__", hash).unwrap());
+        assert!(verify_password("__one_dummy_password__", hash).unwrap());
     }
 
     #[test]

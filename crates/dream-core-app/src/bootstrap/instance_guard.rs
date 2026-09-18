@@ -53,9 +53,9 @@ mod tests {
 
     #[test]
     fn yields_after_bounded_wait_when_peer_holds_the_guard() {
-        let dir = std::env::temp_dir().join(format!("aionui-wait-guard-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("one-wait-guard-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("aionui-backend.db");
+        let db_path = dir.join("one-backend.db");
 
         // A peer already owns the data dir.
         let _held = DataDirInstanceGuard::try_acquire(&db_path)
@@ -80,9 +80,9 @@ mod tests {
 
     #[test]
     fn acquires_immediately_when_data_dir_is_free() {
-        let dir = std::env::temp_dir().join(format!("aionui-wait-guard-free-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("one-wait-guard-free-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("aionui-backend.db");
+        let db_path = dir.join("one-backend.db");
 
         let guard = wait_for_instance_guard_with(&db_path, WAIT_MAX_ATTEMPTS, WAIT_DELAY)
             .expect("wait should not error")

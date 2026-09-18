@@ -411,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn teammate_status_parse_aionui_aliases() {
+    fn teammate_status_parse_one_aliases() {
         assert_eq!(TeammateStatus::parse("pending"), Some(TeammateStatus::Idle));
         assert_eq!(TeammateStatus::parse("active"), Some(TeammateStatus::Working));
         assert_eq!(TeammateStatus::parse("failed"), Some(TeammateStatus::Error));
@@ -434,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn teammate_status_serde_aionui_aliases() {
+    fn teammate_status_serde_one_aliases() {
         let pending: TeammateStatus = serde_json::from_str(r#""pending""#).unwrap();
         assert_eq!(pending, TeammateStatus::Idle);
         let active: TeammateStatus = serde_json::from_str(r#""active""#).unwrap();
@@ -605,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn team_agent_deserialize_aionui_format() {
+    fn team_agent_deserialize_one_format() {
         let raw = serde_json::json!({
             "slot_id": "slot-abc",
             "conversation_id": "conv-1",

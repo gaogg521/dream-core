@@ -84,11 +84,11 @@ mod tests {
 
     #[test]
     fn a_path_outside_every_root_is_rejected() {
-        let roots = vec![PathBuf::from("/managed/dream"), PathBuf::from("/managed/aionui")];
+        let roots = vec![PathBuf::from("/managed/dream"), PathBuf::from("/managed/one")];
         let within = |root: &Path, candidate: &Path| candidate.starts_with(root);
 
         assert!(within_any_root(&roots, Path::new("/managed/dream/a.png"), within));
-        assert!(within_any_root(&roots, Path::new("/managed/aionui/b.png"), within));
+        assert!(within_any_root(&roots, Path::new("/managed/one/b.png"), within));
         assert!(!within_any_root(&roots, Path::new("/elsewhere/c.png"), within));
     }
 

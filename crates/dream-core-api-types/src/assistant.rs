@@ -483,7 +483,7 @@ mod tests {
         assert_eq!(
             assistant_avatar_response_value(
                 "user_asset",
-                Some("/Users/veryliu/.aionui/assistant-avatars/custom-1.jpg"),
+                Some("/Users/veryliu/.one/assistant-avatars/custom-1.jpg"),
                 "custom-1",
             )
             .as_deref(),
@@ -492,7 +492,7 @@ mod tests {
         assert_eq!(
             assistant_avatar_response_value(
                 "emoji",
-                Some("file:///Users/veryliu/.aionui/assistant-avatars/custom-1.jpg"),
+                Some("file:///Users/veryliu/.one/assistant-avatars/custom-1.jpg"),
                 "custom-1",
             ),
             None

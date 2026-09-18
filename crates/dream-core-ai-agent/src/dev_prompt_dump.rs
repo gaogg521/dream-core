@@ -211,17 +211,17 @@ mod tests {
 
     #[test]
     fn disabled_dump_prompts_returns_no_dump_dir() {
-        let data_dir = Path::new("/Users/alice/.aionui-dev");
+        let data_dir = Path::new("/Users/alice/.one-dev");
 
         assert!(dump_dir_for_data_dir(data_dir, false).is_none());
     }
 
     #[test]
     fn enabled_dump_prompts_uses_data_dir() {
-        let data_dir = Path::new("/Users/alice/.aionui-dev");
+        let data_dir = Path::new("/Users/alice/.one-dev");
 
         let dump_dir = dump_dir_for_data_dir(data_dir, true).unwrap();
 
-        assert_eq!(dump_dir, Path::new("/Users/alice/.aionui-dev/prompt-dumps"));
+        assert_eq!(dump_dir, Path::new("/Users/alice/.one-dev/prompt-dumps"));
     }
 }

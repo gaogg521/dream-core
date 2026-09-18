@@ -18,13 +18,13 @@ fn write_manifest(dir: &Path, name: &str, version: &str) {
     write_manifest_full(dir, name, version, None, None);
 }
 
-fn write_manifest_full(dir: &Path, name: &str, version: &str, engine_aionui: Option<&str>, api_version: Option<&str>) {
+fn write_manifest_full(dir: &Path, name: &str, version: &str, engine_one: Option<&str>, api_version: Option<&str>) {
     let mut manifest = serde_json::json!({
         "name": name,
         "version": version,
     });
-    if let Some(eng) = engine_aionui {
-        manifest["engine"] = serde_json::json!({ "aionui": eng });
+    if let Some(eng) = engine_one {
+        manifest["engine"] = serde_json::json!({ "one": eng });
     }
     if let Some(api) = api_version {
         manifest["api_version"] = serde_json::json!(api);

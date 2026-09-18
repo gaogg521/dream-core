@@ -278,8 +278,8 @@ sudo iptables -A INPUT -p tcp --dport 25808 -j ACCEPT
 
 ```bash
 # 允许端口 25808
-sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /Applications/AionUi.app/Contents/MacOS/AionUi
-sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp /Applications/AionUi.app/Contents/MacOS/AionUi
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add "/Applications/One Work.app/Contents/MacOS/onework"
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp "/Applications/One Work.app/Contents/MacOS/onework"
 ```
 
 ---
@@ -371,9 +371,9 @@ sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp /Applications/
 
 | 平台    | 配置文件位置                                             |
 | ------- | -------------------------------------------------------- |
-| Windows | `%APPDATA%/AionUi/webui.config.json`                     |
-| macOS   | `~/Library/Application Support/AionUi/webui.config.json` |
-| Linux   | `~/.config/AionUi/webui.config.json`                     |
+| Windows | `%APPDATA%/One Work/webui.config.json`                     |
+| macOS   | `~/Library/Application Support/One Work/webui.config.json` |
+| Linux   | `~/.config/One Work/webui.config.json`                     |
 
 ### 配置示例
 
@@ -435,8 +435,6 @@ sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp /Applications/
 
 ## 相关资源
 
-- [1One Work Wiki - Remote Internet Access Guide](https://github.com/iOfficeAI/AionUi/wiki/Remote-Internet-Access-Guide)
-- [1One Work Wiki - WebUI Configuration Guide](https://github.com/iOfficeAI/AionUi/wiki/WebUI-Configuration-Guide)
 - [Tailscale 官方文档](https://tailscale.com/kb/)
 
 ---

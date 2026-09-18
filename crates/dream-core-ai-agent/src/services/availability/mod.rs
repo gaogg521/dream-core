@@ -321,7 +321,7 @@ async fn run_probe(
         // so its usability hinges entirely on having a configured model. It is
         // online only when at least one model provider is enabled — otherwise
         // it cannot run a single turn.
-        probe_aionrs_provider_readiness(provider_repo, user_id).await
+        probe_dream_engine_provider_readiness(provider_repo, user_id).await
     } else {
         (AgentSnapshotCheckStatus::Online, None, None)
     };
@@ -366,7 +366,7 @@ fn explicit_probe_args(meta: &AgentMetadata) -> Result<Vec<String>, String> {
 /// as usable exactly when at least one provider is enabled. With no enabled
 /// provider it cannot complete a turn, so we report it offline with a
 /// `no_provider` code the UI maps to "configure a model" guidance.
-async fn probe_aionrs_provider_readiness(
+async fn probe_dream_engine_provider_readiness(
     provider_repo: &Arc<dyn IProviderRepository>,
     user_id: &str,
 ) -> (AgentSnapshotCheckStatus, Option<String>, Option<String>) {
@@ -406,7 +406,7 @@ impl AgentAvailabilityFeedbackPort for AgentAvailabilityService {
 mod tests {
     use std::sync::Arc;
 
-    use super::{AgentAvailabilityService, explicit_probe_args, probe_aionrs_provider_readiness, run_probe};
+    use super::{AgentAvailabilityService, explicit_probe_args, probe_dream_engine_provider_readiness, run_probe};
     use crate::registry::AgentRegistry;
     use dream_core_api_types::{
         AgentHandshake, AgentManagementStatus, AgentMetadata, AgentSnapshotCheckKind, AgentSnapshotCheckStatus,
@@ -443,23 +443,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn aionrs_is_offline_without_an_enabled_provider() {
+    async fn dream_engine_is_offline_without_an_enabled_provider() {
         let db = init_database_memory().await.unwrap();
         let provider_repo: Arc<dyn IProviderRepository> = Arc::new(SqliteProviderRepository::new(db.pool().clone()));
 
-        let (status, code, _msg) = probe_aionrs_provider_readiness(&provider_repo, TEST_USER_ID).await;
+        let (status, code, _msg) = probe_dream_engine_provider_readiness(&provider_repo, TEST_USER_ID).await;
 
         assert_eq!(status, AgentSnapshotCheckStatus::Offline);
         assert_eq!(code.as_deref(), Some("no_provider"));
     }
 
     #[tokio::test]
-    async fn aionrs_is_online_when_a_provider_is_enabled() {
+    async fn dream_engine_is_online_when_a_provider_is_enabled() {
         let db = init_database_memory().await.unwrap();
         let provider_repo: Arc<dyn IProviderRepository> = Arc::new(SqliteProviderRepository::new(db.pool().clone()));
         provider_repo.create(enabled_provider_params()).await.unwrap();
 
-        let (status, code, _msg) = probe_aionrs_provider_readiness(&provider_repo, TEST_USER_ID).await;
+        let (status, code, _msg) = probe_dream_engine_provider_readiness(&provider_repo, TEST_USER_ID).await;
 
         assert_eq!(status, AgentSnapshotCheckStatus::Online);
         assert!(code.is_none());

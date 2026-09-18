@@ -668,7 +668,7 @@ mod tests {
     #[tokio::test]
     async fn stdio_timeout_cleans_up_process_group() {
         let marker_path = std::env::temp_dir().join(format!(
-            "aionui-mcp-timeout-pid-{}-{}",
+            "one-mcp-timeout-pid-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

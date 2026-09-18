@@ -68,7 +68,7 @@ impl FeedbackDiagnosticsService {
                 })
                 .collect(),
             privacy: FeedbackDiagnosticsPrivacyResponse {
-                redaction: "aionCore returns selected metadata, ids, titles, status fields, counts, endpoint hosts, selected configuration values, and MCP original_json keeps connection structure while credential values are redacted; raw error and tool-call diagnostic content may be included; non-error message content and prompts are summarized or redacted."
+                redaction: "One Work returns selected metadata, ids, titles, status fields, counts, endpoint hosts, selected configuration values, and MCP original_json keeps connection structure while credential values are redacted; raw error and tool-call diagnostic content may be included; non-error message content and prompts are summarized or redacted."
                     .to_owned(),
                 raw_content_included: true,
                 api_keys_included: false,

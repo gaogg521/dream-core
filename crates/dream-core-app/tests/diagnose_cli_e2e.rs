@@ -443,7 +443,7 @@ async fn diagnose_logs_tail_reads_latest_dreamcore_log_and_filters_errors() {
     let log_dir = temp.path().join("2026").join("07").join("08");
     std::fs::create_dir_all(&log_dir).unwrap();
     std::fs::write(
-        log_dir.join("2026-07-08.aioncore.log"),
+        log_dir.join("2026-07-08.dreamcore.log"),
         r#"{"level":"INFO","message":"boot","conversation_id":"conv-log"}
 {"level":"WARN","message":"warn line","conversation_id":"conv-log"}
 {"level":"ERROR","message":"other conversation","conversation_id":"other"}
@@ -489,7 +489,7 @@ fn builtin_troubleshooting_skill_uses_diagnose_cli_not_python_helper() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/builtin-skills/one-troubleshooting");
     let skill = std::fs::read_to_string(root.join("SKILL.md")).unwrap();
 
-    for forbidden in ["python3", "aion_diag.py", "lsof", "ps -", "curl"] {
+    for forbidden in ["python3", "dream_diag.py", "lsof", "ps -", "curl"] {
         assert!(
             !skill.contains(forbidden),
             "one-troubleshooting skill must not mention {forbidden}"

@@ -111,9 +111,9 @@ mod tests {
         );
         let dir = tempfile::tempdir().unwrap();
         let servers = vec![McpServerSpec {
-            name: "aionui-team".into(),
+            name: "one-team".into(),
             transport: McpTransport::Stdio {
-                command: "/opt/aionui/backend".into(),
+                command: "/opt/one/backend".into(),
                 args: vec!["mcp-team-stdio".into()],
                 env: vec![
                     ("TEAM_MCP_PORT".into(), "8931".into()),
@@ -123,8 +123,8 @@ mod tests {
         }];
         write_mcp_config(dir.path(), &servers).unwrap();
 
-        let s = &read_config(dir.path())["mcpServers"]["aionui-team"];
-        assert_eq!(s["command"], "/opt/aionui/backend");
+        let s = &read_config(dir.path())["mcpServers"]["one-team"];
+        assert_eq!(s["command"], "/opt/one/backend");
         assert_eq!(s["args"][0], "mcp-team-stdio");
         // agy wants env as an OBJECT; we carry it as ordered pairs internally.
         assert_eq!(s["env"]["TEAM_MCP_PORT"], "8931");

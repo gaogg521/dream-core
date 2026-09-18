@@ -155,18 +155,18 @@ mod tests {
             (
                 "conversations",
                 "source",
-                "AionUi v8 baseline before v23-v26 issue path",
+                "One Work v8 baseline before v23-v26 issue path",
             ),
             (
                 "conversations",
                 "channel_chat_id",
-                "AionUi v14 baseline before v23-v26 issue path",
+                "One Work v14 baseline before v23-v26 issue path",
             ),
-            ("mailbox", "files", "AionUi v25 adds it on the observed v23->v26 path"),
+            ("mailbox", "files", "One Work v25 adds it on the observed v23->v26 path"),
             (
                 "remote_agents",
                 "allow_insecure",
-                "AionUi v18 baseline before v23-v26 issue path",
+                "One Work v18 baseline before v23-v26 issue path",
             ),
             (
                 "cron_jobs",

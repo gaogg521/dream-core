@@ -176,7 +176,7 @@ mod tests {
             err.stderr_line()
                 .starts_with("CLI_DOCTOR_DATABASE_FAILED subcommand=doctor")
         );
-        assert!(!err.stderr_line().contains("/Users/secret/aionui-backend.db"));
+        assert!(!err.stderr_line().contains("/Users/secret/one-backend.db"));
     }
 
     #[test]

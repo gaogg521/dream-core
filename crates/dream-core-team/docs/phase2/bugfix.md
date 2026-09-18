@@ -37,7 +37,7 @@ Leader prompt (`lead.txt`) 规则 9/10 和 87-88 行要求先提方案等确认�
 
 ### 前端待做
 
-前端需监听 `team.created` + `conversation.listChanged` 实现自动跳转。已提 issue: https://github.com/iOfficeAI/AionUi/issues/2734
+前端需监听 `team.created` + `conversation.listChanged` 实现自动跳转。已提 issue: https://github.com/gaogg521/One Work/issues/2734
 
 ---
 
@@ -205,17 +205,17 @@ crates/dream-core-app/src/guide_stdio.rs       — forward_tool 重试逻辑
 
 ## 重要操作提示
 
-1. build release 后必须执行 `pkill -f aionui-backend` 杀掉旧进程，再重启前端
-2. 当前 release binary 已包含所有修复：`/Users/zhuqingyu/project/aionui-backend/target/release/aionui-backend`
+1. build release 后必须执行 `pkill -f dreamcore` 杀掉旧进程，再重启前端
+2. 当前 release binary 已包含所有修复：`/Users/zhuqingyu/project/dreamcore/target/release/dreamcore`
 3. 代码改动均在工作区未提交，需要 commit
 
 ---
 
 ## 环境信息
 
-- Backend binary: `/Users/zhuqingyu/project/aionui-backend/target/release/aionui-backend`
-- Symlink: `~/.local/bin/aionui-backend` → 上述 binary
-- Frontend: `/Users/zhuqingyu/project/AionUi` branch `feat/backend-migration`
+- Backend binary: `/Users/zhuqingyu/project/dreamcore/target/release/dreamcore`
+- Symlink: `~/.local/bin/dreamcore` → 上述 binary
+- Frontend: `/Users/zhuqingyu/project/One Work` branch `feat/backend-migration`
 - Backend fix branch: `fix/team-communication-bugs`
-- Log file: `/Users/zhuqingyu/Library/Logs/AionUi-Dev/2026-05-02.backend.log`
-- Frontend issue: https://github.com/iOfficeAI/AionUi/issues/2734
+- Log file: `/Users/zhuqingyu/Library/Logs/One Work-Dev/2026-05-02.backend.log`
+- Frontend issue: https://github.com/gaogg521/One Work/issues/2734

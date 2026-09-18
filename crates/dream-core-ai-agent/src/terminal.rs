@@ -148,7 +148,7 @@ impl TerminalRegistry {
         }
         let mut child = builder.spawn().map_err(|e| format!("spawn failed: {e}"))?;
 
-        let id = format!("aionui-term-{}", NEXT_TERMINAL_SEQ.fetch_add(1, Ordering::Relaxed) + 1);
+        let id = format!("one-term-{}", NEXT_TERMINAL_SEQ.fetch_add(1, Ordering::Relaxed) + 1);
         let command_line = std::iter::once(params.command.as_str())
             .chain(params.args.iter().map(String::as_str))
             .collect::<Vec<_>>()

@@ -432,7 +432,7 @@ mod tests {
     #[test]
     fn auto_approve_matches_claude_team_mcp_title_prefix() {
         let request = permission_request_with_title_and_raw_input(
-            "mcp__aionui-team__team_members",
+            "mcp__one-team__team_members",
             None,
             vec![allow_always_option("allow_always"), reject_option("reject")],
         );
@@ -445,7 +445,7 @@ mod tests {
         let request = permission_request_with_title_and_raw_input(
             "Approve MCP tool call",
             Some(json!({
-                "server_name": "aionui-team",
+                "server_name": "one-team",
                 "request": {
                     "_meta": {
                         "codex_approval_kind": "mcp_tool_call"
@@ -467,7 +467,7 @@ mod tests {
     fn auto_approve_rejects_non_team_mcp_server() {
         let request = permission_request_with_title_and_raw_input(
             "Approve MCP tool call",
-            Some(json!({ "server_name": "aionui-image-generation" })),
+            Some(json!({ "server_name": "one-image-generation" })),
             vec![allow_always_option("approved-for-session"), reject_option("cancel")],
         );
 
@@ -478,7 +478,7 @@ mod tests {
     fn auto_approve_selects_first_codex_allow_always_option() {
         let request = permission_request_with_title_and_raw_input(
             "Approve MCP tool call",
-            Some(json!({ "server_name": "aionui-team" })),
+            Some(json!({ "server_name": "one-team" })),
             vec![
                 allow_once_option("approved"),
                 allow_always_option("approved-for-session"),
@@ -498,7 +498,7 @@ mod tests {
     #[test]
     fn auto_approve_selects_claude_allow_always_by_kind() {
         let request = permission_request_with_title_and_raw_input(
-            "mcp__aionui-team__team_write_plan",
+            "mcp__one-team__team_write_plan",
             None,
             vec![
                 allow_always_option("allow_always"),
@@ -515,7 +515,7 @@ mod tests {
     #[test]
     fn auto_approve_ignores_removed_upgrade_server() {
         let request = permission_request_with_title_and_raw_input(
-            concat!("mcp__aionui-team", "-guide__guide_write_plan"),
+            concat!("mcp__one-team", "-guide__guide_write_plan"),
             None,
             vec![allow_always_option("allow_always"), reject_option("reject")],
         );
@@ -527,7 +527,7 @@ mod tests {
     fn auto_approve_selects_first_available_allow_always_option() {
         let request = permission_request_with_title_and_raw_input(
             "Approve MCP tool call",
-            Some(json!({ "server_name": "aionui-team" })),
+            Some(json!({ "server_name": "one-team" })),
             vec![
                 allow_always_option("custom-allow-always"),
                 allow_once_option("custom-allow-once"),
@@ -541,7 +541,7 @@ mod tests {
     fn auto_approve_returns_none_when_team_mcp_has_no_allow_option() {
         let request = permission_request_with_title_and_raw_input(
             "Approve MCP tool call",
-            Some(json!({ "server_name": "aionui-team" })),
+            Some(json!({ "server_name": "one-team" })),
             vec![reject_option("cancel")],
         );
 
@@ -638,7 +638,7 @@ mod tests {
 
         let request = permission_request_with_title_and_raw_input(
             "Approve MCP tool call",
-            Some(json!({ "server_name": "aionui-team" })),
+            Some(json!({ "server_name": "one-team" })),
             vec![
                 allow_once_option("approved"),
                 allow_always_option("approved-for-session"),

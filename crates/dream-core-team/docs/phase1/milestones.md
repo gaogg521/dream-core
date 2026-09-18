@@ -4,7 +4,7 @@
 >
 > **相关文档**：[README.md](./README.md) · [modules.md](./modules.md) · [interface-contracts.md](./interface-contracts.md)
 >
-> **事实来源**：[backend-audit.md §3.4](./backend-audit.md#34-p0-gap-连锁关系修正版) 的 P0 连锁图 · [aionui-audit.md §2.1](./aionui-audit.md#21-能力清单)
+> **事实来源**：[backend-audit.md §3.4](./backend-audit.md#34-p0-gap-连锁关系修正版) 的 P0 连锁图 · [one-audit.md §2.1](./one-audit.md#21-能力清单)
 
 ---
 
@@ -66,8 +66,8 @@ M0 共识冻结 → M1 W1 完工 → M2 W2 骨架 → M3 W2 闭环跑通 → M4 
 - ⬜ D3 `TeamMcpStdioServerSpec` 合并 + 3 条单元测试绿
 - ⬜ D4 `team_list_models` + `team_describe_assistant` descriptor + 最小 handler 合并；descriptor 文本与 team-prompts.md §5.2 逐字节一致
 - ⬜ **D4b `TEAM_SPAWN_AGENT_DESCRIPTION` 原文常量合并 + `diff -w` 证明零差异**（P0#48 补漏）
-- ⬜ D5a/b-1/b-2/c 四个 prompt 子模块合并；快照测试绿；模板文本来自 AionUi 源码（非大模型生成）
-- ⬜ D6 `aionui-backend mcp-bridge` 子命令合并；独立集成测试通过（spawn 子进程 + mock TCP 收到 `auth_token`）
+- ⬜ D5a/b-1/b-2/c 四个 prompt 子模块合并；快照测试绿；模板文本来自 One Work 源码（非大模型生成）
+- ⬜ D6 `dreamcore mcp-bridge` 子命令合并；独立集成测试通过（spawn 子进程 + mock TCP 收到 `auth_token`）
 
 **验收证据**：
 1. `cargo test --workspace` 全绿（列出新增用例：`team_mcp_config_roundtrip`、`acp_build_extra_team_mcp`、`stdio_spec_env`、`team_list_models_descriptor_matches`、`build_lead_prompt_with_preset_assistants`、`mcp_bridge_forwards_tools_list` 等）
@@ -79,7 +79,7 @@ M0 共识冻结 → M1 W1 完工 → M2 W2 骨架 → M3 W2 闭环跑通 → M4 
 - D5 prompt 对齐：同样方法对 `LEAD_PROMPT_TEMPLATE` / `TEAMMATE_PROMPT_TEMPLATE` / `TEAM_GUIDE_PROMPT_TEMPLATE` 三个常量做 diff，证据贴在 PR 里
 
 **不通过的典型信号**：
-- 任何 descriptor 或 prompt 常量"改写成了更清晰的版本" → 驳回，按 AionUi 原文重改（[aionui-audit §8 #5](./aionui-audit.md#8-源码中发现的硬约束agent-行为易坏点)）
+- 任何 descriptor 或 prompt 常量"改写成了更清晰的版本" → 驳回，按 One Work 原文重改（[one-audit §8 #5](./one-audit.md#8-源码中发现的硬约束agent-行为易坏点)）
 - D6 bridge 丢弃了 `auth_token` 没有带入 TCP 请求 → 驳回
 
 **依赖**：M0 通过。
@@ -97,14 +97,14 @@ M0 共识冻结 → M1 W1 完工 → M2 W2 骨架 → M3 W2 闭环跑通 → M4 
 - ⬜ D8 `TeammateStatus::Pending` + 首次 wake 区分合并 + 3 条单元测试绿（**修正**：failed 不 reset 回 Pending，直接作为 settled 成员）
 - ⬜ D9 `TeamSessionService::ensure_session` kill+rebuild 闭环合并 + MockWorkerTaskManager 集成测试绿
 - ⬜ D10 `acp_agent::session_new_and_prompt` 注入合并 + 单元测试证明 mcp_servers 数组长度
-- ⬜ D11 `build_team_state` 签名扩展合并 + `aionui-backend mcp-bridge` 在缺 env 时 1s 内退出且 exit code 非零
+- ⬜ D11 `build_team_state` 签名扩展合并 + `dreamcore mcp-bridge` 在缺 env 时 1s 内退出且 exit code 非零
 - ⬜ **D11.5 `remove_team` 级联 kill agent 进程合并 + 2 条集成测试绿**（P0#47 补漏，MockWorkerTaskManager kill 被调 N 次）
 
 **验收证据**：
 1. `cargo test --workspace` 全绿
 2. `cargo clippy --workspace -- -D warnings` 无新增 warning
-3. `cargo build --release` 成功产出 `aionui-backend` 二进制
-4. 手工执行：`./target/release/aionui-backend mcp-bridge` 在无 env 时报错退出（证明 bridge 入口连通）
+3. `cargo build --release` 成功产出 `dreamcore` 二进制
+4. 手工执行：`./target/release/dreamcore mcp-bridge` 在无 env 时报错退出（证明 bridge 入口连通）
 
 **关键对齐点**：
 - D9 的 `ensure_session` 闭环必须在集成测试里用 `MockWorkerTaskManager` 断言**顺序**：先 update_extra，再 kill，最后 get_or_build_task；顺序错会导致新进程读到旧 extra
@@ -142,7 +142,7 @@ Step 8  断言 5：60s 内 WS 出现 team.agentStatusChanged.Working（coder 被
 
 **验收证据**：
 1. smoke test 脚本跑通 → 在本地终端截图（含前 5 秒到 60 秒的时间戳）
-2. `sqlite3 aionui.db "SELECT extra FROM conversations WHERE id IN (...)"` 能看到 `team_mcp_stdio_config` 字段
+2. `sqlite3 one.db "SELECT extra FROM conversations WHERE id IN (...)"` 能看到 `team_mcp_stdio_config` 字段
 3. WS 事件序列抓取成文本日志（`wscat` 或后端自己的 `/api/ws-token` + client）
 4. MCP server TCP log（开 `RUST_LOG=dream_core_team::mcp=debug` 跑）能看到至少一次 `tools/call team_task_create`
 
@@ -282,14 +282,14 @@ Step 8  断言 5：60s 内 WS 出现 team.agentStatusChanged.Working（coder 被
 
 **关键对齐点**：
 - **W4-D25 必须最先合并**（D18/D20/D21/D22 都订阅它）
-- W4-D18 的 `release_wake_lock` 必须在"消息发出成功"时立即调用，不等 finish（aionui-audit §8 #2）
-- W4-D19 的 `clear_finalized_turn` 必须在 re-wake 前调用（aionui-audit §8 #3）
-- W4-D24 的 timeout 必须 graceful resolve，不能 reject（aionui-audit §8 #11）
+- W4-D18 的 `release_wake_lock` 必须在"消息发出成功"时立即调用，不等 finish（one-audit §8 #2）
+- W4-D19 的 `clear_finalized_turn` 必须在 re-wake 前调用（one-audit §8 #3）
+- W4-D24 的 timeout 必须 graceful resolve，不能 reject（one-audit §8 #11）
 
 **不通过的典型信号**：
 - 任何模块绕过 W4-D25 自己订阅 ACP stream → 驳回（违反 DRY）
 - W4-D18 的 wake lock 在 finish 事件之后才释放 → 死锁风险，驳回
-- W4-D20 的 leader crash 逻辑走了 remove 路径而不是只 failed → 驳回（aionui-audit §2.1）
+- W4-D20 的 leader crash 逻辑走了 remove 路径而不是只 failed → 驳回（one-audit §2.1）
 
 **依赖**：M4 通过；M5 不阻塞（Wave 3 与 Wave 4 互不依赖）。
 
@@ -301,9 +301,9 @@ Step 8  断言 5：60s 内 WS 出现 team.agentStatusChanged.Working（coder 被
 
 **产出物清单**（31 个子模块）：
 - ⬜ W5-D26a GuideMcpServer 启停合并 + 2 条测试绿
-- ⬜ **W5-D26b-1 `aion_create_team` args 解析 + 默认值（纯函数）合并 + 4 条测试绿**
-- ⬜ **W5-D26b-2 `handle_aion_create_team` 调 service + 返回结构化合并 + 3 条测试绿**
-- ⬜ W5-D26c `handle_aion_list_models` handler 合并 + 1 条测试绿
+- ⬜ **W5-D26b-1 `one_create_team` args 解析 + 默认值（纯函数）合并 + 4 条测试绿**
+- ⬜ **W5-D26b-2 `handle_one_create_team` 调 service + 返回结构化合并 + 3 条测试绿**
+- ⬜ W5-D26c `handle_one_list_models` handler 合并 + 1 条测试绿
 - ⬜ W5-D26d 建团后 3 个 WS 事件合并 + 1 条集成测试绿
 - ⬜ W5-D27 Guide stdio bridge 分支合并 + 2 条测试绿
 - ⬜ W5-D28a `is_team_capable_backend` 纯函数合并 + 3 条测试绿
@@ -340,7 +340,7 @@ Step 8  断言 5：60s 内 WS 出现 team.agentStatusChanged.Working（coder 被
 
 场景 A：单聊→建团（MCP 路径）
 1. 用 solo claude agent 发送消息 "帮我拉一个团做一个简单的 todo app"
-2. agent 基于 Guide prompt 调 aion_list_models → aion_create_team
+2. agent 基于 Guide prompt 调 one_list_models → one_create_team
 3. 断言：team 被创建，lead 复用原 conversation
 4. 断言：WS 收到 team.listChanged + deepLink.received
 5. 断言：lead agent 自动收到 summary 消息并开始 team 工作流
@@ -366,7 +366,7 @@ Step 8  断言 5：60s 内 WS 出现 team.agentStatusChanged.Working（coder 被
 
 **验收证据**：
 1. 上述 3 + 互斥 4 个场景全部实跑日志（含 WS 事件流 + MCP server log）
-2. `sqlite3 aionui.db` 查场景 A 后 conversations 表确认复用：单聊 conversation.extra.team_id 被写入且 conversation 未删除
+2. `sqlite3 one.db` 查场景 A 后 conversations 表确认复用：单聊 conversation.extra.team_id 被写入且 conversation 未删除
 3. 场景 C 后 `ps aux | grep claude` 确认 coder 进程已消失
 4. `cargo test --workspace` 全绿
 
@@ -374,13 +374,13 @@ Step 8  断言 5：60s 内 WS 出现 team.agentStatusChanged.Working（coder 被
 - 场景 A 依赖 Wave 3 W3-D15（conversation 复用）正确实现
 - 场景 B 依赖 Wave 4 W4-D18（wake 锁）+ W4-D23（add_agent_locks）
 - 场景 C 依赖 Wave 4 W4-D18（清 wake 锁）+ W4-D19（清 finalized_turns）
-- 场景 D 是硬约束（aionui-audit §8 #17），失败直接影响产品语义
+- 场景 D 是硬约束（one-audit §8 #17），失败直接影响产品语义
 
 **不通过的典型信号**：
 - 场景 A 后单聊 conversation 消失 → 复用逻辑错误，回滚 W3-D15
 - 场景 B spawn 后新 agent 永远 Pending 不被 wake → W5-D29 步骤 10 未调 wake 或 W4-D18 lock 错用
 - 场景 C shutdown_approved 后 agent 进程仍在 → W5-D30 的 `remove_agent` 未调 kill
-- 场景 D 进 team 的 agent 能调 aion_create_team → W5-D28 互斥 guard 失效
+- 场景 D 进 team 的 agent 能调 one_create_team → W5-D28 互斥 guard 失效
 
 **依赖**：M5 **且** M6 通过。
 
@@ -431,7 +431,7 @@ Step 8  断言 5：60s 内 WS 出现 team.agentStatusChanged.Working（coder 被
 | ACP SDK 的 `McpServer` stdio variant 不符合预期 | D3 在 M0 阶段发现 | 改用 HTTP transport 注入（backend-audit §4.3 备选）；延期 M1 半天 |
 | `claude --experimental-acp` 本地机跑不起来 | M3 / M7 阶段 | 手工 WS 连 + curl 校验 DB extra + mock ACP 响应；smoke 改成半手工 |
 | Wave N 某模块做到一半发现签名冲突 | 各 Wave 阶段 | 暂停该模块，开 issue 改 interface-contracts.md，leader 裁决；其他模块不冻结 |
-| D5 的 AionUi prompt 文本在移植时有 UTF-8/换行问题 | M1 阶段 | 改用 `include_str!("prompt_templates/lead.txt")` 把 AionUi 原文件逐字节拷进来，再 diff |
+| D5 的 One Work prompt 文本在移植时有 UTF-8/换行问题 | M1 阶段 | 改用 `include_str!("prompt_templates/lead.txt")` 把 One Work 原文件逐字节拷进来，再 diff |
 | `task_manager.kill` + `get_or_build_task` 组合在 team agent 首次启动（DashMap 里本来就没）时行为不确定 | M2 / M7 阶段 | D9 / W5-D29 显式处理：`kill` 返回 `NotFound` 视为成功 |
 | Finish 事件订阅导致后台 task 泄漏 | M3 / M6 阶段 | D9 / W4-D18 在 `stop_session` 里 abort 所有订阅 task 的 JoinHandle；smoke test 跑完断言后台 task 已退出 |
 | W4-D25 broadcast channel 被 lagged 订阅拖慢 | M6 阶段 | channel size 已取 256；lagged 订阅者 tokio broadcast 自动 skip 不影响其他订阅 |
@@ -459,7 +459,7 @@ Step 8  断言 5：60s 内 WS 出现 team.agentStatusChanged.Working（coder 被
 | `team_spawn_agent` 真实 spawn | Wave 5 | W5-D29 |
 | `team_rename_agent` 规范化 + renamed_agents map | Wave 3 | W3-D14 |
 | `teammate_message` WS 事件 | Wave 5 | W5-D31 |
-| Team Guide MCP 单例（aion_create_team / aion_list_models） | Wave 5 | W5-D26 / W5-D27 / W5-D28 |
+| Team Guide MCP 单例（one_create_team / one_list_models） | Wave 5 | W5-D26 / W5-D27 / W5-D28 |
 | `mcp_ready` 握手 | Wave 4 | W4-D24 |
 | 300s 请求超时 + 64MB 帧 | Wave 3 | W3-D17 |
 | `getTeam` 的 `repairTeamAgentsIfMissing` | Wave 3 | W3-D13 |

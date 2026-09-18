@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn linux_show_item_uses_filemanager1_when_gdbus_available() {
-        let path = Path::new("/home/user/Downloads/AionUi.deb");
+        let path = Path::new("/home/user/Downloads/OneWork.deb");
         let (program, args) = linux_show_item_command(path, true);
         assert_eq!(program, "gdbus");
         assert_eq!(args[0], "call");
@@ -398,25 +398,25 @@ mod tests {
         assert!(args.iter().any(|a| a == "org.freedesktop.FileManager1.ShowItems"));
         // The file URI must target the file itself (so it gets highlighted),
         // not the parent directory, wrapped as a GVariant array literal.
-        assert!(args.contains(&"['file:///home/user/Downloads/AionUi.deb']".to_owned()));
+        assert!(args.contains(&"['file:///home/user/Downloads/OneWork.deb']".to_owned()));
         // Trailing empty startup-id GVariant string.
         assert_eq!(args.last().unwrap(), "");
     }
 
     #[test]
     fn linux_show_item_percent_encodes_spaces_in_uri() {
-        let path = Path::new("/home/user/My Downloads/AionUi.deb");
+        let path = Path::new("/home/user/My Downloads/OneWork.deb");
         let (program, args) = linux_show_item_command(path, true);
         assert_eq!(program, "gdbus");
         assert!(
-            args.contains(&"['file:///home/user/My%20Downloads/AionUi.deb']".to_owned()),
+            args.contains(&"['file:///home/user/My%20Downloads/OneWork.deb']".to_owned()),
             "space must be percent-encoded, got: {args:?}"
         );
     }
 
     #[test]
     fn linux_show_item_falls_back_to_parent_dir_without_gdbus() {
-        let path = Path::new("/home/user/Downloads/AionUi.deb");
+        let path = Path::new("/home/user/Downloads/OneWork.deb");
         let (program, args) = linux_show_item_command(path, false);
         assert_eq!(program, "xdg-open");
         // Fallback opens the parent directory, never the file (whose MIME

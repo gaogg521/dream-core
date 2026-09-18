@@ -3293,7 +3293,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
             }))
         },
         local: services.local,
-        aionpro_mode: services.identity_mode == crate::config::IdentityMode::DreamPro,
+        dreampro_mode: services.identity_mode == crate::config::IdentityMode::DreamPro,
         login_risk,
     };
 

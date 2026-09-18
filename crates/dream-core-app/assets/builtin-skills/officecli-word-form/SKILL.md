@@ -47,7 +47,7 @@ Verify: `officecli --version`
 
 If `officecli` is still not found after first install, open a new terminal and run the verify command again.
 
-If the install command above fails (e.g. blocked by security policy, no network access, or insufficient permissions), install manually — download the binary for your platform from https://github.com/iOfficeAI/OfficeCLI/releases — then re-run the verify command.
+If the install command above fails (e.g. blocked by security policy, no network access, or insufficient permissions), install manually — download the binary for your platform from https://officecli.ai — then re-run the verify command.
 
 ## Help-First Rule
 

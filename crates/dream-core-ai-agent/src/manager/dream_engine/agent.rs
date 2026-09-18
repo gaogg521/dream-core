@@ -1043,14 +1043,14 @@ fn dream_engine_mode_config_option(current_value: String) -> AcpConfigOptionDto 
         option_type: "select".to_owned(),
         current_value: Some(current_value),
         options: vec![
-            aionrs_mode_select_option("default", "Default"),
-            aionrs_mode_select_option("auto_edit", "Auto Edit"),
-            aionrs_mode_select_option("yolo", "YOLO"),
+            dream_engine_mode_select_option("default", "Default"),
+            dream_engine_mode_select_option("auto_edit", "Auto Edit"),
+            dream_engine_mode_select_option("yolo", "YOLO"),
         ],
     }
 }
 
-fn aionrs_mode_select_option(value: &str, name: &str) -> AcpConfigSelectOptionDto {
+fn dream_engine_mode_select_option(value: &str, name: &str) -> AcpConfigSelectOptionDto {
     AcpConfigSelectOptionDto {
         value: value.to_owned(),
         name: Some(name.to_owned()),

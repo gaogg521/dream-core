@@ -142,7 +142,7 @@ cargo build -p dream-core-app --release
 ```powershell
 cd ..\dream-ui
 $env:DREAM_BACKEND_LOCAL_PATH = '..\dream-core\target\release\dreamcore.exe'
-node scripts/prepareAioncore.js
+node scripts/prepareDreamcore.js
 cd ..
 # 然后在前端目录 bun run dev
 ```
@@ -173,7 +173,7 @@ cd ..
 
 ## 与上游的关系
 
-本仓库最初基于开源项目 AionCore 二次开发，现已作为独立仓库维护（`main` 分支），不再跟随或合并上游——技术身份、内部协议与运行时命名空间均已切换为 `dream` 前缀，新增能力（`dream-domain-*` 系列 crate：项目组、企业、SSO、计费、数字员工、DevOps 等）只在本仓库演进。
+本仓库最初基于一个上游开源项目二次开发，现已作为独立仓库维护（`main` 分支），不再跟随或合并上游——技术身份、内部协议与运行时命名空间均已切换为 `dream` 前缀，新增能力（`dream-domain-*` 系列 crate：项目组、企业、SSO、计费、数字员工、DevOps 等）只在本仓库演进。
 
 - **用户安装包**：只下 [One Work Releases](https://github.com/gaogg521/dream-ui/releases)  
 - **后端单独发布**：当前随桌面包 bundled；独立发版策略见团队文档  

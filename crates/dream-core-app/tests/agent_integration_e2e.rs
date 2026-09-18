@@ -256,7 +256,7 @@ async fn management_endpoint_keeps_deprecated_runtime_rows_for_diagnostics() {
 
     for (id, agent_type) in [
         ("test-visible-acp", "acp"),
-        ("test-visible-aionrs", "dream"),
+        ("test-visible-dream-engine", "dream"),
         ("test-visible-openclaw", "openclaw-gateway"),
         ("test-visible-nanobot", "nanobot"),
         ("test-visible-remote", "remote"),
@@ -348,7 +348,7 @@ async fn agent_logos_endpoint_returns_backend_to_logo_catalog() {
 
     // Dream CLI has no vendor `backend` (NULL); it must still be keyed by its
     // agent_type ("dream") so dream conversations resolve a logo. Migration
-    // 021 rebranded the seeded icon from aion.svg to the 1ONE mascot.
+    // 021 repointed the seeded icon at the 1ONE mascot; 057 swept the rest.
     assert_eq!(logo_for("dream").as_deref(), Some("/api/assets/logos/brand/1one.png"));
 
     // Every entry carries a non-empty backend + logo, and backends are unique.
@@ -378,7 +378,7 @@ async fn agent_logos_endpoint_includes_disabled_and_missing_rows() {
         .repo_handle()
         .upsert(&UpsertAgentMetadataParams {
             id: "logo-only-row",
-            icon: Some("/api/assets/logos/brand/aion.svg"),
+            icon: Some("/api/assets/logos/brand/droid.svg"),
             name: "Logo Only",
             name_i18n: None,
             description: None,
@@ -420,7 +420,7 @@ async fn agent_logos_endpoint_includes_disabled_and_missing_rows() {
         entry.is_some(),
         "disabled row with an icon must still appear in the logo catalog"
     );
-    assert_eq!(entry.unwrap()["logo"], "/api/assets/logos/brand/aion.svg");
+    assert_eq!(entry.unwrap()["logo"], "/api/assets/logos/brand/droid.svg");
 }
 
 // ── Message flow with mock agent ────────────────────────────────

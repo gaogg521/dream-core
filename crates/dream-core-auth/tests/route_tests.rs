@@ -38,7 +38,7 @@ async fn test_app_with_options(local: bool, bootstrap_secret: Option<&str>) -> (
 async fn test_app_with_options_and_hook(
     local: bool,
     bootstrap_secret: Option<&str>,
-    aionpro_mode: bool,
+    dreampro_mode: bool,
     session_revoked_hook: Option<Arc<SessionRevokedHook>>,
 ) -> (Router, TestContext) {
     let db = init_database_memory().await.unwrap();
@@ -59,7 +59,7 @@ async fn test_app_with_options_and_hook(
         qr_token_store: qr_token_store.clone(),
         identity_mode: if local {
             AuthIdentityMode::Local
-        } else if aionpro_mode {
+        } else if dreampro_mode {
             AuthIdentityMode::DreamPro
         } else {
             AuthIdentityMode::UserSession
@@ -67,7 +67,7 @@ async fn test_app_with_options_and_hook(
         bootstrap_secret: bootstrap_secret.map(Arc::<str>::from),
         session_revoked_hook,
         local,
-        aionpro_mode,
+        dreampro_mode,
         login_risk: None,
     };
 
@@ -289,7 +289,7 @@ async fn t4_4_login_missing_fields() {
 }
 
 #[tokio::test]
-async fn login_rejects_aionpro_mode() {
+async fn login_rejects_dreampro_mode() {
     let (app, ctx) = test_app_with_options_and_hook(false, Some("bootstrap-secret"), true, None).await;
     create_test_user(&ctx, "admin", "StrongP@ss1").await;
 
@@ -690,7 +690,7 @@ async fn t9_3_refresh_missing_token() {
 }
 
 #[tokio::test]
-async fn refresh_rejects_local_user_token_in_aionpro_mode() {
+async fn refresh_rejects_local_user_token_in_dreampro_mode() {
     let (app, ctx) = test_app_with_options_and_hook(false, Some("bootstrap-secret"), true, None).await;
     let token = ctx
         .jwt_service
@@ -824,7 +824,7 @@ async fn t11_5_qr_login_missing_token() {
 }
 
 #[tokio::test]
-async fn qr_login_rejects_aionpro_mode() {
+async fn qr_login_rejects_dreampro_mode() {
     let (app, ctx) = test_app_with_options_and_hook(false, Some("bootstrap-secret"), true, None).await;
     let qr_token = ctx.qr_token_store.generate();
 

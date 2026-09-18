@@ -24,8 +24,8 @@ function getFontDir() {
   const candidates = [
     process.env.ONE_FONTS_DIR,
     path.join(__dirname, '../../canvas-design/canvas-fonts'),
-    path.join(process.env.HOME || '', 'Library/Application Support/AionUi/config/skills/canvas-design/canvas-fonts'),
-    path.join(process.env.APPDATA || '', 'AionUi/config/skills/canvas-design/canvas-fonts'),
+    path.join(process.env.HOME || '', 'Library/Application Support/One Work/config/skills/canvas-design/canvas-fonts'),
+    path.join(process.env.APPDATA || '', 'One Work/config/skills/canvas-design/canvas-fonts'),
   ].filter(Boolean);
 
   for (const dir of candidates) {

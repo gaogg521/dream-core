@@ -5389,7 +5389,7 @@ mod tests {
         // still expose the concrete agent id so the frontend does not bind it
         // through an overloaded runtime backend label.
         let mut agent_row = mk_agent_row(
-            "agent-aionrs",
+            "agent-dream-engine",
             "aionrs",
             dream_core_api_types::AgentManagementStatus::Online,
         );
@@ -5405,31 +5405,31 @@ mod tests {
         let list = fx.service.list().await.unwrap();
         let bare = list
             .iter()
-            .find(|assistant| assistant.id == "bare:agent-aionrs")
+            .find(|assistant| assistant.id == "bare:agent-dream-engine")
             .unwrap();
-        assert_eq!(bare.agent_id, "agent-aionrs");
+        assert_eq!(bare.agent_id, "agent-dream-engine");
     }
 
     #[tokio::test]
-    async fn aionrs_assistant_resolves_agent_status_via_agent_type_not_backend() {
+    async fn dream_engine_assistant_resolves_agent_status_via_agent_type_not_backend() {
         // Regression: an assistant whose engine is dream must match the dream
         // agent row by `agent_type` ("dream"), since that row's `backend` is
         // NULL. Matching on `backend` alone left the row unresolved and
         // mislabelled every dream assistant as Missing/unavailable.
-        let mut aionrs_row = mk_agent_row(
-            "agent-aionrs",
+        let mut dream_engine_row = mk_agent_row(
+            "agent-dream-engine",
             "dream",
             dream_core_api_types::AgentManagementStatus::Online,
         );
-        aionrs_row.backend = None;
-        aionrs_row.agent_type = dream_core_common::AgentType::DreamEngine;
+        dream_engine_row.backend = None;
+        dream_engine_row.agent_type = dream_core_common::AgentType::DreamEngine;
 
-        let mut builtin = mk_builtin("builtin-aionrs", "Aion Assistant");
+        let mut builtin = mk_builtin("builtin-dream-engine", "Dream Assistant");
         builtin.agent_ref = "dream".into();
 
         let fx = fixture_with_options(FixtureOpts {
             builtins: vec![builtin],
-            agent_rows: vec![aionrs_row],
+            agent_rows: vec![dream_engine_row],
             ..Default::default()
         })
         .await;
@@ -5437,12 +5437,12 @@ mod tests {
         let list = fx.service.list().await.unwrap();
         let assistant = list
             .iter()
-            .find(|assistant| assistant.id == "builtin-aionrs")
-            .expect("aionrs builtin assistant should be listed");
+            .find(|assistant| assistant.id == "builtin-dream-engine")
+            .expect("dream-engine builtin assistant should be listed");
         assert_eq!(
             assistant.agent_status,
             dream_core_api_types::AgentManagementStatus::Online,
-            "aionrs assistant should resolve to the online aionrs agent row, not Missing"
+            "dream-engine assistant should resolve to the online dream_engine agent row, not Missing"
         );
     }
 
@@ -5568,7 +5568,7 @@ mod tests {
 
     #[tokio::test]
     async fn bootstrap_reactivates_soft_deleted_builtin_definition_by_source_ref() {
-        let mut builtin = mk_builtin("one-assistant", "AionUi Butler");
+        let mut builtin = mk_builtin("one-assistant", "One Work Butler");
         builtin.rule_file = Some("rules/one-assistant.{locale}.md".into());
         let fx = fixture_with_builtins(vec![builtin]).await;
 
@@ -7318,7 +7318,7 @@ mod tests {
     /// `claude` on `PATH`. CLI-based agents must be opted into
     /// explicitly.
     #[tokio::test]
-    async fn resolve_default_agent_id_routes_anthropic_provider_to_aionrs() {
+    async fn resolve_default_agent_id_routes_anthropic_provider_to_dream_engine() {
         let fx = fixture_with_options(FixtureOpts {
             seed_platform: Some("anthropic"),
             ..Default::default()
@@ -7331,7 +7331,7 @@ mod tests {
     /// OpenAI / custom provider falls back to DreamRS, the only DreamUI
     /// agent that doesn't require a third-party CLI.
     #[tokio::test]
-    async fn resolve_default_agent_id_falls_back_to_aionrs_for_openai_provider() {
+    async fn resolve_default_agent_id_falls_back_to_dream_engine_for_openai_provider() {
         let fx = fixture_with_options(FixtureOpts {
             seed_platform: Some("openai"),
             ..Default::default()
@@ -7344,7 +7344,7 @@ mod tests {
     /// Custom (non-anthropic, non-openai) platform also routes to DreamRS,
     /// which handles OpenAI-compatible custom URLs.
     #[tokio::test]
-    async fn resolve_default_agent_id_handles_custom_platform_as_aionrs() {
+    async fn resolve_default_agent_id_handles_custom_platform_as_dream_engine() {
         let fx = fixture_with_options(FixtureOpts {
             seed_platform: Some("custom"),
             ..Default::default()
@@ -7446,7 +7446,7 @@ mod tests {
             );
             assert_eq!(
                 created.agent_id, "632f31d2",
-                "{platform} provider should resolve to aionrs"
+                "{platform} provider should resolve to dream-engine"
             );
         }
     }

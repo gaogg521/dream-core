@@ -1,5 +1,26 @@
 /// Manifest filename that identifies an extension directory.
-pub const EXTENSION_MANIFEST_FILE: &str = "aion-extension.json";
+pub const EXTENSION_MANIFEST_FILE: &str = "one-extension.json";
+
+/// The pre-rebrand manifest filename. Extensions already installed on a user's
+/// disk — and any third-party extension published before the rename — still carry
+/// it, so discovery falls back to this name. Only the current name is written.
+pub const LEGACY_EXTENSION_MANIFEST_FILE: &str = "aion-extension.json";
+
+/// Resolve an extension directory's manifest, accepting the pre-rebrand filename.
+///
+/// Returns the current name's path when neither exists, so a "not found" error
+/// names the file an author should have written.
+pub fn resolve_manifest_path(extension_dir: &std::path::Path) -> std::path::PathBuf {
+    let current = extension_dir.join(EXTENSION_MANIFEST_FILE);
+    if current.exists() {
+        return current;
+    }
+    let legacy = extension_dir.join(LEGACY_EXTENSION_MANIFEST_FILE);
+    if legacy.exists() {
+        return legacy;
+    }
+    current
+}
 
 /// Default subdirectory name for extensions.
 pub const EXTENSIONS_DIR_NAME: &str = "extensions";
@@ -20,7 +41,7 @@ pub const DEBOUNCE_MS: u64 = 1000;
 pub const STATE_PERSIST_DEBOUNCE_MS: u64 = 500;
 
 /// Reserved extension name prefixes that third-party extensions cannot use.
-pub const RESERVED_NAME_PREFIXES: &[&str] = &["aion-", "internal-", "builtin-", "system-"];
+pub const RESERVED_NAME_PREFIXES: &[&str] = &["dream-", "one-", "internal-", "builtin-", "system-"];
 
 /// Preset agent type identifiers.
 pub const PRESET_AGENT_TYPES: &[&str] = &["gemini", "claude", "codex", "codebuddy", "opencode"];
@@ -89,7 +110,7 @@ pub const SKILL_MANIFEST_FILE: &str = "SKILL.md";
 pub const CUSTOM_SKILL_PATHS_FILE: &str = "custom-skill-paths.json";
 
 /// Well-known skill source name for the dream skills market.
-pub const SKILLS_MARKET_NAME: &str = "aionui-skills";
+pub const SKILLS_MARKET_NAME: &str = "one-skills";
 
 /// Well-known skill source path for the dream skills market.
 ///
@@ -97,7 +118,13 @@ pub const SKILLS_MARKET_NAME: &str = "aionui-skills";
 /// `ExternalPathsManager`, it serves as an identifier for the skills market
 /// source. Filesystem scanning functions like `detect_and_count_external_skills`
 /// will silently skip it since the path does not exist on disk.
-pub const SKILLS_MARKET_PATH: &str = "https://github.com/AionUI/aionui-skills";
+pub const SKILLS_MARKET_PATH: &str = "https://github.com/gaogg521/dream-skills";
+
+/// The same identifier as written by pre-rebrand builds. Only `disable_skills_market`
+/// reads it: a user who enabled the market before the rename has the old string in
+/// their `custom_skill_paths.json`, and removing only the current one would leave a
+/// dead row that the UI keeps rendering as an enabled source.
+pub const LEGACY_SKILLS_MARKET_PATH: &str = "https://github.com/AionUI/aionui-skills";
 
 /// Common skill directory names to detect on the filesystem.
 ///
@@ -119,12 +146,14 @@ mod tests {
 
     #[test]
     fn test_manifest_file_name() {
-        assert_eq!(EXTENSION_MANIFEST_FILE, "aion-extension.json");
+        assert_eq!(EXTENSION_MANIFEST_FILE, "one-extension.json");
+        assert_eq!(LEGACY_EXTENSION_MANIFEST_FILE, "aion-extension.json");
     }
 
     #[test]
     fn test_reserved_prefixes_contains_expected() {
-        assert!(RESERVED_NAME_PREFIXES.contains(&"aion-"));
+        assert!(RESERVED_NAME_PREFIXES.contains(&"dream-"));
+        assert!(RESERVED_NAME_PREFIXES.contains(&"one-"));
         assert!(RESERVED_NAME_PREFIXES.contains(&"internal-"));
         assert!(RESERVED_NAME_PREFIXES.contains(&"builtin-"));
         assert!(RESERVED_NAME_PREFIXES.contains(&"system-"));

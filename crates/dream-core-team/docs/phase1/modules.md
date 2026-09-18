@@ -10,7 +10,7 @@
 >
 > **相关文档**：[README.md](./README.md) · [interface-contracts.md](./interface-contracts.md) · [milestones.md](./milestones.md)
 >
-> **事实来源**：[backend-audit.md](./backend-audit.md) §1–§5 · [aionui-audit.md](./aionui-audit.md) §1–§4 · [mcp.md](../mcp.md) §4 · [team-prompts.md](../team-prompts.md) §2–§4
+> **事实来源**：[backend-audit.md](./backend-audit.md) §1–§5 · [one-audit.md](./one-audit.md) §1–§4 · [mcp.md](../mcp.md) §4 · [team-prompts.md](../team-prompts.md) §2–§4
 
 ---
 
@@ -174,7 +174,7 @@ Wave 5（3 人关键路径 + 可并行点）
 |---|---|
 | 目标文件 | `crates/dream-core-team/src/mcp/tools.rs`（修改）+ `server.rs` dispatch 分支（修改） |
 | 职责 | 加 descriptor（文本原样复用 [team-prompts.md §5.2](../team-prompts.md#52-team-内部-mcp10-个工具)）+ phase1 最小 handler |
-| phase1 最小实现 | `team_list_models`：返回固定 JSON `{agent_types:[{type:"claude",models:["claude-sonnet-4","claude-opus-4"]},{type:"codex",models:["gpt-5"]},...]}`（不读真实 registry）；`team_describe_assistant`：统一返回 `"Preset assistant not found"` 文本（backend 尚无 assistants 配置，aionui-audit §7.1 "workspace" 一致未实现） |
+| phase1 最小实现 | `team_list_models`：返回固定 JSON `{agent_types:[{type:"claude",models:["claude-sonnet-4","claude-opus-4"]},{type:"codex",models:["gpt-5"]},...]}`（不读真实 registry）；`team_describe_assistant`：统一返回 `"Preset assistant not found"` 文本（backend 尚无 assistants 配置，one-audit §7.1 "workspace" 一致未实现） |
 | 输入 | 无（phase1 用 hardcoded backend 表） |
 | 输出 | 两个 descriptor + 两个 handler |
 | 依赖 | 无 |
@@ -182,7 +182,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 预估 LoC | 150 行（含两段 description 文本 + handler + 测试 fixture） |
 | 预估人天 | 1.0 |
 | 接口契约 | [§4](./interface-contracts.md#4-dream-core-teammcptools-新增两个工具-descriptorwave-1--模块-d4) |
-| ⚠️ 硬约束 | descriptor 文本**原样**来自 AionUi（aionui-audit §8 #5）；Wave 2 才补真实数据源 |
+| ⚠️ 硬约束 | descriptor 文本**原样**来自 One Work（one-audit §8 #5）；Wave 2 才补真实数据源 |
 
 ---
 
@@ -191,12 +191,12 @@ Wave 5（3 人关键路径 + 可并行点）
 | 项 | 内容 |
 |---|---|
 | 目标文件 | `crates/dream-core-team/src/mcp/tools.rs`（新增 `pub const TEAM_SPAWN_AGENT_DESCRIPTION: &str = r#"..."#;`） + 替换现有 `team_spawn_agent` descriptor 中的 description 字段引用常量 |
-| 职责 | 只做一件事：把 AionUi `toolDescriptions.ts:1-18` 原文（"3 PRECONDITIONS + STRICT 流程"）**逐字节**复制到 Rust 常量替换后端原有的极简自造描述（"Dynamically create a new teammate agent (Lead only)."）；现有 D4 模块只管新加的 2 个工具，这条是改已有工具 |
+| 职责 | 只做一件事：把 One Work `toolDescriptions.ts:1-18` 原文（"3 PRECONDITIONS + STRICT 流程"）**逐字节**复制到 Rust 常量替换后端原有的极简自造描述（"Dynamically create a new teammate agent (Lead only)."）；现有 D4 模块只管新加的 2 个工具，这条是改已有工具 |
 | 依赖 | 无（纯文本常量） |
 | 测试 | 2 条：常量与 team-prompts.md §5.2 `team_spawn_agent` 原文 `diff -w` 零差异；`tools/list` 返回的该工具 description 等于常量 |
 | 预估 LoC | 40（常量 + 替换 + 测试） |
 | 预估人天 | 0.3 |
-| 事实来源 | [backend-audit §3.5 #48](./backend-audit.md#35-交叉审阅补漏二轮对照-aionui-audit-7-8-后新发现) 标 **P0** · [aionui-audit §8 #5](./aionui-audit.md#8-源码中发现的硬约束agent-行为易坏点)（原文复用硬约束） · [team-prompts.md §5.2 team_spawn_agent](../team-prompts.md#team_spawn_agent) |
+| 事实来源 | [backend-audit §3.5 #48](./backend-audit.md#35-交叉审阅补漏二轮对照-one-audit-7-8-后新发现) 标 **P0** · [one-audit §8 #5](./one-audit.md#8-源码中发现的硬约束agent-行为易坏点)（原文复用硬约束） · [team-prompts.md §5.2 team_spawn_agent](../team-prompts.md#team_spawn_agent) |
 
 ---
 
@@ -206,20 +206,20 @@ Wave 5（3 人关键路径 + 可并行点）
 |---|---|
 | 目标文件 | `crates/dream-core-team/src/prompts.rs`（**重写**：保留 `build_wake_payload` 概念，替换三个 builder） |
 | 职责 | 定义四份常量（Guide / Lead / Teammate 模板 + spawn 工具描述），实现新签名 builder |
-| 模板来源 | [team-prompts.md §2/§3/§4/§5](../team-prompts.md) —— **原样复用 AionUi 英文，禁翻译、禁改写** |
+| 模板来源 | [team-prompts.md §2/§3/§4/§5](../team-prompts.md) —— **原样复用 One Work 英文，禁翻译、禁改写** |
 | builder 任务 | 按 [interface-contracts.md §5](./interface-contracts.md#5-dream-core-teamprompts-大幅扩写wave-1--模块-d5) 的 params 产出字符串；`## Your Teammates` / `## Available Agent Types` / `## Available Preset Assistants` / `## Team Workspace` 四个动态 section 按条件开关 |
 | 输入 | TeamAgent / MailboxMessage / TeamTask / HashMap<slot_id,name> |
 | 输出 | 5 个 pub fn（3 个 role builder + team_guide + wake_payload） |
 | 依赖 | `dream-core-team::types`（已存在） |
 | 测试策略 | 6 条快照测试：lead 最小参数；lead 带 preset assistants；teammate 最小；teammate 带 renamed；wake_payload 空邮件箱；wake_payload 有任务和邮件 |
-| 预估 LoC | 需要承载 500+ 行 AionUi 原文文本 → **虽超 200 行约束，但都是 `r#"..."#` 常量，实际"代码"逻辑 < 150 行。此处申请例外**：模板原文是"原料"不是"逻辑"，leader 已默许（phase1 README 会重申） |
-| 预估人天 | 1.5（含模板逐行从 AionUi 源码拷贝校对的 0.5 天） |
+| 预估 LoC | 需要承载 500+ 行 One Work 原文文本 → **虽超 200 行约束，但都是 `r#"..."#` 常量，实际"代码"逻辑 < 150 行。此处申请例外**：模板原文是"原料"不是"逻辑"，leader 已默许（phase1 README 会重申） |
+| 预估人天 | 1.5（含模板逐行从 One Work 源码拷贝校对的 0.5 天） |
 | 接口契约 | [§5](./interface-contracts.md#5-dream-core-teamprompts-大幅扩写wave-1--模块-d5) |
 
-**例外说明**：因 AionUi 三份 prompt 加起来 410 行原文必须原样搬运，模板文本视作"原料"而非"逻辑"（aionui-audit §8 #5 硬约束）。默认方案已按 team lead 要求把 D5 拆成 **4 个子模块 D5a / D5b-1 / D5b-2 / D5c**（即 8 人 Wave 1 里的 D5 系列），每人代码 < 200 行：
+**例外说明**：因 One Work 三份 prompt 加起来 410 行原文必须原样搬运，模板文本视作"原料"而非"逻辑"（one-audit §8 #5 硬约束）。默认方案已按 team lead 要求把 D5 拆成 **4 个子模块 D5a / D5b-1 / D5b-2 / D5c**（即 8 人 Wave 1 里的 D5 系列），每人代码 < 200 行：
 
 - **D5a**：Team Guide 模板常量 + `build_team_guide_prompt()`（~120 行）
-- **D5b-1**：Lead prompt 常量，用 `include_str!("prompt_templates/lead.txt")` 引用 AionUi 原文件。目标文件 `crates/dream-core-team/src/prompts/lead.rs`（代码 < 50 行）+ `crates/dream-core-team/src/prompts/prompt_templates/lead.txt`（逐字节复制 AionUi `leadPrompt.ts` 模板原文）
+- **D5b-1**：Lead prompt 常量，用 `include_str!("prompt_templates/lead.txt")` 引用 One Work 原文件。目标文件 `crates/dream-core-team/src/prompts/lead.rs`（代码 < 50 行）+ `crates/dream-core-team/src/prompts/prompt_templates/lead.txt`（逐字节复制 One Work `leadPrompt.ts` 模板原文）
 - **D5b-2**：`build_lead_prompt()` builder 实现（依赖 D5b-1 的常量）。目标文件 `crates/dream-core-team/src/prompts/lead.rs` 的 builder 部分（~30 行 Rust）
 - **D5c**：Teammate 模板常量 + `build_teammate_prompt()` + `build_wake_payload()`（~150 行）
 
@@ -270,7 +270,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 预估 LoC | 120 |
 | 预估人天 | 1.2 |
 | 接口契约 | [§6.2](./interface-contracts.md#6-dream-core-teamsessionteamsession-新方法wave-2--模块-d7) |
-| 事实来源 | [backend-audit §3.5 #45/#46](./backend-audit.md#35-交叉审阅补漏二轮对照-aionui-audit-7-8-后新发现) · [aionui-audit §4.1 表格备注](./aionui-audit.md#41-wake-触发源) "log-not-throw" |
+| 事实来源 | [backend-audit §3.5 #45/#46](./backend-audit.md#35-交叉审阅补漏二轮对照-one-audit-7-8-后新发现) · [one-audit §4.1 表格备注](./one-audit.md#41-wake-触发源) "log-not-throw" |
 
 ---
 
@@ -279,13 +279,13 @@ Wave 5（3 人关键路径 + 可并行点）
 | 项 | 内容 |
 |---|---|
 | 目标文件 | `crates/dream-core-team/src/session.rs`（`send_message_to_agent` 加 `silent: bool` 参数 + 占位分支） |
-| 职责 | 只做占位：`silent=true` 走和 `silent=false` 几乎一样的流程，**但不写 user bubble** 到目标 conversation（phase1 因为 Wave 2 还没接通 conversation 的 user bubble 写入路径，此模块仅让签名支持参数，实际 silent 行为的**完整测试**在 Wave 5 W5-D26b 的 `aion_create_team` 场景里真跑（那时 leader 复用 conversation 会用到 silent=true） |
+| 职责 | 只做占位：`silent=true` 走和 `silent=false` 几乎一样的流程，**但不写 user bubble** 到目标 conversation（phase1 因为 Wave 2 还没接通 conversation 的 user bubble 写入路径，此模块仅让签名支持参数，实际 silent 行为的**完整测试**在 Wave 5 W5-D26b 的 `one_create_team` 场景里真跑（那时 leader 复用 conversation 会用到 silent=true） |
 | 依赖 | D7b |
 | 测试 | 2 条：silent=true 不 panic；Wave 5 e2e 验证实际效果 |
 | 预估 LoC | 40 |
 | 预估人天 | 0.3 |
 | 接口契约 | [§6.3](./interface-contracts.md#6-dream-core-teamsessionteamsession-新方法wave-2--模块-d7) |
-| 事实来源 | [aionui-audit §4.1](./aionui-audit.md#41-wake-触发源) "silent=true 时 **不** 写 user bubble" |
+| 事实来源 | [one-audit §4.1](./one-audit.md#41-wake-触发源) "silent=true 时 **不** 写 user bubble" |
 
 ---
 
@@ -294,7 +294,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 项 | 内容 |
 |---|---|
 | 目标文件 | `crates/dream-core-team/src/scheduler.rs`（修改） |
-| 职责 | 1) 在 `TeammateStatus` 加 `Pending` variant（默认值，取代 `None` 状态的"首次"语义，aionui-audit §2.1）<br>2) `try_wake` 判断 `status in {Pending, Failed}` 时返回 `WakePayload::WithRolePrompt`，否则 `WakePayload::MailboxOnly`<br>3) `maybe_wake_leader_when_all_idle` 扩大 settled 集合到 `{Idle, Completed, Failed, Pending}`（aionui-audit §8 #4） |
+| 职责 | 1) 在 `TeammateStatus` 加 `Pending` variant（默认值，取代 `None` 状态的"首次"语义，one-audit §2.1）<br>2) `try_wake` 判断 `status in {Pending, Failed}` 时返回 `WakePayload::WithRolePrompt`，否则 `WakePayload::MailboxOnly`<br>3) `maybe_wake_leader_when_all_idle` 扩大 settled 集合到 `{Idle, Completed, Failed, Pending}`（one-audit §8 #4） |
 | 输入 | 现有 scheduler + D5 builder |
 | 输出 | `WakePayload` 多一个 variant；`try_wake` 签名兼容（内部结构变化） |
 | 依赖 | D5（需要用 role prompt builder） + D7（调用 D7 的 compute_wake_input 或由 D7 封装） |
@@ -362,7 +362,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 预估 LoC | 40 |
 | 预估人天 | 0.3 |
 | 接口契约 | [§12.5](./interface-contracts.md#125-remove_team-级联-killwave-2--模块-d115) |
-| 事实来源 | [backend-audit §3.5 #47](./backend-audit.md#35-交叉审阅补漏二轮对照-aionui-audit-7-8-后新发现) 标 **P0**（agent 进程会变成孤儿） · [aionui-audit §1.4 删除时序图](./aionui-audit.md#14-删除时序图) |
+| 事实来源 | [backend-audit §3.5 #47](./backend-audit.md#35-交叉审阅补漏二轮对照-one-audit-7-8-后新发现) 标 **P0**（agent 进程会变成孤儿） · [one-audit §1.4 删除时序图](./one-audit.md#14-删除时序图) |
 
 ---
 
@@ -389,7 +389,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 测试 | 1 条集成：两个 user 各一个 team → A 的 list 只见 A |
 | 预估 LoC | 40 · 预估人天 0.3 |
 | 接口契约 | [§13.1](./interface-contracts.md#131-list_teamsuser_id) |
-| 事实来源 | [backend-audit §1.2](./backend-audit.md#12-cratesdream-core-teamsrcservicers--teamsessionservice) · [aionui-audit §1.1 listTeams(userId)](./aionui-audit.md#11-能力清单) |
+| 事实来源 | [backend-audit §1.2](./backend-audit.md#12-cratesdream-core-teamsrcservicers--teamsessionservice) · [one-audit §1.1 listTeams(userId)](./one-audit.md#11-能力清单) |
 
 ### W3-D12b — `get_team(user_id, id)` 归属校验
 
@@ -474,7 +474,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 测试 | 3 条：冲突返 Err；首次记录；二次不覆盖 |
 | 预估 LoC | 70 · 预估人天 0.5 |
 | 接口契约 | [§15.2](./interface-contracts.md#152-rename_agent-冲突--renamed_agents) |
-| 事实来源 | [aionui-audit §2.1 renameAgent](./aionui-audit.md#21-能力清单) |
+| 事实来源 | [one-audit §2.1 renameAgent](./one-audit.md#21-能力清单) |
 
 ### W3-D14c — Prompt builder 读 renamed_agents 渲染 `[formerly: X]`
 
@@ -511,8 +511,8 @@ Wave 5（3 人关键路径 + 可并行点）
 | 预估 LoC | 100 · 预估人天 1.0 |
 | 不能再拆理由 | 三个校验（存在 / 归属 / 冲突）+ update_extra 是 early-return 决策链，每一步都依赖上一步的结果；拆开会让错误路径跨模块传状态 |
 | 接口契约 | [§16.2](./interface-contracts.md#162-create_team-复用分支) |
-| 事实来源 | [aionui-audit §1.1 "单聊→team 的 conversation 复用"](./aionui-audit.md#11-能力清单) |
-| ⚠️ 注意 | phase1 只实现 REST 路径复用；MCP 路径 `aion_create_team` 的复用由 Wave 5 W5-D26b 完成 |
+| 事实来源 | [one-audit §1.1 "单聊→team 的 conversation 复用"](./one-audit.md#11-能力清单) |
+| ⚠️ 注意 | phase1 只实现 REST 路径复用；MCP 路径 `one_create_team` 的复用由 Wave 5 W5-D26b 完成 |
 
 ---
 
@@ -538,7 +538,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 测试 | 3 条：无 team_id 走原路径；有 team_id + router 走 mock；有 team_id 但 router None log warn 退化 |
 | 预估 LoC | 80 · 预估人天 0.7 |
 | 接口契约 | [§17.2](./interface-contracts.md#172-send_message-路由分叉) |
-| 事实来源 | [aionui-audit §7.1 "对 agent 发话"](./aionui-audit.md#71-rest--ipc-等价入口backend-需要暴露的-api) |
+| 事实来源 | [one-audit §7.1 "对 agent 发话"](./one-audit.md#71-rest--ipc-等价入口backend-需要暴露的-api) |
 
 ### W3-D16c — `TeamSessionService impl ITeamMessageRouter` + 装配
 
@@ -633,7 +633,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 预估 LoC | 50 |
 | 预估人天 | 0.5 |
 | 接口契约 | [§19.3.2](./interface-contracts.md#193-acpagentmanager-broadcast-注入) |
-| 事实来源 | [backend-audit §3.5 #53](./backend-audit.md#35-交叉审阅补漏二轮对照-aionui-audit-7-8-后新发现) |
+| 事实来源 | [backend-audit §3.5 #53](./backend-audit.md#35-交叉审阅补漏二轮对照-one-audit-7-8-后新发现) |
 
 ---
 
@@ -647,7 +647,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 测试 | 2 条：并发 100 次 try_acquire → 只有 1 次返 true；release 后 try_acquire 再次成功 |
 | 预估 LoC | 60 · 预估人天 0.5 |
 | 接口契约 | [§20.1](./interface-contracts.md#201-active_wakes-重入锁) |
-| 事实来源 | [aionui-audit §8 #1/#2](./aionui-audit.md#8-源码中发现的硬约束agent-行为易坏点) |
+| 事实来源 | [one-audit §8 #1/#2](./one-audit.md#8-源码中发现的硬约束agent-行为易坏点) |
 
 ### W4-D18b-1 — `wake_timeouts` 存储字段 + `clear_wake_timeout`
 
@@ -673,7 +673,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 预估人天 | 1.0 |
 | 不能再拆理由 | `tokio::select!` 三路（chunk recv / sleep / Finish）是原子并发原语；拆开会让取消语义失控 |
 | 接口契约 | [§20.2.2](./interface-contracts.md#202-wake_timeouts-60s-看门狗) |
-| 事实来源 | [aionui-audit §2.1 inactivity watchdog](./aionui-audit.md#21-能力清单) |
+| 事实来源 | [one-audit §2.1 inactivity watchdog](./one-audit.md#21-能力清单) |
 
 ### W4-D18c — `compute_wake_input` / `send_message` 接入 wake lock
 
@@ -698,7 +698,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 测试 | 3 条：100ms 内两次 begin_finalize 同 conv → 第二次 false；5s 后再次 true；clear 后立即 true |
 | 预估 LoC | 80 · 预估人天 0.7 |
 | 接口契约 | [§21.1](./interface-contracts.md#211-finalized_turns-存储) |
-| 事实来源 | [aionui-audit §4.3 + §8 #3](./aionui-audit.md#8-源码中发现的硬约束agent-行为易坏点) |
+| 事实来源 | [one-audit §4.3 + §8 #3](./one-audit.md#8-源码中发现的硬约束agent-行为易坏点) |
 
 ### W4-D19b — `on_agent_finish` / re-wake 路径接入 dedup
 
@@ -754,12 +754,12 @@ Wave 5（3 人关键路径 + 可并行点）
 | 项 | 内容 |
 |---|---|
 | 目标文件 | `crates/dream-core-team/src/scheduler.rs`（在 D20b 的方法里加 `if role == Lead` 分支） |
-| 职责 | 只做 leader crash 的特殊分支：只 `set_status(Failed)`，不 remove、不 wake 其他（aionui-audit §2.1）|
+| 职责 | 只做 leader crash 的特殊分支：只 `set_status(Failed)`，不 remove、不 wake 其他（one-audit §2.1）|
 | 依赖 | W4-D20b |
 | 测试 | 2 条：leader crash 不触发其他 wake；leader crash 后 agents 数组未变 |
 | 预估 LoC | 40 · 预估人天 0.3 |
 | 接口契约 | [§22.3](./interface-contracts.md#223-handle_agent_crash-leader-分支) |
-| 事实来源 | [aionui-audit §2.1 crash recovery](./aionui-audit.md#21-能力清单) |
+| 事实来源 | [one-audit §2.1 crash recovery](./one-audit.md#21-能力清单) |
 
 ---
 
@@ -773,7 +773,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 测试 | 3 条：命中 "HTTP 429"；命中 "rate limit"；不命中 "syntax error" |
 | 预估 LoC | 50 · 预估人天 0.3 |
 | 接口契约 | [§23](./interface-contracts.md#23-429--rate-limit-识别) |
-| 事实来源 | [aionui-audit §2.1 "429 / 限流识别"](./aionui-audit.md#21-能力清单) |
+| 事实来源 | [one-audit §2.1 "429 / 限流识别"](./one-audit.md#21-能力清单) |
 
 ---
 
@@ -788,7 +788,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 预估 LoC | 100 · 预估人天 1.0 |
 | 不能再拆理由 | 同一个 handler 内 leader / 非 leader 是 if/else 决策树，共用前置（set_status + release_lock）；拆分会让 set_status 调用散落 |
 | 接口契约 | [§24](./interface-contracts.md#24-inactivity-watchdog) |
-| 事实来源 | [aionui-audit §2.1 inactivity watchdog](./aionui-audit.md#21-能力清单) |
+| 事实来源 | [one-audit §2.1 inactivity watchdog](./one-audit.md#21-能力清单) |
 
 ---
 
@@ -803,7 +803,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 预估 LoC | 80 · 预估人天 0.7 |
 | 不能再拆理由 | lock 的申请 / 使用 / 清理三点必须在同一 service 对象内联动，拆开会让 lock entry 泄漏 |
 | 接口契约 | [§25](./interface-contracts.md#25-add_agent_locks-串行化) |
-| 事实来源 | [aionui-audit §8 #14](./aionui-audit.md#8-源码中发现的硬约束agent-行为易坏点) |
+| 事实来源 | [one-audit §8 #14](./one-audit.md#8-源码中发现的硬约束agent-行为易坏点) |
 
 ---
 
@@ -847,14 +847,14 @@ Wave 5（3 人关键路径 + 可并行点）
 | 项 | 内容 |
 |---|---|
 | 目标文件 | `crates/dream-core-team/src/mcp/server.rs`（方法实现：外部 service 调用此方法等待 ready） |
-| 职责 | 只做一件事：若 `ready_latch.contains(slot_id)` 直接 Ok；否则取 / 创建 `Notify` 放入 `ready_notify`；`tokio::select!` 等 `notify.notified()` 或 `sleep(30s)`；**timeout 分支也 `Ok(())`**（aionui-audit §8 #11 graceful） |
+| 职责 | 只做一件事：若 `ready_latch.contains(slot_id)` 直接 Ok；否则取 / 创建 `Notify` 放入 `ready_notify`；`tokio::select!` 等 `notify.notified()` 或 `sleep(30s)`；**timeout 分支也 `Ok(())`**（one-audit §8 #11 graceful） |
 | 依赖 | W4-D24b-1（字段） + W4-D24b-2（notify 写入）|
 | 测试 | 3 条：已有 latch 直接返回；无 notify 30s graceful Ok；两个 slot 并发独立计时互不干扰 |
 | 预估 LoC | 50 |
 | 预估人天 | 0.5 |
 | 不能再拆理由 | `tokio::select!` 两路（notify / sleep）是原子并发原语，拆开引入 race |
 | 接口契约 | [§26.2.3](./interface-contracts.md#262-server-notify--wait) |
-| 事实来源 | [aionui-audit §3.1 "MCP ready 握手"](./aionui-audit.md#31-能力清单) · [aionui-audit §8 #11](./aionui-audit.md#8-源码中发现的硬约束agent-行为易坏点)（graceful timeout） |
+| 事实来源 | [one-audit §3.1 "MCP ready 握手"](./one-audit.md#31-能力清单) · [one-audit §8 #11](./one-audit.md#8-源码中发现的硬约束agent-行为易坏点)（graceful timeout） |
 
 ### W4-D24c — Bridge 端发 `mcp_ready` 通知
 
@@ -887,9 +887,9 @@ Wave 5（3 人关键路径 + 可并行点）
 | 测试 | 2 条：start 返回成功 addr；stop 后 bind 端口释放 |
 | 预估 LoC | 80 · 预估人天 0.8 |
 | 接口契约 | [§27.1](./interface-contracts.md#271-guidemcpserver-结构--启停) |
-| 事实来源 | [aionui-audit §3.1 Team Guide MCP 生命周期](./aionui-audit.md#31-能力清单) |
+| 事实来源 | [one-audit §3.1 Team Guide MCP 生命周期](./one-audit.md#31-能力清单) |
 
-### W5-D26b-1 — `aion_create_team` args 解析 + 默认值补全（纯函数）
+### W5-D26b-1 — `one_create_team` args 解析 + 默认值补全（纯函数）
 
 | 项 | 内容 |
 |---|---|
@@ -899,9 +899,9 @@ Wave 5（3 人关键路径 + 可并行点）
 | 测试 | 4 条：summary 缺失 Err；name 缺省用 summary 前 5 词；workspace 缺省继承 caller；全字段自定义优先生效 |
 | 预估 LoC | 70 |
 | 预估人天 | 0.6 |
-| 接口契约 | [§27.2.1](./interface-contracts.md#272-handle_aion_create_team) |
+| 接口契约 | [§27.2.1](./interface-contracts.md#272-handle_one_create_team) |
 
-### W5-D26b-2 — `handle_aion_create_team` 调 service + 返回结构化
+### W5-D26b-2 — `handle_one_create_team` 调 service + 返回结构化
 
 | 项 | 内容 |
 |---|---|
@@ -911,10 +911,10 @@ Wave 5（3 人关键路径 + 可并行点）
 | 测试 | 3 条：正常路径 service.create_team 被调且返回含 next_step；service Err 时返 ToolResult.is_error=true；leader 复用 caller_conversation_id |
 | 预估 LoC | 70 |
 | 预估人天 | 0.7 |
-| 接口契约 | [§27.2.2](./interface-contracts.md#272-handle_aion_create_team) |
-| 事实来源 | [aionui-audit §1.2 建团流程](./aionui-audit.md#12-建团流程时序图mcp-spawn) |
+| 接口契约 | [§27.2.2](./interface-contracts.md#272-handle_one_create_team) |
+| 事实来源 | [one-audit §1.2 建团流程](./one-audit.md#12-建团流程时序图mcp-spawn) |
 
-### W5-D26c — `handle_aion_list_models` handler
+### W5-D26c — `handle_one_list_models` handler
 
 | 项 | 内容 |
 |---|---|
@@ -923,18 +923,18 @@ Wave 5（3 人关键路径 + 可并行点）
 | 依赖 | W5-D26a + D4 |
 | 测试 | 1 条：返回 JSON schema 和 D4 一致 |
 | 预估 LoC | 40 · 预估人天 0.3 |
-| 接口契约 | [§27.3](./interface-contracts.md#273-handle_aion_list_models) |
+| 接口契约 | [§27.3](./interface-contracts.md#273-handle_one_list_models) |
 
 ### W5-D26d — 建团成功后 emit 3 个 WS 事件
 
 | 项 | 内容 |
 |---|---|
 | 目标文件 | `crates/dream-core-team/src/guide/handlers.rs`（D26b 的末尾插入事件广播） |
-| 职责 | 只在 `handle_aion_create_team` 成功路径尾部 emit 3 个 WS 事件：`team.listChanged` + `conversation.listChanged` + `deepLink.received { route:/team/<id> }` |
+| 职责 | 只在 `handle_one_create_team` 成功路径尾部 emit 3 个 WS 事件：`team.listChanged` + `conversation.listChanged` + `deepLink.received { route:/team/<id> }` |
 | 依赖 | W5-D26b（handler 已出结果）+ W5-D31a（事件类型定义） |
 | 测试 | 1 条集成：建团成功 → WS 订阅者收到三个事件 |
 | 预估 LoC | 50 · 预估人天 0.4 |
-| 接口契约 | [§27.4](./interface-contracts.md#274-aion_create_team-成功后的-ws-事件) |
+| 接口契约 | [§27.4](./interface-contracts.md#274-one_create_team-成功后的-ws-事件) |
 
 ---
 
@@ -942,14 +942,14 @@ Wave 5（3 人关键路径 + 可并行点）
 
 | 项 | 内容 |
 |---|---|
-| 目标文件 | `crates/dream-core-app/src/bridge.rs`（D6 主 bridge 里加 `if env::var(AION_MCP_BACKEND).is_ok()` 分支） |
-| 职责 | 只做 bridge 端分叉：env 里有 `AION_MCP_BACKEND` → 走 guide bridge 模式，每条 tools/call payload 额外带 `backend` + `conversation_id`；否则走 team bridge（不动） |
+| 目标文件 | `crates/dream-core-app/src/bridge.rs`（D6 主 bridge 里加 `if env::var(ONE_MCP_BACKEND).is_ok()` 分支） |
+| 职责 | 只做 bridge 端分叉：env 里有 `ONE_MCP_BACKEND` → 走 guide bridge 模式，每条 tools/call payload 额外带 `backend` + `conversation_id`；否则走 team bridge（不动） |
 | 依赖 | D6（bridge 主体） + W5-D26（guide server 约定协议） |
 | 测试 | 2 条：guide 模式 payload 含 backend+conversation_id；team 模式（无 backend env）行为不变 |
 | 预估 LoC | 80 · 预估人天 0.7 |
 | 不能再拆理由 | bridge 的 if/else 分叉是单点入口，分叉条件检查和两条路径选择不能拆分 |
 | 接口契约 | [§28](./interface-contracts.md#28-guide-stdio-bridge-分支) |
-| 事实来源 | [aionui-audit §3.3 stdio↔TCP 桥架构](./aionui-audit.md#33-stdio--tcp-桥架构) |
+| 事实来源 | [one-audit §3.3 stdio↔TCP 桥架构](./one-audit.md#33-stdio--tcp-桥架构) |
 
 ---
 
@@ -958,7 +958,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 项 | 内容 |
 |---|---|
 | 目标文件 | `crates/dream-core-team/src/guide/capability.rs`（新增） |
-| 职责 | 只做纯函数：`pub fn is_team_capable_backend(backend: &str, mcp_stdio_capable: bool) -> bool` + 硬白名单常量 `TEAM_CAPABLE_BACKENDS = &["claude", "codex", "gemini", "aionrs"]` |
+| 职责 | 只做纯函数：`pub fn is_team_capable_backend(backend: &str, mcp_stdio_capable: bool) -> bool` + 硬白名单常量 `TEAM_CAPABLE_BACKENDS = &["claude", "codex", "gemini", "dream-engine"]` |
 | 依赖 | 无 |
 | 测试 | 3 条：白名单命中；非白名单 + mcp_stdio_capable=true 命中；非白名单 + false 不命中 |
 | 预估 LoC | 40 · 预估人天 0.3 |
@@ -974,7 +974,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 测试 | 3 条：solo claude 含 Guide prompt；已在 team 的 agent 不含；solo backend="unknown" 不含 |
 | 预估 LoC | 60 · 预估人天 0.5 |
 | 接口契约 | [§29.2](./interface-contracts.md#292-guide-prompt-注入到-instructions) |
-| 事实来源 | [aionui-audit §8 #17 Guide 互斥](./aionui-audit.md#8-源码中发现的硬约束agent-行为易坏点) |
+| 事实来源 | [one-audit §8 #17 Guide 互斥](./one-audit.md#8-源码中发现的硬约束agent-行为易坏点) |
 
 ### W5-D28c — `session/new.mcp_servers` 追加 Guide config + 互斥 guard
 
@@ -1036,7 +1036,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 预估 LoC | 25 |
 | 预估人天 | 0.2 |
 | 接口契约 | [§30.1.4](./interface-contracts.md#301-spawnagentrequest--校验层) |
-| 事实来源 | [aionui-audit §2.1 MCP spawn](./aionui-audit.md#21-能力清单) · backend-audit §1.5.2 SPAWN_BACKEND_WHITELIST |
+| 事实来源 | [one-audit §2.1 MCP spawn](./one-audit.md#21-能力清单) · backend-audit §1.5.2 SPAWN_BACKEND_WHITELIST |
 
 ### W5-D29b — `TeamSessionService::add_agent` 扩展用于 spawn
 
@@ -1136,7 +1136,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 预估 LoC | 60 |
 | 预估人天 | 0.5 |
 | 接口契约 | [§31.1.2](./interface-contracts.md#311-approved-拦截) |
-| 事实来源 | [aionui-audit §2.1 shutdown 协议](./aionui-audit.md#21-能力清单) |
+| 事实来源 | [one-audit §2.1 shutdown 协议](./one-audit.md#21-能力清单) |
 
 ### W5-D30b — `team_send_message` 识别 `shutdown_rejected: <reason>`
 
@@ -1159,7 +1159,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 测试 | 1 条：leader 调 shutdown_agent(target=leader) 返 Err |
 | 预估 LoC | 30 · 预估人天 0.2 |
 | 接口契约 | [§31.3](./interface-contracts.md#313-shutdown_agent-目标-role-校验) |
-| 事实来源 | [aionui-audit §2.1 "Leader 不可 shutdown"](./aionui-audit.md#21-能力清单) |
+| 事实来源 | [one-audit §2.1 "Leader 不可 shutdown"](./one-audit.md#21-能力清单) |
 
 ### W5-D30d-1 — `remove_agent` 改造：`task_manager.kill`
 
@@ -1197,7 +1197,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 预估 LoC | 25 |
 | 预估人天 | 0.2 |
 | 接口契约 | [§31.4.3](./interface-contracts.md#314-remove_agent-真-kill) |
-| 事实来源 | [aionui-audit §2.1 TeammateManager.removeAgent](./aionui-audit.md#21-能力清单) |
+| 事实来源 | [one-audit §2.1 TeammateManager.removeAgent](./one-audit.md#21-能力清单) |
 
 ---
 
@@ -1211,7 +1211,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 测试 | 2 条：10 个 phase serde roundtrip；两个 payload 序列化字段齐 |
 | 预估 LoC | 60 · 预估人天 0.4 |
 | 接口契约 | [§32.1](./interface-contracts.md#321-teammcpphase--payload-类型) |
-| 事实来源 | [aionui-audit §7.6 事件](./aionui-audit.md#76-事件--ipc后端等价需提供-websocket-或-sse) |
+| 事实来源 | [one-audit §7.6 事件](./one-audit.md#76-事件--ipc后端等价需提供-websocket-或-sse) |
 
 ### W5-D31b-1 — `team.mcpStatus` tcp 层 2 点广播（mcp/server.rs）
 
@@ -1259,7 +1259,7 @@ Wave 5（3 人关键路径 + 可并行点）
 | 测试 | 2 条：teammate 有 2 条 unread → emit 2 次；Lead 有 2 条 unread → emit 0 次 |
 | 预估 LoC | 40 · 预估人天 0.3 |
 | 接口契约 | [§32.3](./interface-contracts.md#323-teammate_message-emit) |
-| 事实来源 | [aionui-audit §2.1 "active 期间输入字节流"](./aionui-audit.md#21-能力清单) |
+| 事实来源 | [one-audit §2.1 "active 期间输入字节流"](./one-audit.md#21-能力清单) |
 
 ---
 
@@ -1324,9 +1324,9 @@ Wave 5（3 人关键路径 + 可并行点）
 | **W4-D24b-3** | 4 | **wait_for_mcp_ready graceful select!** | team/mcp/server.rs | 50 | 0.5 |
 | W4-D24c | 4 | Bridge 发 mcp_ready | app/bridge.rs | 30 | 0.2 |
 | W5-D26a | 5 | `GuideMcpServer` 结构 + 启停 | team/guide/server.rs | 80 | 0.8 |
-| **W5-D26b-1** | 5 | **`aion_create_team` args 解析 + 默认值（纯函数）** | team/guide/handlers.rs | 70 | 0.6 |
-| **W5-D26b-2** | 5 | **`handle_aion_create_team` 调 service + 返回结构化** | team/guide/handlers.rs | 70 | 0.7 |
-| W5-D26c | 5 | `handle_aion_list_models` handler | team/guide/handlers.rs | 40 | 0.3 |
+| **W5-D26b-1** | 5 | **`one_create_team` args 解析 + 默认值（纯函数）** | team/guide/handlers.rs | 70 | 0.6 |
+| **W5-D26b-2** | 5 | **`handle_one_create_team` 调 service + 返回结构化** | team/guide/handlers.rs | 70 | 0.7 |
+| W5-D26c | 5 | `handle_one_list_models` handler | team/guide/handlers.rs | 40 | 0.3 |
 | W5-D26d | 5 | 建团成功后 3 个 WS 事件 | team/guide/handlers.rs | 50 | 0.4 |
 | W5-D27 | 5 | Guide stdio bridge 分支 | app/bridge.rs | 80 | 0.7 |
 | W5-D28a | 5 | `is_team_capable_backend` 纯函数 | team/guide/capability.rs | 40 | 0.3 |
@@ -1375,7 +1375,7 @@ Wave 5（3 人关键路径 + 可并行点）
 ## 5. 交付硬性要求（所有模块适用）
 
 1. **测试先行**：每个模块必须先写 2–4 条单元/集成测试（见各模块"测试策略"行），再开工；PR 必须带测试证据
-2. **禁 mock 逃课**：D4 的 descriptor 文本要对比 team-prompts.md 原文；D5 的 builder 要对比 AionUi 源码拷贝；D9/D11 的集成测试用 `MockWorkerTaskManager`（**合法 mock**，只为隔离真 ACP 进程）但必须 assert 调用顺序和参数
+2. **禁 mock 逃课**：D4 的 descriptor 文本要对比 team-prompts.md 原文；D5 的 builder 要对比 One Work 源码拷贝；D9/D11 的集成测试用 `MockWorkerTaskManager`（**合法 mock**，只为隔离真 ACP 进程）但必须 assert 调用顺序和参数
 3. **一次性交付**：按 leader 规则 #4，每个模块交付 = 该开发者下线；有返工派新人接手（每人只处理一个模块一次）
 4. **文档交接**：每个模块 PR 必须更新 [interface-contracts.md](./interface-contracts.md) 的对应 section 状态（TODO → Shipped）
 5. **CLAUDE.md 规则**：符合"只管 backend / 只 ACP / 事实来源是审计报告"

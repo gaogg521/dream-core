@@ -367,7 +367,7 @@ mod tests {
         // already exist (real-CLI error: "CODEX_HOME points to ..., but
         // that path does not exist") — caught by the integration test in
         // tests/codex_config_isolation.rs. This is the mitigation.
-        let tmp = std::env::temp_dir().join(format!("aionui-codex-adapter-test-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("one-codex-adapter-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
 
         let adapter = CodexAdapter::new(&tmp);

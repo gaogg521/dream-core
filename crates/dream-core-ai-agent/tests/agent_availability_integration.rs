@@ -66,8 +66,8 @@ async fn management_rows_derive_missing_available_and_unavailable_statuses() {
     repo.upsert(&custom_params(
         "agent-missing",
         "Missing Agent",
-        "aionui-missing-agent-binary",
-        r#"{"binary_name":"aionui-missing-agent-binary"}"#,
+        "one-missing-agent-binary",
+        r#"{"binary_name":"one-missing-agent-binary"}"#,
     ))
     .await
     .unwrap();
@@ -312,8 +312,8 @@ async fn manual_health_check_does_not_refresh_unrelated_agents() {
     repo.upsert(&custom_params(
         "agent-target-missing",
         "Target Missing Agent",
-        "aionui-definitely-missing-health-check-target",
-        r#"{"binary_name":"aionui-definitely-missing-health-check-target"}"#,
+        "one-definitely-missing-health-check-target",
+        r#"{"binary_name":"one-definitely-missing-health-check-target"}"#,
     ))
     .await
     .unwrap();
@@ -360,8 +360,8 @@ async fn custom_enabled_toggle_does_not_refresh_unrelated_agents() {
     repo.upsert(&custom_params(
         "agent-target-toggle",
         "Target Toggle Agent",
-        "aionui-target-toggle-command",
-        r#"{"binary_name":"aionui-target-toggle-command"}"#,
+        "one-target-toggle-command",
+        r#"{"binary_name":"one-target-toggle-command"}"#,
     ))
     .await
     .unwrap();
@@ -408,8 +408,8 @@ async fn custom_delete_does_not_refresh_unrelated_agents() {
     repo.upsert(&custom_params(
         "agent-target-delete",
         "Target Delete Agent",
-        "aionui-target-delete-command",
-        r#"{"binary_name":"aionui-target-delete-command"}"#,
+        "one-target-delete-command",
+        r#"{"binary_name":"one-target-delete-command"}"#,
     ))
     .await
     .unwrap();

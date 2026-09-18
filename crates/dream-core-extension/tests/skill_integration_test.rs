@@ -404,7 +404,7 @@ async fn sm11_get_skill_paths() {
     }
 
     let resource_dir = Path::new("/app/resources");
-    let data_dir = Path::new("/home/user/.aionui");
+    let data_dir = Path::new("/home/user/.one");
     let paths = resolve_skill_paths(resource_dir, data_dir);
 
     assert!(paths.user_skills_dir.to_string_lossy().contains("skills"));
@@ -628,7 +628,7 @@ async fn cp4_enable_skills_market() {
 
     let paths = mgr.get_custom_external_paths().await;
     assert_eq!(paths.len(), 1);
-    assert_eq!(paths[0].name, "aionui-skills");
+    assert_eq!(paths[0].name, "one-skills");
 }
 
 /// CP-5: Disable skills market.

@@ -225,7 +225,7 @@ async fn subscribe_parent_escape_is_invalid_relative_path() {
 /// A target that resolves (phase 1) but cannot mount (phase 2) must not take the
 /// whole batch down. Mount = arm watch + read the baseline listing, so it can
 /// fail per-target for reasons that say nothing about the siblings — on a large
-/// tree, an exhausted OS watch-descriptor limit (AIONUI-236). A regular file
+/// tree, an exhausted OS watch-descriptor limit (ONE-236). A regular file
 /// stands in for that here: it passes lexical resolution, then fails the mount.
 #[tokio::test]
 async fn subscribe_keeps_mounted_targets_when_one_target_fails() {

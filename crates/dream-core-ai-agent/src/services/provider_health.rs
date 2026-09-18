@@ -105,7 +105,7 @@ impl ProviderHealthCheckService {
             vision_unavailable_reason: None,
             // A health probe sends one trivial request and reads no images.
             local_ocr: None,
-            session_directory: self.data_dir.join("aionrs-health-check-sessions"),
+            session_directory: self.data_dir.join("dream-engine-health-check-sessions"),
             session_mode: None,
             skills: Vec::new(),
             extra_mcp_servers: HashMap::new(),

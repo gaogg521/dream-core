@@ -90,7 +90,7 @@ fn make_factory(
         data_dir: PathBuf::from("/tmp/dream-engine-test"),
         dump_prompts: false,
         broadcaster: Arc::new(BroadcastEventBus::new(16)),
-        backend_binary_path: Arc::new(PathBuf::from("/tmp/dream-engine-test/aioncore")),
+        backend_binary_path: Arc::new(PathBuf::from("/tmp/dream-engine-test/dreamcore")),
         mcp_server_repo: None,
         codex_bridge_config_repo: None,
         local_base_url: "http://127.0.0.1:0".into(),
@@ -105,7 +105,7 @@ fn make_factory(
     })
 }
 
-fn make_aionrs_options(
+fn make_dream_engine_options(
     conversation_id: &str,
     workspace: &str,
     model: ProviderWithModel,
@@ -136,11 +136,11 @@ fn make_aionrs_options(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn aionrs_factory_returns_error_for_missing_provider() {
+async fn dream_engine_factory_returns_error_for_missing_provider() {
     let (provider_repo, agent_registry, acp_agent_service) = setup().await;
     let factory = make_factory(provider_repo, agent_registry, acp_agent_service);
 
-    let options = make_aionrs_options(
+    let options = make_dream_engine_options(
         "conv-test-1",
         "",
         ProviderWithModel {
@@ -165,12 +165,12 @@ async fn aionrs_factory_returns_error_for_missing_provider() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn aionrs_factory_resolves_provider_from_db() {
+async fn dream_engine_factory_resolves_provider_from_db() {
     let (provider_repo, agent_registry, acp_agent_service) = setup().await;
     insert_test_provider(&*provider_repo, "prov-001", "openai").await;
     let factory = make_factory(provider_repo, agent_registry, acp_agent_service);
 
-    let options = make_aionrs_options(
+    let options = make_dream_engine_options(
         "conv-test-2",
         "/tmp/test-workspace",
         ProviderWithModel {
@@ -186,12 +186,12 @@ async fn aionrs_factory_resolves_provider_from_db() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn aionrs_factory_respects_use_model_override() {
+async fn dream_engine_factory_respects_use_model_override() {
     let (provider_repo, agent_registry, acp_agent_service) = setup().await;
     insert_test_provider(&*provider_repo, "prov-002", "openai").await;
     let factory = make_factory(provider_repo, agent_registry, acp_agent_service);
 
-    let options = make_aionrs_options(
+    let options = make_dream_engine_options(
         "conv-test-3",
         "/tmp/test-workspace",
         ProviderWithModel {

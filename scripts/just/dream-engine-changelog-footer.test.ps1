@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$script = Join-Path $scriptDir "aionrs-changelog-footer.ps1"
+$script = Join-Path $scriptDir "dream-engine-changelog-footer.ps1"
 
 function Assert-Transform($name, $inputText, $expected) {
     $actual = ($inputText -split "`n" | & $script) -join "`n"
@@ -13,7 +13,7 @@ function Assert-Transform($name, $inputText, $expected) {
 Assert-Transform "filter+scope+dedup" @"
 feat(agent): persist and report context usage
 fix(agent): preserve emergency watermark after microcompact
-Merge pull request #239 from iOfficeAI/jiahe/feat/context-usage
+Merge pull request #239 from origin/feat/context-usage
 feat(agent): persist and report context usage
 chore(main): release 0.2.8
 chore: sync Cargo.lock for release
@@ -45,4 +45,4 @@ feat(engine): drop legacy config
 fix(engine): rename field
 "@
 
-Write-Output "aionrs-changelog-footer ps1 tests passed"
+Write-Output "dream-engine-changelog-footer ps1 tests passed"

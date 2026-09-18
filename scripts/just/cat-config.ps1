@@ -1,9 +1,9 @@
 $ErrorActionPreference = "Stop"
 
-$configFile = if ([string]::IsNullOrWhiteSpace($env:AIONUI_CONFIG_DEV_FILE)) {
-    Join-Path $HOME ".aionui-config-dev/aionui-config.txt"
+$configFile = if ([string]::IsNullOrWhiteSpace($env:ONE_CONFIG_DEV_FILE)) {
+    Join-Path $HOME ".one-config-dev/one-config.txt"
 } else {
-    $env:AIONUI_CONFIG_DEV_FILE
+    $env:ONE_CONFIG_DEV_FILE
 }
 
 if (-not (Test-Path -LiteralPath $configFile -PathType Leaf)) {

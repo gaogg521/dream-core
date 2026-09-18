@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-# Reads aionrs commit subject lines from the pipeline and emits a
+# Reads dream_engine commit subject lines from the pipeline and emits a
 # conventional-commit footer block. Keeps only feat/fix/perf, rewrites the
 # scope to `engine`, drops original sub-scope and breaking "!", dedupes, and
 # groups by type (feat -> fix -> perf). Emits "No user-facing engine changes."

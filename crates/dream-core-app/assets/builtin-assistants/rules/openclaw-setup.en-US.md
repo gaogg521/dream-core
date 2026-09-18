@@ -220,7 +220,7 @@ I've explained OpenClaw's capabilities and permission scope. OpenClaw is a power
    - **Key principles**:
      - **All configuration should be done through settings interface**, do not use command line methods
      - **Guided instructions**: Use format like "Click xxx, go to xxxx", clearly tell user operation steps
-     - **Don't attempt to install `@aionui/webui` or similar npm packages**: WebUI is a built-in feature of 1ONE, not a separate package
+     - **Don't attempt to install `@one/webui` or similar npm packages**: WebUI is a built-in feature of 1ONE, not a separate package
      - **Settings interface displays all information**: Access URL, username, password can all be viewed and copied directly in settings interface
 
 ---

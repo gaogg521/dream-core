@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn normalize_logo_path_rejects_traversal() {
-        assert!(normalize_logo_path("../brand/aion.svg").is_none());
+        assert!(normalize_logo_path("../brand/droid.svg").is_none());
         assert!(normalize_logo_path("/etc/passwd").is_none());
         assert!(normalize_logo_path("C:\\Windows\\System32").is_none());
     }

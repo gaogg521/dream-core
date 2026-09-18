@@ -191,7 +191,7 @@ jobs:
           PLATFORMS=$(echo "$MATRIX" | jq -r '[.include[].platform] | join(", ")')
           ARTIFACTS=$(echo "$MATRIX" | jq -r '[.include[].artifact_name] | join(", ")')
 
-          echo "## AionCore Manual Build" >> "$GITHUB_STEP_SUMMARY"
+          echo "## dreamcore Manual Build" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Key | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"

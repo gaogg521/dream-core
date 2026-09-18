@@ -1830,7 +1830,7 @@ mod additive_tests {
             }
         ));
         // A NEW Permission frame round-trips its G3 metadata verbatim.
-        let new_p = r#"{"Permission":{"request_id":"r","kind":"Tool","metadata":{"server_name":"aionui-team"}}}"#;
+        let new_p = r#"{"Permission":{"request_id":"r","kind":"Tool","metadata":{"server_name":"one-team"}}}"#;
         let ev: SessionEvent = serde_json::from_str(new_p).expect("new Permission deserializes");
         match ev {
             SessionEvent::Permission { metadata, .. } => {
@@ -1839,7 +1839,7 @@ mod additive_tests {
                         .as_ref()
                         .and_then(|m| m.get("server_name"))
                         .and_then(|v| v.as_str()),
-                    Some("aionui-team")
+                    Some("one-team")
                 );
             }
             other => panic!("expected Permission, got {other:?}"),

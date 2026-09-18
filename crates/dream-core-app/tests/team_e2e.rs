@@ -401,10 +401,8 @@ async fn tc6c_create_team_rejects_missing_workspace_path() {
     let (mut app, services) = build_app().await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
     ensure_default_team_assistant(&mut app, &services, &token, &csrf).await;
-    let missing_workspace = std::env::temp_dir().join(format!(
-        "aionui-team-missing-{}",
-        dream_core_common::generate_short_id()
-    ));
+    let missing_workspace =
+        std::env::temp_dir().join(format!("one-team-missing-{}", dream_core_common::generate_short_id()));
 
     let body = json!({
         "name": "Alpha",
@@ -1332,7 +1330,7 @@ async fn es1c_team_conversations_carry_assistant_bound_mcp_snapshot() {
     sqlx::query(
         "INSERT INTO mcp_servers \
          (id, user_id, name, enabled, transport_type, transport_config, builtin, created_at, updated_at) \
-         VALUES ('mcp-e2e-reserved', ?, 'aionui-team', 1, 'http', ?, 0, ?, ?)",
+         VALUES ('mcp-e2e-reserved', ?, 'one-team', 1, 'http', ?, 0, ?, ?)",
     )
     .bind(user_id)
     .bind(r#"{"url":"http://127.0.0.1:7777/mcp"}"#)
@@ -1435,7 +1433,7 @@ async fn es1c_team_conversations_carry_assistant_bound_mcp_snapshot() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|name| name == "aionui-team")
+            .any(|name| name == "one-team")
     );
     // Request-only fields must never leak into the stored row.
     assert!(lead_extra.get("selected_mcp_server_ids").is_none());

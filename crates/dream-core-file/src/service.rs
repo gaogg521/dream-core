@@ -1577,18 +1577,18 @@ mod tests {
     #[test]
     fn list_workspace_files_sync_skips_directory_symlinks() {
         let dir = tempfile::tempdir().unwrap();
-        let skill_dir = dir.path().join("builtin-skills/auto-inject/aionui-skills");
+        let skill_dir = dir.path().join("builtin-skills/auto-inject/one-skills");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(skill_dir.join("SKILL.md"), "---\ndescription: test\n---\nbody").unwrap();
 
         let workspace = dir.path().join("workspace/.claude/skills");
         fs::create_dir_all(&workspace).unwrap();
-        std::os::unix::fs::symlink(&skill_dir, workspace.join("aionui-skills")).unwrap();
+        std::os::unix::fs::symlink(&skill_dir, workspace.join("one-skills")).unwrap();
 
         let files = list_workspace_files_sync(&dir.path().join("workspace")).unwrap();
 
         assert!(
-            files.iter().all(|f| f.name != "aionui-skills"),
+            files.iter().all(|f| f.name != "one-skills"),
             "directory symlink should not be surfaced as a file: {files:?}"
         );
     }

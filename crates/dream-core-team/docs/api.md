@@ -32,7 +32,7 @@
                "model": "claude-opus", "custom_agent_id": null }] }
 ```
 - `agents` 至少 1 个；第一个自动成为 lead（无论 role 写什么）
-- `backend`：`acp / claude / gemini / qwen / nanobot / aionrs / remote / openclaw-gateway`
+- `backend`：`acp / claude / gemini / qwen / nanobot / dream-engine / remote / openclaw-gateway`
 - `role`：`lead / leader / teammate`（大小写敏感）
 
 ### TeamResponse

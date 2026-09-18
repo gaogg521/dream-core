@@ -114,7 +114,7 @@ fn pgid(pid: u32) -> i32 {
 
 #[test]
 fn a_tool_child_that_left_the_group_is_still_reaped() {
-    let marker = std::env::temp_dir().join(format!("aionui-reap-{}.pid", std::process::id()));
+    let marker = std::env::temp_dir().join(format!("one-reap-{}.pid", std::process::id()));
     let marker_s = marker.to_string_lossy().to_string();
     let _ = std::fs::remove_file(&marker);
 
@@ -165,7 +165,7 @@ fn a_tool_child_that_left_the_group_is_still_reaped() {
 fn an_unrelated_process_is_left_running() {
     // The reap walks a live parent table; a bug there would take out processes
     // that merely happened to be running. This is the guard against that.
-    let marker = std::env::temp_dir().join(format!("aionui-bystander-{}.pid", std::process::id()));
+    let marker = std::env::temp_dir().join(format!("one-bystander-{}.pid", std::process::id()));
     let marker_s = marker.to_string_lossy().to_string();
     let _ = std::fs::remove_file(&marker);
 
@@ -206,7 +206,7 @@ async fn managed_process_kill_reaps_a_child_that_left_the_group() {
     use dream_core_common::CommandSpec;
     use dream_core_process::ManagedProcess;
 
-    let marker = std::env::temp_dir().join(format!("aionui-mpkill-{}.pid", std::process::id()));
+    let marker = std::env::temp_dir().join(format!("one-mpkill-{}.pid", std::process::id()));
     let marker_s = marker.to_string_lossy().to_string();
     let _ = std::fs::remove_file(&marker);
 

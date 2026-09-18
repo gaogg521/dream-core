@@ -187,10 +187,10 @@ cd dream-core
 cargo build -p dream-core-app --release
 cd ..\dream-ui
 $env:DREAM_BACKEND_LOCAL_PATH = '..\dream-core\target\release\dreamcore.exe'
-node scripts/prepareAioncore.js
+node scripts/prepareDreamcore.js
 ```
 
-**`prepareAioncore.js` 的两个坑**：
+**`prepareDreamcore.js` 的两个坑**：
 
 1. **dev 在跑时会 `EPERM`**（二进制被占用）。必须先停 dev，并确认
    `Get-Process electron` / `dreamcore` 都清零再执行。
@@ -257,7 +257,7 @@ start · thinking · content · acp_context_usage · finish
   ```
 
   不是缺持久化层，是这个 match arm 没写。现在返回
-  `AionrsAgentManager::context_usage_snapshot()`——锁住引擎取 `context_status()`。
+  `DreamEngineAgentManager::context_usage_snapshot()`——锁住引擎取 `context_status()`。
   两个细节：① 用 `try_lock` 而不是 `lock`，因为引擎的锁在整轮期间被持有（可能几
   分钟），让一个 HTTP handler 阻塞在后面去取一个实时流已经在送的数字，是拿"缺个
   数字"换"请求挂住"；② `context_usage == 0` 时返回 `None` 而不是"窗口有值、已用

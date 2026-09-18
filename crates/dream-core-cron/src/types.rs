@@ -903,7 +903,7 @@ mod tests {
     }
 
     #[test]
-    fn domain_to_dto_keeps_model_for_aionrs_assistant_jobs() {
+    fn domain_to_dto_keeps_model_for_dream_engine_assistant_jobs() {
         let job = CronJob {
             agent_type: "aionrs".into(),
             agent_config: Some(CronAgentConfig {

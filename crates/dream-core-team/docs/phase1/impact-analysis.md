@@ -17,7 +17,7 @@
 | D3 | dream-core-team | **新增** `TeamMcpStdioServerSpec` | 零影响 — 纯新增 struct，不改现有 bridge.rs 的 `TeamMcpStdioConfig` | 新增 struct |
 | D4 | dream-core-team | **修改** `tools.rs` + `server.rs` — 加 2 个工具 | 零影响 — 只追加 descriptor 和 dispatch 分支，不改现有 8 个工具的行为 | 追加分支 |
 | D5a/b-1/b-2/c | dream-core-team | **重写** `prompts.rs` | ⚠️ **影响 team prompt** — 现有 `build_lead_prompt` / `build_teammate_prompt` / `build_wake_payload` 被替换。但这三个函数**只在 team 单测里调用**（生产零调用，backend-audit P0#8/#9），所以不影响任何运行中功能 | 生产路径无调用者 |
-| D6 | dream-core-app | **新增** `bridge.rs` + main.rs argv 分支 | 零影响 — 只在 `args == "mcp-bridge"` 时走新路径，正常 `aionui-backend` 启动不走此分支 | argv 门禁 |
+| D6 | dream-core-app | **新增** `bridge.rs` + main.rs argv 分支 | 零影响 — 只在 `args == "mcp-bridge"` 时走新路径，正常 `dreamcore` 启动不走此分支 | argv 门禁 |
 | D7 | dream-core-team | **修改** `session.rs` — 加 3 个方法 + 改 2 个 send 方法 | ⚠️ **影响 team send_message** — 但这两个方法在当前分支已被删除（本 session 前半段的改动），不影响其他功能 | team-only 方法 |
 | D8 | dream-core-team | **修改** `scheduler.rs` — 扩展 mark_idle / try_wake / maybe_wake | 零影响 — scheduler 只被 team session 调用，不被其他 crate 引用 | team 内部模块 |
 | D9 | dream-core-team + dream-core-conversation | **修改** `service.rs` + 可能新增 `ConversationService::update_extra` | ⚠️ `update_extra` 是**新增公开方法**，不改现有方法。但需确认不会被意外调用 | 纯新增方法 |
@@ -46,7 +46,7 @@
 |---|------|---------|---------|
 | R1 | `AcpBuildExtra` 加字段后，旧 conversation.extra 反序列化是否真的不报错 | 写一条单测：用不含 `team_mcp_stdio_config` 的 JSON 反序列化 `AcpBuildExtra`，断言成功且字段为 None | D2 |
 | R2 | `session_new` 加 mcpServers 后，ACP CLI 不认这个字段会不会报错 | smoke test：不带 team config 的单聊 conversation 仍能正常 send_message | D11 |
-| R3 | `mcp-bridge` 子命令是否增加主二进制体积 | 构建后 `ls -lh target/release/aionui-backend`，对比 rebase 前 | D6 |
+| R3 | `mcp-bridge` 子命令是否增加主二进制体积 | 构建后 `ls -lh target/release/dreamcore`，对比 rebase 前 | D6 |
 | R4 | `build_team_state` 签名变了，其他调用点是否都更新了 | `cargo build` 通过 = 编译器保证 | D11 |
 | R5 | D5 重写 prompts.rs 后，现有 team 单测是否仍通过 | `cargo test -p dream-core-team` | D5 |
 | R6 | `ConversationService::update_extra` 新增方法是否影响 trait object 兼容 | 不是 trait 方法，是 impl 上的方法，不影响 `dyn IConversationRepository` | D9 |

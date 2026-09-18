@@ -124,6 +124,4 @@ description: '1One Work WebUI configuration expert: Helps users configure 1One W
 
 ## 参考资源
 
-- [1One Work Wiki - Remote Internet Access Guide](https://github.com/iOfficeAI/AionUi/wiki/Remote-Internet-Access-Guide)
-- [1One Work Wiki - WebUI Configuration Guide](https://github.com/iOfficeAI/AionUi/wiki/WebUI-Configuration-Guide)
 - [Tailscale 官方文档](https://tailscale.com/kb/)

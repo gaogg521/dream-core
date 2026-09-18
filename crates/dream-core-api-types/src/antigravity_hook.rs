@@ -34,9 +34,9 @@ impl AntigravityHookConfig {
     /// env key the hook reads to learn which conversation it belongs to.
     pub const ENV_CONVERSATION_ID: &'static str = "ONE_ANTIGRAVITY_HOOK_CONVERSATION_ID";
     /// Header carrying [`Self::ENV_TOKEN`] on the callback request.
-    pub const TOKEN_HEADER: &'static str = "x-aionui-hook-token";
+    pub const TOKEN_HEADER: &'static str = "x-one-hook-token";
     /// Name under which the bridge registers itself in `hooks.json`.
-    pub const HOOK_NAME: &'static str = "aionui-permission-bridge";
+    pub const HOOK_NAME: &'static str = "one-permission-bridge";
 }
 
 /// What agy writes to the hook's stdin before a tool runs.
@@ -167,9 +167,9 @@ mod tests {
 
     #[test]
     fn an_mcp_call_is_shown_as_server_slash_tool() {
-        let raw = r#"{"conversationId":"c1","toolCall":{"name":"call_mcp_tool","args":{"ServerName":"aionui-team","ToolName":"dream_core_team_ping"}}}"#;
+        let raw = r#"{"conversationId":"c1","toolCall":{"name":"call_mcp_tool","args":{"ServerName":"one-team","ToolName":"dream_core_team_ping"}}}"#;
         let input: AntigravityHookInput = serde_json::from_str(raw).unwrap();
-        assert_eq!(input.tool_call.display_name(), "aionui-team/dream_core_team_ping");
+        assert_eq!(input.tool_call.display_name(), "one-team/dream_core_team_ping");
     }
 
     #[test]

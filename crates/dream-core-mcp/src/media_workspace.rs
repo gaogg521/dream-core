@@ -113,6 +113,7 @@ mod tests {
     /// misplacement as the env-name drift above, reintroduced by the fix for it.
     #[test]
     fn the_media_server_is_recognised_under_every_name_it_has_carried() {
+        // The current name first, then every legacy name in LEGACY_MEDIA_MCP_NAMES.
         for name in [
             "one-image-generation",
             "aionui-image-generation",

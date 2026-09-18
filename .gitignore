@@ -584,3 +584,6 @@ graphify-out/
 
 # scratch target dir used when target/ is locked by a running backend
 target-test/
+
+# Developer-local skill symlinks: each points at a path on one machine.
+.opencode/skills/

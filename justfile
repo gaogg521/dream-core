@@ -7,7 +7,7 @@ install_script := if os_family() == "windows" { "powershell.exe -NoLogo -NoProfi
 migration_check_script := if os_family() == "windows" { "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/migration/check-immutability.ps1" } else { "bash scripts/migration/check-immutability.sh" }
 migration_check_test_script := if os_family() == "windows" { "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/migration/check-immutability.test.ps1" } else { "bash scripts/migration/check-immutability.test.sh" }
 auto_commit_script := if os_family() == "windows" { "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/just/auto-commit-fixes.ps1" } else { "bash scripts/just/auto-commit-fixes.sh" }
-update_aionrs_script := if os_family() == "windows" { "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/just/update-aionrs.ps1" } else { "bash scripts/just/update-aionrs.sh" }
+update_dream_engine_script := if os_family() == "windows" { "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/just/update-dream-engine.ps1" } else { "bash scripts/just/update-dream-engine.sh" }
 cat_config_script := if os_family() == "windows" { "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/just/cat-config.ps1" } else { "bash scripts/just/cat-config.sh" }
 
 default:
@@ -18,7 +18,7 @@ setup:
     git config core.hooksPath .githooks
     @echo "Git hooks enabled"
 
-# Run cargo with optional local aionrs SDK patches.
+# Run cargo with optional local dream-engine SDK patches.
 _cargo *ARGS:
     @{{cargo_script}} {{ARGS}}
 
@@ -121,11 +121,11 @@ push *ARGS: migration-check lint-fix fmt _auto-commit-fixes test
 _auto-commit-fixes:
     @{{auto_commit_script}}
 
-# Update aionrs dependency: bump Cargo.toml tag, then open a PR whose body
-# carries aionrs feat/fix/perf as conventional footer for release-please.
-# e.g. `just update-aionrs` (latest) or `just update-aionrs v0.2.9`
-update-aionrs *TAG:
-    @{{update_aionrs_script}} {{TAG}}
+# Update dream-engine dependency: bump Cargo.toml tag, then open a PR whose body
+# carries dream-engine feat/fix/perf as conventional footer for release-please.
+# e.g. `just update-dream-engine` (latest) or `just update-dream-engine v0.2.9`
+update-dream-engine *TAG:
+    @{{update_dream_engine_script}} {{TAG}}
 
 # Security audit
 audit:

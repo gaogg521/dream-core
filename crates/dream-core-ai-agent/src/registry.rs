@@ -1676,13 +1676,13 @@ mod tests {
     #[tokio::test]
     async fn internal_metadata_projects_constructed_mcp_capabilities_when_backend_is_null() {
         let reg = registry().await;
-        let aionrs = reg.get("632f31d2").await.expect("seeded aionrs metadata");
-        let mcp = aionrs
+        let dream_engine = reg.get("632f31d2").await.expect("seeded dream_engine metadata");
+        let mcp = dream_engine
             .handshake
             .agent_capabilities
             .as_ref()
             .and_then(|caps| caps.get("mcp_capabilities"))
-            .expect("aionrs effective MCP projection");
+            .expect("dream-engine effective MCP projection");
 
         assert_eq!(mcp["stdio"], true);
         assert_eq!(mcp["sse"], false);
@@ -1761,7 +1761,7 @@ mod tests {
         // Dream CLI (internal, no spawn command) is always available.
         assert!(
             visible.iter().any(|m| m.agent_type == AgentType::DreamEngine),
-            "internal aionrs row should survive the filter"
+            "internal dream_engine row should survive the filter"
         );
     }
 
@@ -1780,17 +1780,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn aionrs_internal_row_is_available_without_command() {
+    async fn dream_engine_internal_row_is_available_without_command() {
         let reg = registry().await;
-        let aionrs = reg
+        let dream_engine = reg
             .list_by_agent_type(AgentType::DreamEngine)
             .await
             .into_iter()
             .next()
             .unwrap();
-        assert_eq!(aionrs.agent_source, AgentSource::Internal);
-        assert!(aionrs.command.is_none());
-        assert!(aionrs.available);
+        assert_eq!(dream_engine.agent_source, AgentSource::Internal);
+        assert!(dream_engine.command.is_none());
+        assert!(dream_engine.available);
     }
 
     #[tokio::test]
@@ -2013,12 +2013,12 @@ mod tests {
         // The internal dream row is always available — its reason
         // slot must be None (sanity check that "available" doesn't
         // accidentally co-occur with a reason).
-        let aionrs = snapshot
+        let dream_engine = snapshot
             .iter()
             .find(|(m, _)| m.agent_type == AgentType::DreamEngine)
-            .expect("aionrs seed row");
-        assert!(aionrs.0.available);
-        assert!(aionrs.1.is_none());
+            .expect("dream-engine seed row");
+        assert!(dream_engine.0.available);
+        assert!(dream_engine.1.is_none());
     }
 
     /// An empty snapshot is a no-op — no column gets overwritten.
@@ -2075,8 +2075,8 @@ mod tests {
             // conversation's own token or base URL.
             "ONE_RUNTIME_TOKEN",
             "one_base_url",
-            "AIONUI_RUNTIME_TOKEN",
-            "aionui_bar",
+            "ONE_RUNTIME_TOKEN",
+            "one_bar",
             "path",
         ] {
             assert!(super::is_blocked_override_env_key(k), "{k} should be blocked");

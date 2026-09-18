@@ -41,8 +41,8 @@ and dream-core-common has zero internal dependencies.
 
 The project is organized as a Cargo workspace with 33 crates. They belong to two independent naming lineages:
 
-- **`dream-core-*`** (26 crates, formerly `aionui-*`) — the product core: conversations, channels, team collaboration, files, Office, MCP, etc. This is the whole surface of the personal/open-source edition.
-- **`dream-domain-*`** (7 crates, formerly `one-*`) — the enterprise/commercialization layer: org tenants, digital employees, billing, SSO, the enterprise-org dimension, deployment reservations, the requirements/DevOps board. **Not part of the original AionCore lineage** — it's a separate family added later, layered on top of `dream-core-*` in the dependency graph (see "Enterprise" below).
+- **`dream-core-*`** (26 crates) — the product core: conversations, channels, team collaboration, files, Office, MCP, etc. This is the whole surface of the personal/open-source edition.
+- **`dream-domain-*`** (7 crates, formerly `one-*`) — the enterprise/commercialization layer: org tenants, digital employees, billing, SSO, the enterprise-org dimension, deployment reservations, the requirements/DevOps board. **Not part of the original upstream lineage** — it's a separate family added later, layered on top of `dream-core-*` in the dependency graph (see "Enterprise" below).
 
 The four foundational layers below are the pre-existing `dream-core-*` layering; Enterprise is a new fifth layer inserted between Domain and Composition.
 

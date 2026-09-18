@@ -2493,33 +2493,33 @@ mod tests {
     }
 
     #[test]
-    fn validate_aionrs_accepts_valid_config() {
+    fn validate_dream_engine_accepts_valid_config() {
         let cfg = agent_cfg_dto("4056cdea");
         assert!(validate_engine_agent_config("dream", Some(&cfg)).is_ok());
     }
 
     #[test]
-    fn validate_aionrs_rejects_missing_config() {
+    fn validate_dream_engine_rejects_missing_config() {
         let err = validate_engine_agent_config("dream", None).unwrap_err();
         assert!(matches!(err, CronError::InvalidAgentConfig(_)));
     }
 
     #[test]
-    fn validate_aionrs_rejects_empty_provider_id() {
+    fn validate_dream_engine_rejects_empty_provider_id() {
         let cfg = agent_cfg_dto("");
         let err = validate_engine_agent_config("dream", Some(&cfg)).unwrap_err();
         assert!(matches!(err, CronError::InvalidAgentConfig(_)));
     }
 
     #[test]
-    fn validate_aionrs_rejects_whitespace_provider_id() {
+    fn validate_dream_engine_rejects_whitespace_provider_id() {
         let cfg = agent_cfg_dto("   ");
         let err = validate_engine_agent_config("dream", Some(&cfg)).unwrap_err();
         assert!(matches!(err, CronError::InvalidAgentConfig(_)));
     }
 
     #[test]
-    fn validate_aionrs_ignores_non_aionrs_type() {
+    fn validate_dream_engine_ignores_non_dream_engine_type() {
         // ACP / other types may legitimately omit agent_config or leave model empty.
         assert!(validate_engine_agent_config("acp", None).is_ok());
         let cfg = agent_cfg_dto("");

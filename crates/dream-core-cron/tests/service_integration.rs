@@ -278,7 +278,7 @@ impl IConversationRepository for StubConvRepo {
                 extra: serde_json::json!({
                     "backend": "gemini",
                     "agent_name": "Gemini",
-                    "workspace": ensure_named_workspace_path("aionui-cron-service-gemini-workspace"),
+                    "workspace": ensure_named_workspace_path("one-cron-service-gemini-workspace"),
                     "session_mode": "yolo",
                     "current_model_id": "gemini-2.5-pro"
                 })
@@ -311,7 +311,7 @@ impl IConversationRepository for StubConvRepo {
                 extra: serde_json::json!({
                     "backend": "hermes",
                     "agent_name": "Hermes",
-                    "workspace": ensure_named_workspace_path("aionui-cron-service-hermes-workspace"),
+                    "workspace": ensure_named_workspace_path("one-cron-service-hermes-workspace"),
                     "session_mode": "default",
                     "current_model_id": "gemini-2.5-pro"
                 })
@@ -344,7 +344,7 @@ impl IConversationRepository for StubConvRepo {
                 extra: serde_json::json!({
                     "backend": "gemini",
                     "agent_name": "Gemini",
-                    "workspace": ensure_named_workspace_path("aionui-cron-service-gemini-default-workspace"),
+                    "workspace": ensure_named_workspace_path("one-cron-service-gemini-default-workspace"),
                     "session_mode": "default",
                     "current_model_id": "gemini-2.5-pro"
                 })
@@ -377,7 +377,7 @@ impl IConversationRepository for StubConvRepo {
                 extra: serde_json::json!({
                     "backend": "codex",
                     "agent_name": "Codex",
-                    "workspace": ensure_named_workspace_path("aionui-cron-service-codex-workspace"),
+                    "workspace": ensure_named_workspace_path("one-cron-service-codex-workspace"),
                     "session_mode": "default",
                     "current_model_id": "gpt-5-codex"
                 })
@@ -410,7 +410,7 @@ impl IConversationRepository for StubConvRepo {
                 extra: serde_json::json!({
                     "backend": "claude",
                     "agent_name": "Claude",
-                    "workspace": ensure_named_workspace_path("aionui-cron-service-claude-workspace"),
+                    "workspace": ensure_named_workspace_path("one-cron-service-claude-workspace"),
                     "session_mode": "default",
                     "current_model_id": "claude-sonnet-4-20250514"
                 })
@@ -443,7 +443,7 @@ impl IConversationRepository for StubConvRepo {
                 extra: serde_json::json!({
                     "backend": "claude",
                     "agent_name": "Gemini",
-                    "workspace": ensure_named_workspace_path("aionui-cron-service-stale-backend-workspace"),
+                    "workspace": ensure_named_workspace_path("one-cron-service-stale-backend-workspace"),
                     "session_mode": "yolo",
                     "current_model_id": "gemini-2.5-pro"
                 })
@@ -456,7 +456,7 @@ impl IConversationRepository for StubConvRepo {
                 folder_id: None,
                 name_source: None,
             }
-        } else if id == "conv_mode_aionrs" {
+        } else if id == "conv_mode_dream_engine" {
             dream_core_db::models::ConversationRow {
                 id: id.into(),
                 user_id: "u1".into(),
@@ -476,7 +476,7 @@ impl IConversationRepository for StubConvRepo {
                 extra: serde_json::json!({
                     "backend": "anthropic",
                     "agent_name": "Aion CLI",
-                    "workspace": ensure_named_workspace_path("aionui-cron-service-aionrs-workspace"),
+                    "workspace": ensure_named_workspace_path("one-cron-service-dream_engine-workspace"),
                     "session_mode": "default",
                     "current_model_id": "claude-sonnet-4-20250514"
                 })
@@ -503,7 +503,7 @@ impl IConversationRepository for StubConvRepo {
                     "assistant_id": "assistant-override",
                     "backend": "claude",
                     "agent_name": "Override Assistant",
-                    "workspace": ensure_named_workspace_path("aionui-cron-service-assistant-stale-backend-workspace"),
+                    "workspace": ensure_named_workspace_path("one-cron-service-assistant-stale-backend-workspace"),
                     "current_model_id": "gpt-5.4"
                 })
                 .to_string(),
@@ -529,7 +529,7 @@ impl IConversationRepository for StubConvRepo {
                     "assistant_id": "missing-assistant",
                     "backend": "claude",
                     "agent_name": "Missing Assistant",
-                    "workspace": ensure_named_workspace_path("aionui-cron-service-missing-assistant-stale-backend-workspace")
+                    "workspace": ensure_named_workspace_path("one-cron-service-missing-assistant-stale-backend-workspace")
                 })
                 .to_string(),
                 pinned: false,
@@ -1245,7 +1245,7 @@ async fn seed_bare_assistant_definitions(repo: &Arc<dyn IAssistantDefinitionRepo
     for (definition_id, assistant_id, agent_backend) in [
         ("asstdef_bare_gemini", "bare:cc126dd5", "gemini"),
         ("asstdef_bare_codex", "bare:8e1acf31", "codex"),
-        ("asstdef_bare_aionrs", "bare:632f31d2", "aionrs"),
+        ("asstdef_bare_dream_engine", "bare:632f31d2", "aionrs"),
     ] {
         seed_assistant_definition(repo, definition_id, assistant_id, agent_backend).await;
     }
@@ -1405,15 +1405,21 @@ async fn create_job_requires_assistant_id_for_new_jobs() {
 }
 
 #[tokio::test]
-async fn create_job_derives_runtime_type_from_aionrs_assistant() {
+async fn create_job_derives_runtime_type_from_dream_engine_assistant() {
     let (svc, _, _, _, definition_repo, _) = setup_with_assistant_repos().await;
-    seed_assistant_definition(&definition_repo, "asstdef_runtime_aionrs", "assistant-aionrs", "aionrs").await;
+    seed_assistant_definition(
+        &definition_repo,
+        "asstdef_runtime_dream_engine",
+        "assistant-dream-engine",
+        "aionrs",
+    )
+    .await;
 
     let mut req = make_create_req("Assistant DreamEngine", every_60s());
     req.agent_config = Some(dream_core_api_types::CronAgentConfigWriteDto {
         name: "DreamEngine Assistant".into(),
         cli_path: None,
-        assistant_id: Some("assistant-aionrs".into()),
+        assistant_id: Some("assistant-dream-engine".into()),
         mode: Some("yolo".into()),
         model_id: Some("gemini-3.1-pro-preview".into()),
         model: Some(ProviderWithModel {
@@ -1892,7 +1898,7 @@ async fn update_existing_job_to_new_conversation_clears_previous_auto_workspace(
 async fn update_existing_job_to_new_conversation_preserves_custom_workspace() {
     let (svc, cron_repo, _, conv_repo) = setup_with_conv_repo().await;
     let conversation_id = format!("conv_mode_switch_custom_workspace_{}", now_ms());
-    let custom_workspace = ensure_named_workspace_path(&format!("aionui-cron-switch-custom-{conversation_id}"));
+    let custom_workspace = ensure_named_workspace_path(&format!("one-cron-switch-custom-{conversation_id}"));
     conv_repo.set_conversation_extra(
         &conversation_id,
         serde_json::json!({
@@ -1939,7 +1945,7 @@ async fn update_team_conversation_job_rejects_execution_mode_change() {
         "conv_team_cron",
         serde_json::json!({
             "team_id": "team-1",
-            "workspace": ensure_named_workspace_path("aionui-cron-service-team-workspace")
+            "workspace": ensure_named_workspace_path("one-cron-service-team-workspace")
         }),
     );
     let created = svc.add_job("u1", create_req).await.unwrap();
@@ -3587,7 +3593,7 @@ async fn cd3c_on_conversation_delete_preserves_custom_workspace_on_jobs() {
 
     let (svc, cron_repo, bc, conv_repo) = setup_with_conv_repo().await;
     let conversation_id = format!("conv_workspace_custom_{}", now_ms());
-    let custom_workspace = ensure_named_workspace_path(&format!("aionui-cron-custom-workspace-{conversation_id}"));
+    let custom_workspace = ensure_named_workspace_path(&format!("one-cron-custom-workspace-{conversation_id}"));
     conv_repo.set_conversation_extra(
         &conversation_id,
         serde_json::json!({

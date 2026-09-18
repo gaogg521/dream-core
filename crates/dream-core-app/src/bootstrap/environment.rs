@@ -27,7 +27,7 @@ pub struct ServerEnvironment {
 /// All subcommands that need logging and config should call this first.
 pub fn init_environment(cli: &Cli, merged_path: &str) -> Result<ServerEnvironment, BootstrapError> {
     // A custom --log-dir that cannot be created must not permanently brick
-    // bootstrap (AIONUI-231): init_tracing falls back to the default dir.
+    // bootstrap (ONE-231): init_tracing falls back to the default dir.
     let default_log_dir = cli.data_dir.join("logs");
     let log_guard = init_tracing(cli.log_dir.as_deref(), &default_log_dir, cli.log_level.as_deref())?;
 
@@ -276,7 +276,7 @@ mod tests {
             dream_core_db::DbError::Migration(sqlx::migrate::MigrateError::VersionMissing(39)),
         );
 
-        let bootstrap = database_init_bootstrap_error(err, std::path::Path::new("/db/path/aionui-backend.db"));
+        let bootstrap = database_init_bootstrap_error(err, std::path::Path::new("/db/path/one-backend.db"));
         let line = bootstrap.stderr_line();
         assert!(
             line.starts_with("BOOTSTRAP_DATA_INIT_FAILED stage=database.newer_than_app"),
@@ -296,7 +296,7 @@ mod tests {
             dream_core_db::DbError::Migration(sqlx::migrate::MigrateError::VersionMismatch(7)),
         );
 
-        let bootstrap = database_init_bootstrap_error(err, std::path::Path::new("/db/path/aionui-backend.db"));
+        let bootstrap = database_init_bootstrap_error(err, std::path::Path::new("/db/path/one-backend.db"));
         let line = bootstrap.stderr_line();
         assert!(
             line.starts_with("BOOTSTRAP_DATA_INIT_FAILED stage=database.migration"),
@@ -306,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn aionpro_identity_requires_bootstrap_secret() {
+    fn dreampro_identity_requires_bootstrap_secret() {
         let err = validate_identity_environment(IdentityMode::DreamPro, None)
             .expect_err("DreamPro startup must require bootstrap secret");
 
@@ -315,13 +315,13 @@ mod tests {
     }
 
     #[test]
-    fn aionpro_identity_accepts_bootstrap_secret() {
+    fn dreampro_identity_accepts_bootstrap_secret() {
         validate_identity_environment(IdentityMode::DreamPro, Some("secret"))
             .expect("DreamPro startup should accept configured bootstrap secret");
     }
 
     #[test]
-    fn non_aionpro_identity_does_not_require_bootstrap_secret() {
+    fn non_dreampro_identity_does_not_require_bootstrap_secret() {
         validate_identity_environment(IdentityMode::WebUi, None)
             .expect("WebUI startup should not require bootstrap secret");
         validate_identity_environment(IdentityMode::Local, None)

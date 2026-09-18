@@ -1235,7 +1235,7 @@ async fn clear_acp_context_anchor_drops_only_the_resume_anchor() {
 }
 
 #[tokio::test]
-async fn aionrs_conversation_does_not_support_acp_context_reset() {
+async fn dream_engine_conversation_does_not_support_acp_context_reset() {
     let (service, _broadcaster, _repo, _task_manager) = make_service();
     let request = serde_json::from_value(json!({
         "type": "aionrs",
@@ -1496,14 +1496,14 @@ fn make_create_req_with_backend(backend: &str) -> CreateConversationRequest {
 }
 
 fn ensure_test_workspace_path() -> String {
-    let workspace = std::env::temp_dir().join("aionui-conversation-service-test-project");
+    let workspace = std::env::temp_dir().join("one-conversation-service-test-project");
     std::fs::create_dir_all(&workspace).unwrap();
     workspace.to_string_lossy().to_string()
 }
 
 fn unique_test_workspace_path(label: &str) -> PathBuf {
     let workspace = std::env::temp_dir()
-        .join(format!("aionui-conversation-service-test-{label}"))
+        .join(format!("one-conversation-service-test-{label}"))
         .join(ConversationService::mint_msg_id());
     std::fs::create_dir_all(&workspace).unwrap();
     workspace
@@ -2006,7 +2006,7 @@ async fn create_rejects_deprecated_agent_types_for_new_conversations() {
 #[tokio::test]
 async fn create_auto_provisions_workspace_under_date_partition() {
     let temp = tempfile::tempdir().unwrap();
-    let workspace_root = temp.path().join("aionui-data");
+    let workspace_root = temp.path().join("one-data");
     let (svc, _broadcaster, _repo, _task_mgr) = make_service_with_workspace_root(workspace_root.clone());
     let req: CreateConversationRequest = serde_json::from_value(json!({
         "type": "acp",
@@ -2024,7 +2024,7 @@ async fn create_auto_provisions_workspace_under_date_partition() {
 #[test]
 fn create_team_temp_workspace_uses_date_partition() {
     let temp = tempfile::tempdir().unwrap();
-    let workspace_root = temp.path().join("aionui-data");
+    let workspace_root = temp.path().join("one-data");
     let (svc, _broadcaster, _repo, _task_mgr) = make_service_with_workspace_root(workspace_root.clone());
 
     let workspace = svc.create_team_temp_workspace("user_1", "team_1").unwrap();
@@ -2037,7 +2037,7 @@ fn create_team_temp_workspace_uses_date_partition() {
 #[tokio::test]
 async fn create_rejects_unavailable_workspace_with_trailing_whitespace_in_request() {
     let (svc, _broadcaster, _repo, _task_mgr) = make_service();
-    let dir = std::env::temp_dir().join(format!("aionui-test-{}", dream_core_common::generate_short_id()));
+    let dir = std::env::temp_dir().join(format!("one-test-{}", dream_core_common::generate_short_id()));
     std::fs::create_dir(&dir).unwrap();
     let workspace = dir.join("workspace");
     std::fs::create_dir(&workspace).unwrap();
@@ -2065,7 +2065,7 @@ async fn create_rejects_unavailable_workspace_with_trailing_whitespace_in_reques
 #[tokio::test]
 async fn create_accepts_existing_workspace_with_trailing_whitespace_in_name() {
     let (svc, _broadcaster, _repo, _task_mgr) = make_service();
-    let dir = std::env::temp_dir().join(format!("aionui-test-{}", dream_core_common::generate_short_id()));
+    let dir = std::env::temp_dir().join(format!("one-test-{}", dream_core_common::generate_short_id()));
     std::fs::create_dir(&dir).unwrap();
     let workspace = dir.join("workspace ");
     std::fs::create_dir(&workspace).unwrap();
@@ -2083,7 +2083,7 @@ async fn create_accepts_existing_workspace_with_trailing_whitespace_in_name() {
 #[tokio::test]
 async fn create_accepts_workspace_with_whitespace_in_any_path_segment() {
     let (svc, _broadcaster, _repo, _task_mgr) = make_service();
-    let dir = std::env::temp_dir().join(format!("aionui-test-{}", dream_core_common::generate_short_id()));
+    let dir = std::env::temp_dir().join(format!("one-test-{}", dream_core_common::generate_short_id()));
     std::fs::create_dir(&dir).unwrap();
     let workspace = dir.join("my project").join("workspace");
     std::fs::create_dir(dir.join("my project")).unwrap();
@@ -2140,7 +2140,7 @@ async fn create_stores_model_as_json() {
 }
 
 #[tokio::test]
-async fn create_derives_aionrs_type_from_assistant_backend_when_type_is_missing() {
+async fn create_derives_dream_engine_type_from_assistant_backend_when_type_is_missing() {
     let resolver = Arc::new(FixedSkillResolver { names: vec![] });
     let dispatcher = Arc::new(StaticAssistantDispatcher {
         rules: std::collections::HashMap::new(),
@@ -2150,8 +2150,8 @@ async fn create_derives_aionrs_type_from_assistant_backend_when_type_is_missing(
 
     upsert_test_assistant_definition(
         &definition_repo,
-        "asstdef_aionrs_missing_type",
-        "assistant-aionrs-missing-type",
+        "asstdef_dream_engine_missing_type",
+        "assistant-dream_engine-missing-type",
         "aionrs",
         "auto",
         "auto",
@@ -2159,7 +2159,7 @@ async fn create_derives_aionrs_type_from_assistant_backend_when_type_is_missing(
     .await;
     overlay_repo
         .upsert(&UpsertAssistantOverlayParams {
-            assistant_definition_id: "asstdef_aionrs_missing_type",
+            assistant_definition_id: "asstdef_dream_engine_missing_type",
             enabled: true,
             sort_order: 0,
             agent_id_override: None,
@@ -2171,7 +2171,7 @@ async fn create_derives_aionrs_type_from_assistant_backend_when_type_is_missing(
     let workspace = ensure_test_workspace_path();
     let req: CreateConversationRequest = serde_json::from_value(json!({
         "assistant": {
-            "id": "assistant-aionrs-missing-type",
+            "id": "assistant-dream_engine-missing-type",
             "locale": "en-US"
         },
         "model": {
@@ -2684,7 +2684,7 @@ async fn update_unpin_clears_pinned_at() {
 async fn update_extra_merge() {
     let (svc, _broadcaster, _repo, task_mgr) = make_service();
     let dir = std::env::temp_dir().join(format!(
-        "aionui-conversation-update-extra-merge-{}",
+        "one-conversation-update-extra-merge-{}",
         dream_core_common::generate_short_id()
     ));
     let old_workspace = dir.join("old-workspace");
@@ -2830,7 +2830,7 @@ async fn delete_invokes_registered_hook_before_row_delete() {
 #[tokio::test]
 async fn delete_removes_auto_provisioned_workspace_directory() {
     let temp = tempfile::tempdir().unwrap();
-    let workspace_root = temp.path().join("aionui-data");
+    let workspace_root = temp.path().join("one-data");
     let (svc, _broadcaster, _repo, _task_mgr) = make_service_with_workspace_root(workspace_root);
     let req: CreateConversationRequest = serde_json::from_value(json!({
         "type": "acp",
@@ -2850,7 +2850,7 @@ async fn delete_removes_auto_provisioned_workspace_directory() {
 #[tokio::test]
 async fn delete_removes_empty_date_workspace_parents() {
     let temp = tempfile::tempdir().unwrap();
-    let workspace_root = temp.path().join("aionui-data");
+    let workspace_root = temp.path().join("one-data");
     let (svc, _broadcaster, _repo, _task_mgr) = make_service_with_workspace_root(workspace_root);
     let make_req = || {
         serde_json::from_value::<CreateConversationRequest>(json!({
@@ -2883,7 +2883,7 @@ async fn delete_removes_empty_date_workspace_parents() {
 #[tokio::test]
 async fn delete_preserves_user_supplied_workspace_directory() {
     let temp = tempfile::tempdir().unwrap();
-    let workspace_root = temp.path().join("aionui-data");
+    let workspace_root = temp.path().join("one-data");
     let user_workspace = temp.path().join("user-project");
     std::fs::create_dir_all(&user_workspace).unwrap();
     let (svc, _broadcaster, _repo, _task_mgr) = make_service_with_workspace_root(workspace_root);
@@ -4418,7 +4418,7 @@ async fn send_message_injects_conversation_runtime_context() {
 async fn send_message_injects_configured_runtime_helper_context() {
     let (svc, _broadcaster, _repo, _default_task_mgr) = make_service();
     let svc = svc.with_runtime_helper_context(
-        "/Applications/AionUi/aioncore".to_owned(),
+        "/Applications/One Work/dreamcore".to_owned(),
         "http://127.0.0.1:51234".to_owned(),
     );
     let conv = svc.create("user_1", make_create_req()).await.unwrap();
@@ -4438,7 +4438,7 @@ async fn send_message_injects_configured_runtime_helper_context() {
         options[0]
             .context
             .runtime_env
-            .contains(&(HELPER_BIN_ENV.to_owned(), "/Applications/AionUi/aioncore".to_owned())),
+            .contains(&(HELPER_BIN_ENV.to_owned(), "/Applications/One Work/dreamcore".to_owned())),
         "runtime env should include ONE_HELPER_BIN"
     );
     assert!(
@@ -5618,15 +5618,15 @@ async fn set_config_option_command_ack_does_not_persist_assistant_preference() {
 }
 
 #[tokio::test]
-async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_model_mode_is_auto() {
+async fn update_dream_engine_model_updates_assistant_preference_only_when_snapshot_model_mode_is_auto() {
     let task_mgr = Arc::new(MockTaskManager::new());
     let (svc, _broadcaster, repo, definition_repo, overlay_repo, preference_repo) =
         make_service_with_mock_task_manager_and_assistant_support(task_mgr.clone()).await;
 
     upsert_test_assistant_definition(
         &definition_repo,
-        "asstdef_aionrs_auto",
-        "assistant-aionrs-auto",
+        "asstdef_dream_engine_auto",
+        "assistant-dream-engine-auto",
         "aionrs",
         "auto",
         "auto",
@@ -5634,7 +5634,7 @@ async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_mod
     .await;
     overlay_repo
         .upsert(&UpsertAssistantOverlayParams {
-            assistant_definition_id: "asstdef_aionrs_auto",
+            assistant_definition_id: "asstdef_dream_engine_auto",
             enabled: true,
             sort_order: 0,
             agent_id_override: None,
@@ -5646,8 +5646,8 @@ async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_mod
         .upsert_for_user(
             "user_1",
             &UpsertAssistantPreferenceParams {
-                assistant_definition_id: "asstdef_aionrs_auto",
-                last_model_id: Some("legacy-aionrs-model"),
+                assistant_definition_id: "asstdef_dream_engine_auto",
+                last_model_id: Some("legacy-dream-engine-model"),
                 last_permission_value: None,
                 last_thought_level_value: None,
                 last_skill_ids: "[]",
@@ -5659,7 +5659,8 @@ async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_mod
         .unwrap();
 
     let auto_conv =
-        create_assistant_backed_conversation(&svc, "user_1", Some("aionrs"), "aionrs", "assistant-aionrs-auto").await;
+        create_assistant_backed_conversation(&svc, "user_1", Some("aionrs"), "aionrs", "assistant-dream-engine-auto")
+            .await;
     let updated = svc
         .update(
             "user_1",
@@ -5685,7 +5686,7 @@ async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_mod
         Some("model-z")
     );
     let auto_pref = preference_repo
-        .get_for_user("user_1", "asstdef_aionrs_auto")
+        .get_for_user("user_1", "asstdef_dream_engine_auto")
         .await
         .unwrap()
         .unwrap();
@@ -5699,8 +5700,8 @@ async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_mod
 
     upsert_test_assistant_definition(
         &definition_repo,
-        "asstdef_aionrs_fixed",
-        "assistant-aionrs-fixed",
+        "asstdef_dream_engine_fixed",
+        "assistant-dream_engine-fixed",
         "aionrs",
         "fixed",
         "auto",
@@ -5708,7 +5709,7 @@ async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_mod
     .await;
     overlay_repo
         .upsert(&UpsertAssistantOverlayParams {
-            assistant_definition_id: "asstdef_aionrs_fixed",
+            assistant_definition_id: "asstdef_dream_engine_fixed",
             enabled: true,
             sort_order: 0,
             agent_id_override: None,
@@ -5720,8 +5721,8 @@ async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_mod
         .upsert_for_user(
             "user_1",
             &UpsertAssistantPreferenceParams {
-                assistant_definition_id: "asstdef_aionrs_fixed",
-                last_model_id: Some("legacy-aionrs-fixed-model"),
+                assistant_definition_id: "asstdef_dream_engine_fixed",
+                last_model_id: Some("legacy-dream-engine-fixed-model"),
                 last_permission_value: None,
                 last_thought_level_value: None,
                 last_skill_ids: "[]",
@@ -5733,7 +5734,8 @@ async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_mod
         .unwrap();
 
     let fixed_conv =
-        create_assistant_backed_conversation(&svc, "user_1", Some("aionrs"), "aionrs", "assistant-aionrs-fixed").await;
+        create_assistant_backed_conversation(&svc, "user_1", Some("aionrs"), "aionrs", "assistant-dream_engine-fixed")
+            .await;
     let _ = svc
         .update(
             "user_1",
@@ -5755,11 +5757,14 @@ async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_mod
         .unwrap();
 
     let fixed_pref = preference_repo
-        .get_for_user("user_1", "asstdef_aionrs_fixed")
+        .get_for_user("user_1", "asstdef_dream_engine_fixed")
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(fixed_pref.last_model_id.as_deref(), Some("legacy-aionrs-fixed-model"));
+    assert_eq!(
+        fixed_pref.last_model_id.as_deref(),
+        Some("legacy-dream-engine-fixed-model")
+    );
     let fixed_snapshot = repo
         .get_assistant_snapshot("user_1", &fixed_conv.id)
         .await
@@ -5778,15 +5783,15 @@ async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_mod
 }
 
 #[tokio::test]
-async fn create_defaults_aionrs_session_mode_to_yolo_for_never_used_auto_assistant() {
+async fn create_defaults_dream_engine_session_mode_to_yolo_for_never_used_auto_assistant() {
     let task_mgr = Arc::new(MockTaskManager::new());
     let (svc, _broadcaster, _repo, definition_repo, overlay_repo, _preference_repo) =
         make_service_with_mock_task_manager_and_assistant_support(task_mgr.clone()).await;
 
     upsert_test_assistant_definition(
         &definition_repo,
-        "asstdef_aionrs_never_used",
-        "assistant-aionrs-never-used",
+        "asstdef_dream_engine_never_used",
+        "assistant-dream_engine-never-used",
         "aionrs",
         "auto",
         "auto",
@@ -5794,7 +5799,7 @@ async fn create_defaults_aionrs_session_mode_to_yolo_for_never_used_auto_assista
     .await;
     overlay_repo
         .upsert(&UpsertAssistantOverlayParams {
-            assistant_definition_id: "asstdef_aionrs_never_used",
+            assistant_definition_id: "asstdef_dream_engine_never_used",
             enabled: true,
             sort_order: 0,
             agent_id_override: None,
@@ -5804,23 +5809,28 @@ async fn create_defaults_aionrs_session_mode_to_yolo_for_never_used_auto_assista
         .unwrap();
     // No preference row at all — this assistant has never been used before.
 
-    let conv =
-        create_assistant_backed_conversation(&svc, "user_1", Some("aionrs"), "aionrs", "assistant-aionrs-never-used")
-            .await;
+    let conv = create_assistant_backed_conversation(
+        &svc,
+        "user_1",
+        Some("aionrs"),
+        "aionrs",
+        "assistant-dream_engine-never-used",
+    )
+    .await;
 
     assert_eq!(conv.extra["session_mode"], json!("yolo"));
 }
 
 #[tokio::test]
-async fn create_keeps_aionrs_session_mode_unset_when_permission_mode_is_fixed() {
+async fn create_keeps_dream_engine_session_mode_unset_when_permission_mode_is_fixed() {
     let task_mgr = Arc::new(MockTaskManager::new());
     let (svc, _broadcaster, _repo, definition_repo, overlay_repo, _preference_repo) =
         make_service_with_mock_task_manager_and_assistant_support(task_mgr.clone()).await;
 
     upsert_test_assistant_definition(
         &definition_repo,
-        "asstdef_aionrs_fixed_no_value",
-        "assistant-aionrs-fixed-no-value",
+        "asstdef_dream_engine_fixed_no_value",
+        "assistant-dream_engine-fixed-no-value",
         "aionrs",
         "auto",
         "fixed",
@@ -5828,7 +5838,7 @@ async fn create_keeps_aionrs_session_mode_unset_when_permission_mode_is_fixed() 
     .await;
     overlay_repo
         .upsert(&UpsertAssistantOverlayParams {
-            assistant_definition_id: "asstdef_aionrs_fixed_no_value",
+            assistant_definition_id: "asstdef_dream_engine_fixed_no_value",
             enabled: true,
             sort_order: 0,
             agent_id_override: None,
@@ -5842,7 +5852,7 @@ async fn create_keeps_aionrs_session_mode_unset_when_permission_mode_is_fixed() 
         "user_1",
         Some("aionrs"),
         "aionrs",
-        "assistant-aionrs-fixed-no-value",
+        "assistant-dream_engine-fixed-no-value",
     )
     .await;
 
@@ -6606,7 +6616,7 @@ async fn send_message_does_not_evict_non_acp_task_after_terminal_error() {
         ScriptedAgent::new(
             &conv.id,
             vec![vec![AgentStreamEvent::Error(ErrorEventData::legacy(
-                "aionrs terminal error",
+                "dream-engine terminal error",
                 Some(AgentErrorCode::UnknownUpstreamError),
             ))]],
         )
@@ -8343,18 +8353,21 @@ async fn assistant_backed_acp_build_options_include_snapshot_rule_as_preset_cont
 }
 
 #[tokio::test]
-async fn assistant_backed_aionrs_build_options_include_snapshot_rule_as_preset_rules() {
+async fn assistant_backed_dream_engine_build_options_include_snapshot_rule_as_preset_rules() {
     let resolver = Arc::new(FixedSkillResolver { names: vec![] });
     let dispatcher = Arc::new(StaticAssistantDispatcher {
-        rules: std::collections::HashMap::from([("preset-aionrs-rule".to_string(), "assistant rule body".to_string())]),
+        rules: std::collections::HashMap::from([(
+            "preset-dream_engine-rule".to_string(),
+            "assistant rule body".to_string(),
+        )]),
     });
     let (svc, _broadcaster, repo, definition_repo, state_repo, _preference_repo) =
         make_service_with_assistant_support(resolver, dispatcher).await;
 
     upsert_test_assistant_definition(
         &definition_repo,
-        "asstdef_preset_aionrs_rule",
-        "preset-aionrs-rule",
+        "asstdef_preset_dream_engine_rule",
+        "preset-dream_engine-rule",
         "aionrs",
         "auto",
         "auto",
@@ -8362,7 +8375,7 @@ async fn assistant_backed_aionrs_build_options_include_snapshot_rule_as_preset_r
     .await;
     state_repo
         .upsert(&UpsertAssistantOverlayParams {
-            assistant_definition_id: "asstdef_preset_aionrs_rule",
+            assistant_definition_id: "asstdef_preset_dream_engine_rule",
             enabled: true,
             sort_order: 0,
             agent_id_override: None,
@@ -8372,7 +8385,8 @@ async fn assistant_backed_aionrs_build_options_include_snapshot_rule_as_preset_r
         .unwrap();
 
     let conv =
-        create_assistant_backed_conversation(&svc, "user_1", Some("aionrs"), "aionrs", "preset-aionrs-rule").await;
+        create_assistant_backed_conversation(&svc, "user_1", Some("aionrs"), "aionrs", "preset-dream_engine-rule")
+            .await;
     let row = repo.get("user_1", &conv.id).await.unwrap().unwrap();
     let options = svc.build_task_options(&row).await.unwrap();
 
@@ -9147,16 +9161,16 @@ async fn insert_raw_message_persists_row_and_broadcasts_stream() {
 /// Inserts an dream conversation whose `extra.session_mode` is the create-time
 /// value and persists an assistant snapshot carrying the runtime permission
 /// gate inputs (`default_permission_mode` / `resolved_permission_value`).
-async fn seed_aionrs_conversation_with_snapshot(
+async fn seed_dream_engine_conversation_with_snapshot(
     repo: &Arc<MockRepo>,
     session_mode: &str,
     default_permission_mode: &str,
     resolved_permission_value: Option<&str>,
 ) -> ConversationRow {
     let row = ConversationRow {
-        id: format!("aionrs-seed-{}", dream_core_common::generate_short_id()),
+        id: format!("dream-engine-seed-{}", dream_core_common::generate_short_id()),
         user_id: "user_1".into(),
-        name: "aionrs seed".into(),
+        name: "dream-engine seed".into(),
         r#type: "dream".into(),
         extra: json!({
             "session_mode": session_mode,
@@ -9203,7 +9217,7 @@ async fn seed_aionrs_conversation_with_snapshot(
     row
 }
 
-fn aionrs_session_mode(options: &BuildTaskOptions) -> Option<String> {
+fn dream_engine_session_mode(options: &BuildTaskOptions) -> Option<String> {
     match &options.context.kind {
         AgentSessionKind::DreamEngine(ctx) => ctx.config.session_mode.clone(),
         AgentSessionKind::Acp(_) | AgentSessionKind::Antigravity(_) => panic!("expected DreamEngine build options"),
@@ -9211,39 +9225,39 @@ fn aionrs_session_mode(options: &BuildTaskOptions) -> Option<String> {
 }
 
 #[tokio::test]
-async fn aionrs_rebuild_auto_mode_preserves_runtime_yolo() {
+async fn dream_engine_rebuild_auto_mode_preserves_runtime_yolo() {
     // AC#1: an `auto` dream session that was switched to yolo at runtime must
     // keep yolo after a rebuild (model switch / agent restart).
     let (svc, _broadcaster, repo, _task_mgr) = make_service();
-    let row = seed_aionrs_conversation_with_snapshot(&repo, "default", "auto", Some("yolo")).await;
+    let row = seed_dream_engine_conversation_with_snapshot(&repo, "default", "auto", Some("yolo")).await;
 
     let options = svc.build_task_options(&row).await.unwrap();
 
-    assert_eq!(aionrs_session_mode(&options).as_deref(), Some("yolo"));
+    assert_eq!(dream_engine_session_mode(&options).as_deref(), Some("yolo"));
 }
 
 #[tokio::test]
-async fn aionrs_rebuild_existing_data_auto_overrides_create_time_seed() {
+async fn dream_engine_rebuild_existing_data_auto_overrides_create_time_seed() {
     // AC#2: existing data — create-time non-yolo seed is overridden by the
     // authoritative resolved runtime value.
     let (svc, _broadcaster, repo, _task_mgr) = make_service();
-    let row = seed_aionrs_conversation_with_snapshot(&repo, "auto_edit", "auto", Some("yolo")).await;
+    let row = seed_dream_engine_conversation_with_snapshot(&repo, "auto_edit", "auto", Some("yolo")).await;
 
     let options = svc.build_task_options(&row).await.unwrap();
 
-    assert_eq!(aionrs_session_mode(&options).as_deref(), Some("yolo"));
+    assert_eq!(dream_engine_session_mode(&options).as_deref(), Some("yolo"));
 }
 
 #[tokio::test]
-async fn aionrs_rebuild_fixed_mode_blocks_runtime_escalation() {
+async fn dream_engine_rebuild_fixed_mode_blocks_runtime_escalation() {
     // AC#3 (hard safety gate): a `fixed` assistant must NOT adopt the runtime
     // residue, even if `resolved_permission_value` was written to yolo.
     let (svc, _broadcaster, repo, _task_mgr) = make_service();
-    let row = seed_aionrs_conversation_with_snapshot(&repo, "default", "fixed", Some("yolo")).await;
+    let row = seed_dream_engine_conversation_with_snapshot(&repo, "default", "fixed", Some("yolo")).await;
 
     let options = svc.build_task_options(&row).await.unwrap();
 
-    assert_eq!(aionrs_session_mode(&options).as_deref(), Some("default"));
+    assert_eq!(dream_engine_session_mode(&options).as_deref(), Some("default"));
 }
 
 #[tokio::test]
@@ -9255,7 +9269,7 @@ async fn cron_required_runtime_mode_wins_over_resolved_permission_seed() {
     // not bypass or reorder this override.
     let task_mgr = Arc::new(MockTaskManager::new());
     let (svc, broadcaster, repo) = make_service_with_mock_task_manager(task_mgr.clone());
-    let row = seed_aionrs_conversation_with_snapshot(&repo, "default", "auto", Some("yolo")).await;
+    let row = seed_dream_engine_conversation_with_snapshot(&repo, "default", "auto", Some("yolo")).await;
     broadcaster.take_events();
 
     let agent = Arc::new(

@@ -342,7 +342,7 @@ async fn test_on_save_cli_not_found_blocks_upsert() {
         &csrf,
         json!({
             "name": "bad",
-            "command": "aionui-definitely-nonexistent-xyz"
+            "command": "one-definitely-nonexistent-xyz"
         }),
     )
     .await;

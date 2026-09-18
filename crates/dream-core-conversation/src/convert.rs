@@ -452,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_provider_with_model_aionui_format() {
+    fn parse_provider_with_model_one_format() {
         let json = r#"{"id":"prov_1","platform":"openai","name":"My Provider","baseUrl":"https://api.openai.com","apiKey":"sk-xxx","model":[{"id":"gpt-4","name":"GPT-4"}],"capabilities":["text","vision"],"useModel":"gpt-4-turbo","enabled":true}"#;
         let result = parse_provider_with_model(json).unwrap();
         assert_eq!(result.provider_id, "prov_1");
@@ -473,9 +473,9 @@ mod tests {
             "pending",
             Some("dream"),
             None,
-            r#"{"workspace":"/srv/aionui-data/conversations/claude-temp-abc"}"#,
+            r#"{"workspace":"/srv/one-data/conversations/claude-temp-abc"}"#,
         );
-        let resp = row_to_response(row, Path::new("/srv/aionui-data")).unwrap();
+        let resp = row_to_response(row, Path::new("/srv/one-data")).unwrap();
         assert_eq!(resp.extra["is_temporary_workspace"], true);
     }
 
@@ -488,14 +488,14 @@ mod tests {
             None,
             r#"{"workspace":"/Users/alice/my-project"}"#,
         );
-        let resp = row_to_response(row, Path::new("/srv/aionui-data")).unwrap();
+        let resp = row_to_response(row, Path::new("/srv/one-data")).unwrap();
         assert_eq!(resp.extra["is_temporary_workspace"], false);
     }
 
     #[test]
     fn row_to_response_marks_missing_workspace_as_non_temporary() {
         let row = make_row("acp", "pending", Some("dream"), None, r#"{}"#);
-        let resp = row_to_response(row, Path::new("/srv/aionui-data")).unwrap();
+        let resp = row_to_response(row, Path::new("/srv/one-data")).unwrap();
         assert_eq!(resp.extra["is_temporary_workspace"], false);
     }
 

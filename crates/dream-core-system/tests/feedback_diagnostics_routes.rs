@@ -100,7 +100,7 @@ async fn insert_fixture(db: &dream_core_db::Database) {
     .bind(json!({"agentId":"opencode"}).to_string())
     .bind(json!({"providerId":"prov-route","modelId":"sakana/fugu-ultra"}).to_string())
     .bind("running")
-    .bind("aionui")
+    .bind("one")
     .bind(None::<String>)
     .bind(false)
     .bind(None::<i64>)

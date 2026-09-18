@@ -4,7 +4,7 @@ $CargoArgs = @($args)
 $cargoConfig = @()
 $restoreCargoLock = $false
 $cargoLockSnapshot = $null
-$aionrsRoot = $null
+$dreamEngineRoot = $null
 $crates = @()
 
 function Invoke-Native {
@@ -34,7 +34,7 @@ function Resolve-LocalPath {
     return [System.IO.Path]::GetFullPath($Path).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
 }
 
-function Test-AionrsPatch {
+function Test-DreamEnginePatch {
     $metadataJson = & cargo @cargoConfig metadata --format-version 1
     if ($LASTEXITCODE -ne 0) {
         $script:status = $LASTEXITCODE
@@ -43,7 +43,7 @@ function Test-AionrsPatch {
     $metadata = $metadataJson | ConvertFrom-Json
 
     foreach ($crate in $crates) {
-        $expectedPath = Resolve-LocalPath (Join-Path $aionrsRoot "crates/$crate")
+        $expectedPath = Resolve-LocalPath (Join-Path $dreamEngineRoot "crates/$crate")
         $package = $metadata.packages | Where-Object { $_.name -eq $crate } | Select-Object -First 1
         $actualPath = if ($null -eq $package) {
             "package not found"
@@ -52,7 +52,7 @@ function Test-AionrsPatch {
         }
 
         if ($actualPath -ne $expectedPath) {
-            Write-Error "AIONRS patch was not used for $crate.`n  resolved: $actualPath`n  expected: $expectedPath"
+            Write-Error "DREAM_ENGINE patch was not used for $crate.`n  resolved: $actualPath`n  expected: $expectedPath"
             $script:status = 1
             exit 1
         }
@@ -61,40 +61,40 @@ function Test-AionrsPatch {
 
 $status = 0
 try {
-    if (-not [string]::IsNullOrWhiteSpace($env:AIONRS)) {
-        if (-not (Test-Path -LiteralPath $env:AIONRS -PathType Container)) {
-            Write-Error "AIONRS does not exist or is not a directory: $env:AIONRS"
+    if (-not [string]::IsNullOrWhiteSpace($env:DREAM_ENGINE)) {
+        if (-not (Test-Path -LiteralPath $env:DREAM_ENGINE -PathType Container)) {
+            Write-Error "DREAM_ENGINE does not exist or is not a directory: $env:DREAM_ENGINE"
             exit 1
         }
 
-        $aionrsRoot = (Resolve-Path -LiteralPath $env:AIONRS).ProviderPath
+        $dreamEngineRoot = (Resolve-Path -LiteralPath $env:DREAM_ENGINE).ProviderPath
         $crates = @(
-            "aion-agent",
-            "aion-compact",
-            "aion-config",
-            "aion-mcp",
-            "aion-memory",
-            "aion-process",
-            "aion-protocol",
-            "aion-providers",
-            "aion-skills",
-            "aion-tools",
-            "aion-types"
+            "dream-engine-agent",
+            "dream-engine-compact",
+            "dream-engine-config",
+            "dream-engine-mcp",
+            "dream-engine-memory",
+            "dream-engine-process",
+            "dream-engine-protocol",
+            "dream-engine-providers",
+            "dream-engine-skills",
+            "dream-engine-tools",
+            "dream-engine-types"
         )
 
         foreach ($crate in $crates) {
-            $crateDir = Join-Path $aionrsRoot "crates/$crate"
+            $crateDir = Join-Path $dreamEngineRoot "crates/$crate"
             $manifest = Join-Path $crateDir "Cargo.toml"
             if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
-                Write-Error "AIONRS is missing ${crate}: $manifest"
+                Write-Error "DREAM_ENGINE is missing ${crate}: $manifest"
                 exit 1
             }
 
             $tomlPath = $crateDir.Replace("\", "/").Replace('"', '\"')
-            $cargoConfig += @("--config", "patch.'https://github.com/iOfficeAI/aionrs.git'.$crate.path = `"`"$tomlPath`"`"")
+            $cargoConfig += @("--config", "patch.'https://github.com/gaogg521/dream-engine.git'.$crate.path = `"`"$tomlPath`"`"")
         }
 
-        [Console]::Error.WriteLine("Using local aionrs SDK: $aionrsRoot")
+        [Console]::Error.WriteLine("Using local dream_engine SDK: $dreamEngineRoot")
 
         if (Test-Path -LiteralPath "Cargo.lock" -PathType Leaf) {
             $cargoLockSnapshot = [System.IO.Path]::GetTempFileName()
@@ -105,27 +105,27 @@ try {
             if ($worktreeClean -and $indexClean) {
                 $restoreCargoLock = $true
             } else {
-                [Console]::Error.WriteLine("Cargo.lock already has changes; leaving successful AIONRS lockfile updates in place.")
+                [Console]::Error.WriteLine("Cargo.lock already has changes; leaving successful DREAM_ENGINE lockfile updates in place.")
             }
         }
 
-        [Console]::Error.WriteLine("Resolving Cargo.lock against local aionrs SDK")
+        [Console]::Error.WriteLine("Resolving Cargo.lock against local dream_engine SDK")
         $updateArgs = @($cargoConfig) + @(
             "update",
-            "-p", "aion-agent",
-            "-p", "aion-compact",
-            "-p", "aion-config",
-            "-p", "aion-mcp",
-            "-p", "aion-memory",
-            "-p", "aion-process",
-            "-p", "aion-protocol",
-            "-p", "aion-providers",
-            "-p", "aion-skills",
-            "-p", "aion-tools",
-            "-p", "aion-types"
+            "-p", "dream-engine-agent",
+            "-p", "dream-engine-compact",
+            "-p", "dream-engine-config",
+            "-p", "dream-engine-mcp",
+            "-p", "dream-engine-memory",
+            "-p", "dream-engine-process",
+            "-p", "dream-engine-protocol",
+            "-p", "dream-engine-providers",
+            "-p", "dream-engine-skills",
+            "-p", "dream-engine-tools",
+            "-p", "dream-engine-types"
         )
         Invoke-Native "cargo" $updateArgs
-        Test-AionrsPatch
+        Test-DreamEnginePatch
     }
 
     & cargo @cargoConfig @CargoArgs

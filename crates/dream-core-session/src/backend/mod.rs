@@ -220,7 +220,7 @@ pub struct SessionInit {
     pub preset_context: Option<String>,
     /// Opaque persisted session snapshot for resume (dream `SessionManager` JSON
     /// blob). Kept as `serde_json::Value` so `dream-core-session` need not depend on
-    /// the `aion-agent` `Session` type; the dream backend deserializes it.
+    /// the `dream-engine-agent` `Session` type; the dream backend deserializes it.
     pub session_snapshot: Option<serde_json::Value>,
     /// Explicit resume flag. acp/codex resume via `SessionSpec::Resume`; this is the
     /// dream equivalent + the single source of truth for "sanitize on resume".

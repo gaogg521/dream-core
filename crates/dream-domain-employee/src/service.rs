@@ -1028,7 +1028,7 @@ impl EmployeeService {
 
         if !is_dream_engine(agent_type) {
             return Err(EmployeeError::BadRequest(format!(
-                "a model may only be bound to an aionrs employee; '{agent_type}' resolves its model through its own backend"
+                "a model may only be bound to an dream_engine employee; '{agent_type}' resolves its model through its own backend"
             )));
         }
         if model.provider_id.trim().is_empty() || model.model.trim().is_empty() {
@@ -2418,7 +2418,7 @@ mod tests {
     /// empty provider id and fail with `Provider '' not found`. A bound model
     /// must now survive the round-trip through the stored column.
     #[test]
-    fn aionrs_agent_resolves_stored_model() {
+    fn dream_engine_agent_resolves_stored_model() {
         let mut agent = agent_row("dream");
         agent.model = Some(
             serde_json::to_string(&ProviderWithModel {
@@ -2429,7 +2429,7 @@ mod tests {
             .unwrap(),
         );
 
-        let resolved = resolve_model(&agent).expect("aionrs must carry a top-level model");
+        let resolved = resolve_model(&agent).expect("dream-engine must carry a top-level model");
         assert_eq!(resolved.provider_id, "prov_1");
         assert_eq!(resolved.model, "glm-5-2");
     }
@@ -2438,7 +2438,7 @@ mod tests {
     /// hard 400 otherwise, so ACP employees must never send one even if the
     /// column somehow holds a value.
     #[test]
-    fn non_aionrs_agent_never_sends_a_top_level_model() {
+    fn non_dream_engine_agent_never_sends_a_top_level_model() {
         let mut agent = agent_row("claude");
         agent.model = Some(r#"{"provider_id":"prov_1","model":"x","use_model":null}"#.into());
         assert!(resolve_model(&agent).is_none());

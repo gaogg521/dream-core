@@ -201,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn aionrs_build_extra_ignores_legacy_fields() {
+    fn dream_engine_build_extra_ignores_legacy_fields() {
         let legacy_key = concat!("guide", "_mcp_config");
         let parsed: DreamEngineBuildExtra = serde_json::from_value(serde_json::json!({
             "backend": "aionrs",

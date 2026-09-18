@@ -238,12 +238,12 @@ mod tests {
         let repo = FakeRepo {
             rows: vec![
                 row("u1", "user-server", true, false),
-                row("b1", "aionui-image-generation", true, true),
+                row("b1", "one-image-generation", true, true),
                 row("b2", "one-export-pdf", true, true),
             ],
         };
         let rows = load_session_mcp_rows(&repo, None, "u", "c1").await;
-        assert_eq!(names(&rows), vec!["user-server", "aionui-image-generation"]);
+        assert_eq!(names(&rows), vec!["user-server", "one-image-generation"]);
     }
 
     /// …and equally when the conversation *does* carry a snapshot that never
@@ -253,11 +253,11 @@ mod tests {
         let repo = FakeRepo {
             rows: vec![
                 row("u1", "user-server", false, false),
-                row("b1", "aionui-image-generation", true, true),
+                row("b1", "one-image-generation", true, true),
             ],
         };
         let rows = load_session_mcp_rows(&repo, Some(&["u1".to_owned()]), "u", "c1").await;
-        assert_eq!(names(&rows), vec!["user-server", "aionui-image-generation"]);
+        assert_eq!(names(&rows), vec!["user-server", "one-image-generation"]);
     }
 
     /// Only this one built-in. Handing every agent the PDF exporter and the
@@ -321,9 +321,9 @@ mod tests {
     #[tokio::test]
     async fn an_explicitly_ticked_media_builtin_appears_once() {
         let repo = FakeRepo {
-            rows: vec![row("b1", "aionui-image-generation", true, true)],
+            rows: vec![row("b1", "one-image-generation", true, true)],
         };
         let rows = load_session_mcp_rows(&repo, Some(&["b1".to_owned()]), "u", "c1").await;
-        assert_eq!(names(&rows), vec!["aionui-image-generation"]);
+        assert_eq!(names(&rows), vec!["one-image-generation"]);
     }
 }

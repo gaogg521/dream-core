@@ -10,7 +10,7 @@ fn unique_temp_dir(label: &str) -> std::path::PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    std::env::temp_dir().join(format!("aionui-extension-{label}-{}-{nanos}", std::process::id()))
+    std::env::temp_dir().join(format!("one-extension-{label}-{}-{nanos}", std::process::id()))
 }
 
 fn write_cron_skill(base: &std::path::Path, dir_name: &str, skill_name: &str) -> std::path::PathBuf {

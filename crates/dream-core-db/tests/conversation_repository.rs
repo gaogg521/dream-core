@@ -234,7 +234,7 @@ async fn cursor_pagination_walks_through_all_items() {
 async fn filter_by_source_and_pinned_combined() {
     let (repo, _db) = setup().await;
 
-    let mut c1 = make_conversation("aionui-pinned");
+    let mut c1 = make_conversation("one-pinned");
     c1.source = Some("dream".to_string());
     c1.pinned = true;
     c1.pinned_at = Some(dream_core_common::now_ms());
@@ -246,7 +246,7 @@ async fn filter_by_source_and_pinned_combined() {
     c2.pinned_at = Some(dream_core_common::now_ms());
     repo.create(&c2).await.unwrap();
 
-    let mut c3 = make_conversation("aionui-unpinned");
+    let mut c3 = make_conversation("one-unpinned");
     c3.source = Some("dream".to_string());
     c3.pinned = false;
     repo.create(&c3).await.unwrap();

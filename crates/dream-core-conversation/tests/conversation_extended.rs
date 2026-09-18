@@ -116,7 +116,7 @@ async fn setup() -> (
 const USER_ID: &str = "system_default_user";
 
 fn ensure_test_workspace_path() -> String {
-    ensure_named_workspace_path("aionui-conversation-extended-test-project")
+    ensure_named_workspace_path("one-conversation-extended-test-project")
 }
 
 fn ensure_named_workspace_path(name: &str) -> String {
@@ -665,13 +665,13 @@ async fn t9_6_search_result_includes_conversation_model() {
 
     // Search surfaces conversation.model only for dream (the only type that
     // carries a top-level model under the dream-only rule).
-    let aionrs_req: CreateConversationRequest = serde_json::from_value(json!({
+    let dream_engine_req: CreateConversationRequest = serde_json::from_value(json!({
         "type": "aionrs",
         "model": { "provider_id": "p1", "model": "claude-sonnet-4-20250514" },
         "extra": { "workspace": workspace }
     }))
     .unwrap();
-    let conv = svc.create(USER_ID, aionrs_req).await.unwrap();
+    let conv = svc.create(USER_ID, dream_engine_req).await.unwrap();
 
     repo.insert_message(USER_ID, &make_message(&conv.id, "model test keyword", 0))
         .await
@@ -715,8 +715,8 @@ async fn t9_7_search_does_not_leak_other_users_messages() {
 #[tokio::test]
 async fn t10_1_same_workspace() {
     let (svc, _repo, _b) = setup().await;
-    let shared_workspace = ensure_named_workspace_path("aionui-conversation-extended-shared-workspace");
-    let other_workspace = ensure_named_workspace_path("aionui-conversation-extended-other-workspace");
+    let shared_workspace = ensure_named_workspace_path("one-conversation-extended-shared-workspace");
+    let other_workspace = ensure_named_workspace_path("one-conversation-extended-other-workspace");
 
     let req1: CreateConversationRequest = serde_json::from_value(json!({
         "type": "acp",
@@ -751,7 +751,7 @@ async fn t10_1_same_workspace() {
 #[tokio::test]
 async fn t10_2_no_associated() {
     let (svc, _repo, _b) = setup().await;
-    let workspace = ensure_named_workspace_path("aionui-conversation-extended-unique-workspace");
+    let workspace = ensure_named_workspace_path("one-conversation-extended-unique-workspace");
 
     let req: CreateConversationRequest = serde_json::from_value(json!({
         "type": "acp",
@@ -883,7 +883,7 @@ async fn setup_fork() -> (
 }
 
 fn fork_create_req(backend: &str) -> CreateConversationRequest {
-    let workspace = ensure_named_workspace_path(&format!("aionui-fork-test-{backend}"));
+    let workspace = ensure_named_workspace_path(&format!("one-fork-test-{backend}"));
     serde_json::from_value(json!({
         "type": "acp",
         "extra": { "workspace": workspace, "backend": backend }
@@ -1067,7 +1067,7 @@ async fn fork_rejects_unbound_parent_and_unsupported_agent() {
 #[tokio::test]
 async fn create_strips_client_supplied_fork_spec() {
     let (svc, _repo, _acp) = setup_fork().await;
-    let workspace = ensure_named_workspace_path("aionui-fork-test-strip");
+    let workspace = ensure_named_workspace_path("one-fork-test-strip");
     let req: CreateConversationRequest = serde_json::from_value(json!({
         "type": "acp",
         "extra": {
@@ -1204,8 +1204,8 @@ async fn fork_resolves_stream_msg_id_when_row_id_unknown() {
 
 // ── Conversation fork: builtin dream agent (no acp_session row) ────
 
-fn aionrs_create_req() -> CreateConversationRequest {
-    let workspace = ensure_named_workspace_path("aionui-fork-test-aionrs");
+fn dream_engine_create_req() -> CreateConversationRequest {
+    let workspace = ensure_named_workspace_path("one-fork-test-dream-engine");
     serde_json::from_value(json!({
         "type": "aionrs",
         "extra": { "workspace": workspace, "backend": "aionrs" }
@@ -1214,9 +1214,9 @@ fn aionrs_create_req() -> CreateConversationRequest {
 }
 
 #[tokio::test]
-async fn fork_head_aionrs_uses_conversation_id_anchor_without_acp_row() {
+async fn fork_head_dream_engine_uses_conversation_id_anchor_without_acp_row() {
     let (svc, repo, acp_repo) = setup_fork().await;
-    let parent = svc.create(USER_ID, aionrs_create_req()).await.unwrap();
+    let parent = svc.create(USER_ID, dream_engine_create_req()).await.unwrap();
     // dream conversations own no acp_session row (create() only makes one
     // for ACP/antigravity) — the whole point of this path. The agent
     // identity resolves through the builtin binding ladder (agent_type
@@ -1232,16 +1232,16 @@ async fn fork_head_aionrs_uses_conversation_id_anchor_without_acp_row() {
     assert_eq!(
         fork.fork_capability,
         Some(dream_core_api_types::ForkCapabilityView { at_turn: true }),
-        "aionrs declares an at-turn fork capability (migration 038)"
+        "dream-engine declares an at-turn fork capability (migration 038)"
     );
     let spec = fork.extra.get("fork").expect("fork lineage in extra");
     assert_eq!(spec["parent_conversation_id"], parent.id);
     assert_eq!(spec["parent_message_id"], m2.id);
     assert_eq!(
         spec["parent_session_id"], parent.id,
-        "aionrs sessions are keyed by conversation id, so the parent conversation id is the session anchor"
+        "dream-engine sessions are keyed by conversation id, so the parent conversation id is the session anchor"
     );
-    assert!(spec.get("last_turn_id").is_none(), "aionrs forks only at HEAD");
+    assert!(spec.get("last_turn_id").is_none(), "dream-engine forks only at HEAD");
 
     // Copied history.
     let page = repo
@@ -1262,9 +1262,9 @@ async fn fork_head_aionrs_uses_conversation_id_anchor_without_acp_row() {
 }
 
 #[tokio::test]
-async fn fork_mid_history_without_anchor_is_refused_for_aionrs() {
+async fn fork_mid_history_without_anchor_is_refused_for_dream_engine() {
     let (svc, repo, _acp_repo) = setup_fork().await;
-    let parent = svc.create(USER_ID, aionrs_create_req()).await.unwrap();
+    let parent = svc.create(USER_ID, dream_engine_create_req()).await.unwrap();
     // Rows without backend_turn_id: written before turn stamping existed.
     let m1 = make_message(&parent.id, "one", 0);
     let m2 = make_message(&parent.id, "two", 10);
@@ -1274,18 +1274,18 @@ async fn fork_mid_history_without_anchor_is_refused_for_aionrs() {
     let err = svc.fork(USER_ID, &parent.id, fork_req(&m1.id)).await.unwrap_err();
     assert!(
         matches!(&err, ConversationError::Unprocessable { reason } if reason.starts_with("FORK_POINT_UNSUPPORTED")),
-        "unanchored aionrs mid-history fork must be refused, not degraded to HEAD, got {err:?}"
+        "unanchored dream_engine mid-history fork must be refused, not degraded to HEAD, got {err:?}"
     );
 }
 
 #[tokio::test]
-async fn fork_mid_history_resolves_aionrs_turn_anchor() {
+async fn fork_mid_history_resolves_dream_engine_turn_anchor() {
     let (svc, repo, _acp_repo) = setup_fork().await;
-    let parent = svc.create(USER_ID, aionrs_create_req()).await.unwrap();
+    let parent = svc.create(USER_ID, dream_engine_create_req()).await.unwrap();
     // Rows stamped by the dream turn wiring (manager emits BackendTurnBound
     // with the conversation-layer turn id).
     let mut m1 = make_message(&parent.id, "one", 0);
-    m1.backend_turn_id = Some("turn_aion1".into());
+    m1.backend_turn_id = Some("turn_dream1".into());
     let m2 = make_message(&parent.id, "two", 10);
     repo.insert_message(USER_ID, &m1).await.unwrap();
     repo.insert_message(USER_ID, &m2).await.unwrap();
@@ -1293,21 +1293,21 @@ async fn fork_mid_history_resolves_aionrs_turn_anchor() {
     let fork = svc.fork(USER_ID, &parent.id, fork_req(&m1.id)).await.unwrap();
     let spec = fork.extra.get("fork").expect("fork lineage in extra");
     assert_eq!(
-        spec["last_turn_id"], "turn_aion1",
-        "mid-history fork snapshots the resolved aionrs turn anchor"
+        spec["last_turn_id"], "turn_dream1",
+        "mid-history fork snapshots the resolved dream_engine turn anchor"
     );
     assert_eq!(spec["parent_session_id"], parent.id);
 }
 
 #[tokio::test]
-async fn get_projects_fork_capability_for_aionrs_on_detail_path() {
+async fn get_projects_fork_capability_for_dream_engine_on_detail_path() {
     let (svc, _repo, _acp_repo) = setup_fork().await;
-    let conv = svc.create(USER_ID, aionrs_create_req()).await.unwrap();
+    let conv = svc.create(USER_ID, dream_engine_create_req()).await.unwrap();
 
     let detail = svc.get(USER_ID, &conv.id).await.unwrap();
     assert_eq!(
         detail.fork_capability,
         Some(dream_core_api_types::ForkCapabilityView { at_turn: true }),
-        "detail path projects the aionrs fork capability via the builtin binding ladder"
+        "detail path projects the dream_engine fork capability via the builtin binding ladder"
     );
 }

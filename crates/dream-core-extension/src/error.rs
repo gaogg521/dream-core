@@ -19,7 +19,7 @@ pub enum ExtensionError {
     #[error("Path traversal detected: {0}")]
     PathTraversal(String),
 
-    #[error("Engine incompatible: extension '{name}' requires aionui {required}, got {actual}")]
+    #[error("Engine incompatible: extension '{name}' requires one {required}, got {actual}")]
     EngineIncompatible {
         name: String,
         required: String,
@@ -139,12 +139,12 @@ mod tests {
     #[test]
     fn test_reserved_name_prefix_error_display() {
         let err = ExtensionError::ReservedNamePrefix {
-            name: "aion-test".into(),
-            prefix: "aion-".into(),
+            name: "dream-test".into(),
+            prefix: "dream-".into(),
         };
         assert_eq!(
             err.to_string(),
-            "Extension name 'aion-test' uses reserved prefix 'aion-'"
+            "Extension name 'dream-test' uses reserved prefix 'dream-'"
         );
     }
 

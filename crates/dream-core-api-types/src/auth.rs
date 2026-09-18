@@ -109,7 +109,7 @@ pub struct EnsureExternalUserRequest {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ExternalUserType {
-    /// Serialized value is frozen at `aionpro` (persisted in external IdP rows).
+    /// Serialized value is frozen at the legacy `aionpro` (persisted in external IdP rows).
     #[serde(rename = "aionpro")]
     DreamPro,
 }

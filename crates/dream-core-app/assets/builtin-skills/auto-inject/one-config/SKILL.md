@@ -12,7 +12,7 @@ not call raw backend paths, and do not depend on tools outside the bundled
 ## Rules
 
 1. Use only `"$ONE_HELPER_BIN" config ...`.
-2. Never pass, inline, export, echo, or set any `AIONUI_...` environment variable.
+2. Never pass, inline, export, echo, or set any `ONE_...` environment variable.
 3. Put all command input in stdin JSON.
 4. Do not use flags for business fields.
 5. Use `"$ONE_HELPER_BIN" config capabilities` when unsure which config command or stdin fields are supported.

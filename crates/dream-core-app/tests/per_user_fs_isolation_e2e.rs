@@ -21,7 +21,7 @@ fn write_skill(dir: &Path, name: &str, body: &str) {
     .unwrap();
 }
 
-async fn aionpro_services(data_dir: &Path) -> dream_core_app::AppServices {
+async fn dreampro_services(data_dir: &Path) -> dream_core_app::AppServices {
     let db = dream_core_db::init_database_memory().await.unwrap();
     let config = dream_core_app::AppConfig {
         identity_mode: dream_core_app::IdentityMode::DreamPro,
@@ -45,7 +45,7 @@ async fn seed_user(services: &dream_core_app::AppServices, username: &str) -> St
 #[tokio::test]
 async fn same_named_skill_is_physically_isolated_per_user() {
     let data = tempfile::tempdir().unwrap();
-    let services = aionpro_services(data.path()).await;
+    let services = dreampro_services(data.path()).await;
     let paths = services.skill_paths.as_ref();
     let repo = services.skill_repo.as_ref();
 
@@ -103,9 +103,9 @@ async fn same_named_skill_is_physically_isolated_per_user() {
 }
 
 #[tokio::test]
-async fn provisioning_first_aionpro_user_adopts_default_user_files_on_disk() {
+async fn provisioning_first_dreampro_user_adopts_default_user_files_on_disk() {
     let data = tempfile::tempdir().unwrap();
-    let services = aionpro_services(data.path()).await;
+    let services = dreampro_services(data.path()).await;
     let (app, _runtime) = dream_core_app::create_router_with_runtime(&services).await.unwrap();
 
     // A default-user skill sitting under the new layout, owned (in DB) by the

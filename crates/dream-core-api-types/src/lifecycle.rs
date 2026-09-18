@@ -69,16 +69,16 @@ mod tests {
     #[test]
     fn test_system_info_response_serialization() {
         let resp = SystemInfoResponse {
-            cache_dir: "/home/user/.cache/aionui".into(),
-            work_dir: "/home/user/.local/share/aionui".into(),
-            log_dir: "/home/user/.local/state/aionui/logs".into(),
+            cache_dir: "/home/user/.cache/one".into(),
+            work_dir: "/home/user/.local/share/one".into(),
+            log_dir: "/home/user/.local/state/one/logs".into(),
             platform: "linux".into(),
             arch: "x64".into(),
         };
         let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["cache_dir"], "/home/user/.cache/aionui");
-        assert_eq!(json["work_dir"], "/home/user/.local/share/aionui");
-        assert_eq!(json["log_dir"], "/home/user/.local/state/aionui/logs");
+        assert_eq!(json["cache_dir"], "/home/user/.cache/one");
+        assert_eq!(json["work_dir"], "/home/user/.local/share/one");
+        assert_eq!(json["log_dir"], "/home/user/.local/state/one/logs");
         assert_eq!(json["platform"], "linux");
         assert_eq!(json["arch"], "x64");
         // Verify snake_case
@@ -151,7 +151,7 @@ mod tests {
                 draft: false,
                 assets: vec![GitHubReleaseAsset {
                     name: "dream-2.0.0-darwin-arm64.dmg".into(),
-                    url: "https://github.com/download/aionui.dmg".into(),
+                    url: "https://github.com/download/one.dmg".into(),
                     size: 85_000_000,
                     content_type: Some("application/x-apple-diskimage".into()),
                 }],

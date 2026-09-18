@@ -2,14 +2,10 @@
 
 ## 项目定位
 
-**dream-core** 是 **One Work** 平台的本地后端服务（Rust），编译产物为单个可执行文件 `dreamcore`。本项目最初基于开源项目 [AionCore](https://github.com/iOfficeAI/AionCore) 二次开发，**现已完全独立成自有平台，不再跟随或合并上游**，技术与协议层统一使用小写前缀 `dream`。
+**dream-core** 是 **One Work** 平台的本地后端服务（Rust），编译产物为单个可执行文件 `dreamcore`。本项目最初基于一个上游开源项目二次开发，**现已完全独立成自有平台，不再跟随或合并上游**，技术与协议层统一使用小写前缀 `dream`。
 
-> **代码溯源**：本仓库 2026-08-23 从旧仓库 `D:\aionui-m0\1oneCore`（原始最上游是开源项目
-> [AionCore](https://github.com/iOfficeAI/AionCore)）**原样复制的一次性快照**，不含 `.git`
-> 历史。如果在本仓库里发现某个功能/文件"应该存在但找不到"，先去 `D:\aionui-m0\1oneCore`
-> 翻一下——很可能是快照时点之后才在旧仓库落地的，或者是旧仓库里还没合并进 `one-main`
-> 主干的分支。`D:\aionui-m0` 三仓（`1oneUI`/`1oneCore`/`aionrs-local`）定位是只读归档，
-> 不再往里提交新代码。
+> **代码溯源**：本仓库 2026-08-23 由一次性快照建立（不含 `.git` 历史），来源是拆分三仓之前
+> 的旧后端仓库。中转用的临时目录已经废弃，**不要再去找它**；这里就是唯一的真相。
 
 > **新会话/新 AI 首读**：本仓库持久化数据迁移的详细过程（改了哪些文件、发现的真实 bug、
 > 迁移文件生命周期踩坑）记录在
@@ -28,13 +24,23 @@
 > 详见
 > [session-2026-09-18-team-provider-spend-block.zh-CN.md](./docs/guides/session-2026-09-18-team-provider-spend-block.zh-CN.md)。
 
-> **2026-09-01**：aion 家族残留全量清理 + `onework.exe` 定名 + moltbook 移除。
+> **2026-09-18（第三轮品牌 sweep）**：这轮的教训是**改多了比改漏了危险**。批量改名
+> 把密钥派生的域分隔前缀、SSO deep-link 允许列表、11 个 domain 迁移的 `WHERE` 子句、
+> 两个 `serde(alias)` 和扩展 manifest 的 `engine` key 一起改掉了——每一条都会让存量
+> 用户彻底不可用，而且**实现和断言被一起改绿，测试拦不住**。全部已还原或改成
+> 「新值写入 + 旧值兼容读」。新增 `crates/dream-core-common/tests/brand_residue.rs`
+> 作为长期护栏（`PINNED_VALUES` 是不可改值的权威清单，迁移目录与迁移状态 fixture
+> 整体豁免）。**任何一次批量改名之后，必须跑一遍「消失的字面量」全仓差集审计**，
+> 做法见
+> [session-2026-09-18-brand-sweep-and-the-compat-layers-it-broke.zh-CN.md](./docs/guides/session-2026-09-18-brand-sweep-and-the-compat-layers-it-broke.zh-CN.md)。
+
+> **2026-09-01**：上游品牌残留全量清理 + `onework.exe` 定名 + moltbook 移除。
 > 运行时契约（READY/LISTENING 标记、`x-dream-*` 头、`[[DREAM_FILES]]`、日志文件名、
-> `DREAMCORE_BOOTSTRAP_SECRET`）全部按「新值写入 + 旧值兼容读」处理；`AionPro` 枚举变体
-> 改 DreamPro 但 wire 值 `aionpro` 用 serde/sqlx/clap alias 钉死；自动更新默认仓库从上游
+> `DREAMCORE_BOOTSTRAP_SECRET`）全部按「新值写入 + 旧值兼容读」处理；身份模式枚举变体
+> 改 DreamPro 但 legacy wire 值用 serde/sqlx/clap alias 钉死；自动更新默认仓库从上游
 > 改为本仓库；`resolve_model` 的旧值比较、Dockerfile/compose 旧环境变量名三个真实 bug
 > 顺手修复。保留清单与踩坑详见
-> [session-2026-09-01-aion-residue-cleanup-and-onework-rename.zh-CN.md](./docs/guides/session-2026-09-01-aion-residue-cleanup-and-onework-rename.zh-CN.md)。
+> [session-2026-09-01-brand-residue-cleanup-and-onework-rename.zh-CN.md](./docs/guides/session-2026-09-01-brand-residue-cleanup-and-onework-rename.zh-CN.md)。
 
 > **2026-08-27**：`dream`（1ONE CLI）类型会话的上下文/token 指示器**从来没显示过**——唯一携带 token 计数的发射点只被独立 `dream-engine-cli` 调用，而进程内这条路把 `engine.run_with_blocks()` 的
 > 返回值直接丢掉了。已修：在 `Finish` **之前**发一帧 `AcpContextUsage`。

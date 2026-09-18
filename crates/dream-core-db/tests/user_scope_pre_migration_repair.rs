@@ -68,7 +68,7 @@ async fn latest_bundled_version() -> i64 {
 #[tokio::test]
 async fn stuck_user_with_orphans_self_heals_and_042_applies() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("aionui-backend.db");
+    let path = dir.path().join("one-backend.db");
     build_v41_db(
         &path,
         &[
@@ -109,7 +109,7 @@ async fn stuck_user_with_orphans_self_heals_and_042_applies() {
 #[tokio::test]
 async fn already_applied_042_upgrades_without_version_mismatch() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("aionui-backend.db");
+    let path = dir.path().join("one-backend.db");
     // Apply the FULL migrator (through 042) to simulate an already-migrated user.
     {
         let url = format!("sqlite://{}?mode=rwc", path.display());
@@ -135,7 +135,7 @@ async fn already_applied_042_upgrades_without_version_mismatch() {
 #[tokio::test]
 async fn repair_then_startup_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("aionui-backend.db");
+    let path = dir.path().join("one-backend.db");
     build_v41_db(
         &path,
         &[

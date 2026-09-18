@@ -6,12 +6,12 @@ cd "$repo_root"
 
 # Migrations live under every crate that owns schema, not one directory:
 # dream-core-db plus each dream-domain-* crate. The pre-rebrand script only
-# looked at the old `crates/aionui-db/migrations` path, which no longer
+# looked at the old `crates/dream-core-db/migrations` path, which no longer
 # exists — so this check silently never ran.
 migration_glob='crates/*/migrations/*.sql'
 
-allow_override="${DREAM_ALLOW_MAIN_MIGRATION_EDIT:-${AIONCORE_ALLOW_MAIN_MIGRATION_EDIT:-}}"
-base_ref="${DREAM_MIGRATION_BASE_REF:-${AIONCORE_MIGRATION_BASE_REF:-}}"
+allow_override="${DREAM_ALLOW_MAIN_MIGRATION_EDIT:-}"
+base_ref="${DREAM_MIGRATION_BASE_REF:-}"
 
 # ── 1. No two migration files in the same directory may share a version ──
 # The version is the first run of digits in the file name, so both

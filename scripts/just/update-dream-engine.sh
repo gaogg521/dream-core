@@ -3,11 +3,11 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
-footer_script="$script_dir/aionrs-changelog-footer.sh"
+footer_script="$script_dir/dream-engine-changelog-footer.sh"
 
-aionrs_repo="https://github.com/iOfficeAI/aionrs.git"
-aionrs_slug="iOfficeAI/aionrs"
-aioncore_slug="iOfficeAI/AionCore"
+dream_engine_repo="https://github.com/gaogg521/dream-engine.git"
+dream_engine_slug="gaogg521/dream-engine"
+dreamcore_slug="gaogg521/dream-core"
 
 fail() { echo "error: $*" >&2; exit 1; }
 
@@ -23,7 +23,7 @@ fi
 tag="${1:-}"
 if [[ -z "$tag" ]]; then
     tag=$(
-        git ls-remote --tags "$aionrs_repo" |
+        git ls-remote --tags "$dream_engine_repo" |
             python3 -c 'import re, sys; tags=[]; [tags.append(m.group(1)) for line in sys.stdin for m in [re.search(r"refs/tags/(v[0-9]+(?:\.[0-9]+)*(?:[-+][0-9A-Za-z.-]+)?)$", line)] if m]; print(sorted(tags, key=lambda t: [int(p) if p.isdigit() else p for p in re.split(r"[.-]", t.lstrip("v"))])[-1])'
     )
     echo "Using latest tag: $tag"
@@ -35,20 +35,20 @@ old_tag=$(
 import re, sys
 from pathlib import Path
 text = Path("Cargo.toml").read_text()
-tags = re.findall(r'git = "https://github\.com/iOfficeAI/aionrs\.git", tag = "([^"]*)"', text)
+tags = re.findall(r'git = "https://github\.com/gaogg521/dream-engine\.git", tag = "([^"]*)"', text)
 if not tags:
-    sys.exit("no aionrs git dependency tags found in Cargo.toml")
+    sys.exit("no dream_engine git dependency tags found in Cargo.toml")
 if len(set(tags)) != 1:
-    sys.exit("aionrs tags in Cargo.toml are inconsistent: %s" % sorted(set(tags)))
+    sys.exit("dream-engine tags in Cargo.toml are inconsistent: %s" % sorted(set(tags)))
 print(tags[0])
 PY
-) || fail "failed to read current aionrs tag"
+) || fail "failed to read current dream_engine tag"
 
 if [[ "$old_tag" == "$tag" ]]; then
     echo "already on $tag; nothing to do"
     exit 0
 fi
-echo "Updating aionrs $old_tag -> $tag"
+echo "Updating dream_engine $old_tag -> $tag"
 
 # --- rewrite Cargo.toml tags ---
 python3 /dev/fd/3 "$tag" 3<<'PY'
@@ -57,11 +57,11 @@ import re, sys
 tag = sys.argv[1]
 path = Path("Cargo.toml")
 text = path.read_text()
-if not re.search(r'git = "https://github\.com/iOfficeAI/aionrs\.git", tag = "[^"]*"', text):
-    raise SystemExit("No aionrs git dependency tags found in Cargo.toml")
+if not re.search(r'git = "https://github\.com/gaogg521/dream-engine\.git", tag = "[^"]*"', text):
+    raise SystemExit("No dream_engine git dependency tags found in Cargo.toml")
 path.write_text(re.sub(
-    r'git = "https://github\.com/iOfficeAI/aionrs\.git", tag = "[^"]*"',
-    f'git = "https://github.com/iOfficeAI/aionrs.git", tag = "{tag}"',
+    r'git = "https://github\.com/gaogg521/dream-engine\.git", tag = "[^"]*"',
+    f'git = "https://github.com/gaogg521/dream-engine.git", tag = "{tag}"',
     text,
 ))
 PY
@@ -69,32 +69,32 @@ PY
 # --- refresh lockfile / verify build wiring ---
 cargo check --workspace
 
-# --- build changelog footer from aionrs compare range ---
+# --- build changelog footer from dream_engine compare range ---
 footer="$(
-    gh api "repos/$aionrs_slug/compare/$old_tag...$tag" \
+    gh api "repos/$dream_engine_slug/compare/$old_tag...$tag" \
         --jq '.commits[].commit.message | split("\n")[0]' \
         | bash "$footer_script"
 )"
 
 pr_body="$(cat <<EOF
-Bumps embedded engine aionrs $old_tag → $tag.
-https://github.com/$aionrs_slug/compare/$old_tag...$tag
+Bumps embedded engine dream_engine $old_tag → $tag.
+https://github.com/$dream_engine_slug/compare/$old_tag...$tag
 
 $footer
 EOF
 )"
 
 # --- branch + commit ---
-branch="chore/update-aionrs-$tag"
+branch="chore/update-dream_engine-$tag"
 git checkout -b "$branch"
 git add Cargo.toml Cargo.lock
-git commit -m "chore(deps): update aionrs to $tag"
+git commit -m "chore(deps): update dream_engine to $tag"
 
 # --- push through the full pre-push gate ---
 if ! just push -u origin "$branch"; then
     cat >&2 <<EOF
 
-pre-push gate failed. The aionrs bump likely needs adaptation code.
+pre-push gate failed. The dream_engine bump likely needs adaptation code.
 Branch '$branch' is committed locally but NOT pushed, and no PR was created.
 Fix the build/tests, then re-run 'just push -u origin $branch' and create the PR
 manually with the body printed above.
@@ -107,8 +107,8 @@ fi
 # remotes exist (e.g. origin + a contributor fork) unless one was configured
 # via 'gh repo set-default'.
 if ! gh pr create \
-    --repo "$aioncore_slug" \
-    --title "chore(deps): update aionrs to $tag" \
+    --repo "$dreamcore_slug" \
+    --title "chore(deps): update dream_engine to $tag" \
     --body "$pr_body" \
     --base main \
     --head "$branch"; then
@@ -122,4 +122,4 @@ EOF
     exit 1
 fi
 
-echo "PR created for aionrs $old_tag -> $tag"
+echo "PR created for dream_engine $old_tag -> $tag"

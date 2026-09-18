@@ -1,7 +1,7 @@
 //! Maps provider-neutral [`LlmEvent`]s (from `dream_engine_providers::LlmProvider::stream`)
 //! into OpenAI Responses API SSE events / a single aggregated response body.
 //!
-//! `aion-providers` already accumulates streaming tool-call deltas into one
+//! `dream-engine-providers` already accumulates streaming tool-call deltas into one
 //! complete [`LlmEvent::ToolUse`] per call (see its doc comment), so this
 //! encoder never has to reassemble partial tool-call JSON itself — it only
 //! has to re-emit that one complete call as the `output_item.added` /

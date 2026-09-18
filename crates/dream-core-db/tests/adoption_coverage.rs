@@ -102,7 +102,7 @@ async fn has_column(pool: &sqlx::SqlitePool, table: &str, column: &str) -> bool 
 }
 
 #[tokio::test]
-async fn every_table_is_classified_for_aionpro_adoption() {
+async fn every_table_is_classified_for_dreampro_adoption() {
     let db = init_database_memory().await.unwrap();
     let pool = db.pool();
 
@@ -142,11 +142,11 @@ async fn every_table_is_classified_for_aionpro_adoption() {
     );
     assert!(
         unclassified.is_empty(),
-        "NEW TABLE(S) WITHOUT AN AIONPRO ADOPTION DECISION: {unclassified:?}\n\
+        "NEW TABLE(S) WITHOUT A DREAMPRO ADOPTION DECISION: {unclassified:?}\n\
          Every table must either carry an ownership column (`user_id` / `owner_user_id`,\n\
          adopted automatically), or be declared in this test as parent-scoped (with its\n\
          parent column), machine-global (with a rationale), or infrastructure.\n\
-         See crates/aionui-db/tests/adoption_coverage.rs."
+         See crates/one-db/tests/adoption_coverage.rs."
     );
 
     db.close().await;

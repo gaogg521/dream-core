@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Capture real claude-CLI wire traffic for `control_request{set_permission_mode}`.
 
-Settles three questions that aionCore currently answers from an uncited rationale:
+Settles three questions that dream-core currently answers from an uncited rationale:
 
   Q1  Does a mid-turn set_permission_mode truncate / reinitialize the in-flight turn?
       claude_conn.rs:432-440 asserts it does ("raw-CLI limitation") but cites no

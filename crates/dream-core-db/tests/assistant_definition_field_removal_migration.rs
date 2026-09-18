@@ -44,7 +44,7 @@ async fn migration_029_removes_unused_fields_and_preserves_definition() {
             created_at, updated_at
         ) VALUES (
             'definition-1', 'custom-1', 'user', 'user', 'custom-1', '1.0.0', 'hash',
-            'Custom', '{}', '{}', 'none', 'aionrs',
+            'Custom', '{}', '{}', 'none', 'dream_engine',
             'inline', '# stale inline rule',
             '[]', '{}',
             'auto', 'auto',
@@ -69,7 +69,7 @@ async fn migration_029_removes_unused_fields_and_preserves_definition() {
             created_at, updated_at
         ) VALUES (
             'definition-2', 'builtin-1', 'builtin', 'system', 'builtin-1',
-            'Builtin', '{}', '{}', 'none', 'aionrs',
+            'Builtin', '{}', '{}', 'none', 'dream_engine',
             'inline', 'stale-ref', '# stale inline rule',
             '[]', '{}',
             'auto', 'auto',

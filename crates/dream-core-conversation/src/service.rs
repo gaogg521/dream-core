@@ -28,7 +28,7 @@ use dream_core_api_types::{
     PromptCapabilityView, SearchMessagesQuery, SendMessageRequest, SendMessageResponse, SessionMcpServer,
     SessionMcpTransport, TEAM_MCP_SERVER_NAME, TeamMcpSelection, TeamSessionBinding, UpdateConversationArtifactRequest,
     UpdateConversationRequest, WebSocketMessage, assistant_avatar_response_value,
-    assistant_avatar_response_value_with_version, assistant_mcp_binding_fingerprint,
+    assistant_avatar_response_value_with_version, assistant_mcp_binding_fingerprint, is_team_mcp_server_name,
 };
 use dream_core_common::{
     AgentKillReason, AgentType, ConversationSource, ConversationStatus, ErrorChain, MessageType, OnConversationDelete,
@@ -255,7 +255,7 @@ struct McpSupportPolicy {
 }
 
 impl McpSupportPolicy {
-    const AIONRS: Self = Self {
+    const DREAM_ENGINE: Self = Self {
         stdio: true,
         http: true,
         sse: true,
@@ -1195,7 +1195,7 @@ impl ConversationService {
         if effective_type != AgentType::DreamEngine && req.model.is_some() {
             return Err(ConversationError::BadRequest {
                 reason: format!(
-                    "top-level `model` is only accepted for aionrs conversations; pass model via `extra` for {}",
+                    "top-level `model` is only accepted for dream-engine conversations; pass model via `extra` for {}",
                     effective_type.serde_name()
                 ),
             });
@@ -1208,7 +1208,7 @@ impl ConversationService {
             && let Some(obj) = extra.as_object_mut()
             && obj.remove("model").is_some()
         {
-            warn!("aionrs create: stripped legacy `extra.model`; top-level `model` is canonical");
+            warn!("dream-engine create: stripped legacy `extra.model`; top-level `model` is canonical");
         }
 
         // Determine whether the user chose this workspace ("custom") or we
@@ -2328,7 +2328,7 @@ impl ConversationService {
         let capability_agent_id = match self.acp_session_repo.get_for_user(user_id, id).await {
             Ok(Some(acp_row)) => Some(acp_row.agent_id),
             Ok(None) if row_agent_type == Some(AgentType::DreamEngine) => {
-                self.aionrs_capability_agent_id(user_id, id).await.ok()
+                self.dream_engine_capability_agent_id(user_id, id).await.ok()
             }
             _ => None,
         };
@@ -2462,7 +2462,7 @@ impl ConversationService {
         if existing_type != AgentType::DreamEngine && req.model.is_some() {
             return Err(ConversationError::BadRequest {
                 reason: format!(
-                    "top-level `model` is only accepted for aionrs conversations; pass model via `extra` for {}",
+                    "top-level `model` is only accepted for dream_engine conversations; pass model via `extra` for {}",
                     existing.r#type
                 ),
             });
@@ -2502,7 +2502,7 @@ impl ConversationService {
                 && let Some(obj) = existing_extra.as_object_mut()
                 && obj.remove("model").is_some()
             {
-                warn!("aionrs update: stripped legacy `extra.model` from merged extra");
+                warn!("dream-engine update: stripped legacy `extra.model` from merged extra");
             }
             if new_extra.get("workspace").is_some() {
                 normalize_workspace_extra(&mut existing_extra)?;
@@ -2912,7 +2912,7 @@ impl ConversationService {
                 (acp_row.agent_id.clone(), session_id)
             }
             None if parse_agent_type_from_row(&parent) == Some(AgentType::DreamEngine) => {
-                let agent_id = self.aionrs_capability_agent_id(user_id, id).await?;
+                let agent_id = self.dream_engine_capability_agent_id(user_id, id).await?;
                 (agent_id, id.to_owned())
             }
             None => {
@@ -3124,7 +3124,7 @@ impl ConversationService {
     /// when present, else the builtin Dream CLI row resolved through the
     /// standard id/backend/agent_type binding ladder (dream's backend column
     /// is NULL, so it resolves by agent_type).
-    async fn aionrs_capability_agent_id(
+    async fn dream_engine_capability_agent_id(
         &self,
         user_id: &str,
         conversation_id: &str,
@@ -4912,7 +4912,7 @@ impl ConversationService {
     /// sessions are out of scope — spec §5). This is the only place a
     /// `conversation_repo` handle is needed, so the seed is computed here and
     /// threaded into `SessionContextBuilder` (spec §7.3, A-2).
-    async fn load_aionrs_permission_seed(
+    async fn load_dream_engine_permission_seed(
         &self,
         row: &dream_core_db::models::ConversationRow,
     ) -> Result<Option<DreamEngineRuntimePermissionSeed>, ConversationError> {
@@ -4925,7 +4925,7 @@ impl ConversationService {
             .await
             .map_err(|e| {
                 ConversationError::internal(format!(
-                    "Failed to load assistant snapshot for aionrs permission seed: {e}"
+                    "Failed to load assistant snapshot for dream_engine permission seed: {e}"
                 ))
             })?;
         Ok(snapshot.map(|snapshot| DreamEngineRuntimePermissionSeed {
@@ -4944,7 +4944,7 @@ impl ConversationService {
         row: &dream_core_db::models::ConversationRow,
     ) -> Result<BuildTaskOptions, ConversationError> {
         reject_deprecated_runtime_row(row)?;
-        let seed = self.load_aionrs_permission_seed(row).await?;
+        let seed = self.load_dream_engine_permission_seed(row).await?;
         SessionContextBuilder::new(&self.workspace_root, &self.agent_metadata_repo, &self.acp_session_repo)
             .build_options(row, seed)
             .await
@@ -4956,7 +4956,7 @@ impl ConversationService {
         workspace_override: Option<&str>,
     ) -> Result<BuildTaskOptions, ConversationError> {
         reject_deprecated_runtime_row(row)?;
-        let seed = self.load_aionrs_permission_seed(row).await?;
+        let seed = self.load_dream_engine_permission_seed(row).await?;
         SessionContextBuilder::new(&self.workspace_root, &self.agent_metadata_repo, &self.acp_session_repo)
             .build_options_with_workspace_override(row, workspace_override, seed)
             .await
@@ -5556,7 +5556,7 @@ impl ConversationService {
         }
         let mut selected_session_servers = Vec::with_capacity(session_servers.len());
         for server in session_servers {
-            if server.name == TEAM_MCP_SERVER_NAME {
+            if is_team_mcp_server_name(&server.name) {
                 continue;
             }
             selected_session_servers.push(server.clone());
@@ -5702,7 +5702,7 @@ impl ConversationService {
     ) -> Result<McpSupportPolicy, ConversationError> {
         match agent_type {
             AgentType::Acp => resolve_acp_mcp_support_policy(&self.agent_metadata_repo, user_id, extra).await,
-            AgentType::DreamEngine => Ok(McpSupportPolicy::AIONRS),
+            AgentType::DreamEngine => Ok(McpSupportPolicy::DREAM_ENGINE),
             // agy supports exactly two MCP transports: stdio (local command)
             // and SSE (remote `serverUrl`). Letting it fall through to the
             // all-true default would let users configure HTTP-transport servers
@@ -5713,7 +5713,7 @@ impl ConversationService {
                 http: false,
                 streamable_http: false,
             }),
-            _ => Ok(McpSupportPolicy::AIONRS),
+            _ => Ok(McpSupportPolicy::DREAM_ENGINE),
         }
     }
 }
@@ -6335,7 +6335,7 @@ mod tests {
     }
 
     #[test]
-    fn assistant_lineage_extracts_aionrs_preset_id() {
+    fn assistant_lineage_extracts_dream_engine_preset_id() {
         use dream_core_common::AgentType;
         let response = response_with_type(AgentType::DreamEngine);
         let extra = json!({ "preset_assistant_id": "preset-xyz" });
@@ -6427,7 +6427,7 @@ mod tests {
                     env: HashMap::new(),
                 },
             },
-            McpSupportPolicy::AIONRS,
+            McpSupportPolicy::DREAM_ENGINE,
         );
 
         assert_eq!(status.status, ConversationMcpStatusKind::Failed);

@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $PSCommandPath
 $repoRoot = (Resolve-Path (Join-Path $scriptDir "../..")).ProviderPath
 $script = Join-Path $repoRoot "scripts/migration/check-immutability.ps1"
-$tmpdir = Join-Path ([System.IO.Path]::GetTempPath()) ("aioncore-migration-test-" + [Guid]::NewGuid().ToString("N"))
+$tmpdir = Join-Path ([System.IO.Path]::GetTempPath()) ("dreamcore-migration-test-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tmpdir | Out-Null
 
 function Invoke-Native {
@@ -86,17 +86,17 @@ function New-CaseRepo {
     param([string] $Name)
 
     $dir = Join-Path $tmpdir $Name
-    New-Item -ItemType Directory -Force -Path (Join-Path $dir "crates/aionui-db/migrations") | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $dir "crates/dream-core-db/migrations") | Out-Null
 
     Push-Location $dir
     try {
         Invoke-Native git init -q -b main
         Invoke-Native git config user.email test@example.com
         Invoke-Native git config user.name "Migration Test"
-        Set-Content -LiteralPath "crates/aionui-db/migrations/001_initial_schema.sql" -Value "-- 001 initial"
-        Set-Content -LiteralPath "crates/aionui-db/migrations/002_data_fix.sql" -Value "-- 002 data fix"
-        Set-Content -LiteralPath "crates/aionui-db/migrations/manual_fixture.sql" -Value "-- auxiliary sql"
-        Invoke-Native git add crates/aionui-db/migrations
+        Set-Content -LiteralPath "crates/dream-core-db/migrations/001_initial_schema.sql" -Value "-- 001 initial"
+        Set-Content -LiteralPath "crates/dream-core-db/migrations/002_data_fix.sql" -Value "-- 002 data fix"
+        Set-Content -LiteralPath "crates/dream-core-db/migrations/manual_fixture.sql" -Value "-- auxiliary sql"
+        Invoke-Native git add crates/dream-core-db/migrations
         Invoke-Native git commit -q -m "seed migrations"
         Invoke-Native git checkout -q -b feature
     } finally {
@@ -108,30 +108,30 @@ function New-CaseRepo {
 
 try {
     $modifiedRepo = New-CaseRepo "modified"
-    Add-Content -LiteralPath (Join-Path $modifiedRepo "crates/aionui-db/migrations/001_initial_schema.sql") -Value "-- modified"
-    Invoke-InRepo $modifiedRepo 1 "Existing migration files from main must not be modified or deleted" @{ AIONCORE_MIGRATION_BASE_REF = "main" }
+    Add-Content -LiteralPath (Join-Path $modifiedRepo "crates/dream-core-db/migrations/001_initial_schema.sql") -Value "-- modified"
+    Invoke-InRepo $modifiedRepo 1 "Existing migration files from main must not be modified or deleted" @{ DREAM_MIGRATION_BASE_REF = "main" }
 
     $deletedRepo = New-CaseRepo "deleted"
-    Remove-Item -LiteralPath (Join-Path $deletedRepo "crates/aionui-db/migrations/002_data_fix.sql")
-    Invoke-InRepo $deletedRepo 1 "Existing migration files from main must not be modified or deleted" @{ AIONCORE_MIGRATION_BASE_REF = "main" }
+    Remove-Item -LiteralPath (Join-Path $deletedRepo "crates/dream-core-db/migrations/002_data_fix.sql")
+    Invoke-InRepo $deletedRepo 1 "Existing migration files from main must not be modified or deleted" @{ DREAM_MIGRATION_BASE_REF = "main" }
 
     $auxiliaryRepo = New-CaseRepo "auxiliary"
-    Add-Content -LiteralPath (Join-Path $auxiliaryRepo "crates/aionui-db/migrations/manual_fixture.sql") -Value "-- modified auxiliary sql"
-    Invoke-InRepo $auxiliaryRepo 1 "Existing migration files from main must not be modified or deleted" @{ AIONCORE_MIGRATION_BASE_REF = "main" }
+    Add-Content -LiteralPath (Join-Path $auxiliaryRepo "crates/dream-core-db/migrations/manual_fixture.sql") -Value "-- modified auxiliary sql"
+    Invoke-InRepo $auxiliaryRepo 1 "Existing migration files from main must not be modified or deleted" @{ DREAM_MIGRATION_BASE_REF = "main" }
 
     $addedRepo = New-CaseRepo "added"
-    Set-Content -LiteralPath (Join-Path $addedRepo "crates/aionui-db/migrations/003_new_change.sql") -Value "-- 003 new migration"
-    Invoke-InRepo $addedRepo 0 "Migration immutability check passed" @{ AIONCORE_MIGRATION_BASE_REF = "main" }
+    Set-Content -LiteralPath (Join-Path $addedRepo "crates/dream-core-db/migrations/003_new_change.sql") -Value "-- 003 new migration"
+    Invoke-InRepo $addedRepo 0 "Migration immutability check passed" @{ DREAM_MIGRATION_BASE_REF = "main" }
 
     $duplicateRepo = New-CaseRepo "duplicate"
-    Set-Content -LiteralPath (Join-Path $duplicateRepo "crates/aionui-db/migrations/002_duplicate_change.sql") -Value "-- duplicate 002 migration"
-    Invoke-InRepo $duplicateRepo 1 "Duplicate database migration versions are not allowed" @{ AIONCORE_MIGRATION_BASE_REF = "main" }
+    Set-Content -LiteralPath (Join-Path $duplicateRepo "crates/dream-core-db/migrations/002_duplicate_change.sql") -Value "-- duplicate 002 migration"
+    Invoke-InRepo $duplicateRepo 1 "Duplicate database migration versions are not allowed" @{ DREAM_MIGRATION_BASE_REF = "main" }
 
     $overrideRepo = New-CaseRepo "override"
-    Add-Content -LiteralPath (Join-Path $overrideRepo "crates/aionui-db/migrations/001_initial_schema.sql") -Value "-- modified with explicit override"
+    Add-Content -LiteralPath (Join-Path $overrideRepo "crates/dream-core-db/migrations/001_initial_schema.sql") -Value "-- modified with explicit override"
     Invoke-InRepo $overrideRepo 0 "skipping migration immutability check" @{
-        AIONCORE_MIGRATION_BASE_REF = "main"
-        AIONCORE_ALLOW_MAIN_MIGRATION_EDIT = "1"
+        DREAM_MIGRATION_BASE_REF = "main"
+        DREAM_ALLOW_MAIN_MIGRATION_EDIT = "1"
     }
 
     Write-Output "Migration immutability script tests passed"

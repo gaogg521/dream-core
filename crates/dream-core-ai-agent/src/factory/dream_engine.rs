@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use dream_core_api_types::{
     DreamEngineBuildExtra, ForkSpec, ModelImageInputCapability, ModelMaxTokensField, ModelOpenAiApiMode, ModelSettings,
-    SessionMcpServer, SessionMcpTransport, TEAM_MCP_SERVER_NAME, TeamMcpStdioConfig,
+    SessionMcpServer, SessionMcpTransport, TEAM_MCP_SERVER_NAME, TeamMcpStdioConfig, is_team_mcp_server_name,
 };
 use dream_core_common::ProviderWithModel;
 use dream_core_db::IMcpServerRepository;
@@ -694,7 +694,7 @@ async fn load_user_mcp_servers(
         // `dream-team` is the reserved team coordination MCP name; a user row
         // that collides with it is never injected here (the team bridge is
         // folded in separately and must win).
-        if row.name == TEAM_MCP_SERVER_NAME {
+        if is_team_mcp_server_name(&row.name) {
             continue;
         }
         match row_to_mcp_server_config(&row, user_id, conversation_id, broadcaster.clone()).await {
@@ -915,7 +915,7 @@ async fn merge_session_snapshot_mcp_servers(
         // Reserved name defense: the team coordination MCP must win. The inline
         // merge below OVERWRITES on name collision, so a snapshot entry named
         // `dream-team` would otherwise replace the coordination bridge.
-        if server.name == TEAM_MCP_SERVER_NAME {
+        if is_team_mcp_server_name(&server.name) {
             warn!(
                 conversation_id = %conversation_id,
                 server_name = %server.name,
@@ -1066,7 +1066,7 @@ pub(crate) fn build_dream_engine_config(
 }
 
 /// Resolve a saved [`dream_core_db::models::Provider`] row + explicit model into
-/// an aion-providers `Config`, for one-shot LLM calls outside the full
+/// a dream-engine-providers `Config`, for one-shot LLM calls outside the full
 /// agent/session/tool-loop — used by the Codex compatibility bridge so an
 /// external CLI that only speaks the OpenAI Responses wire format can still
 /// reach the user's configured provider through Dream UI's own hardened

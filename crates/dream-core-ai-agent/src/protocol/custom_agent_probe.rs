@@ -282,7 +282,7 @@ mod tests {
 
     #[tokio::test]
     async fn probe_returns_fail_cli_when_command_missing() {
-        let resp = try_connect_custom_agent("aionui-definitely-does-not-exist-xyz", &[], &HashMap::new(), None).await;
+        let resp = try_connect_custom_agent("one-definitely-does-not-exist-xyz", &[], &HashMap::new(), None).await;
         match resp {
             TryConnectCustomAgentResponse::FailCli { error } => {
                 let lower = error.to_lowercase();

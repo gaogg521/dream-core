@@ -14,7 +14,19 @@ use serde::{Deserialize, Serialize};
 /// caused `invalid_request_error: 工具名称过长` (ELECTRON-1JY). Team routing
 /// has always been done via per-team TCP port + auth token, so the team_id was
 /// redundant in the server name.
-pub const TEAM_MCP_SERVER_NAME: &str = "aionui-team";
+pub const TEAM_MCP_SERVER_NAME: &str = "one-team";
+
+/// The name pre-rebrand builds wrote onto `mcp_servers` rows.
+///
+/// Only compared against, never written. The row name is what the "is this the team
+/// server?" filters key on, so a row left over from before the rename would stop
+/// being recognised and start showing up as a user-selectable MCP server.
+pub const LEGACY_TEAM_MCP_SERVER_NAME: &str = "aionui-team";
+
+/// Is `name` the team session MCP server, under either name it has carried?
+pub fn is_team_mcp_server_name(name: &str) -> bool {
+    name == TEAM_MCP_SERVER_NAME || name == LEGACY_TEAM_MCP_SERVER_NAME
+}
 
 /// Stdio connection config for the team session MCP server.
 ///

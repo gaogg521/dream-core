@@ -1,9 +1,10 @@
 //! Turn a local image into text via a vision-capable delegate model.
 //!
 //! Mirrors dream's `ReadImageTool::describe` / `ViewImageTool::load_image`
-//! (`aion-tools/src/{read_image,view_image}.rs`) rather than sharing code
-//! with them: 1oneCore already depends on `aion-providers`/`aion-types`
-//! directly (`aion-agent` is embedded as a library, not a subprocess), so
+//! (`dream-engine-tools/src/{read_image,view_image}.rs`) rather than sharing
+//! code with them: dream-core already depends on `dream-engine-providers` and
+//! `dream-engine-types` directly (`dream-engine-agent` is embedded as a library,
+//! not a subprocess), so
 //! this stays a same-repo, single-PR change instead of requiring an
 //! dream-local push + `Cargo.lock` bump before it can build. The two
 //! implementations are intentionally not the same crate — they live in
