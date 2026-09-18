@@ -3723,6 +3723,65 @@ mod tests {
         }
     }
 
+    /// Auto-inject descriptions are a per-session RESIDENT cost, and which of
+    /// the two ceilings below applies depends on how the agent gets its skills:
+    ///
+    /// - Prompt-injected agents read the index built by
+    ///   `dream_core_ai_agent::capability::skill_manager::prompt_builder`, which
+    ///   already digests each description down to its first sentence and hard-caps
+    ///   it at 120 chars. A long description is not paid in full there — it is
+    ///   silently cut, which is its own problem: the cut lands mid-sentence.
+    /// - Agents with NATIVE skill delivery (claude, codex — the view directory is
+    ///   handed to the CLI) get no such digest. The CLI reads this frontmatter
+    ///   itself and carries the whole description in its always-on catalog, so the
+    ///   full length is paid on every single conversation.
+    ///
+    /// The budget therefore guards the native path, and keeping descriptions
+    /// inside it also keeps the injected digest from truncating mid-sentence.
+    const MAX_AUTO_INJECT_DESCRIPTION_CHARS: usize = 200;
+
+    #[test]
+    fn auto_inject_skill_descriptions_stay_within_injection_budget() {
+        let auto_dir = BUILTIN_SKILLS
+            .get_dir(BUILTIN_AUTO_SKILLS_SUBDIR)
+            .expect("embedded corpus must contain the auto-inject subdirectory");
+
+        let mut checked = 0;
+        let mut failures = Vec::new();
+
+        for subdir in auto_dir.dirs() {
+            let location = subdir.path().join(SKILL_MANIFEST_FILE);
+            let Some(file) = BUILTIN_SKILLS.get_file(&location) else {
+                failures.push(format!("{}: missing {SKILL_MANIFEST_FILE}", subdir.path().display()));
+                continue;
+            };
+
+            let content = std::str::from_utf8(file.contents())
+                .unwrap_or_else(|err| panic!("{}: not UTF-8: {err}", location.display()));
+            // Measure the PARSED value, not the raw YAML: a folded block scalar
+            // (`>-`) is what actually gets injected, not its source text.
+            let parsed = parse_frontmatter_fields(content)
+                .unwrap_or_else(|| panic!("{}: invalid frontmatter or missing description", location.display()));
+
+            checked += 1;
+            let length = parsed.description.chars().count();
+            if length > MAX_AUTO_INJECT_DESCRIPTION_CHARS {
+                failures.push(format!("{}: description is {length} chars", location.display()));
+            }
+        }
+
+        assert!(checked >= 4, "expected at least 4 auto-inject skills, got {checked}");
+        assert!(
+            failures.is_empty(),
+            "auto-inject skill descriptions must stay within {MAX_AUTO_INJECT_DESCRIPTION_CHARS} chars:
+{}",
+            failures.join(
+                "
+"
+            )
+        );
+    }
+
     #[tokio::test]
     async fn embedded_lists_auto_inject_from_corpus() {
         let tmp = TempDir::new().unwrap();
