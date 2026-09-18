@@ -144,11 +144,17 @@
 - ✅ 另补 `state_nonce_cannot_be_consumed_twice`（state 一次性）。
 - ⏳ **仍需人工**：真实 IdP 往返（要填真 App Secret / LDAP bind 密码，代填密钥不是我该做的事）。
 
-> 📌 一处**刻意不改**的东西：SSO 落地页的标题/正文写的是 `1One Work`，
-> 而品牌常量 `BRAND_DISPLAY_NAME` 是 `One Work`。看起来像错字，但**带 `one` 的名字
-> 都是自家品牌，不在 aionui 清理范围内**（用户 2026-09-18 明确）。
-> 本轮一度改成了 `One Work`，已**全部还原**。
-> 本轮要清的只有 `aionui` 家族，别把 `1One`/`1ONE` 顺手也扫了。
+> 📌 **`1One Work` 已于 2026-09-19 改为 `One Work`。**
+> 它是上一代的叫法（与 `1ONE Code` 同期），现行产品名是 **One Work**。
+> 2026-07-21 那轮改名做了 825 处替换并验证「全库为空」，但**只扫了 dream-ui** ——
+> dream-core 这几处是漏网的：SSO 落地页（标题/正文）、ACP 握手的 `clientInfo.name`、
+> 4 个内置技能 markdown（45 处）。
+>
+> **没有跟着改的**（改了会弄坏存量安装，别顺手扫）：
+> `LEGACY_PROD_USERDATA_APP_NAMES = ['1ONE Code']`、
+> `resources/windows/support/report-installer-failure.ps1` 的目录探测列表、
+> `data_paths.rs` 里说明这些冻结值的注释 —— 那是**查找旧数据目录用的键，不是品牌文案**。
+> `1ONE CLI` 是 CLI agent 自己的名字，也不在范围内。
 
 完整验证办法（三档：零凭据 / 真后端假密钥 / 真实 IdP，以及 `enterprise` 编译期
 feature 这道最容易踩的闸门）见 dream-ui 的

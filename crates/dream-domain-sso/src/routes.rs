@@ -457,7 +457,7 @@ async fn callback(
         //
         // A raw redirect here left the system-browser tab stuck forever: a
         // 3xx Location to a non-http(s) scheme just makes the browser pop an
-        // "open 1One Work?" prompt — it can't actually navigate the tab
+        // "open One Work?" prompt — it can't actually navigate the tab
         // anywhere, so whatever was on screen (often the OAuth consent page)
         // stays put with no way to tell the user it's safe to close it.
         // Render a small landing page instead: trigger the deep link via
@@ -842,12 +842,12 @@ fn desktop_callback_page(deep_link: &str) -> String {
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>1One Work</title>
+<title>One Work</title>
 </head>
 <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f5f5f7;color:#1d1d1f;">
 <div style="text-align:center;max-width:360px;padding:24px;">
 <p style="font-size:17px;font-weight:600;margin:0 0 8px;">登录成功<br>Login successful</p>
-<p style="font-size:14px;color:#555;margin:0 0 20px;">正在打开 1One Work…<br>Opening 1One Work…</p>
+<p style="font-size:14px;color:#555;margin:0 0 20px;">正在打开 One Work…<br>Opening One Work…</p>
 <a href="{href}" style="display:inline-block;padding:12px 32px;background:#4E5969;color:#fff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:500;">打开应用 · Open the app</a>
 <p style="font-size:12px;color:#86868b;margin:20px 0 0;line-height:1.6;">若浏览器弹出「是否打开」确认框，请点击「打开」。之后可关闭此页面。<br>If a prompt appears, click "Open". You can close this tab afterwards.</p>
 </div>
@@ -1029,6 +1029,22 @@ mod tests {
     /// above: the scheme read is the *second* thing `callback` does with the
     /// entry, so a store that handed the same entry out twice would make the
     /// deep link fire twice too.
+    /// The landing page is the product's face during login, so it must carry the
+    /// current product name. It said `1One Work` — the previous generation's
+    /// naming, alongside `1ONE Code` — until 2026-09-19.
+    ///
+    /// `1ONE Code` deliberately survives elsewhere (dream-ui's
+    /// `LEGACY_PROD_USERDATA_APP_NAMES`, the installer's probe list): those are
+    /// lookup keys for an existing install's data directory, not brand text.
+    #[test]
+    fn callback_page_carries_the_current_product_name() {
+        let page = desktop_callback_page("dream://sso-callback?token=t");
+        assert!(page.contains("<title>One Work</title>"));
+        assert!(page.contains("正在打开 One Work…"));
+        assert!(page.contains("Opening One Work…"));
+        assert!(!page.contains("1One"), "the retired product name is back");
+    }
+
     #[tokio::test]
     async fn state_nonce_cannot_be_consumed_twice() {
         let store = crate::service::OAuthStateStore::new();
