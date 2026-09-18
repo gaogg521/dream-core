@@ -218,6 +218,9 @@ team paused: the model provider refused on spend grounds; waiting for the user
 
 ## 六、还没做 / 已知问题
 
+> 📋 **本轮的未竟项总登记在 dream-ui `docs/guides/handoff-2026-09-18-enterprise-p0-and-sso-verification.zh-CN.md` 的 §4** —— 09-18 一轮产出 5 份文档，每份都有自己的这一节，散着看必漏。本节留原文细节，总表在那边。
+
+
 - **成员因非额度原因反复失败时，`notify_leader_delivery_exhausted` 的放大仍在**：每条消息
   3 次预算是有界的，但新消息不断到达时总量无界。合并同一槽位的重复"已暂停"通知还没做。
 - `engine.rs:1102` 截断工具调用时仍直接发英文串（没走 `emit_info_coded`），正常使用可达。
