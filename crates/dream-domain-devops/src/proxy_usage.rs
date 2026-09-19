@@ -261,6 +261,7 @@ pub struct UsageTap {
 }
 
 impl UsageTap {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         recorder: Option<Arc<dyn ProxyUsageRecorder>>,
         user_id: String,

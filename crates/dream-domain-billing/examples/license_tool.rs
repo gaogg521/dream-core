@@ -135,6 +135,7 @@ fn issue(args: &[String]) {
         app_id: flag(args, "--app-id").map(str::to_owned),
         file_name: flag(args, "--file-name").map(str::to_owned),
         instance_id: flag(args, "--instance-id").map(str::to_owned),
+        deployment_fingerprint: flag(args, "--deployment-fingerprint").map(str::to_owned),
     };
 
     match sign_license_key(&payload, secret) {

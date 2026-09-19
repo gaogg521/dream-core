@@ -101,17 +101,17 @@ fn dir_has_index(dir: &Path) -> bool {
 
 fn discover_admin_web_dir() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("admin-web"));
-            candidates.push(dir.join("admin-web").join("dist"));
-            let mut walk = dir.to_path_buf();
-            for _ in 0..8 {
-                candidates.push(walk.join("dream-en").join("admin-web").join("dist"));
-                candidates.push(walk.join("admin-web").join("dist"));
-                if !walk.pop() {
-                    break;
-                }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        candidates.push(dir.join("admin-web"));
+        candidates.push(dir.join("admin-web").join("dist"));
+        let mut walk = dir.to_path_buf();
+        for _ in 0..8 {
+            candidates.push(walk.join("dream-en").join("admin-web").join("dist"));
+            candidates.push(walk.join("admin-web").join("dist"));
+            if !walk.pop() {
+                break;
             }
         }
     }

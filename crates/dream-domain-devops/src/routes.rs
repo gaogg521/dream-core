@@ -954,21 +954,20 @@ async fn publish_skills(
     Json(body): Json<PublishBatchBody>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
     require_registry_admin(&state, &user.id).await?;
-    if body.published {
-        if let Ok(policy) = state.service.get_scan_policy().await
-            && policy.block_on_warning
-        {
-            let extra: Vec<String> = serde_json::from_str(&policy.extra_needles).unwrap_or_default();
-            let skills = state.service.list_skills(&user.id).await?;
-            for skill in skills.iter().filter(|s| body.ids.contains(&s.id)) {
-                let findings = crate::resource_pack::scan_findings_with(&skill.content, &extra);
-                if !findings.is_empty() {
-                    return Err(DevopsError::BadRequest(format!(
-                        "refusing to publish '{}' while scan policy blocks warnings ({})",
-                        skill.name,
-                        findings.join(", ")
-                    )));
-                }
+    if body.published
+        && let Ok(policy) = state.service.get_scan_policy().await
+        && policy.block_on_warning
+    {
+        let extra: Vec<String> = serde_json::from_str(&policy.extra_needles).unwrap_or_default();
+        let skills = state.service.list_skills(&user.id).await?;
+        for skill in skills.iter().filter(|s| body.ids.contains(&s.id)) {
+            let findings = crate::resource_pack::scan_findings_with(&skill.content, &extra);
+            if !findings.is_empty() {
+                return Err(DevopsError::BadRequest(format!(
+                    "refusing to publish '{}' while scan policy blocks warnings ({})",
+                    skill.name,
+                    findings.join(", ")
+                )));
             }
         }
     }

@@ -531,10 +531,10 @@ async fn login_handler(
         return Err(ApiError::BadRequest("Password must not exceed 128 characters".into()));
     }
 
-    if let Some(gate) = &state.login_risk {
-        if let Err(msg) = gate.assert_not_locked(&req.username).await {
-            return Err(ApiError::Forbidden(msg));
-        }
+    if let Some(gate) = &state.login_risk
+        && let Err(msg) = gate.assert_not_locked(&req.username).await
+    {
+        return Err(ApiError::Forbidden(msg));
     }
 
     // Look up user; run dummy verify on miss to prevent timing attacks

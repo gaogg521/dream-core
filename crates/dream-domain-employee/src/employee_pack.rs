@@ -102,14 +102,14 @@ pub fn parse_employee_zip(bytes: &[u8]) -> Result<EmployeePack, EmployeeError> {
                 "data:image/png;base64,{}",
                 base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &buf)
             ));
-        } else if rel.to_ascii_lowercase().ends_with("skill.zip") {
-            if let Ok(skill) = parse_nested_skill_zip(&rel, &buf) {
-                nested_skills.push(skill);
-            }
-        } else if is_text_pack_path(rel) {
-            if let Ok(text) = String::from_utf8(buf) {
-                pack_files.insert(rel.to_owned(), text);
-            }
+        } else if rel.to_ascii_lowercase().ends_with("skill.zip")
+            && let Ok(skill) = parse_nested_skill_zip(rel, &buf)
+        {
+            nested_skills.push(skill);
+        } else if is_text_pack_path(rel)
+            && let Ok(text) = String::from_utf8(buf)
+        {
+            pack_files.insert(rel.to_owned(), text);
         }
     }
     let config: EmployeePackConfig = serde_json::from_str(
@@ -162,20 +162,20 @@ fn parse_nested_skill_zip(filename: &str, bytes: &[u8]) -> Result<NestedSkillPac
         if base.eq_ignore_ascii_case("skill.md") {
             skill_md = String::from_utf8(buf)
                 .map_err(|_| EmployeeError::BadRequest("nested SKILL.md must be UTF-8".into()))?;
-        } else if is_text_pack_path(base) {
-            if let Ok(text) = String::from_utf8(buf) {
-                extras.insert(base.to_owned(), text);
-            }
+        } else if is_text_pack_path(base)
+            && let Ok(text) = String::from_utf8(buf)
+        {
+            extras.insert(base.to_owned(), text);
         }
     }
     if skill_md.trim().is_empty() {
         return Err(EmployeeError::BadRequest("skill.zip must contain SKILL.md".into()));
     }
     let mut content = skill_md.clone();
-    if !extras.is_empty() {
-        if let Ok(json) = serde_json::to_string_pretty(&extras) {
-            content = format!("{}\n<!--ONE_PACK_FILES\n{json}\n-->", skill_md.trim_end());
-        }
+    if !extras.is_empty()
+        && let Ok(json) = serde_json::to_string_pretty(&extras)
+    {
+        content = format!("{}\n<!--ONE_PACK_FILES\n{json}\n-->", skill_md.trim_end());
     }
     let name = skill_md
         .lines()

@@ -989,6 +989,9 @@ mod tests {
     async fn deep_link_scheme_survives_the_state_round_trip_for_every_allowed_scheme() {
         // `None` is in here on purpose: an old build sends no `scheme` param at
         // all, and its callback must still come back on `aionui://`.
+        // The `aionui` schemes below are legacy, not residue: existing installs
+        // registered that protocol handler with the OS, so the spelling is
+        // frozen — renaming it would strand every deep link they can produce.
         let cases = [
             (Some("dream"), "dream"),
             (Some("dream-dev"), "dream-dev"),

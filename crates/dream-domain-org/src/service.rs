@@ -1149,28 +1149,28 @@ impl OrgService {
         let tenant = self.get_tenant(tenant_id).await?.ok_or(OrgError::TenantNotFound)?;
         let display_code = format_invite_code_for_display(&row.code);
         let smtp = self.get_smtp_config().await?;
-        if smtp.enabled {
-            if let Some(host) = smtp.host.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                let from = smtp
-                    .from_address
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("noreply@localhost");
-                let password = self.smtp_password().await?;
-                let port = smtp.port.unwrap_or(587).clamp(1, 65535) as u16;
-                return Ok(send_invite_via_smtp(
-                    host,
-                    port,
-                    smtp.username.as_deref(),
-                    password.as_deref(),
-                    from,
-                    to,
-                    &display_code,
-                    &tenant.name,
-                )
-                .await);
-            }
+        if smtp.enabled
+            && let Some(host) = smtp.host.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        {
+            let from = smtp
+                .from_address
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("noreply@localhost");
+            let password = self.smtp_password().await?;
+            let port = smtp.port.unwrap_or(587).clamp(1, 65535) as u16;
+            return Ok(send_invite_via_smtp(
+                host,
+                port,
+                smtp.username.as_deref(),
+                password.as_deref(),
+                from,
+                to,
+                &display_code,
+                &tenant.name,
+            )
+            .await);
         }
         Ok(self.email_sender.send_invite(to, &display_code, &tenant.name).await)
     }

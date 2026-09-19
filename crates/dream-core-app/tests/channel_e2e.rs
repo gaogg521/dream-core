@@ -33,11 +33,11 @@ async fn get_plugins_empty() {
     let json = body_json(resp).await;
     assert!(json["success"].as_bool().unwrap());
     let data = json["data"].as_array().unwrap();
-    assert_eq!(data.len(), 7);
+    assert_eq!(data.len(), 6);
     let types: std::collections::HashSet<_> = data.iter().filter_map(|item| item["type"].as_str()).collect();
     assert_eq!(
         types,
-        std::collections::HashSet::from(["telegram", "lark", "dingtalk", "slack", "discord", "weixin", "wecom",])
+        std::collections::HashSet::from(["telegram", "lark", "dingtalk", "slack", "discord", "weixin",])
     );
     assert!(data.iter().all(|item| item["enabled"] == false));
 }
@@ -756,7 +756,7 @@ async fn enable_disable_plugin_lifecycle() {
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     let plugins = json["data"].as_array().unwrap();
-    assert_eq!(plugins.len(), 7);
+    assert_eq!(plugins.len(), 6);
     let telegram = plugins
         .iter()
         .find(|plugin| plugin["plugin_id"] == "telegram")
@@ -783,7 +783,7 @@ async fn enable_disable_plugin_lifecycle() {
     let resp = app.oneshot(req).await.unwrap();
     let json = body_json(resp).await;
     let plugins = json["data"].as_array().unwrap();
-    assert_eq!(plugins.len(), 7);
+    assert_eq!(plugins.len(), 6);
     let telegram = plugins
         .iter()
         .find(|plugin| plugin["plugin_id"] == "telegram")
