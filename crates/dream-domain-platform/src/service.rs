@@ -1386,6 +1386,7 @@ impl PlatformService {
             .collect())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_im_pipeline(
         &self,
         tenant_id: &str,
@@ -1434,6 +1435,7 @@ impl PlatformService {
         self.get_im_pipeline(tenant_id, &id).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_im_pipeline(
         &self,
         tenant_id: &str,

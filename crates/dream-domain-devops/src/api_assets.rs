@@ -513,7 +513,7 @@ impl DevopsService {
         let current = self.get_api_asset(tenant_id, id).await?.asset;
 
         let name = match input.name.as_deref().map(str::trim) {
-            Some(n) if n.is_empty() => return Err(DevopsError::BadRequest("name cannot be blank".into())),
+            Some("") => return Err(DevopsError::BadRequest("name cannot be blank".into())),
             Some(n) => n.to_owned(),
             None => current.name.clone(),
         };

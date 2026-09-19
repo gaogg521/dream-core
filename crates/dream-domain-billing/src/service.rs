@@ -640,7 +640,8 @@ impl BillingService {
                 "license is bound to a different installation".into(),
             ));
         }
-        self.verify_deployment_binding(payload.deployment_fingerprint.as_deref()).await?;
+        self.verify_deployment_binding(payload.deployment_fingerprint.as_deref())
+            .await?;
 
         // Re-serialized rather than storing the raw signed payload bytes: this
         // table is a read model for the admin UI, not a re-verification
@@ -5016,10 +5017,7 @@ mod tests {
             .verify_deployment_binding(Some(&format!("sha256:{}", "0".repeat(64))))
             .await
             .unwrap_err();
-        assert!(
-            foreign.to_string().contains("different deployment"),
-            "got: {foreign}"
-        );
+        assert!(foreign.to_string().contains("different deployment"), "got: {foreign}");
 
         // Legacy licenses carry no binding and stay portable.
         svc.verify_deployment_binding(None).await.unwrap();

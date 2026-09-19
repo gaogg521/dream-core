@@ -543,7 +543,7 @@ impl ConversationService {
     fn pinned_model_of(row: &ConversationRow) -> Option<String> {
         let raw = row.model.as_deref()?;
         let parsed = serde_json::from_str::<ProviderWithModel>(raw).ok()?;
-        let selected = parsed.use_model.unwrap_or_else(|| parsed.model);
+        let selected = parsed.use_model.unwrap_or(parsed.model);
         (!selected.trim().is_empty()).then_some(selected)
     }
 

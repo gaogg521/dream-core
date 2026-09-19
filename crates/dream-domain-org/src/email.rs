@@ -42,6 +42,7 @@ impl EmailSender for StubEmailSender {
 }
 
 /// Deliver through the operator's SMTP relay (`lettre`, STARTTLS on 587 / implicit TLS on 465).
+#[allow(clippy::too_many_arguments)]
 pub async fn send_invite_via_smtp(
     host: &str,
     port: u16,
@@ -118,10 +119,11 @@ fn build_transport(
         AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host).map_err(|e| e.to_string())?
     };
     builder = builder.port(port).timeout(Some(Duration::from_secs(8)));
-    if let (Some(u), Some(p)) = (username, password) {
-        if !u.is_empty() && !p.is_empty() {
-            builder = builder.credentials(Credentials::new(u.to_owned(), p.to_owned()));
-        }
+    if let (Some(u), Some(p)) = (username, password)
+        && !u.is_empty()
+        && !p.is_empty()
+    {
+        builder = builder.credentials(Credentials::new(u.to_owned(), p.to_owned()));
     }
     Ok(builder.build())
 }
