@@ -45,6 +45,10 @@ use crate::work_coordinator::{
 };
 use crate::work_source::WorkSource;
 
+/// Mailbox summary stamped on the lead's delivery-exhaustion notice; the
+/// dedupe key in [`TeamSession::notify_leader_delivery_exhausted`].
+const DELIVERY_EXHAUSTED_SUBJECT: &str = "Delivery retry limit reached";
+
 /// Input for the wake path. Produced by [`TeamSession::compute_wake_input`],
 /// consumed by D7b's `send_message` / `send_message_to_agent` (not implemented
 /// in D7a). `first_message` includes the role prompt on cold starts.
@@ -2124,6 +2128,14 @@ impl TeamSession {
     /// Tell the lead that a teammate burned through its delivery retries and is
     /// now paused. Without this the slot stalls silently and the lead waits on a
     /// teammate that will never answer. Mirrors `notify_leader_spawn_attach_failed`.
+    ///
+    /// Deduplicated per slot: the notice itself invites the lead to intervene,
+    /// and a `LeadIntervention` resumes the paused slot — so a teammate that
+    /// keeps failing non-spend grounds can loop through resume → fail ×3 →
+    /// pause → notify indefinitely. Per-message retries are bounded; without
+    /// this merge the notices in the lead's mailbox are not. While an unread
+    /// notice from this slot is still pending, a repeat adds no information the
+    /// lead can act on, so the write (and its wake) is skipped.
     pub(crate) async fn notify_leader_delivery_exhausted(
         &self,
         slot_id: &str,
@@ -2134,6 +2146,18 @@ impl TeamSession {
         };
         if lead_slot_id == slot_id {
             // The lead itself stalled; there is no higher authority to notify.
+            return Ok(());
+        }
+        let already_pending = self
+            .mailbox
+            .peek_unread(&self.team.id, &lead_slot_id)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .any(|message| {
+                message.from_agent_id == slot_id && message.summary.as_deref() == Some(DELIVERY_EXHAUSTED_SUBJECT)
+            });
+        if already_pending {
             return Ok(());
         }
         let content = format!(
@@ -2149,7 +2173,7 @@ impl TeamSession {
                 slot_id,
                 MailboxMessageType::Message,
                 &content,
-                Some("Delivery retry limit reached"),
+                Some(DELIVERY_EXHAUSTED_SUBJECT),
             )
             .await?;
         self.wake_leader_after_recovery_message(slot_id, WorkSource::DeliveryFailureNotification)
@@ -3183,6 +3207,57 @@ mod tests {
     }
 
     // -- D7a new method tests ------------------------------------------------
+
+    #[tokio::test]
+    async fn delivery_exhausted_notice_merges_while_previous_is_unread() {
+        let session = start_session().await;
+        let lead = session.scheduler().find_lead_slot_id().await.expect("lead");
+        assert_ne!(lead, "worker-1");
+
+        let unread_notices = || async {
+            session
+                .mailbox()
+                .peek_unread(session.team_id(), &lead)
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|message| {
+                    message.from_agent_id == "worker-1"
+                        && message.summary.as_deref() == Some(DELIVERY_EXHAUSTED_SUBJECT)
+                })
+                .count()
+        };
+
+        session.notify_leader_delivery_exhausted("worker-1", 2).await.unwrap();
+        assert_eq!(unread_notices().await, 1);
+
+        // A repeat while the first notice is still unread must merge into it, not
+        // stack: the notice invites lead intervention, which resumes the paused
+        // slot, so a teammate that keeps failing non-spend grounds would loop
+        // resume → fail ×3 → pause → notify with no bound on the mailbox.
+        session.notify_leader_delivery_exhausted("worker-1", 2).await.unwrap();
+        assert_eq!(unread_notices().await, 1, "pending notice must dedupe repeats");
+
+        // Once the lead consumed the notice, a fresh exhaustion notifies again —
+        // the lead has acted on the old one and must hear about the new failure.
+        let consumed: Vec<String> = session
+            .mailbox()
+            .peek_unread(session.team_id(), &lead)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|message| message.from_agent_id == "worker-1")
+            .map(|message| message.id)
+            .collect();
+        session
+            .mailbox()
+            .mark_read_batch(session.team_id(), &consumed)
+            .await
+            .unwrap();
+        session.notify_leader_delivery_exhausted("worker-1", 1).await.unwrap();
+        assert_eq!(unread_notices().await, 1, "post-consumption failure must notify afresh");
+        session.stop();
+    }
 
     #[tokio::test]
     async fn recovery_scan_creates_one_wake_per_slot_with_non_self_unread() {
