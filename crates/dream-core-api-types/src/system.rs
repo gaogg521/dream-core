@@ -154,6 +154,18 @@ pub struct CreateBackupRequest {
     pub passphrase: String,
 }
 
+/// Wire form of `ArchiveEncryption`. Carries only what the client needs to know
+/// an archive IS sealed — cipher and KDF name, for display. `salt` and
+/// `verifier` stay server-side: the client never decrypts anything itself, it
+/// only types a passphrase and the backend does the actual unlock, so there is
+/// no reason for those to leave the machine that already has the archive.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveEncryptionResponse {
+    pub cipher: String,
+    pub kdf: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupManifestResponse {
@@ -165,6 +177,17 @@ pub struct BackupManifestResponse {
     /// True when the archive carries decryptable provider credentials, so the
     /// UI can tell the user to store the file accordingly.
     pub contains_credentials: bool,
+    /// Present when the archive is sealed, absent for a version-2 archive
+    /// written before encryption existed. The desktop UI's ENTIRE decision
+    /// about whether to show a passphrase field before restoring reads this
+    /// field's truthiness -- it was missing from this DTO from the day
+    /// encryption shipped, so that prompt has never once appeared for a real
+    /// user: `preview` always came back without it, restore was always
+    /// attempted with an empty passphrase, and every restore of an encrypted
+    /// archive failed with "That passphrase does not open this backup" before
+    /// the passphrase field a person could type into ever appeared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<ArchiveEncryptionResponse>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
