@@ -246,7 +246,13 @@ impl FeishuProvider {
             .send()
             .await?;
         let status = resp.status();
-        let json: serde_json::Value = resp.json().await.unwrap_or_default();
+        // Keep the raw body: an error here is OAuth-error-shaped
+        // (`{"error":"invalid_grant","error_description":...}`) rather than the
+        // `{code,msg}` envelope — parsing it into `FeishuApiResponse` throws the
+        // only field that says WHY away, and a bare "HTTP 400" sends everyone
+        // to guesswork (wrong secret? redirect_uri? expired code?).
+        let body_text = resp.text().await.unwrap_or_default();
+        let json: serde_json::Value = serde_json::from_str(&body_text).unwrap_or_default();
 
         let api: FeishuApiResponse<FeishuTokenResponse> =
             serde_json::from_value(json.clone()).unwrap_or(FeishuApiResponse {
@@ -255,8 +261,14 @@ impl FeishuProvider {
                 data: None,
             });
         if !status.is_success() {
+            let detail = json
+                .get("error_description")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+                .or_else(|| json.get("error").and_then(|v| v.as_str()).map(str::to_owned))
+                .unwrap_or_else(|| body_text.chars().take(300).collect());
             return Err(SsoError::Internal(format!(
-                "Feishu token exchange failed: HTTP {status}"
+                "Feishu token exchange failed: HTTP {status}: {detail}"
             )));
         }
         if api.code != 0 {
