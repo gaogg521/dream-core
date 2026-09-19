@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.73](https://github.com/gaogg521/dream-core/compare/v0.1.72...v0.1.73) (2026-09-19)
+
+
+### Bug Fixes
+
+* **backup:** a colliding remap must not take the whole restore down with it ([db1d60a](https://github.com/gaogg521/dream-core/commit/db1d60ac3d4734e36c4b89e74c5dcfe5f5e12d4c))
+
 ## [0.1.72](https://github.com/gaogg521/dream-core/compare/v0.1.71...v0.1.72) (2026-09-19)
 
 
