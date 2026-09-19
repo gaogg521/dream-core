@@ -63,11 +63,7 @@ async fn first_run_provisions_a_working_default_enterprise_and_is_idempotent() {
     // The default license seeds as Free (15a6a7a: fail closed on unofficial
     // paid tiers) — a fresh deployment must not wake up already enterprise.
     assert_eq!(
-        count(
-            pool,
-            "SELECT COUNT(*) FROM one_enterprise_license WHERE tier = 'free'"
-        )
-        .await,
+        count(pool, "SELECT COUNT(*) FROM one_enterprise_license WHERE tier = 'free'").await,
         1
     );
     let enterprise_id: String = sqlx::query_scalar("SELECT enterprise_id FROM one_tenants WHERE id = 'enterprise'")
