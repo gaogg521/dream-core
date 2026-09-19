@@ -119,6 +119,13 @@ pub struct LicensePayload {
     /// unbound keys remain valid for backwards compatibility.
     #[serde(default)]
     pub instance_id: Option<String>,
+    /// Random per-installation identity the customer's request code carried.
+    /// Unlike `instance_id` (which a cloned database carries along), this is
+    /// what the deployment compares at activation time; a license issued for
+    /// one install's fingerprint must not activate on another. Absent on
+    /// legacy licenses, which stay portable.
+    #[serde(default)]
+    pub deployment_fingerprint: Option<String>,
 }
 
 /// One module's authorization window inside a [`LicensePayload`].
@@ -412,6 +419,7 @@ mod tests {
             app_id: None,
             file_name: None,
             instance_id: None,
+            deployment_fingerprint: None,
         }
     }
 

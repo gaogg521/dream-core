@@ -9,7 +9,6 @@ use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
 use base64::Engine as _;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 use dream_core_api_types::ApiResponse;
 use dream_core_auth::CurrentUser;
@@ -317,10 +316,11 @@ async fn billing_license_request(
     let app_id = "one-work-enterprise".to_owned();
     let requested_at = now_ms();
     let nonce = uuid::Uuid::now_v7().simple().to_string();
-    let fingerprint = format!(
-        "sha256:{:x}",
-        Sha256::digest(format!("{instance_id}|{app_id}").as_bytes())
-    );
+    // The deployment's random per-install identity (billing_011), NOT anything
+    // derived from the tenant — a fingerprint computable from the request code
+    // itself would bind nothing. The vendor embeds it verbatim in the signed
+    // license and activation compares it against this same stored value.
+    let fingerprint = state.service.deployment_fingerprint().await?;
     let claims = serde_json::json!({"instanceId":instance_id,"deploymentFingerprint":fingerprint,"appId":app_id,"requestedAt":requested_at,"nonce":nonce});
     let request_code = format!(
         "ONEWORK-REQ-{}",

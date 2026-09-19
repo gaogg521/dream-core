@@ -70,6 +70,10 @@ pub struct LicenseInfoDto {
     pub serial: Option<String>,
     pub app_id: Option<String>,
     pub file_name: Option<String>,
+    /// The installation fingerprint the license was request-bound to, `null`
+    /// on legacy licenses. Read back so the admin UI can show what the
+    /// activation matched against.
+    pub deployment_fingerprint: Option<String>,
 }
 
 impl LicenseInfoDto {

@@ -2974,6 +2974,17 @@ async fn bootstrap_default_enterprise(services: &AppServices) -> Result<(), Rout
         )
         .with_source(e)
     })?;
+    // First-boot installation identity for request-bound licenses: generated
+    // HERE rather than lazily on the first license request so the deployment
+    // has a stable fingerprint from the moment it exists, not from the moment
+    // someone opens the license page.
+    billing.deployment_fingerprint().await.map_err(|e| {
+        RouterBuildError::new(
+            "router.bootstrap_enterprise.installation_fingerprint",
+            "failed to seed the installation fingerprint",
+        )
+        .with_source(e)
+    })?;
 
     tracing::info!(
         enterprise_id = %enterprise_id,
