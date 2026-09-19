@@ -147,6 +147,11 @@ pub struct BackupScopeDto {
 pub struct CreateBackupRequest {
     pub destination: String,
     pub scope: BackupScopeDto,
+    /// Passphrase the archive is encrypted with. Required: an archive always
+    /// carries the install's identity secret, so there is no scope that is safe
+    /// to write in the clear.
+    #[serde(default)]
+    pub passphrase: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -186,6 +191,10 @@ pub struct PreviewBackupRequest {
 pub struct RestoreBackupRequest {
     pub source: String,
     pub scope: BackupScopeDto,
+    /// Passphrase that opens the archive. Ignored for a version 2 archive,
+    /// written before encryption existed.
+    #[serde(default)]
+    pub passphrase: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

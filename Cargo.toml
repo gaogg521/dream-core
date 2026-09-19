@@ -137,6 +137,12 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
 bcrypt = "0.17"
 aes-gcm = "0.10"
+# Password-based key derivation for backup archives. Deliberately NOT the
+# SHA-256 in `derive_encryption_key`: that one hashes a machine-generated
+# secret, where speed is irrelevant and brute force is not a threat. A backup
+# passphrase is chosen by a person and the archive sits on a disk or a USB
+# stick, so the KDF has to be a slow, salted one.
+argon2 = "0.5"
 
 # UUID
 uuid = { version = "1", features = ["v7"] }

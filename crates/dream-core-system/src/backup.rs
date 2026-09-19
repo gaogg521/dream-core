@@ -49,11 +49,17 @@ use sqlx::{Row, SqlitePool};
 
 use dream_core_db::DbPool;
 
+use crate::backup_crypto::{ArchiveEncryption, ArchiveKey};
 use crate::error::SystemError;
 
 /// Archive format version. A restore refuses anything it does not recognize
 /// rather than half-applying it.
-pub const BACKUP_FORMAT_VERSION: u32 = 2;
+///
+/// 3 adds passphrase encryption, which every new archive now carries. The bump
+/// is what makes an older build refuse such a file cleanly instead of unpacking
+/// a `catalog.db` full of ciphertext and reporting a corrupt database. Version
+/// 2 archives — written before this existed — still restore.
+pub const BACKUP_FORMAT_VERSION: u32 = 3;
 
 const MANIFEST_NAME: &str = "manifest.json";
 
@@ -239,6 +245,14 @@ pub struct BackupManifest {
     /// True when the archive carries decryptable provider credentials, so the
     /// UI can warn about where the file is stored.
     pub contains_credentials: bool,
+    /// How the payload is encrypted, or `None` for a version 2 archive written
+    /// before encryption existed.
+    ///
+    /// Lives in the manifest, which is the one part left in the clear: a person
+    /// can see what an archive holds and when it was made without producing the
+    /// passphrase, and only the data itself needs it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<ArchiveEncryption>,
 }
 
 /// Outcome of a restore, per category.
@@ -271,11 +285,16 @@ impl BackupService {
     /// `pool` must be the pool serving this data directory. A MySQL pool is
     /// rejected: that is the enterprise server deployment, which has its own
     /// backup path and whose catalog is not a file in this directory.
+    /// `passphrase` is required, not optional. Every archive carries
+    /// `users.jwt_secret` whatever the scope, so there is no category that is
+    /// safe to write in the clear — and leaving the choice to the person
+    /// exporting means the one time they skip it is the time it matters.
     pub async fn export(
         &self,
         pool: &DbPool,
         destination: &Path,
         scope: BackupScope,
+        passphrase: &str,
     ) -> Result<BackupManifest, SystemError> {
         if scope.is_empty() {
             return Err(SystemError::BadRequest(
@@ -328,6 +347,9 @@ impl BackupService {
             .filter_map(|(_, path)| std::fs::metadata(path).ok())
             .map(|meta| meta.len())
             .sum();
+        // Derived before anything is written, so a passphrase that is too
+        // short fails here rather than after the archive exists.
+        let key = ArchiveKey::new(passphrase)?;
         let manifest = BackupManifest {
             format_version: BACKUP_FORMAT_VERSION,
             exported_at: now_ms(),
@@ -335,6 +357,7 @@ impl BackupService {
             scope,
             total_bytes,
             contains_credentials: scope.providers,
+            encryption: Some(key.encryption().clone()),
         };
 
         // Compressing runs on the blocking pool, not an async worker.
@@ -345,7 +368,7 @@ impl BackupService {
         // whole run, and every other request contends for what is left.
         let manifest_for_write = manifest.clone();
         let destination = destination.to_path_buf();
-        tokio::task::spawn_blocking(move || write_archive(&destination, &manifest_for_write, &entries))
+        tokio::task::spawn_blocking(move || write_archive(&destination, &manifest_for_write, &entries, Some(&key)))
             .await
             .map_err(|error| SystemError::Internal(format!("The backup task could not be run: {error}")))??;
         Ok(manifest)
@@ -368,11 +391,14 @@ impl BackupService {
     /// `scope` narrows what is applied; categories the archive does not carry
     /// are ignored. Nothing outside the selected categories is touched, so a
     /// conversations-only archive cannot wipe the provider configuration.
+    /// `passphrase` opens an encrypted archive. A version 2 archive, written
+    /// before encryption existed, ignores it and restores as before.
     pub async fn restore(
         &self,
         pool: &DbPool,
         archive: &Path,
         requested: BackupScope,
+        passphrase: &str,
     ) -> Result<RestoreOutcome, SystemError> {
         let DbPool::Sqlite(live) = pool else {
             return Err(SystemError::BadRequest(
@@ -395,9 +421,17 @@ impl BackupService {
             ));
         }
 
+        // The passphrase is checked against the manifest's verifier before a
+        // single byte is unpacked, so a mistyped one says so instead of
+        // failing later as a damaged catalog.
+        let key = match manifest.encryption.as_ref() {
+            Some(encryption) => Some(ArchiveKey::reopen(passphrase, encryption)?),
+            None => None,
+        };
+
         let staging = tempfile::tempdir()
             .map_err(|error| SystemError::Internal(format!("Could not create a staging directory: {error}")))?;
-        unpack_archive(archive, staging.path())?;
+        unpack_archive(archive, staging.path(), key.as_ref())?;
 
         let mut outcome = RestoreOutcome::default();
         let staged_catalog = staging.path().join(ARCHIVE_DB_NAME);
@@ -550,6 +584,11 @@ async fn merge_within_transaction(
         .await
         .map_err(|error| SystemError::Internal(format!("Could not begin the restore: {error}")))?;
 
+    // Read before the merge overwrites it: this is the key the target machine
+    // is actually running with, and the running process will not re-read it.
+    let local_secret = read_data_secret(&mut *conn, "main").await.unwrap_or_default();
+    let archive_secret = read_data_secret(&mut *conn, "backup").await.unwrap_or_default();
+
     let merged = match merge_tables(&mut *conn, scope).await {
         Ok(merged) => merged,
         Err(error) => {
@@ -557,6 +596,25 @@ async fn merge_within_transaction(
             return Err(error);
         }
     };
+
+    // The merge just replaced the identity row, and with it the secret every
+    // stored credential on this machine is sealed with. Put the local one back
+    // and re-seal what the archive brought, so nothing needs a restart and
+    // nothing the target already had is lost.
+    if !local_secret.is_empty() && local_secret != archive_secret {
+        if let Err(error) = restore_local_data_secret(&mut *conn, &local_secret).await {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+            return Err(error);
+        }
+        match rekey_restored_secrets(&mut *conn, &archive_secret, &local_secret).await {
+            Ok(count) if count > 0 => tracing::info!(count, "re-keyed restored credentials to this install"),
+            Ok(_) => {}
+            Err(error) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                return Err(error);
+            }
+        }
+    }
 
     let orphans_removed = match sweep_orphans(&mut *conn).await {
         Ok(orphans) => orphans,
@@ -635,6 +693,123 @@ async fn sweep_orphans(
     }
 
     Ok(removed)
+}
+
+/// This install's data secret, from whichever attached schema is asked.
+///
+/// Missing column, missing table or no row all read as "no secret" rather than
+/// an error: a catalog old enough to lack the column is one with nothing
+/// encrypted to worry about.
+async fn read_data_secret(conn: &mut sqlx::SqliteConnection, schema: &str) -> Result<String, SystemError> {
+    let columns = column_names(&mut *conn, schema, "users").await.unwrap_or_default();
+    if !columns.iter().any(|column| column == "data_secret") {
+        return Ok(String::new());
+    }
+    let row = sqlx::query(&format!(
+        "SELECT data_secret FROM {schema}.users WHERE data_secret IS NOT NULL AND data_secret <> '' LIMIT 1"
+    ))
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(|error| SystemError::Internal(format!("Could not read the data secret: {error}")))?;
+    Ok(row.and_then(|row| row.try_get::<String, _>(0).ok()).unwrap_or_default())
+}
+
+/// Puts the machine's own data secret back after the merge replaced it.
+async fn restore_local_data_secret(conn: &mut sqlx::SqliteConnection, secret: &str) -> Result<(), SystemError> {
+    sqlx::query("UPDATE main.users SET data_secret = ?")
+        .bind(secret)
+        .execute(&mut *conn)
+        .await
+        .map_err(|error| SystemError::Internal(format!("Could not keep this install's data secret: {error}")))?;
+    Ok(())
+}
+
+/// Columns holding a value encrypted with this install's data secret, by table.
+///
+/// These cannot simply be copied across. The value is sealed with
+/// `derive_encryption_key(users.data_secret)`, and the archive's secret is not
+/// the target machine's: merging the rows verbatim hands the target ciphertext
+/// it has no key for. See [`rekey_restored_secrets`].
+const ENCRYPTED_COLUMNS: &[(&str, &str)] = &[("providers", "api_key_encrypted")];
+
+/// Re-encrypts values that arrived sealed with the archive's data secret.
+///
+/// The archive carries `users.data_secret`, and the merge used to let it
+/// overwrite the local one. That looked harmless and was not: the running
+/// process reads the secret ONCE at startup, so after a restore it still held
+/// the old key while the catalog held the new one — every restored provider key
+/// failed to decrypt until a restart, and every provider the target machine
+/// already had became permanently unreadable after it. Measured on two real
+/// catalogs: same user id, different `data_secret`.
+///
+/// So the local secret wins and the archive's is used only to read what the
+/// archive brought. A row whose value cannot be decrypted is left as it is
+/// rather than replaced with something wrong — an archive from an install whose
+/// secret was rotated is the case that produces this, and blanking the key
+/// would turn an unusable credential into a lost one.
+async fn rekey_restored_secrets(
+    live: &mut sqlx::SqliteConnection,
+    archive_secret: &str,
+    local_secret: &str,
+) -> Result<u64, SystemError> {
+    if archive_secret == local_secret || archive_secret.is_empty() || local_secret.is_empty() {
+        return Ok(0);
+    }
+    let from = dream_core_app_key(archive_secret);
+    let to = dream_core_app_key(local_secret);
+
+    let mut rekeyed = 0u64;
+    for (table, column) in ENCRYPTED_COLUMNS {
+        if !table_exists(&mut *live, table).await? {
+            continue;
+        }
+        let rows = sqlx::query(&format!(
+            "SELECT rowid, \"{column}\" FROM main.\"{table}\" WHERE \"{column}\" IS NOT NULL AND \"{column}\" <> ''"
+        ))
+        .fetch_all(&mut *live)
+        .await
+        .map_err(|error| SystemError::Internal(format!("Could not read {table} to re-key it: {error}")))?;
+
+        for row in rows {
+            let rowid: i64 = row.try_get(0).unwrap_or_default();
+            let sealed: String = row.try_get(1).unwrap_or_default();
+            // Already readable with the local key: a row the target machine
+            // owned before this restore. Leave it alone.
+            if dream_core_common::decrypt_string(&sealed, &to).is_ok() {
+                continue;
+            }
+            let Ok(plaintext) = dream_core_common::decrypt_string(&sealed, &from) else {
+                tracing::warn!(
+                    table,
+                    rowid,
+                    "restored credential could not be decrypted; left untouched"
+                );
+                continue;
+            };
+            let resealed = dream_core_common::encrypt_string(&plaintext, &to)
+                .map_err(|error| SystemError::Internal(format!("Could not re-key {table}: {error}")))?;
+            sqlx::query(&format!("UPDATE main.\"{table}\" SET \"{column}\" = ? WHERE rowid = ?"))
+                .bind(resealed)
+                .bind(rowid)
+                .execute(&mut *live)
+                .await
+                .map_err(|error| SystemError::Internal(format!("Could not re-key {table}: {error}")))?;
+            rekeyed += 1;
+        }
+    }
+    Ok(rekeyed)
+}
+
+/// The same derivation `dream-core-app` uses, duplicated rather than imported:
+/// that crate sits above this one in the layering, so depending on it would
+/// invert the dependency direction. The domain prefix is a frozen legacy value
+/// — changing one byte makes every stored credential undecryptable.
+fn dream_core_app_key(data_secret: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"aionui-encryption-key:");
+    hasher.update(data_secret.as_bytes());
+    hasher.finalize().into()
 }
 
 async fn merge_tables(
@@ -821,10 +996,18 @@ fn intersect(archive: BackupScope, requested: BackupScope) -> BackupScope {
     }
 }
 
+/// Writes the archive, sealing every payload entry when a key is given.
+///
+/// `manifest.json` is never sealed — see `backup_crypto`. Payloads are sealed
+/// one file at a time rather than the archive as a whole, which keeps peak
+/// memory at the size of the largest single file: a real export was 13,304
+/// files and 228 MB, and holding that at once to encrypt it would be a very
+/// expensive way to save a few lines.
 fn write_archive(
     destination: &Path,
     manifest: &BackupManifest,
     entries: &[(String, PathBuf)],
+    key: Option<&ArchiveKey>,
 ) -> Result<(), SystemError> {
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent)
@@ -845,13 +1028,26 @@ fn write_archive(
         .map_err(|error| SystemError::Internal(format!("Could not write the backup manifest: {error}")))?;
 
     for (name, path) in entries {
-        let mut source = std::fs::File::open(path)
-            .map_err(|error| SystemError::Internal(format!("Could not read {} for backup: {error}", path.display())))?;
         writer
             .start_file(name.as_str(), options)
             .map_err(|error| SystemError::Internal(format!("Could not add {name} to the backup: {error}")))?;
-        std::io::copy(&mut source, &mut writer)
-            .map_err(|error| SystemError::Internal(format!("Could not add {name} to the backup: {error}")))?;
+        match key {
+            Some(key) => {
+                let plaintext = std::fs::read(path).map_err(|error| {
+                    SystemError::Internal(format!("Could not read {} for backup: {error}", path.display()))
+                })?;
+                let sealed = key.seal(&plaintext)?;
+                std::io::Write::write_all(&mut writer, &sealed)
+                    .map_err(|error| SystemError::Internal(format!("Could not add {name} to the backup: {error}")))?;
+            }
+            None => {
+                let mut source = std::fs::File::open(path).map_err(|error| {
+                    SystemError::Internal(format!("Could not read {} for backup: {error}", path.display()))
+                })?;
+                std::io::copy(&mut source, &mut writer)
+                    .map_err(|error| SystemError::Internal(format!("Could not add {name} to the backup: {error}")))?;
+            }
+        }
     }
 
     writer
@@ -872,7 +1068,7 @@ fn read_manifest(archive: &Path) -> Result<BackupManifest, SystemError> {
         .map_err(|error| SystemError::BadRequest(format!("This backup's manifest is unreadable: {error}")))
 }
 
-fn unpack_archive(archive: &Path, destination: &Path) -> Result<(), SystemError> {
+fn unpack_archive(archive: &Path, destination: &Path, key: Option<&ArchiveKey>) -> Result<(), SystemError> {
     let file = std::fs::File::open(archive)
         .map_err(|error| SystemError::BadRequest(format!("Could not open the backup file: {error}")))?;
     let mut zip = zip::ZipArchive::new(file)
@@ -894,15 +1090,26 @@ fn unpack_archive(archive: &Path, destination: &Path) -> Result<(), SystemError>
                 "This backup contains an unsafe file path and was not restored.".to_owned(),
             ));
         };
-        let target = destination.join(relative);
+        let target = destination.join(&relative);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|error| SystemError::Internal(format!("Could not unpack the backup: {error}")))?;
         }
+        // The manifest is the one entry that was never sealed.
+        let sealed_entry = key.is_some() && relative != Path::new(MANIFEST_NAME);
         let mut out = std::fs::File::create(&target)
             .map_err(|error| SystemError::Internal(format!("Could not unpack the backup: {error}")))?;
-        std::io::copy(&mut entry, &mut out)
-            .map_err(|error| SystemError::Internal(format!("Could not unpack the backup: {error}")))?;
+        if sealed_entry {
+            let mut sealed = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut sealed)
+                .map_err(|error| SystemError::Internal(format!("Could not unpack the backup: {error}")))?;
+            let plaintext = key.expect("checked above").open(&sealed)?;
+            std::io::Write::write_all(&mut out, &plaintext)
+                .map_err(|error| SystemError::Internal(format!("Could not unpack the backup: {error}")))?;
+        } else {
+            std::io::copy(&mut entry, &mut out)
+                .map_err(|error| SystemError::Internal(format!("Could not unpack the backup: {error}")))?;
+        }
     }
     Ok(())
 }
