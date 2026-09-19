@@ -114,11 +114,13 @@ async fn restore_backup(
     tracing::info!(
         tables = outcome.rows_by_table.len(),
         files = outcome.files_restored,
+        orphans = outcome.orphans_removed.values().sum::<u64>(),
         "Backup restore applied"
     );
     Ok(Json(ApiResponse::ok(RestoreBackupResponse {
         rows_by_table: outcome.rows_by_table,
         files_restored: outcome.files_restored,
+        orphans_removed: outcome.orphans_removed,
     })))
 }
 

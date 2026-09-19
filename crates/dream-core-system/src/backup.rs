@@ -249,6 +249,9 @@ pub struct RestoreOutcome {
     pub rows_by_table: std::collections::BTreeMap<String, u64>,
     /// Files copied out of the archive.
     pub files_restored: u64,
+    /// Rows dropped because the parent they referenced was not restored —
+    /// what a partial scope costs, reported rather than left to be discovered.
+    pub orphans_removed: std::collections::BTreeMap<String, u64>,
 }
 
 /// Backup and restore over a data directory.
@@ -399,7 +402,9 @@ impl BackupService {
         let mut outcome = RestoreOutcome::default();
         let staged_catalog = staging.path().join(ARCHIVE_DB_NAME);
         if staged_catalog.is_file() {
-            outcome.rows_by_table = merge_catalog(live, &staged_catalog, effective).await?;
+            let merged = merge_catalog(live, &staged_catalog, effective).await?;
+            outcome.rows_by_table = merged.rows_by_table;
+            outcome.orphans_removed = merged.orphans_removed;
         }
 
         let staged_files = staging.path().join("files");
@@ -470,29 +475,166 @@ async fn prune_catalog_to_scope(catalog: &Path, scope: BackupScope) -> Result<()
 /// different one of the five — cannot see `backup` at all. The failure is a
 /// plain "no such table", and a pool of one connection (as in a test) hides it
 /// completely.
-async fn merge_catalog(
-    live: &SqlitePool,
-    staged: &Path,
-    scope: BackupScope,
-) -> Result<std::collections::BTreeMap<String, u64>, SystemError> {
+async fn merge_catalog(live: &SqlitePool, staged: &Path, scope: BackupScope) -> Result<MergeOutcome, SystemError> {
     let mut conn = live
         .acquire()
         .await
         .map_err(|error| SystemError::Internal(format!("Could not open the catalog for restore: {error}")))?;
 
-    let staged_path = staged.to_string_lossy().replace('\'', "''");
-    sqlx::query(&format!("ATTACH DATABASE '{staged_path}' AS backup"))
+    // Foreign keys OFF for the merge, exactly as the export path does, and for
+    // a sharper reason.
+    //
+    // Rows go in grouped by category, and that order is not a topological one:
+    // `conversation_assistant_snapshots` is restored with the conversations
+    // while the `assistant_definitions` it points at belong to app settings and
+    // arrive last. On the machine the archive came from those parent rows are
+    // already present and nothing complains. On a NEW machine they are not —
+    // which is why "export here, restore there" failed with a bare 500 while
+    // restoring onto the source machine looked fine.
+    //
+    // Reimposing referential checks row by row would only be asking the merge
+    // to arrive in an order the category grouping cannot express. The archive
+    // is internally consistent; what it can be missing is a parent the user
+    // chose NOT to restore, and `sweep_orphans` deals with that once the whole
+    // merge has landed.
+    //
+    // The placement matters twice: BEFORE the transaction, because
+    // `PRAGMA foreign_keys` is a documented no-op inside one and issued after
+    // BEGIN would silently do nothing; and restored before the connection goes
+    // back to the pool, or every later query on it would run unchecked.
+    sqlx::query("PRAGMA foreign_keys=OFF")
         .execute(&mut *conn)
         .await
-        .map_err(|error| SystemError::Internal(format!("Could not open the backup catalog: {error}")))?;
+        .map_err(|error| SystemError::Internal(format!("Could not prepare the catalog for restore: {error}")))?;
 
-    let result = merge_tables(&mut conn, scope).await;
+    let staged_path = staged.to_string_lossy().replace('\'', "''");
+    let attached = sqlx::query(&format!("ATTACH DATABASE '{staged_path}' AS backup"))
+        .execute(&mut *conn)
+        .await
+        .map_err(|error| SystemError::Internal(format!("Could not open the backup catalog: {error}")));
+
+    let result = match attached {
+        Err(error) => Err(error),
+        Ok(_) => merge_within_transaction(&mut conn, scope).await,
+    };
 
     // Detach even when the merge failed: the connection goes back to the pool
     // either way, and an attached database left on it would make the next
     // restore's ATTACH fail with "database backup is already in use".
     let _ = sqlx::query("DETACH DATABASE backup").execute(&mut *conn).await;
+    // Never hand a connection back with enforcement switched off.
+    let _ = sqlx::query("PRAGMA foreign_keys=ON").execute(&mut *conn).await;
     result
+}
+
+/// What a merge changed.
+#[derive(Debug, Default)]
+pub struct MergeOutcome {
+    pub rows_by_table: std::collections::BTreeMap<String, u64>,
+    /// Rows dropped because the parent they referenced was not restored.
+    pub orphans_removed: std::collections::BTreeMap<String, u64>,
+}
+
+/// The merge and its cleanup, as one transaction.
+///
+/// Without this a failure left the catalog half-merged — measured on real data,
+/// the old code committed `users`, `conversations` and `messages` and then
+/// aborted, so the target ended up holding conversations and nothing else, with
+/// nothing to say the rest never arrived.
+async fn merge_within_transaction(
+    conn: &mut sqlx::SqliteConnection,
+    scope: BackupScope,
+) -> Result<MergeOutcome, SystemError> {
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *conn)
+        .await
+        .map_err(|error| SystemError::Internal(format!("Could not begin the restore: {error}")))?;
+
+    let merged = match merge_tables(&mut *conn, scope).await {
+        Ok(merged) => merged,
+        Err(error) => {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+            return Err(error);
+        }
+    };
+
+    let orphans_removed = match sweep_orphans(&mut *conn).await {
+        Ok(orphans) => orphans,
+        Err(error) => {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+            return Err(error);
+        }
+    };
+
+    sqlx::query("COMMIT")
+        .execute(&mut *conn)
+        .await
+        .map_err(|error| SystemError::Internal(format!("Could not commit the restore: {error}")))?;
+
+    Ok(MergeOutcome {
+        rows_by_table: merged,
+        orphans_removed,
+    })
+}
+
+/// Deletes rows whose foreign key points at something that is not there.
+///
+/// Restoring conversations WITHOUT app settings is a supported choice, and it
+/// leaves `conversation_assistant_snapshots` referring to assistant definitions
+/// that were deliberately not brought across — measured at 20 such rows on a
+/// real catalog. They are unusable either way; leaving them would also leave
+/// the catalog contradicting its own declared constraints, so the next thing to
+/// enforce them would meet a database that never validated.
+///
+/// Looped because removing one row can orphan another, and bounded because a
+/// schema cycle must not turn that into a spin.
+async fn sweep_orphans(
+    conn: &mut sqlx::SqliteConnection,
+) -> Result<std::collections::BTreeMap<String, u64>, SystemError> {
+    const MAX_PASSES: usize = 8;
+    let mut removed: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+
+    for _ in 0..MAX_PASSES {
+        let violations = sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|error| SystemError::Internal(format!("Could not check the restored catalog: {error}")))?;
+        if violations.is_empty() {
+            break;
+        }
+
+        // Columns are (table, rowid, parent, fkid). `rowid` is NULL for a
+        // WITHOUT ROWID table, which cannot be addressed this way — reported
+        // rather than silently skipped.
+        let mut by_table: std::collections::BTreeMap<String, Vec<i64>> = std::collections::BTreeMap::new();
+        for row in &violations {
+            let table: String = row.try_get(0).unwrap_or_default();
+            match row.try_get::<Option<i64>, _>(1) {
+                Ok(Some(rowid)) => by_table.entry(table).or_default().push(rowid),
+                _ => tracing::warn!(
+                    table,
+                    "restored row breaks a foreign key but has no rowid to delete it by"
+                ),
+            }
+        }
+        if by_table.is_empty() {
+            break;
+        }
+
+        for (table, rowids) in by_table {
+            let list = rowids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+            let affected = sqlx::query(&format!("DELETE FROM main.\"{table}\" WHERE rowid IN ({list})"))
+                .execute(&mut *conn)
+                .await
+                .map_err(|error| {
+                    SystemError::Internal(format!("Could not clean up unusable rows in {table}: {error}"))
+                })?
+                .rows_affected();
+            *removed.entry(table).or_default() += affected;
+        }
+    }
+
+    Ok(removed)
 }
 
 async fn merge_tables(
