@@ -266,10 +266,18 @@ async fn cj2_create_three_schedule_types() {
     assert_eq!(at["schedule"]["kind"], "at");
     assert!(at["state"]["next_run_at_ms"].as_i64().unwrap() > now);
 
+    // next_run = the server's now at creation + every_ms (see compute_next_run),
+    // so bracketing the create call pins it exactly — no tolerance to blow
+    // through however loaded the machine is (this used to be a fixed ±3s
+    // window around a timestamp captured two slow requests earlier, and it
+    // failed under parallel e2e load).
+    let before = dream_core_common::now_ms();
     let every = create_job(&mut app, &services, &token, &csrf, create_job_body("Every Job")).await;
+    let after = dream_core_common::now_ms();
     assert_eq!(every["schedule"]["kind"], "every");
     let next = every["state"]["next_run_at_ms"].as_i64().unwrap();
-    assert!((next - now - 60000).abs() < 3000);
+    assert!(next >= before + 60000, "next {next} earlier than before+60s");
+    assert!(next <= after + 60000, "next {next} later than after+60s");
 
     let cron = create_job(
         &mut app,
