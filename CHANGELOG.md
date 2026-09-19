@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.74](https://github.com/gaogg521/dream-core/compare/v0.1.73...v0.1.74) (2026-09-19)
+
+
+### Bug Fixes
+
+* **backup:** tell the client an archive is actually encrypted ([b25a756](https://github.com/gaogg521/dream-core/commit/b25a756d04cde5bbb36adb9ba7a8ea0d659ece82))
+
 ## [0.1.73](https://github.com/gaogg521/dream-core/compare/v0.1.72...v0.1.73) (2026-09-19)
 
 
