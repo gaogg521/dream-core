@@ -60,10 +60,12 @@ async fn first_run_provisions_a_working_default_enterprise_and_is_idempotent() {
         count(pool, "SELECT COUNT(*) FROM one_enterprises WHERE origin = 'bootstrap'").await,
         1
     );
+    // The default license seeds as Free (15a6a7a: fail closed on unofficial
+    // paid tiers) — a fresh deployment must not wake up already enterprise.
     assert_eq!(
         count(
             pool,
-            "SELECT COUNT(*) FROM one_enterprise_license WHERE tier = 'enterprise'"
+            "SELECT COUNT(*) FROM one_enterprise_license WHERE tier = 'free'"
         )
         .await,
         1

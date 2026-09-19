@@ -254,8 +254,6 @@ mod tests {
         }
     }
 
-    use super::*;
-
     #[test]
     fn classified_error_serializes_as_public_contract() {
         let payload = AgentStreamErrorData::classified(
