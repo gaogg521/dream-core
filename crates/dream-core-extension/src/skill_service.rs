@@ -1503,6 +1503,19 @@ pub async fn link_workspace_skills(
     skills_rel_dirs: &[&str],
     skills: &[ResolvedAgentSkill],
 ) -> Result<usize, ExtensionError> {
+    // The CLI reads skills from the native skills dir, but a materialized
+    // tree inside a checked-out repository shows up as untracked noise in
+    // every `git status` the user runs. When the workspace lives inside a
+    // git work tree, make sure the workspace-level `.gitignore` covers the
+    // dirs we are about to create. Best-effort: a failure to ignore is
+    // logged, never fatal — skill delivery outranks git hygiene.
+    if let Err(e) = ensure_skills_ignored(workspace, skills_rel_dirs).await {
+        warn!(
+            workspace = %workspace.display(),
+            error = %e,
+            "could not update workspace .gitignore for skill links"
+        );
+    }
     let mut created = 0usize;
     for rel in skills_rel_dirs {
         let target_skills_dir = resolve_workspace_skills_dir(workspace, rel).await;
@@ -1544,6 +1557,68 @@ pub async fn link_workspace_skills(
         }
     }
     Ok(created)
+}
+
+const SKILLS_GITIGNORE_MARKER: &str = "# One Work CLI native skills (auto-managed)";
+
+/// Append ignore entries for `skills_rel_dirs` to `<workspace>/.gitignore`
+/// when the workspace sits inside a git work tree. Only ever appends — an
+/// existing `.gitignore` is never rewritten — and does nothing at all when
+/// no ancestor directory contains `.git`, so non-repo workspaces stay clean.
+async fn ensure_skills_ignored(workspace: &Path, skills_rel_dirs: &[&str]) -> std::io::Result<()> {
+    if skills_rel_dirs.is_empty() {
+        return Ok(());
+    }
+    if !inside_git_work_tree(workspace).await {
+        return Ok(());
+    }
+
+    let gitignore = workspace.join(".gitignore");
+    let existing = match tokio::fs::read_to_string(&gitignore).await {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    let existing_lines: Vec<&str> = existing.lines().map(str::trim).collect();
+    let mut missing: Vec<String> = Vec::new();
+    for rel in skills_rel_dirs {
+        // Anchored to the .gitignore's own directory, which is the workspace
+        // these dirs are created under.
+        let pattern = format!("/{}/", rel.trim_end_matches('/'));
+        if !existing_lines.iter().any(|line| *line == pattern) {
+            missing.push(pattern);
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let mut next = existing.clone();
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    next.push('\n');
+    next.push_str(SKILLS_GITIGNORE_MARKER);
+    next.push('\n');
+    for pattern in missing {
+        next.push_str(&pattern);
+        next.push('\n');
+    }
+    tokio::fs::write(&gitignore, next).await
+}
+
+/// Does `workspace` (or any ancestor up to the filesystem root) contain a
+/// `.git` entry? Cheap ancestor walk instead of shelling out to git.
+async fn inside_git_work_tree(mut dir: &Path) -> bool {
+    loop {
+        if tokio::fs::symlink_metadata(dir.join(".git")).await.is_ok() {
+            return true;
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => return false,
+        }
+    }
 }
 
 async fn resolve_workspace_skills_dir(workspace: &Path, skills_rel_dir: &str) -> PathBuf {
@@ -4079,6 +4154,68 @@ mod tests {
         assert!(manifest.contains("name: my-skill"));
         let nested = std::fs::read_to_string(target.join("nested").join("data.txt")).unwrap();
         assert_eq!(nested, "payload");
+    }
+
+    fn resolved_skill(source_root: &Path, name: &str) -> ResolvedAgentSkill {
+        let source = source_root.join(name);
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            source.join(SKILL_MANIFEST_FILE),
+            format!("---\nname: {name}\ndescription: test\n---\nbody"),
+        )
+        .unwrap();
+        ResolvedAgentSkill {
+            name: name.to_owned(),
+            source_path: source,
+        }
+    }
+
+    #[tokio::test]
+    async fn link_workspace_skills_gitignores_the_skills_dir_inside_a_repo() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("repo").join("checkout");
+        std::fs::create_dir_all(workspace.join(".git")).unwrap();
+        let source_root = tmp.path().join("sources");
+        let resolved = vec![resolved_skill(&source_root, "my-skill")];
+
+        link_workspace_skills(&workspace, &[".claude/skills"], &resolved)
+            .await
+            .expect("link must succeed inside a repo");
+
+        let gitignore = std::fs::read_to_string(workspace.join(".gitignore")).unwrap();
+        assert!(
+            gitignore.contains("/.claude/skills/"),
+            "gitignore must cover the native skills dir: {gitignore}"
+        );
+
+        // Second run must not duplicate the entry.
+        link_workspace_skills(&workspace, &[".claude/skills"], &resolved)
+            .await
+            .unwrap();
+        let again = std::fs::read_to_string(workspace.join(".gitignore")).unwrap();
+        assert_eq!(
+            again.matches("/.claude/skills/").count(),
+            1,
+            "entry must not be appended twice: {again}"
+        );
+    }
+
+    #[tokio::test]
+    async fn link_workspace_skills_leaves_non_repo_workspaces_untouched() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("plain");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let source_root = tmp.path().join("sources");
+        let resolved = vec![resolved_skill(&source_root, "my-skill")];
+
+        link_workspace_skills(&workspace, &[".claude/skills"], &resolved)
+            .await
+            .unwrap();
+
+        assert!(
+            !workspace.join(".gitignore").exists(),
+            "no .gitignore outside a git work tree"
+        );
     }
 
     #[tokio::test]
