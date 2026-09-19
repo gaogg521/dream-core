@@ -1853,7 +1853,7 @@ checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
 name = "dream-core-ai-agent"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
@@ -1906,7 +1906,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-api-types"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "dream-core-common",
  "serde",
@@ -1915,7 +1915,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-app"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1988,7 +1988,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-assets"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "axum",
  "dream-core-common",
@@ -2003,7 +2003,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-assistant"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "axum",
@@ -2029,7 +2029,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-auth"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "axum",
@@ -2057,7 +2057,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-channel"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "axum",
@@ -2089,7 +2089,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-claude-bridge"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "axum",
  "dream-core-api-types",
@@ -2106,7 +2106,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-codex-bridge"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "axum",
@@ -2130,7 +2130,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-common"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2149,7 +2149,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-conversation"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "axum",
@@ -2180,7 +2180,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-cron"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "axum",
@@ -2209,7 +2209,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-db"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "dream-core-common",
@@ -2226,7 +2226,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-extension"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "axum",
@@ -2259,7 +2259,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-file"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "axum",
@@ -2290,7 +2290,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-mcp"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "axum",
@@ -2318,7 +2318,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-office"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "axum",
@@ -2346,7 +2346,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-process"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "dream-core-common",
@@ -2366,7 +2366,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-project"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "axum",
@@ -2393,7 +2393,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-realtime"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "axum",
  "dashmap",
@@ -2408,7 +2408,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-runtime"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "dirs",
  "flate2",
@@ -2434,7 +2434,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-session"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2455,7 +2455,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-shell"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "arboard",
  "async-trait",
@@ -2488,7 +2488,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-system"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -2527,7 +2527,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-team"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
@@ -2556,7 +2556,7 @@ dependencies = [
 
 [[package]]
 name = "dream-core-team-prompts"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "dream-core-api-types",
  "serde",
@@ -2565,7 +2565,7 @@ dependencies = [
 
 [[package]]
 name = "dream-domain-billing"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2590,7 +2590,7 @@ dependencies = [
 
 [[package]]
 name = "dream-domain-devops"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "aws-credential-types",
@@ -2624,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "dream-domain-employee"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "axum",
@@ -2651,7 +2651,7 @@ dependencies = [
 
 [[package]]
 name = "dream-domain-enterprise"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "axum",
@@ -2672,7 +2672,7 @@ dependencies = [
 
 [[package]]
 name = "dream-domain-memory"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "axum",
  "dream-core-api-types",
@@ -2690,7 +2690,7 @@ dependencies = [
 
 [[package]]
 name = "dream-domain-org"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "axum",
@@ -2714,7 +2714,7 @@ dependencies = [
 
 [[package]]
 name = "dream-domain-platform"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -2739,7 +2739,7 @@ dependencies = [
 
 [[package]]
 name = "dream-domain-sso"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "axum",
@@ -2763,7 +2763,7 @@ dependencies = [
 
 [[package]]
 name = "dream-domain-workflow"
-version = "0.1.71-one.4"
+version = "0.1.72"
 dependencies = [
  "async-trait",
  "axum",
