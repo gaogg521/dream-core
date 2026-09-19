@@ -175,10 +175,11 @@ pub use skill::{
     WriteAssistantRuleRequest,
 };
 pub use system::{
-    BackupManifestResponse, BackupScopeDto, ClientPreferencesResponse, CreateBackupRequest, CreateBackupResponse,
-    FeedbackDiagnosticsContextResponse, FeedbackDiagnosticsPrivacyResponse, FeedbackDiagnosticsProfileResponse,
-    FeedbackDiagnosticsQuery, FeedbackDiagnosticsResponse, PreviewBackupRequest, RestoreBackupRequest,
-    RestoreBackupResponse, SystemSettingsResponse, UpdateClientPreferencesRequest, UpdateSettingsRequest,
+    ArchiveEncryptionResponse, BackupManifestResponse, BackupScopeDto, ClientPreferencesResponse, CreateBackupRequest,
+    CreateBackupResponse, FeedbackDiagnosticsContextResponse, FeedbackDiagnosticsPrivacyResponse,
+    FeedbackDiagnosticsProfileResponse, FeedbackDiagnosticsQuery, FeedbackDiagnosticsResponse, PreviewBackupRequest,
+    RestoreBackupRequest, RestoreBackupResponse, SystemSettingsResponse, UpdateClientPreferencesRequest,
+    UpdateSettingsRequest,
 };
 pub use team::{
     AddAgentRequest, CancelTeamChildTurnRequest, CancelTeamRunRequest, CreateTeamRequest, InterruptTeamAgentRequest,
