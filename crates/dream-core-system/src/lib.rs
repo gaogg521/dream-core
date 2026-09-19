@@ -48,6 +48,7 @@ pub fn platform_has_no_base_url(platform: &str) -> bool {
 }
 
 pub mod backup;
+pub mod backup_crypto;
 pub mod backup_routes;
 pub mod bedrock_probe;
 pub mod client_pref;

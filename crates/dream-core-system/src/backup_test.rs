@@ -9,6 +9,9 @@
 
 use super::*;
 
+/// Every archive is encrypted now, so every test needs one.
+const PASSPHRASE: &str = "a-good-passphrase";
+
 use sqlx::Executor;
 use sqlx::sqlite::SqlitePoolOptions;
 
@@ -37,7 +40,14 @@ async fn seeded_catalog(path: &Path) -> SqlitePool {
     // cannot fail the way a real restore fails: it was green through the whole
     // life of the bug this file now covers.
     pool.execute(
-        "CREATE TABLE users (id TEXT PRIMARY KEY NOT NULL, username TEXT NOT NULL, jwt_secret TEXT);
+        "CREATE TABLE users (
+             id TEXT PRIMARY KEY NOT NULL,
+             username TEXT NOT NULL,
+             jwt_secret TEXT,
+             -- The secret every stored credential is sealed with. Different on
+             -- every install, which is the whole problem a restore has to solve.
+             data_secret TEXT
+         );
          CREATE TABLE conversations (
              id TEXT PRIMARY KEY NOT NULL,
              user_id TEXT NOT NULL REFERENCES users(id),
@@ -61,7 +71,12 @@ async fn seeded_catalog(path: &Path) -> SqlitePool {
              conversation_id TEXT NOT NULL REFERENCES conversations(id),
              assistant_definition_id TEXT NOT NULL REFERENCES assistant_definitions(id)
          );
-         CREATE TABLE providers (id TEXT PRIMARY KEY NOT NULL, platform TEXT NOT NULL, api_key TEXT NOT NULL);
+         CREATE TABLE providers (
+             id TEXT PRIMARY KEY NOT NULL,
+             platform TEXT NOT NULL,
+             api_key TEXT NOT NULL,
+             api_key_encrypted TEXT
+         );
          CREATE TABLE skills (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL);
          CREATE TABLE assistants (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL);
          CREATE TABLE projects (
@@ -74,12 +89,12 @@ async fn seeded_catalog(path: &Path) -> SqlitePool {
     .await
     .unwrap();
     pool.execute(
-        "INSERT INTO users VALUES ('u1', 'me', 'secret-that-unlocks-keys');
+        "INSERT INTO users VALUES ('u1', 'me', 'secret-that-unlocks-keys', 'source-machine-data-secret');
          INSERT INTO conversations VALUES ('c1', 'u1', 'Quarterly plan');
          INSERT INTO messages VALUES ('m1', 'c1', 'hello');
          INSERT INTO assistant_definitions VALUES ('ad1', 'u1', 'Researcher');
          INSERT INTO conversation_assistant_snapshots VALUES ('cs1', 'c1', 'ad1');
-         INSERT INTO providers VALUES ('p1', 'openai', 'sk-live-key');
+         INSERT INTO providers VALUES ('p1', 'openai', 'sk-live-key', NULL);
          INSERT INTO skills VALUES ('s1', 'my-skill');
          INSERT INTO assistants VALUES ('a1', 'Helper');
          INSERT INTO projects (project_id, name) VALUES ('proj-alpha', 'Alpha');",
@@ -134,9 +149,18 @@ fn empty_scope() -> BackupScope {
 }
 
 /// Open the catalog inside an archive and read one table's row count.
+///
+/// Unpacks with the key, because the payload is sealed — which is itself worth
+/// knowing: if the archive were readable without one, every assertion about
+/// what it contains would also be an assertion that the encryption did nothing.
 async fn rows_in_archived_catalog(archive: &Path, table: &str) -> i64 {
     let dir = tempfile::tempdir().unwrap();
-    unpack_archive(archive, dir.path()).unwrap();
+    let manifest = read_manifest(archive).unwrap();
+    let key = manifest
+        .encryption
+        .as_ref()
+        .map(|encryption| ArchiveKey::reopen(PASSPHRASE, encryption).unwrap());
+    unpack_archive(archive, dir.path(), key.as_ref()).unwrap();
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect(&sqlite_url(&dir.path().join(ARCHIVE_DB_NAME)))
@@ -160,7 +184,12 @@ async fn the_archive_contains_rows_still_sitting_in_the_wal() {
     let archive = dir.path().join("backup.zip");
 
     service(dir.path())
-        .export(&DbPool::Sqlite(pool.clone()), &archive, only_conversations())
+        .export(
+            &DbPool::Sqlite(pool.clone()),
+            &archive,
+            only_conversations(),
+            PASSPHRASE,
+        )
         .await
         .unwrap();
 
@@ -178,7 +207,12 @@ async fn an_unselected_category_is_absent_from_the_archive_not_just_unmarked() {
     let archive = dir.path().join("conversations-only.zip");
 
     let manifest = service(dir.path())
-        .export(&DbPool::Sqlite(pool.clone()), &archive, only_conversations())
+        .export(
+            &DbPool::Sqlite(pool.clone()),
+            &archive,
+            only_conversations(),
+            PASSPHRASE,
+        )
         .await
         .unwrap();
 
@@ -207,7 +241,12 @@ async fn restoring_one_category_leaves_the_others_untouched() {
     let source_pool = seeded_catalog(&source.path().join("one-backend.db")).await;
     let archive = source.path().join("conversations-only.zip");
     service(source.path())
-        .export(&DbPool::Sqlite(source_pool.clone()), &archive, only_conversations())
+        .export(
+            &DbPool::Sqlite(source_pool.clone()),
+            &archive,
+            only_conversations(),
+            PASSPHRASE,
+        )
         .await
         .unwrap();
 
@@ -228,7 +267,12 @@ async fn restoring_one_category_leaves_the_others_untouched() {
         .unwrap();
 
     let outcome = service(target.path())
-        .restore(&DbPool::Sqlite(target_pool.clone()), &archive, BackupScope::all())
+        .restore(
+            &DbPool::Sqlite(target_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
         .await
         .unwrap();
 
@@ -262,7 +306,12 @@ async fn a_full_backup_restores_onto_a_machine_that_has_none_of_this_data() {
     let source_pool = seeded_catalog(&source.path().join("one-backend.db")).await;
     let archive = source.path().join("everything.zip");
     service(source.path())
-        .export(&DbPool::Sqlite(source_pool.clone()), &archive, BackupScope::all())
+        .export(
+            &DbPool::Sqlite(source_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
         .await
         .unwrap();
 
@@ -270,7 +319,12 @@ async fn a_full_backup_restores_onto_a_machine_that_has_none_of_this_data() {
     let target_pool = empty_catalog(&target.path().join("one-backend.db")).await;
 
     let outcome = service(target.path())
-        .restore(&DbPool::Sqlite(target_pool.clone()), &archive, BackupScope::all())
+        .restore(
+            &DbPool::Sqlite(target_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
         .await
         .expect("a full backup must restore onto a fresh machine");
 
@@ -303,7 +357,12 @@ async fn a_partial_restore_drops_rows_whose_parent_was_not_selected() {
     let source_pool = seeded_catalog(&source.path().join("one-backend.db")).await;
     let archive = source.path().join("everything.zip");
     service(source.path())
-        .export(&DbPool::Sqlite(source_pool.clone()), &archive, BackupScope::all())
+        .export(
+            &DbPool::Sqlite(source_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
         .await
         .unwrap();
 
@@ -311,7 +370,12 @@ async fn a_partial_restore_drops_rows_whose_parent_was_not_selected() {
     let target_pool = empty_catalog(&target.path().join("one-backend.db")).await;
 
     let outcome = service(target.path())
-        .restore(&DbPool::Sqlite(target_pool.clone()), &archive, only_conversations())
+        .restore(
+            &DbPool::Sqlite(target_pool.clone()),
+            &archive,
+            only_conversations(),
+            PASSPHRASE,
+        )
         .await
         .expect("a partial restore must still succeed");
 
@@ -343,7 +407,12 @@ async fn a_failed_restore_leaves_the_catalog_untouched() {
     let source_pool = seeded_catalog(&source.path().join("one-backend.db")).await;
     let archive = source.path().join("everything.zip");
     service(source.path())
-        .export(&DbPool::Sqlite(source_pool.clone()), &archive, BackupScope::all())
+        .export(
+            &DbPool::Sqlite(source_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
         .await
         .unwrap();
 
@@ -357,7 +426,12 @@ async fn a_failed_restore_leaves_the_catalog_untouched() {
         .unwrap();
 
     let result = service(target.path())
-        .restore(&DbPool::Sqlite(target_pool.clone()), &archive, BackupScope::all())
+        .restore(
+            &DbPool::Sqlite(target_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
         .await;
     assert!(result.is_err(), "the merge should have failed on the check constraint");
 
@@ -371,6 +445,226 @@ async fn a_failed_restore_leaves_the_catalog_untouched() {
     );
 }
 
+/// The archive must be unreadable without the passphrase — including to code
+/// that knows the format perfectly well. A test that only checks "the right
+/// passphrase works" would pass just as happily if nothing were encrypted.
+#[tokio::test]
+async fn an_archive_is_not_readable_without_the_passphrase() {
+    let source = tempfile::tempdir().unwrap();
+    let source_pool = seeded_catalog(&source.path().join("one-backend.db")).await;
+    let archive = source.path().join("sealed.zip");
+    service(source.path())
+        .export(
+            &DbPool::Sqlite(source_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
+        .await
+        .unwrap();
+
+    // Unpacked as if it were a version 2 archive: the bytes come out, but they
+    // are ciphertext, so the catalog will not open as a database.
+    let staging = tempfile::tempdir().unwrap();
+    unpack_archive(&archive, staging.path(), None).unwrap();
+    let raw = std::fs::read(staging.path().join(ARCHIVE_DB_NAME)).unwrap();
+    assert!(
+        !raw.starts_with(b"SQLite format 3"),
+        "the catalog is sitting in the archive unencrypted"
+    );
+
+    // And the wrong passphrase is refused by name.
+    let target = tempfile::tempdir().unwrap();
+    let target_pool = empty_catalog(&target.path().join("one-backend.db")).await;
+    let error = service(target.path())
+        .restore(
+            &DbPool::Sqlite(target_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            "not-the-passphrase",
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, SystemError::BadRequest(message) if message.contains("passphrase")),
+        "expected a passphrase error, got {error:?}"
+    );
+
+    // Nothing was applied on the failed attempt.
+    let conversations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM conversations")
+        .fetch_one(&target_pool)
+        .await
+        .unwrap();
+    assert_eq!(conversations, 0);
+}
+
+/// The manifest stays readable without the passphrase, which is what lets the
+/// app show what an archive holds before asking for one.
+#[tokio::test]
+async fn the_manifest_can_still_be_previewed_without_the_passphrase() {
+    let source = tempfile::tempdir().unwrap();
+    let source_pool = seeded_catalog(&source.path().join("one-backend.db")).await;
+    let archive = source.path().join("sealed.zip");
+    service(source.path())
+        .export(
+            &DbPool::Sqlite(source_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
+        .await
+        .unwrap();
+
+    let manifest = service(source.path()).preview(&archive).unwrap();
+    assert!(manifest.scope.conversations);
+    assert!(manifest.contains_credentials);
+    assert!(
+        manifest.encryption.is_some(),
+        "a new archive must record how it was sealed"
+    );
+}
+
+/// An archive written before encryption existed must still restore.
+#[tokio::test]
+async fn a_version_two_archive_still_restores() {
+    let source = tempfile::tempdir().unwrap();
+    let source_pool = seeded_catalog(&source.path().join("one-backend.db")).await;
+    let catalog_copy = source.path().join(ARCHIVE_DB_NAME);
+    copy_catalog(&DbPool::Sqlite(source_pool.clone()), &catalog_copy)
+        .await
+        .unwrap();
+
+    let archive = source.path().join("legacy.zip");
+    let legacy = BackupManifest {
+        format_version: 2,
+        exported_at: 0,
+        app_version: "3.0.5".to_owned(),
+        scope: BackupScope::all(),
+        total_bytes: 0,
+        contains_credentials: true,
+        encryption: None,
+    };
+    write_archive(&archive, &legacy, &[(ARCHIVE_DB_NAME.to_owned(), catalog_copy)], None).unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    let target_pool = empty_catalog(&target.path().join("one-backend.db")).await;
+    let outcome = service(target.path())
+        .restore(&DbPool::Sqlite(target_pool.clone()), &archive, BackupScope::all(), "")
+        .await
+        .expect("an archive from before encryption must still restore");
+    assert_eq!(outcome.rows_by_table.get("conversations"), Some(&1));
+}
+
+/// A passphrase too short to be worth having is refused before the file is
+/// written, not after.
+#[tokio::test]
+async fn a_weak_passphrase_is_refused_before_anything_is_written() {
+    let source = tempfile::tempdir().unwrap();
+    let source_pool = seeded_catalog(&source.path().join("one-backend.db")).await;
+    let archive = source.path().join("weak.zip");
+
+    let error = service(source.path())
+        .export(
+            &DbPool::Sqlite(source_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            "short",
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, SystemError::BadRequest(_)));
+    assert!(!archive.exists(), "a refused export must not leave a file behind");
+}
+
+/// Credentials arrive sealed with the SOURCE machine's secret, and the running
+/// process reads its own secret once at startup and never again.
+///
+/// Letting the archive's `data_secret` win looked harmless and was not: every
+/// restored provider key failed to decrypt until a restart, and every provider
+/// the target machine already had became permanently unreadable after one.
+/// Measured on two real catalogs — same user id, different secret.
+#[tokio::test]
+async fn restored_credentials_are_re_keyed_and_local_ones_survive() {
+    const SOURCE_SECRET: &str = "source-machine-data-secret";
+    const TARGET_SECRET: &str = "target-machine-data-secret";
+
+    let source = tempfile::tempdir().unwrap();
+    let source_pool = seeded_catalog(&source.path().join("one-backend.db")).await;
+    let from_source =
+        dream_core_common::encrypt_string("sk-from-the-old-machine", &dream_core_app_key(SOURCE_SECRET)).unwrap();
+    sqlx::query("UPDATE providers SET api_key_encrypted = ? WHERE id = 'p1'")
+        .bind(&from_source)
+        .execute(&source_pool)
+        .await
+        .unwrap();
+
+    let archive = source.path().join("with-keys.zip");
+    service(source.path())
+        .export(
+            &DbPool::Sqlite(source_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
+        .await
+        .unwrap();
+
+    // A target machine with its own secret and its own provider already set up.
+    let target = tempfile::tempdir().unwrap();
+    let target_pool = empty_catalog(&target.path().join("one-backend.db")).await;
+    let local = dream_core_common::encrypt_string("sk-already-here", &dream_core_app_key(TARGET_SECRET)).unwrap();
+    sqlx::query("INSERT INTO users VALUES ('u-local', 'them', 'local-jwt', ?)")
+        .bind(TARGET_SECRET)
+        .execute(&target_pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO providers VALUES ('p-local', 'anthropic', 'unused', ?)")
+        .bind(&local)
+        .execute(&target_pool)
+        .await
+        .unwrap();
+
+    service(target.path())
+        .restore(
+            &DbPool::Sqlite(target_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
+        .await
+        .unwrap();
+
+    let key = dream_core_app_key(TARGET_SECRET);
+
+    // The restored credential now opens with THIS machine's key — no restart.
+    let restored: String = sqlx::query_scalar("SELECT api_key_encrypted FROM providers WHERE id = 'p1'")
+        .fetch_one(&target_pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        dream_core_common::decrypt_string(&restored, &key).unwrap(),
+        "sk-from-the-old-machine"
+    );
+
+    // And the one that was already here still opens, which is the half that
+    // used to be destroyed.
+    let untouched: String = sqlx::query_scalar("SELECT api_key_encrypted FROM providers WHERE id = 'p-local'")
+        .fetch_one(&target_pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        dream_core_common::decrypt_string(&untouched, &key).unwrap(),
+        "sk-already-here"
+    );
+
+    // The machine kept its own secret rather than adopting the archive's.
+    let secret: String = sqlx::query_scalar("SELECT data_secret FROM users WHERE id = 'u-local'")
+        .fetch_one(&target_pool)
+        .await
+        .unwrap();
+    assert_eq!(secret, TARGET_SECRET);
+}
+
 /// `projects.id` is an auto-assigned INTEGER key: the number means nothing
 /// outside the database that issued it. Carrying it across would overwrite
 /// whichever unrelated local project happened to hold the same number.
@@ -380,7 +674,12 @@ async fn a_surrogate_key_does_not_overwrite_an_unrelated_local_row() {
     let source_pool = seeded_catalog(&source.path().join("one-backend.db")).await;
     let archive = source.path().join("backup.zip");
     service(source.path())
-        .export(&DbPool::Sqlite(source_pool.clone()), &archive, only_conversations())
+        .export(
+            &DbPool::Sqlite(source_pool.clone()),
+            &archive,
+            only_conversations(),
+            PASSPHRASE,
+        )
         .await
         .unwrap();
 
@@ -394,7 +693,12 @@ async fn a_surrogate_key_does_not_overwrite_an_unrelated_local_row() {
         .unwrap();
 
     service(target.path())
-        .restore(&DbPool::Sqlite(target_pool.clone()), &archive, BackupScope::all())
+        .restore(
+            &DbPool::Sqlite(target_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
         .await
         .unwrap();
 
@@ -418,7 +722,12 @@ async fn restoring_the_same_archive_twice_is_idempotent() {
     let pool = seeded_catalog(&dir.path().join("one-backend.db")).await;
     let archive = dir.path().join("backup.zip");
     service(dir.path())
-        .export(&DbPool::Sqlite(pool.clone()), &archive, only_conversations())
+        .export(
+            &DbPool::Sqlite(pool.clone()),
+            &archive,
+            only_conversations(),
+            PASSPHRASE,
+        )
         .await
         .unwrap();
 
@@ -435,7 +744,12 @@ async fn restoring_the_same_archive_twice_is_idempotent() {
 
     for _ in 0..2 {
         service(target.path())
-            .restore(&DbPool::Sqlite(target_pool.clone()), &archive, BackupScope::all())
+            .restore(
+                &DbPool::Sqlite(target_pool.clone()),
+                &archive,
+                BackupScope::all(),
+                PASSPHRASE,
+            )
             .await
             .unwrap();
     }
@@ -464,7 +778,12 @@ async fn a_catalog_whose_columns_differ_still_merges_on_the_shared_ones() {
     let source_pool = seeded_catalog(&source.path().join("one-backend.db")).await;
     let archive = source.path().join("backup.zip");
     service(source.path())
-        .export(&DbPool::Sqlite(source_pool.clone()), &archive, only_conversations())
+        .export(
+            &DbPool::Sqlite(source_pool.clone()),
+            &archive,
+            only_conversations(),
+            PASSPHRASE,
+        )
         .await
         .unwrap();
 
@@ -485,7 +804,12 @@ async fn a_catalog_whose_columns_differ_still_merges_on_the_shared_ones() {
         .unwrap();
 
     service(target.path())
-        .restore(&DbPool::Sqlite(target_pool.clone()), &archive, BackupScope::all())
+        .restore(
+            &DbPool::Sqlite(target_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
         .await
         .unwrap();
 
@@ -507,7 +831,12 @@ async fn files_are_restored_only_for_the_selected_categories() {
 
     let archive = source.path().join("backup.zip");
     service(source.path())
-        .export(&DbPool::Sqlite(source_pool.clone()), &archive, BackupScope::all())
+        .export(
+            &DbPool::Sqlite(source_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
         .await
         .unwrap();
 
@@ -521,6 +850,7 @@ async fn files_are_restored_only_for_the_selected_categories() {
                 skills: true,
                 ..empty_scope()
             },
+            PASSPHRASE,
         )
         .await
         .unwrap();
@@ -542,6 +872,7 @@ async fn an_export_with_nothing_selected_is_refused() {
             &DbPool::Sqlite(pool.clone()),
             &dir.path().join("empty.zip"),
             empty_scope(),
+            PASSPHRASE,
         )
         .await
         .unwrap_err();
@@ -554,7 +885,12 @@ async fn restoring_a_category_the_archive_lacks_is_refused_rather_than_silently_
     let pool = seeded_catalog(&dir.path().join("one-backend.db")).await;
     let archive = dir.path().join("conversations-only.zip");
     service(dir.path())
-        .export(&DbPool::Sqlite(pool.clone()), &archive, only_conversations())
+        .export(
+            &DbPool::Sqlite(pool.clone()),
+            &archive,
+            only_conversations(),
+            PASSPHRASE,
+        )
         .await
         .unwrap();
 
@@ -566,6 +902,7 @@ async fn restoring_a_category_the_archive_lacks_is_refused_rather_than_silently_
                 providers: true,
                 ..empty_scope()
             },
+            PASSPHRASE,
         )
         .await
         .unwrap_err();
@@ -586,11 +923,12 @@ async fn a_backup_from_a_newer_app_is_refused() {
             scope: BackupScope::all(),
             total_bytes: 0,
             contains_credentials: true,
+            encryption: None,
         },
     );
 
     let error = service(dir.path())
-        .restore(&DbPool::Sqlite(pool.clone()), &archive, BackupScope::all())
+        .restore(&DbPool::Sqlite(pool.clone()), &archive, BackupScope::all(), PASSPHRASE)
         .await
         .unwrap_err();
     assert!(matches!(error, SystemError::BadRequest(_)), "got {error:?}");
@@ -609,6 +947,7 @@ fn an_unknown_format_version_is_refused() {
             scope: BackupScope::all(),
             total_bytes: 0,
             contains_credentials: false,
+            encryption: None,
         },
     );
 
@@ -646,7 +985,7 @@ fn an_archive_with_a_traversal_path_is_refused() {
     }
 
     let staging = dir.path().join("staging");
-    let error = unpack_archive(&archive, &staging).unwrap_err();
+    let error = unpack_archive(&archive, &staging, None).unwrap_err();
     assert!(matches!(error, SystemError::BadRequest(_)), "got {error:?}");
     assert!(!dir.path().parent().unwrap().join("escaped.txt").exists());
 }

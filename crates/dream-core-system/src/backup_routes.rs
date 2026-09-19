@@ -58,7 +58,7 @@ async fn create_backup(
     let destination = std::path::PathBuf::from(&request.destination);
     let manifest = state
         .service
-        .export(&state.pool, &destination, from_dto(request.scope))
+        .export(&state.pool, &destination, from_dto(request.scope), &request.passphrase)
         .await
         .map_err(ApiError::from)?;
 
@@ -97,6 +97,7 @@ async fn restore_backup(
             &state.pool,
             std::path::Path::new(&request.source),
             from_dto(request.scope),
+            &request.passphrase,
         )
         .await
         .inspect_err(|error| {
