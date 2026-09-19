@@ -1,6 +1,11 @@
 *.sh text eol=lf
 *.ps1 text eol=crlf
 
+# release-please's TOML parser rejects CR in comments ("control characters"),
+# which a CRLF checkout re-introduces on every Windows save. Keep every .toml
+# LF in the index — cargo does not care, the release automation does.
+*.toml text eol=lf
+
 # Keep migration bytes identical across checkouts. This is belt-and-braces:
 # `align_line_ending_only_checksums` (dream-core-db/src/database.rs) already repairs
 # databases written by a build from a differently-configured checkout, so
