@@ -221,11 +221,16 @@ team paused: the model provider refused on spend grounds; waiting for the user
 > 📋 **本轮的未竟项总登记在 dream-ui `docs/guides/handoff-2026-09-18-enterprise-p0-and-sso-verification.zh-CN.md` 的 §4** —— 09-18 一轮产出 5 份文档，每份都有自己的这一节，散着看必漏。本节留原文细节，总表在那边。
 
 
-- **成员因非额度原因反复失败时，`notify_leader_delivery_exhausted` 的放大仍在**：每条消息
-  3 次预算是有界的，但新消息不断到达时总量无界。合并同一槽位的重复"已暂停"通知还没做。
-- `engine.rs:1102` 截断工具调用时仍直接发英文串（没走 `emit_info_coded`），正常使用可达。
+- ~~成员因非额度原因反复失败时队长通知无界增长~~ —— **09-19 已做**
+  （`fix(team): merge repeat delivery-exhaustion notices to the lead`）：同一槽位的未读
+  "已暂停"通知还挂着时，重复的那条不再写、也不再唤醒；队长消费掉之后新的失败照常通知。
+- ~~`engine.rs:1102` 截断工具调用直接发英文串~~ —— **09-19 已做**
+  （dream-engine `feat(engine): let the host translate the truncated-tool-call notice`
+  + dream-ui 的 `TRUNCATED_TOOL_CALL_RETRY` 词条）。⚠️ **dream-core 的 `Cargo.lock` 还没对齐
+  到引擎的那个提交**，所以这条词条目前还不会真的被触发；等 billing 的在途改动提交完就做
+  （`Cargo.lock` 里混着它新加的 `hex` 依赖，现在动会把别人的改动扫进来）。
 - `DEFAULT_CHAR_BUDGET` 那句 "2% of 200k × 4" 的注释已过时（`bootstrap.rs` 传的是 `None`，
   固定 16k 字符），**别照着它改成 80_000**。
 - 队长自动下线不用的专家：用户明确说先不做。
-- 团队不活动看门狗（inactivity watchdog）：上游 `gaogg521/dream-core` 也只有定义没接线
-  （58 个 `dream-core-team/*.rs` 全扫过），用户决定跟着不做。
+- 团队不活动看门狗（inactivity watchdog）：上游 `iOfficeAI/AionCore` 也只有定义没接线
+  （58 个 `aionui-team/*.rs` 全扫过），用户决定跟着不做。
