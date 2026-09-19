@@ -589,6 +589,16 @@ async fn merge_within_transaction(
     let local_secret = read_data_secret(&mut *conn, "main").await.unwrap_or_default();
     let archive_secret = read_data_secret(&mut *conn, "backup").await.unwrap_or_default();
 
+    // Read while the local ids still exist: the merge is about to delete some of
+    // them, and the rows that pointed at them have to be told where they went.
+    let remap = match plan_reference_remap(&mut *conn, &scope.tables()).await {
+        Ok(plan) => plan,
+        Err(error) => {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+            return Err(error);
+        }
+    };
+
     let merged = match merge_tables(&mut *conn, scope).await {
         Ok(merged) => merged,
         Err(error) => {
@@ -596,6 +606,19 @@ async fn merge_within_transaction(
             return Err(error);
         }
     };
+
+    match apply_reference_remap(&mut *conn, &remap).await {
+        Ok(moved) if moved > 0 => tracing::info!(
+            moved,
+            replaced = remap.len(),
+            "re-pointed local rows at the records the restore merged over them"
+        ),
+        Ok(_) => {}
+        Err(error) => {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+            return Err(error);
+        }
+    }
 
     // The merge just replaced the identity row, and with it the secret every
     // stored credential on this machine is sealed with. Put the local one back
@@ -635,13 +658,186 @@ async fn merge_within_transaction(
     })
 }
 
+/// Carries children over when a merge replaced the row they pointed at.
+///
+/// `INSERT OR REPLACE` resolves a UNIQUE conflict by DELETING the local row and
+/// inserting the archive's. Two machines that both seeded the same builtin
+/// assistants hold the same `assistant_id` under different row ids, so the
+/// merge silently removes the local row, and everything that referenced it —
+/// the user's own overlays and preferences — is left pointing at an id that no
+/// longer exists.
+///
+/// Deleting those as orphans was the wrong answer to the right observation: a
+/// restore MERGES, and a local customisation of an assistant that is still
+/// present afterwards should still be attached to it. The references are moved
+/// to the surviving row instead, and only what nothing can be attached to is
+/// swept.
+///
+/// Planned BEFORE the merge, because the local ids have to be read while they
+/// still exist.
+async fn plan_reference_remap(
+    live: &mut sqlx::SqliteConnection,
+    tables: &[&str],
+) -> Result<Vec<(String, String, String)>, SystemError> {
+    let mut plan = Vec::new();
+    for table in tables {
+        if !table_exists(&mut *live, table).await? || !attached_table_exists(&mut *live, table).await? {
+            continue;
+        }
+        let Some(key) = primary_key_column(&mut *live, table).await? else {
+            continue;
+        };
+        for unique in unique_business_keys(&mut *live, table).await? {
+            let join = unique
+                .iter()
+                .map(|column| format!("main_t.\"{column}\" IS backup_t.\"{column}\""))
+                .collect::<Vec<_>>()
+                .join(" AND ");
+            // Local rows the archive is about to replace: same business key,
+            // different identity.
+            let sql = format!(
+                "SELECT main_t.\"{key}\", backup_t.\"{key}\" FROM main.\"{table}\" AS main_t
+                 JOIN backup.\"{table}\" AS backup_t ON {join}
+                 WHERE main_t.\"{key}\" <> backup_t.\"{key}\""
+            );
+            let rows = match sqlx::query(&sql).fetch_all(&mut *live).await {
+                Ok(rows) => rows,
+                // A key this build cannot compare must not fail the restore:
+                // the merge still works, the children are just swept as before.
+                Err(error) => {
+                    tracing::warn!(table, error = %error, "could not plan a reference remap for this table");
+                    continue;
+                }
+            };
+            for row in rows {
+                let (Ok(old), Ok(new)) = (row.try_get::<String, _>(0), row.try_get::<String, _>(1)) else {
+                    continue;
+                };
+                plan.push(((*table).to_owned(), old, new));
+            }
+        }
+    }
+    Ok(plan)
+}
+
+/// Applies the remapping planned before the merge.
+async fn apply_reference_remap(
+    live: &mut sqlx::SqliteConnection,
+    plan: &[(String, String, String)],
+) -> Result<u64, SystemError> {
+    if plan.is_empty() {
+        return Ok(0);
+    }
+    let mut moved = 0u64;
+    for (table, old, new) in plan {
+        for (child_table, child_column) in referencing_columns(&mut *live, table).await? {
+            let affected = sqlx::query(&format!(
+                "UPDATE main.\"{child_table}\" SET \"{child_column}\" = ? WHERE \"{child_column}\" = ?"
+            ))
+            .bind(new)
+            .bind(old)
+            .execute(&mut *live)
+            .await
+            .map_err(|error| {
+                SystemError::Internal(format!("Could not re-point {child_table}.{child_column}: {error}"))
+            })?
+            .rows_affected();
+            moved += affected;
+        }
+    }
+    Ok(moved)
+}
+
+/// The single-column primary key of a table, if it has one.
+async fn primary_key_column(conn: &mut sqlx::SqliteConnection, table: &str) -> Result<Option<String>, SystemError> {
+    let rows = sqlx::query(&format!("PRAGMA main.table_info(\"{table}\")"))
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|error| SystemError::Internal(format!("Could not read the schema of {table}: {error}")))?;
+    let keys: Vec<String> = rows
+        .iter()
+        .filter(|row| row.try_get::<i64, _>(5).unwrap_or(0) > 0)
+        .filter_map(|row| row.try_get::<String, _>(1).ok())
+        .collect();
+    Ok(if keys.len() == 1 { keys.into_iter().next() } else { None })
+}
+
+/// Unique indexes that are NOT the primary key — the business keys a merge can
+/// collide on, and therefore the ones whose collision destroys a local row.
+async fn unique_business_keys(conn: &mut sqlx::SqliteConnection, table: &str) -> Result<Vec<Vec<String>>, SystemError> {
+    let indexes = sqlx::query(&format!("PRAGMA main.index_list(\"{table}\")"))
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|error| SystemError::Internal(format!("Could not read the indexes of {table}: {error}")))?;
+
+    let mut keys = Vec::new();
+    for index in indexes {
+        let name: String = index.try_get(1).unwrap_or_default();
+        let unique: i64 = index.try_get(2).unwrap_or(0);
+        let origin: String = index.try_get(3).unwrap_or_default();
+        // `pk` is the primary key itself: replacing on it is identity, not a
+        // business-key collision, and the children already point at the id that
+        // survives.
+        if unique == 0 || origin == "pk" || name.is_empty() {
+            continue;
+        }
+        let info = sqlx::query(&format!("PRAGMA main.index_info(\"{name}\")"))
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|error| SystemError::Internal(format!("Could not read index {name}: {error}")))?;
+        let columns: Vec<String> = info.iter().filter_map(|row| row.try_get::<String, _>(2).ok()).collect();
+        if !columns.is_empty() {
+            keys.push(columns);
+        }
+    }
+    Ok(keys)
+}
+
+/// Every `(table, column)` in the live catalog whose foreign key points at
+/// `parent`.
+async fn referencing_columns(
+    conn: &mut sqlx::SqliteConnection,
+    parent: &str,
+) -> Result<Vec<(String, String)>, SystemError> {
+    let tables = sqlx::query("SELECT name FROM main.sqlite_master WHERE type = 'table'")
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|error| SystemError::Internal(format!("Could not list tables: {error}")))?;
+
+    let mut out = Vec::new();
+    for row in tables {
+        let table: String = row.try_get(0).unwrap_or_default();
+        if table.is_empty() || table.starts_with("sqlite_") {
+            continue;
+        }
+        let keys = sqlx::query(&format!("PRAGMA main.foreign_key_list(\"{table}\")"))
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|error| SystemError::Internal(format!("Could not read the foreign keys of {table}: {error}")))?;
+        for key in keys {
+            let target: String = key.try_get(2).unwrap_or_default();
+            if target != parent {
+                continue;
+            }
+            if let Ok(column) = key.try_get::<String, _>(3) {
+                out.push((table.clone(), column));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Deletes rows whose foreign key points at something that is not there.
 ///
-/// Restoring conversations WITHOUT app settings is a supported choice, and it
-/// leaves `conversation_assistant_snapshots` referring to assistant definitions
-/// that were deliberately not brought across — measured at 20 such rows on a
-/// real catalog. They are unusable either way; leaving them would also leave
-/// the catalog contradicting its own declared constraints, so the next thing to
+/// The last resort, and deliberately narrow now that `apply_reference_remap`
+/// runs first. What reaches here is a row whose parent is not merely at a
+/// different id but genuinely absent — restoring conversations WITHOUT app
+/// settings is a supported choice, and it leaves
+/// `conversation_assistant_snapshots` referring to assistant definitions that
+/// were never brought across (measured at 20 such rows on a real catalog).
+///
+/// There is nothing to attach those to. Leaving them would also leave the
+/// catalog contradicting its own declared constraints, so the next thing to
 /// enforce them would meet a database that never validated.
 ///
 /// Looped because removing one row can orphan another, and bounded because a

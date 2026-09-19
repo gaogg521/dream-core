@@ -61,7 +61,19 @@ async fn seeded_catalog(path: &Path) -> SqlitePool {
          CREATE TABLE assistant_definitions (
              id TEXT PRIMARY KEY NOT NULL,
              user_id TEXT NOT NULL REFERENCES users(id),
+             -- The stable identity of a builtin assistant. Every install seeds
+             -- the same ones under DIFFERENT row ids, so this is the key a
+             -- merge collides on -- and the collision is what used to destroy
+             -- the local row.
+             assistant_id TEXT NOT NULL,
              name TEXT NOT NULL
+         );
+         CREATE UNIQUE INDEX idx_assistant_definitions_user_assistant
+             ON assistant_definitions(user_id, assistant_id);
+         CREATE TABLE assistant_overlays (
+             id TEXT PRIMARY KEY NOT NULL,
+             assistant_definition_id TEXT NOT NULL REFERENCES assistant_definitions(id),
+             note TEXT NOT NULL
          );
          -- The edge that broke cross-machine restore: a CONVERSATION table
          -- pointing at an APP SETTINGS one, so the child is merged before the
@@ -92,7 +104,7 @@ async fn seeded_catalog(path: &Path) -> SqlitePool {
         "INSERT INTO users VALUES ('u1', 'me', 'secret-that-unlocks-keys', 'source-machine-data-secret');
          INSERT INTO conversations VALUES ('c1', 'u1', 'Quarterly plan');
          INSERT INTO messages VALUES ('m1', 'c1', 'hello');
-         INSERT INTO assistant_definitions VALUES ('ad1', 'u1', 'Researcher');
+         INSERT INTO assistant_definitions VALUES ('ad1', 'u1', 'builtin-researcher', 'Researcher');
          INSERT INTO conversation_assistant_snapshots VALUES ('cs1', 'c1', 'ad1');
          INSERT INTO providers VALUES ('p1', 'openai', 'sk-live-key', NULL);
          INSERT INTO skills VALUES ('s1', 'my-skill');
@@ -111,6 +123,7 @@ async fn empty_catalog(path: &Path) -> SqlitePool {
     let pool = seeded_catalog(path).await;
     pool.execute("PRAGMA foreign_keys=OFF").await.unwrap();
     for table in [
+        "assistant_overlays",
         "conversation_assistant_snapshots",
         "messages",
         "conversations",
@@ -289,6 +302,80 @@ async fn restoring_one_category_leaves_the_others_untouched() {
         .await
         .unwrap();
     assert_eq!(key, "sk-the-local-one");
+}
+
+/// A restore MERGES, so a local customisation of something the archive also
+/// carries has to survive it.
+///
+/// `INSERT OR REPLACE` resolves a UNIQUE collision by deleting the local row:
+/// two installs seed the same builtin assistants under different row ids, so
+/// the merge removes the local definition and the user's own overlay is left
+/// pointing at an id that no longer exists. Deleting that overlay as an orphan
+/// was destroying local data as a side effect of the merge -- the reference is
+/// moved to the surviving row instead.
+#[tokio::test]
+async fn a_local_customisation_follows_the_row_the_merge_replaced() {
+    let source = tempfile::tempdir().unwrap();
+    let source_pool = seeded_catalog(&source.path().join("one-backend.db")).await;
+    let archive = source.path().join("everything.zip");
+    service(source.path())
+        .export(
+            &DbPool::Sqlite(source_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
+        .await
+        .unwrap();
+
+    // The target seeded the SAME builtin assistant under its own row id, and
+    // the user customised it here.
+    let target = tempfile::tempdir().unwrap();
+    let target_pool = empty_catalog(&target.path().join("one-backend.db")).await;
+    target_pool
+        .execute(
+            "INSERT INTO users VALUES ('u1', 'me', 'jwt', 'target-secret');
+             INSERT INTO assistant_definitions VALUES ('local-ad', 'u1', 'builtin-researcher', 'Researcher');
+             INSERT INTO assistant_overlays VALUES ('ov1', 'local-ad', 'my own tweak');",
+        )
+        .await
+        .unwrap();
+
+    let outcome = service(target.path())
+        .restore(
+            &DbPool::Sqlite(target_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
+        .await
+        .unwrap();
+
+    // The overlay is still here, and still attached to the assistant.
+    let attached: String =
+        sqlx::query_scalar("SELECT assistant_definition_id FROM assistant_overlays WHERE id = 'ov1'")
+            .fetch_one(&target_pool)
+            .await
+            .expect("the local overlay must survive a merge that replaced its parent");
+    assert_eq!(attached, "ad1", "the overlay should follow the surviving definition");
+
+    let note: String = sqlx::query_scalar("SELECT note FROM assistant_overlays WHERE id = 'ov1'")
+        .fetch_one(&target_pool)
+        .await
+        .unwrap();
+    assert_eq!(note, "my own tweak", "the customisation itself must be untouched");
+
+    assert!(
+        outcome.orphans_removed.is_empty(),
+        "nothing should have been swept, got {:?}",
+        outcome.orphans_removed
+    );
+
+    let violations = sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&target_pool)
+        .await
+        .unwrap();
+    assert!(violations.is_empty());
 }
 
 /// The case the whole feature exists for, and the one that was broken:
