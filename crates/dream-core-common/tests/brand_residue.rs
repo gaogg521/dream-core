@@ -44,7 +44,16 @@ const SKIPPED_PREFIXES: &[&str] = &[
 
 /// Whole files whose subject IS the rename. Every old name in them is a record of
 /// what was decided, not residue — scrubbing them destroys the reasoning.
-const SKIPPED_FILES: &[&str] = &["DREAM-SETUP-NOTES.md"];
+const SKIPPED_FILES: &[&str] = &[
+    "DREAM-SETUP-NOTES.md",
+    // release-please regenerates this file from commit subjects, and three of
+    // those subjects belong to the rename commits themselves -- they carry the
+    // pre-rebrand names because naming them is what those commits were for.
+    // Editing the file would falsify the history AND be undone by the bot on the
+    // next release, so without this entry every release turns main red. That is
+    // not hypothetical: it happened the moment 0.1.72 was cut.
+    "CHANGELOG.md",
+];
 
 /// A migration test has to reproduce the PRE-migration database byte for byte:
 /// the row ids, the `agent_type` values, the skill names the migration rewrites.
