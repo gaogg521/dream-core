@@ -72,9 +72,17 @@ async fn seeded_catalog(path: &Path) -> SqlitePool {
              ON assistant_definitions(user_id, assistant_id);
          CREATE TABLE assistant_overlays (
              id TEXT PRIMARY KEY NOT NULL,
+             user_id TEXT NOT NULL REFERENCES users(id),
              assistant_definition_id TEXT NOT NULL REFERENCES assistant_definitions(id),
              note TEXT NOT NULL
          );
+         -- The child carries a unique key of its own that MENTIONS the column a
+         -- remap re-points. Without this index the fixture cannot express the
+         -- case where moving a local overlay lands on top of one the archive
+         -- already supplied -- and that collision aborted the whole restore
+         -- with a 500 on a real catalog while these tests stayed green.
+         CREATE UNIQUE INDEX idx_assistant_overlays_user_definition
+             ON assistant_overlays(user_id, assistant_definition_id);
          -- The edge that broke cross-machine restore: a CONVERSATION table
          -- pointing at an APP SETTINGS one, so the child is merged before the
          -- parent it needs.
@@ -336,7 +344,7 @@ async fn a_local_customisation_follows_the_row_the_merge_replaced() {
         .execute(
             "INSERT INTO users VALUES ('u1', 'me', 'jwt', 'target-secret');
              INSERT INTO assistant_definitions VALUES ('local-ad', 'u1', 'builtin-researcher', 'Researcher');
-             INSERT INTO assistant_overlays VALUES ('ov1', 'local-ad', 'my own tweak');",
+             INSERT INTO assistant_overlays VALUES ('ov1', 'u1', 'local-ad', 'my own tweak');",
         )
         .await
         .unwrap();
@@ -376,6 +384,87 @@ async fn a_local_customisation_follows_the_row_the_merge_replaced() {
         .await
         .unwrap();
     assert!(violations.is_empty());
+}
+
+/// Re-pointing a local row must not be able to abort the restore.
+///
+/// `assistant_overlays` is unique on `(user_id, assistant_definition_id)`, so
+/// when BOTH machines hold an overlay for the same builtin assistant, moving
+/// the local one onto the definition that survived the merge lands exactly on
+/// the row the archive already inserted. A plain `UPDATE` raises SQLITE
+/// CONSTRAINT_UNIQUE (1555), the transaction rolls back, and the user gets the
+/// same opaque 500 this whole change set exists to remove -- measured on a real
+/// catalog against the shipping v0.1.72 binary.
+///
+/// The local row is a genuine duplicate here (the archive supplies the same
+/// pair), so it is left behind for the sweep instead of being forced on top.
+#[tokio::test]
+async fn a_remap_that_would_collide_leaves_the_row_instead_of_failing_the_restore() {
+    let source = tempfile::tempdir().unwrap();
+    let source_pool = seeded_catalog(&source.path().join("one-backend.db")).await;
+    // The archive carries its OWN overlay for the same assistant -- this is
+    // what the local one is about to be moved on top of.
+    source_pool
+        .execute("INSERT INTO assistant_overlays VALUES ('src-ov', 'u1', 'ad1', 'from the archive');")
+        .await
+        .unwrap();
+    let archive = source.path().join("everything.zip");
+    service(source.path())
+        .export(
+            &DbPool::Sqlite(source_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
+        .await
+        .unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    let target_pool = empty_catalog(&target.path().join("one-backend.db")).await;
+    target_pool
+        .execute(
+            "INSERT INTO users VALUES ('u1', 'me', 'jwt', 'target-secret');
+             INSERT INTO assistant_definitions VALUES ('local-ad', 'u1', 'builtin-researcher', 'Researcher');
+             INSERT INTO assistant_overlays VALUES ('ov1', 'u1', 'local-ad', 'my own tweak');",
+        )
+        .await
+        .unwrap();
+
+    // The assertion that matters: this used to be Err(Internal).
+    let outcome = service(target.path())
+        .restore(
+            &DbPool::Sqlite(target_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
+        .await
+        .expect("a colliding remap must not fail the restore");
+
+    // The archive's overlay is the one that survives, matching what the merge
+    // itself does with a business-key collision.
+    let note: String = sqlx::query_scalar("SELECT note FROM assistant_overlays WHERE assistant_definition_id = 'ad1'")
+        .fetch_one(&target_pool)
+        .await
+        .unwrap();
+    assert_eq!(note, "from the archive");
+
+    // And the displaced duplicate is reported rather than silently vanishing.
+    assert_eq!(
+        outcome.orphans_removed.get("assistant_overlays").copied(),
+        Some(1),
+        "the duplicate should be reported, got {:?}",
+        outcome.orphans_removed
+    );
+
+    let violations = sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&target_pool)
+        .await
+        .unwrap();
+    assert!(
+        violations.is_empty(),
+        "the catalog must still satisfy its own constraints"
+    );
 }
 
 /// The case the whole feature exists for, and the one that was broken:
