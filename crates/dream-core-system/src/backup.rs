@@ -731,8 +731,19 @@ async fn apply_reference_remap(
     let mut moved = 0u64;
     for (table, old, new) in plan {
         for (child_table, child_column) in referencing_columns(&mut *live, table).await? {
+            // OR IGNORE, because the child can carry a unique key of its own
+            // that mentions the column being re-pointed: `assistant_overlays`
+            // is unique on `(user_id, assistant_definition_id)`, and the
+            // archive's own overlay for that assistant is already sitting on
+            // the destination. Moving the local row onto it is a genuine
+            // duplicate, not a lost customisation — the archive supplies the
+            // same pair — so the row is left where it is and the sweep reports
+            // it in `orphans_removed` rather than the whole restore dying on a
+            // constraint. A plain UPDATE turned that collision into a rolled
+            // back restore and a 500, which is the failure this whole change
+            // set exists to remove.
             let affected = sqlx::query(&format!(
-                "UPDATE main.\"{child_table}\" SET \"{child_column}\" = ? WHERE \"{child_column}\" = ?"
+                "UPDATE OR IGNORE main.\"{child_table}\" SET \"{child_column}\" = ? WHERE \"{child_column}\" = ?"
             ))
             .bind(new)
             .bind(old)
