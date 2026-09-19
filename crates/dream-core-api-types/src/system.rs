@@ -194,6 +194,12 @@ pub struct RestoreBackupResponse {
     /// Rows merged into the live catalog, keyed by table.
     pub rows_by_table: std::collections::BTreeMap<String, u64>,
     pub files_restored: u64,
+    /// Rows dropped because the parent they referenced was not part of the
+    /// restore — restoring conversations without app settings leaves the
+    /// assistant snapshots pointing at definitions that never arrived. Reported
+    /// so a partial restore does not look lossless when it was not.
+    #[serde(default)]
+    pub orphans_removed: std::collections::BTreeMap<String, u64>,
 }
 
 #[cfg(test)]

@@ -32,10 +32,35 @@ async fn seeded_catalog(path: &Path) -> SqlitePool {
         .await
         .unwrap();
     pool.execute("PRAGMA journal_mode=WAL;").await.unwrap();
+    // Foreign keys are declared here because the real schema declares 28 of
+    // them and the live pool runs with enforcement ON. A fixture without them
+    // cannot fail the way a real restore fails: it was green through the whole
+    // life of the bug this file now covers.
     pool.execute(
         "CREATE TABLE users (id TEXT PRIMARY KEY NOT NULL, username TEXT NOT NULL, jwt_secret TEXT);
-         CREATE TABLE conversations (id TEXT PRIMARY KEY NOT NULL, user_id TEXT NOT NULL, name TEXT NOT NULL);
-         CREATE TABLE messages (id TEXT PRIMARY KEY NOT NULL, conversation_id TEXT NOT NULL, content TEXT NOT NULL);
+         CREATE TABLE conversations (
+             id TEXT PRIMARY KEY NOT NULL,
+             user_id TEXT NOT NULL REFERENCES users(id),
+             name TEXT NOT NULL
+         );
+         CREATE TABLE messages (
+             id TEXT PRIMARY KEY NOT NULL,
+             conversation_id TEXT NOT NULL REFERENCES conversations(id),
+             content TEXT NOT NULL
+         );
+         CREATE TABLE assistant_definitions (
+             id TEXT PRIMARY KEY NOT NULL,
+             user_id TEXT NOT NULL REFERENCES users(id),
+             name TEXT NOT NULL
+         );
+         -- The edge that broke cross-machine restore: a CONVERSATION table
+         -- pointing at an APP SETTINGS one, so the child is merged before the
+         -- parent it needs.
+         CREATE TABLE conversation_assistant_snapshots (
+             id TEXT PRIMARY KEY NOT NULL,
+             conversation_id TEXT NOT NULL REFERENCES conversations(id),
+             assistant_definition_id TEXT NOT NULL REFERENCES assistant_definitions(id)
+         );
          CREATE TABLE providers (id TEXT PRIMARY KEY NOT NULL, platform TEXT NOT NULL, api_key TEXT NOT NULL);
          CREATE TABLE skills (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL);
          CREATE TABLE assistants (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL);
@@ -52,6 +77,8 @@ async fn seeded_catalog(path: &Path) -> SqlitePool {
         "INSERT INTO users VALUES ('u1', 'me', 'secret-that-unlocks-keys');
          INSERT INTO conversations VALUES ('c1', 'u1', 'Quarterly plan');
          INSERT INTO messages VALUES ('m1', 'c1', 'hello');
+         INSERT INTO assistant_definitions VALUES ('ad1', 'u1', 'Researcher');
+         INSERT INTO conversation_assistant_snapshots VALUES ('cs1', 'c1', 'ad1');
          INSERT INTO providers VALUES ('p1', 'openai', 'sk-live-key');
          INSERT INTO skills VALUES ('s1', 'my-skill');
          INSERT INTO assistants VALUES ('a1', 'Helper');
@@ -59,6 +86,29 @@ async fn seeded_catalog(path: &Path) -> SqlitePool {
     )
     .await
     .unwrap();
+    pool
+}
+
+/// A catalog with the schema but no rows — a machine that has never seen this
+/// user. Restoring here is the case that was broken: on the machine the
+/// archive came from, every parent row already exists and nothing complains.
+async fn empty_catalog(path: &Path) -> SqlitePool {
+    let pool = seeded_catalog(path).await;
+    pool.execute("PRAGMA foreign_keys=OFF").await.unwrap();
+    for table in [
+        "conversation_assistant_snapshots",
+        "messages",
+        "conversations",
+        "assistant_definitions",
+        "projects",
+        "assistants",
+        "skills",
+        "providers",
+        "users",
+    ] {
+        pool.execute(format!("DELETE FROM {table}").as_str()).await.unwrap();
+    }
+    pool.execute("PRAGMA foreign_keys=ON").await.unwrap();
     pool
 }
 
@@ -165,7 +215,11 @@ async fn restoring_one_category_leaves_the_others_untouched() {
     let target = tempfile::tempdir().unwrap();
     let target_pool = seeded_catalog(&target.path().join("one-backend.db")).await;
     target_pool
-        .execute("DELETE FROM conversations; DELETE FROM messages;")
+        .execute(
+            "DELETE FROM conversation_assistant_snapshots;
+             DELETE FROM messages;
+             DELETE FROM conversations;",
+        )
         .await
         .unwrap();
     target_pool
@@ -191,6 +245,130 @@ async fn restoring_one_category_leaves_the_others_untouched() {
         .await
         .unwrap();
     assert_eq!(key, "sk-the-local-one");
+}
+
+/// The case the whole feature exists for, and the one that was broken:
+/// restoring onto a machine that has never seen this user.
+///
+/// On the source machine every parent row is already present, so nothing ever
+/// complains — which is exactly why this shipped. On a new machine
+/// `conversation_assistant_snapshots` is merged with the conversations while
+/// the `assistant_definitions` it points at arrive last with the app settings,
+/// and the insert failed with `FOREIGN KEY constraint failed`. The user saw
+/// only `500 INTERNAL_ERROR`.
+#[tokio::test]
+async fn a_full_backup_restores_onto_a_machine_that_has_none_of_this_data() {
+    let source = tempfile::tempdir().unwrap();
+    let source_pool = seeded_catalog(&source.path().join("one-backend.db")).await;
+    let archive = source.path().join("everything.zip");
+    service(source.path())
+        .export(&DbPool::Sqlite(source_pool.clone()), &archive, BackupScope::all())
+        .await
+        .unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    let target_pool = empty_catalog(&target.path().join("one-backend.db")).await;
+
+    let outcome = service(target.path())
+        .restore(&DbPool::Sqlite(target_pool.clone()), &archive, BackupScope::all())
+        .await
+        .expect("a full backup must restore onto a fresh machine");
+
+    // Every category arrived, not just the ones before the first foreign key.
+    assert_eq!(outcome.rows_by_table.get("conversations"), Some(&1));
+    assert_eq!(outcome.rows_by_table.get("conversation_assistant_snapshots"), Some(&1));
+    assert_eq!(outcome.rows_by_table.get("providers"), Some(&1));
+    assert_eq!(outcome.rows_by_table.get("skills"), Some(&1));
+    assert!(
+        outcome.orphans_removed.is_empty(),
+        "a full restore leaves nothing dangling, got {:?}",
+        outcome.orphans_removed
+    );
+
+    // And the catalog keeps the constraints it declares.
+    let violations = sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&target_pool)
+        .await
+        .unwrap();
+    assert!(violations.is_empty(), "restore left the catalog inconsistent");
+}
+
+/// Restoring conversations WITHOUT app settings is a supported choice, and it
+/// leaves the assistant snapshots pointing at definitions that were never
+/// brought across. Those rows are unusable; keeping them would leave the
+/// catalog contradicting its own constraints, so they are dropped and counted.
+#[tokio::test]
+async fn a_partial_restore_drops_rows_whose_parent_was_not_selected() {
+    let source = tempfile::tempdir().unwrap();
+    let source_pool = seeded_catalog(&source.path().join("one-backend.db")).await;
+    let archive = source.path().join("everything.zip");
+    service(source.path())
+        .export(&DbPool::Sqlite(source_pool.clone()), &archive, BackupScope::all())
+        .await
+        .unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    let target_pool = empty_catalog(&target.path().join("one-backend.db")).await;
+
+    let outcome = service(target.path())
+        .restore(&DbPool::Sqlite(target_pool.clone()), &archive, only_conversations())
+        .await
+        .expect("a partial restore must still succeed");
+
+    assert_eq!(outcome.rows_by_table.get("conversations"), Some(&1));
+    assert_eq!(
+        outcome.orphans_removed.get("conversation_assistant_snapshots"),
+        Some(&1),
+        "the snapshot has no definition to point at and must be reported, not hidden"
+    );
+
+    let violations = sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&target_pool)
+        .await
+        .unwrap();
+    assert!(
+        violations.is_empty(),
+        "a partial restore must still leave a consistent catalog"
+    );
+}
+
+/// A restore that cannot finish must leave nothing behind.
+///
+/// Before the merge ran in a transaction it committed table by table: measured
+/// against a real archive, the target ended up with 43 conversations and 2297
+/// messages but zero providers and zero skills, and the only signal was a 500.
+#[tokio::test]
+async fn a_failed_restore_leaves_the_catalog_untouched() {
+    let source = tempfile::tempdir().unwrap();
+    let source_pool = seeded_catalog(&source.path().join("one-backend.db")).await;
+    let archive = source.path().join("everything.zip");
+    service(source.path())
+        .export(&DbPool::Sqlite(source_pool.clone()), &archive, BackupScope::all())
+        .await
+        .unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    let target_pool = empty_catalog(&target.path().join("one-backend.db")).await;
+    // A column the archive supplies but the live table now rejects, so the
+    // insert fails partway through the merge rather than at the first table.
+    target_pool
+        .execute("ALTER TABLE providers ADD COLUMN tier TEXT NOT NULL DEFAULT 'x' CHECK (tier = 'only-this')")
+        .await
+        .unwrap();
+
+    let result = service(target.path())
+        .restore(&DbPool::Sqlite(target_pool.clone()), &archive, BackupScope::all())
+        .await;
+    assert!(result.is_err(), "the merge should have failed on the check constraint");
+
+    let conversations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM conversations")
+        .fetch_one(&target_pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        conversations, 0,
+        "a failed restore must roll back, not leave the target half-merged"
+    );
 }
 
 /// `projects.id` is an auto-assigned INTEGER key: the number means nothing
@@ -246,7 +424,14 @@ async fn restoring_the_same_archive_twice_is_idempotent() {
 
     let target = tempfile::tempdir().unwrap();
     let target_pool = seeded_catalog(&target.path().join("one-backend.db")).await;
-    target_pool.execute("DELETE FROM conversations").await.unwrap();
+    target_pool
+        .execute(
+            "DELETE FROM conversation_assistant_snapshots;
+             DELETE FROM messages;
+             DELETE FROM conversations;",
+        )
+        .await
+        .unwrap();
 
     for _ in 0..2 {
         service(target.path())
@@ -285,7 +470,14 @@ async fn a_catalog_whose_columns_differ_still_merges_on_the_shared_ones() {
 
     let target = tempfile::tempdir().unwrap();
     let target_pool = seeded_catalog(&target.path().join("one-backend.db")).await;
-    target_pool.execute("DELETE FROM conversations").await.unwrap();
+    target_pool
+        .execute(
+            "DELETE FROM conversation_assistant_snapshots;
+             DELETE FROM messages;
+             DELETE FROM conversations;",
+        )
+        .await
+        .unwrap();
     // A column the archive's catalog does not have.
     target_pool
         .execute("ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
