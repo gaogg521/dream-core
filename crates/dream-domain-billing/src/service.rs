@@ -568,6 +568,60 @@ impl BillingService {
         Ok(())
     }
 
+    /// This deployment's random installation fingerprint (billing_011): a
+    /// 32-byte random value generated once, stored in a singleton row, and
+    /// stable for the life of the deployment. Deliberately NOT derived from a
+    /// user, tenant name, IP, or hardware — see the migration's comment.
+    ///
+    /// Lazy-seeds on first read so pre-011 deployments (and in-memory test
+    /// databases) get an identity without a dedicated startup step. A copied
+    /// database carries the row with it — the copy is indistinguishable from
+    /// the original by design; what the fingerprint stops is a license KEY
+    /// walking to a different deployment, not a full-data-dir clone.
+    pub async fn deployment_fingerprint(&self) -> Result<String, BillingError> {
+        let existing: Option<(String,)> = self
+            .db
+            .fetch_optional_as(
+                "SELECT fingerprint FROM one_license_installation WHERE singleton_id = 1",
+                &db_params![],
+            )
+            .await?;
+        if let Some((fingerprint,)) = existing {
+            return Ok(fingerprint);
+        }
+        let mut seed = [0u8; 32];
+        getrandom::getrandom(&mut seed)
+            .map_err(|e| BillingError::Internal(format!("random source unavailable: {e}")))?;
+        let fingerprint = format!("sha256:{}", hex::encode(seed));
+        self.upsert(
+            "INSERT INTO one_license_installation (singleton_id, fingerprint, created_at) \
+             VALUES (1, ?, ?) ON CONFLICT(singleton_id) DO NOTHING",
+            "INSERT IGNORE INTO one_license_installation (singleton_id, fingerprint, created_at) \
+             VALUES (1, ?, ?)",
+            &db_params![&fingerprint, now_ms()],
+        )
+        .await?;
+        Ok(fingerprint)
+    }
+
+    /// Request-bound licenses must match THIS deployment's random fingerprint.
+    /// Legacy licenses without one stay portable — the same back-compat rule
+    /// `valid_for_instance` applies to `instance_id`. Comparison is
+    /// case-insensitive: fingerprints travel through copy-paste, and hex case
+    /// carries no information.
+    async fn verify_deployment_binding(&self, bound: Option<&str>) -> Result<(), BillingError> {
+        let Some(bound) = bound else {
+            return Ok(());
+        };
+        let fingerprint = self.deployment_fingerprint().await?;
+        if !fingerprint.eq_ignore_ascii_case(bound) {
+            return Err(BillingError::Forbidden(
+                "license is bound to a different deployment".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Activate a vendor-signed license key: the only path that can *raise* a
     /// tier. Verification is offline (Ed25519 against the built-in public key)
     /// so an air-gapped deployment can be licensed.
@@ -586,6 +640,7 @@ impl BillingService {
                 "license is bound to a different installation".into(),
             ));
         }
+        self.verify_deployment_binding(payload.deployment_fingerprint.as_deref()).await?;
 
         // Re-serialized rather than storing the raw signed payload bytes: this
         // table is a read model for the admin UI, not a re-verification
@@ -597,10 +652,10 @@ impl BillingService {
         let mut tx = self.db.begin().await?;
         let activation_sql = match self.db.backend() {
             dream_core_db::DbBackend::Sqlite => {
-                "INSERT INTO one_license_activation                  (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by,                   tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)              ON CONFLICT(license_id) DO UPDATE SET enterprise_id = excluded.enterprise_id,                  activated_at = excluded.activated_at, activated_by = excluded.activated_by,                  tenant_cap = excluded.tenant_cap, agent_node_cap = excluded.agent_node_cap,                  cpu_cores_cap = excluded.cpu_cores_cap, memory_mb_cap = excluded.memory_mb_cap,                  modules = excluded.modules, serial = excluded.serial, app_id = excluded.app_id,                  file_name = excluded.file_name"
+                "INSERT INTO one_license_activation                  (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by,                   tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name, deployment_fingerprint)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)              ON CONFLICT(license_id) DO UPDATE SET enterprise_id = excluded.enterprise_id,                  activated_at = excluded.activated_at, activated_by = excluded.activated_by,                  tenant_cap = excluded.tenant_cap, agent_node_cap = excluded.agent_node_cap,                  cpu_cores_cap = excluded.cpu_cores_cap, memory_mb_cap = excluded.memory_mb_cap,                  modules = excluded.modules, serial = excluded.serial, app_id = excluded.app_id,                  file_name = excluded.file_name, deployment_fingerprint = excluded.deployment_fingerprint"
             }
             dream_core_db::DbBackend::MySql => {
-                "INSERT INTO one_license_activation                  (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by,                   tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new              ON DUPLICATE KEY UPDATE enterprise_id = new.enterprise_id,                  activated_at = new.activated_at, activated_by = new.activated_by,                  tenant_cap = new.tenant_cap, agent_node_cap = new.agent_node_cap,                  cpu_cores_cap = new.cpu_cores_cap, memory_mb_cap = new.memory_mb_cap,                  modules = new.modules, serial = new.serial, app_id = new.app_id,                  file_name = new.file_name"
+                "INSERT INTO one_license_activation                  (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by,                   tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name, deployment_fingerprint)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new              ON DUPLICATE KEY UPDATE enterprise_id = new.enterprise_id,                  activated_at = new.activated_at, activated_by = new.activated_by,                  tenant_cap = new.tenant_cap, agent_node_cap = new.agent_node_cap,                  cpu_cores_cap = new.cpu_cores_cap, memory_mb_cap = new.memory_mb_cap,                  modules = new.modules, serial = new.serial, app_id = new.app_id,                  file_name = new.file_name, deployment_fingerprint = new.deployment_fingerprint"
             }
         };
         tx.execute(
@@ -622,7 +677,8 @@ impl BillingService {
                 &modules_json,
                 &payload.serial,
                 &payload.app_id,
-                &payload.file_name
+                &payload.file_name,
+                &payload.deployment_fingerprint
             ],
         )
         .await?;
@@ -670,12 +726,13 @@ impl BillingService {
             Option<String>,
             Option<String>,
             Option<String>,
+            Option<String>,
         );
         let row: Option<Row> = self
             .db
             .fetch_optional_as::<Row>(
                 "SELECT license_id, customer, tier, seats, expires_at, activated_at, \
-                    tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name \
+                    tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name, deployment_fingerprint \
              FROM one_license_activation WHERE enterprise_id = ? ORDER BY activated_at DESC LIMIT 1",
                 &db_params![enterprise_id],
             )
@@ -696,6 +753,7 @@ impl BillingService {
                 serial,
                 app_id,
                 file_name,
+                deployment_fingerprint,
             )| LicenseInfoDto {
                 license_id,
                 customer,
@@ -716,6 +774,7 @@ impl BillingService {
                 serial,
                 app_id,
                 file_name,
+                deployment_fingerprint,
             },
         ))
     }
@@ -4916,6 +4975,73 @@ mod tests {
         let license = svc.license_of("ent-boot").await.unwrap();
         assert_eq!(license.tier, Tier::Free);
         assert_eq!(license.seat_limit, Some(3));
+    }
+
+    // -- deployment fingerprint binding (billing_011) ------------------------
+
+    #[tokio::test]
+    async fn deployment_fingerprint_is_stable_well_formed_and_survives_reconnect() {
+        let (svc, sqlite) = service().await;
+        let first = svc.deployment_fingerprint().await.unwrap();
+        let again = svc.deployment_fingerprint().await.unwrap();
+        assert_eq!(first, again, "the identity must not regenerate on re-read");
+
+        let body = first
+            .strip_prefix("sha256:")
+            .expect("fingerprint must carry the sha256: prefix the vendor tool validates");
+        assert_eq!(body.len(), 64, "64 hex chars");
+        assert!(body.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+
+        // A fresh BillingService over the SAME database reads the same
+        // identity — it belongs to the deployment, not the process.
+        let svc2 = BillingService::new(
+            dream_core_db::DbPool::Sqlite(sqlite.clone()),
+            Arc::new(ManualBillingProvider),
+        );
+        assert_eq!(svc2.deployment_fingerprint().await.unwrap(), first);
+    }
+
+    #[tokio::test]
+    async fn deployment_binding_rejects_a_foreign_fingerprint_and_accepts_matching() {
+        let (svc, _sqlite) = service().await;
+        let local = svc.deployment_fingerprint().await.unwrap();
+
+        // Matching binding — case-insensitive, the way a pasted key travels.
+        svc.verify_deployment_binding(Some(&local)).await.unwrap();
+        let upper = format!("SHA256:{}", &local[7..]).to_uppercase();
+        svc.verify_deployment_binding(Some(&upper)).await.unwrap();
+
+        // A license issued for another deployment's request code.
+        let foreign = svc
+            .verify_deployment_binding(Some(&format!("sha256:{}", "0".repeat(64))))
+            .await
+            .unwrap_err();
+        assert!(
+            foreign.to_string().contains("different deployment"),
+            "got: {foreign}"
+        );
+
+        // Legacy licenses carry no binding and stay portable.
+        svc.verify_deployment_binding(None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn activation_read_back_carries_the_binding_fingerprint() {
+        let (svc, sqlite) = service().await;
+        sqlx::query(
+            "INSERT INTO one_license_activation \
+                 (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by, \
+                  tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name, deployment_fingerprint) \
+             VALUES ('lic1', 'ent1', 'Acme', 'enterprise', 50, NULL, 0, 0, 'admin1', \
+                     NULL, NULL, NULL, NULL, '[]', NULL, 'one-work-enterprise', 'acme.lic', \
+                     'sha256:abc123')",
+        )
+        .execute(&sqlite)
+        .await
+        .unwrap();
+
+        let info = svc.active_license("ent1").await.unwrap().unwrap();
+        assert_eq!(info.deployment_fingerprint.as_deref(), Some("sha256:abc123"));
     }
 
     /// Real MySQL: exercises `ensure_default_license`'s `INSERT IGNORE` branch.
