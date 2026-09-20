@@ -713,7 +713,11 @@ async fn audit(state: &OneDevopsRouterState, user_id: &str, action: &str, resour
 async fn require_registry_admin(state: &OneDevopsRouterState, user_id: &str) -> Result<(), DevopsError> {
     match state.service.user_org_role(user_id).await? {
         None => Ok(()),
-        Some(role) if role == "org_admin" || role == "system_admin" || role == "admin" => Ok(()),
+        Some(role)
+            if matches!(role.as_str(), "org_admin" | "system_admin" | "admin" | "resource_admin") =>
+        {
+            Ok(())
+        }
         Some(_) => Err(DevopsError::Forbidden(
             "registry writes are admin-only: distributed skills/MCP/knowledge affect every member".into(),
         )),

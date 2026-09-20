@@ -983,7 +983,10 @@ impl DevopsService {
     pub(crate) async fn viewer_is_privileged(&self, viewer_user_id: &str) -> Result<bool, DevopsError> {
         Ok(match self.user_org_role(viewer_user_id).await? {
             None => true,
-            Some(role) => role == "org_admin" || role == "system_admin" || role == "admin",
+            Some(role) => matches!(
+                role.as_str(),
+                "org_admin" | "system_admin" | "admin" | "resource_admin" | "auditor"
+            ),
         })
     }
 

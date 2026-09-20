@@ -33,6 +33,24 @@ impl FromRequestParts<OnePlatformRouterState> for RequirePlatformAdmin {
     }
 }
 
+/// Resource-matrix administration is intentionally narrower than the global
+/// platform configuration surface.
+#[derive(Debug, Clone)]
+pub struct RequireResourceAdmin(pub PlatformActor);
+
+impl FromRequestParts<OnePlatformRouterState> for RequireResourceAdmin {
+    type Rejection = PlatformError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &OnePlatformRouterState) -> Result<Self, Self::Rejection> {
+        let user = parts
+            .extensions
+            .get::<CurrentUser>()
+            .cloned()
+            .ok_or_else(|| PlatformError::Forbidden("Authentication required".into()))?;
+        Ok(Self(state.service.require_resource_admin(&user.id).await?))
+    }
+}
+
 /// Requires any enterprise membership (any role) — the member-facing
 /// counterpart to [`RequirePlatformAdmin`], for self-service routes such as
 /// the in-app notification inbox. Admins pass too (they are members).

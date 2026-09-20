@@ -125,6 +125,10 @@ fn is_admin_role(role: &str) -> bool {
     matches!(role, "org_admin" | "system_admin" | "admin")
 }
 
+fn can_manage_resources(role: &str) -> bool {
+    is_admin_role(role) || role == "resource_admin"
+}
+
 /// `one_scenes` columns as selected by the member-side listing:
 /// id, name, description, job_functions, built_in, created_at, updated_at.
 /// (`SceneRow` further down is the wider admin shape, which also carries
@@ -236,6 +240,16 @@ impl PlatformService {
             None => Err(PlatformError::NotInEnterprise),
             Some(actor) if !is_admin_role(&actor.role) => {
                 Err(PlatformError::Forbidden("Administrator role required".into()))
+            }
+            Some(actor) => Ok(actor),
+        }
+    }
+
+    pub async fn require_resource_admin(&self, user_id: &str) -> Result<PlatformActor, PlatformError> {
+        match self.resolve_actor(user_id).await? {
+            None => Err(PlatformError::NotInEnterprise),
+            Some(actor) if !can_manage_resources(&actor.role) => {
+                Err(PlatformError::Forbidden("Resource administrator role required".into()))
             }
             Some(actor) => Ok(actor),
         }

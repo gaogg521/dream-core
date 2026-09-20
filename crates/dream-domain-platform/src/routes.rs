@@ -51,7 +51,7 @@ use crate::models::{
     SharedConversationDetail, SharedMessageInput, SiemConfigDto,
 };
 use crate::object_storage::{ObjectListingDto, ObjectStorageConfigDto, ObjectStorageConfigInput, StorageProbeDto};
-use crate::rbac::{RequirePlatformAdmin, RequirePlatformMember};
+use crate::rbac::{RequirePlatformAdmin, RequirePlatformMember, RequireResourceAdmin};
 use crate::service::ConfigImportRow;
 use crate::siem::SiemStatus;
 use crate::state::OnePlatformRouterState;
@@ -510,7 +510,7 @@ struct ListGrantsQuery {
 
 async fn list_resource_grants(
     State(state): State<OnePlatformRouterState>,
-    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    RequireResourceAdmin(actor): RequireResourceAdmin,
     Query(query): Query<ListGrantsQuery>,
 ) -> Result<Json<ApiResponse<Vec<ResourceGrantDto>>>, PlatformError> {
     let grants = state
@@ -540,7 +540,7 @@ struct CreateGrantBody {
 
 async fn create_resource_grant(
     State(state): State<OnePlatformRouterState>,
-    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    RequireResourceAdmin(actor): RequireResourceAdmin,
     Extension(user): Extension<CurrentUser>,
     Json(body): Json<CreateGrantBody>,
 ) -> Result<Json<ApiResponse<ResourceGrantDto>>, PlatformError> {
@@ -561,7 +561,7 @@ async fn create_resource_grant(
 
 async fn delete_resource_grant(
     State(state): State<OnePlatformRouterState>,
-    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    RequireResourceAdmin(actor): RequireResourceAdmin,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, PlatformError> {
     state.service.revoke_resource(&actor.tenant_id, &id).await?;
@@ -593,7 +593,7 @@ struct SetGrantModeBody {
 /// enforced nowhere (see the module docs for which types are live).
 async fn effective_resource_grants(
     State(state): State<OnePlatformRouterState>,
-    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    RequireResourceAdmin(actor): RequireResourceAdmin,
     Query(query): Query<EffectiveGrantsQuery>,
 ) -> Result<Json<ApiResponse<EffectiveGrantDto>>, PlatformError> {
     let dto = state
@@ -610,7 +610,7 @@ async fn effective_resource_grants(
 /// type, so an admin is never left inferring one from a blank.
 async fn list_grant_modes(
     State(state): State<OnePlatformRouterState>,
-    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    RequireResourceAdmin(actor): RequireResourceAdmin,
 ) -> Result<Json<ApiResponse<Vec<GrantModeDto>>>, PlatformError> {
     Ok(Json(ApiResponse::ok(
         state.service.list_grant_modes(&actor.tenant_id).await?,
@@ -626,7 +626,7 @@ async fn list_grant_modes(
 /// global default anyone inherits.
 async fn set_grant_mode(
     State(state): State<OnePlatformRouterState>,
-    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    RequireResourceAdmin(actor): RequireResourceAdmin,
     Extension(user): Extension<CurrentUser>,
     Json(body): Json<SetGrantModeBody>,
 ) -> Result<Json<ApiResponse<()>>, PlatformError> {
