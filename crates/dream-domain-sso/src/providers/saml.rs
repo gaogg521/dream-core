@@ -256,7 +256,136 @@ impl SamlProvider {
 
 #[cfg(test)]
 mod tests {
+    //! Round-trip tests drive a real local IdP (the `saml_rs` IdP facade signs
+    //! a genuine XML-DSig response) against our SP glue, so the negative cases
+    //! below exercise the actual verification path, not a mock of it.
+    //!
+    //! Fixture keys are the upstream `saml_rs` MIT test keypair (public,
+    //! expired never before 2030) — never use them outside `#[cfg(test)]`.
+
+    use std::time::Duration;
+
+    use saml_rs::binding::{base64_decode, base64_encode};
+    use saml_rs::constants::signature_algorithm::RSA_SHA256;
+    use saml_rs::constants::Binding;
+    use saml_rs::entity::{EntitySetting, User};
+    use saml_rs::idp::LoginResponseOptions;
+    use saml_rs::metadata::{Endpoint, IdpMetadataConfig, SpMetadataConfig};
+    use saml_rs::template::{LoginResponseAttribute, LoginResponseTemplate};
+    use saml_rs::{IdentityProvider, ServiceProvider};
+
     use super::*;
+
+    const IDP_PRIVKEY: &str = include_str!("saml_fixtures/idp_privkey.pem");
+    const IDP_CERT: &str = include_str!("saml_fixtures/idp_cert.cer");
+    const IDP_PRIVKEY_ALT: &str = include_str!("saml_fixtures/idp_privkey_alt.pem");
+    const IDP_CERT_ALT: &str = include_str!("saml_fixtures/idp_cert_alt.cer");
+    const IDP_ENTITY: &str = "https://idp.example.test/metadata";
+    const SP_ENTITY: &str = "https://sp.example.test/metadata";
+    const ACS_URL: &str = "https://sp.example.test/acs";
+
+    fn config_with_metadata(idp_metadata_xml: &str) -> SamlProviderConfig {
+        SamlProviderConfig {
+            idp_entity_id: IDP_ENTITY.into(),
+            idp_metadata_xml: idp_metadata_xml.to_string(),
+            sp_entity_id: SP_ENTITY.into(),
+            acs_url: ACS_URL.into(),
+            sp_private_key_pem: IDP_PRIVKEY.into(),
+            sp_certificate_pem: IDP_CERT.into(),
+            external_id_attribute: String::new(),
+            name_attribute: String::new(),
+        }
+    }
+
+    /// Local IdP. `signing_cert` is both the key the IdP signs with and the
+    /// certificate published in its metadata — except for [`idp_signing_with`]
+    /// where the two deliberately diverge.
+    fn local_idp(signing_cert: &str, signing_key: &str) -> IdentityProvider {
+        let mut setting = EntitySetting::default();
+        setting.private_key = Some(signing_key.to_string());
+        setting.signing_cert = Some(signing_cert.to_string());
+        setting.request_signature_algorithm = RSA_SHA256.into();
+        setting.login_response_template = Some(LoginResponseTemplate {
+            context: None,
+            attributes: vec![LoginResponseAttribute {
+                name: "displayName".into(),
+                name_format: "urn:oasis:names:tc:SAML:2.0:attrname-format:basic".into(),
+                value_xsi_type: "xs:string".into(),
+                value_tag: "displayName".into(),
+                value_xmlns_xs: None,
+                value_xmlns_xsi: None,
+            }],
+        });
+        let metadata = IdpMetadataConfig {
+            entity_id: IDP_ENTITY.into(),
+            signing_certs: vec![signing_cert.to_string()],
+            want_authn_requests_signed: true,
+            single_sign_on_service: vec![
+                Endpoint::new(Binding::Redirect, "https://idp.example.test/sso"),
+                Endpoint::new(Binding::Post, "https://idp.example.test/sso"),
+            ],
+            ..Default::default()
+        };
+        IdentityProvider::from_config(&metadata, setting).unwrap()
+    }
+
+    fn sp_metadata() -> SpMetadataConfig {
+        SpMetadataConfig {
+            entity_id: SP_ENTITY.into(),
+            want_assertions_signed: true,
+            signing_certs: vec![IDP_CERT.into()],
+            assertion_consumer_service: vec![Endpoint::new(Binding::Post, ACS_URL)],
+            ..Default::default()
+        }
+    }
+
+    fn issue_response(idp: &IdentityProvider, request_id: &str, relay: &str) -> String {
+        let sp = ServiceProvider::from_config(&sp_metadata(), EntitySetting::default()).unwrap();
+        let user = User {
+            name_id: "alice@example.test".into(),
+            attributes: vec![("displayName".to_string(), "Alice Example".to_string())],
+            ..Default::default()
+        };
+        idp.create_login_response(
+            &sp,
+            Binding::Post,
+            &user,
+            &LoginResponseOptions {
+                in_response_to: Some(request_id),
+                relay_state: Some(relay),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .context
+    }
+
+    fn begin(state: &str) -> SamlProviderConfig {
+        let idp = local_idp(IDP_CERT, IDP_PRIVKEY);
+        let metadata = idp.metadata_xml().to_string();
+        SamlProvider::begin(config_with_metadata(&metadata), state).unwrap();
+        config_with_metadata(&metadata)
+    }
+
+    fn pending_request_id(state: &str) -> String {
+        pending_store()
+            .lock()
+            .unwrap()
+            .requests
+            .get(state)
+            .unwrap()
+            .request
+            .id()
+            .as_str()
+            .to_string()
+    }
+
+    fn backdate_pending(state: &str, age: Duration) {
+        pending_store().lock().unwrap().requests.get_mut(state).unwrap().issued_at =
+            std::time::SystemTime::now()
+                .checked_sub(age)
+                .expect("backdate under test clocks");
+    }
 
     #[test]
     fn config_defaults_identity_to_verified_name_id() {
@@ -272,5 +401,159 @@ mod tests {
         };
         assert_eq!(cfg.external_id_attribute_or_default(), "NameID");
         assert_eq!(cfg.name_attribute_or_default(), "displayName");
+    }
+
+    #[test]
+    fn full_roundtrip_accepts_signed_response_and_maps_identity() {
+        let state = "rt-ok";
+        let _config = begin(state);
+        let response = issue_response(
+            &local_idp(IDP_CERT, IDP_PRIVKEY),
+            &pending_request_id(state),
+            state,
+        );
+        let user = SamlProvider::complete(state, &response, Some(state)).unwrap();
+        assert_eq!(user.external_id, "alice@example.test");
+        assert_eq!(user.preferred_username, "Alice Example");
+        assert!(user.org_unit_path.is_none());
+        assert!(user.job_title.is_none());
+        assert!(user.org_external_id.is_none());
+    }
+
+    #[test]
+    fn begin_redirect_carries_relay_state_and_stores_pending() {
+        let state = "rt-begin";
+        let config = begin(state);
+        // The stored pending must be retrievable through the same config the
+        // IdP metadata was derived from — complete() relies on it.
+        assert!(pending_store().lock().unwrap().requests.contains_key(state));
+        assert_eq!(config.sp_entity_id, SP_ENTITY);
+    }
+
+    #[test]
+    fn tampered_assertion_is_rejected() {
+        let state = "rt-tamper";
+        let _config = begin(state);
+        let response = issue_response(
+            &local_idp(IDP_CERT, IDP_PRIVKEY),
+            &pending_request_id(state),
+            state,
+        );
+        let xml = base64_decode(&response).unwrap();
+        let xml = String::from_utf8(xml).unwrap();
+        assert!(xml.contains("alice@example.test"), "fixture NameID missing");
+        let tampered = xml.replace("alice@example.test", "malice@example.test");
+        assert_ne!(xml, tampered);
+        let tampered = base64_encode(tampered.as_bytes());
+        let result = SamlProvider::complete(state, &tampered, Some(state));
+        assert!(matches!(result, Err(SsoError::Unauthorized)), "got {result:?}");
+    }
+
+    #[test]
+    fn response_signed_by_key_outside_trusted_metadata_is_rejected() {
+        // The IdP signs with the ALT keypair, but the metadata our SP trusts
+        // publishes the primary certificate. Trust must come from admin
+        // metadata only — never from the assertion's KeyInfo.
+        let state = "rt-foreign-key";
+        let trusted = local_idp(IDP_CERT, IDP_PRIVKEY);
+        let metadata = trusted.metadata_xml().to_string();
+        SamlProvider::begin(config_with_metadata(&metadata), state).unwrap();
+        let response = issue_response(
+            &local_idp(IDP_CERT_ALT, IDP_PRIVKEY_ALT),
+            &pending_request_id(state),
+            state,
+        );
+        let result = SamlProvider::complete(state, &response, Some(state));
+        assert!(matches!(result, Err(SsoError::Unauthorized)), "got {result:?}");
+    }
+
+    #[test]
+    fn expired_pending_state_is_rejected() {
+        let state = "rt-expired";
+        let _config = begin(state);
+        backdate_pending(state, SAML_PENDING_TTL + Duration::from_secs(5));
+        let response = issue_response(
+            &local_idp(IDP_CERT, IDP_PRIVKEY),
+            &pending_request_id(state),
+            state,
+        );
+        let result = SamlProvider::complete(state, &response, Some(state));
+        assert!(matches!(result, Err(SsoError::InvalidState)), "got {result:?}");
+    }
+
+    #[test]
+    fn relay_state_mismatch_is_rejected() {
+        let state = "rt-relay";
+        let _config = begin(state);
+        let response = issue_response(
+            &local_idp(IDP_CERT, IDP_PRIVKEY),
+            &pending_request_id(state),
+            state,
+        );
+        let result = SamlProvider::complete(state, &response, Some("relay-forged"));
+        assert!(matches!(result, Err(SsoError::InvalidState)), "got {result:?}");
+    }
+
+    #[test]
+    fn unknown_state_is_rejected_without_touching_idp_response() {
+        let result = SamlProvider::complete("rt-unknown", "anything", Some("rt-unknown"));
+        assert!(matches!(result, Err(SsoError::InvalidState)), "got {result:?}");
+    }
+
+    #[test]
+    fn garbage_response_is_rejected() {
+        let state = "rt-garbage";
+        let _config = begin(state);
+        let result = SamlProvider::complete(state, "!!!not-base64-xml!!!", Some(state));
+        assert!(matches!(result, Err(SsoError::Unauthorized)), "got {result:?}");
+    }
+
+    #[test]
+    fn replay_cache_rejects_second_use_of_same_assertion() {
+        let mut cache = InMemoryReplayCache::default();
+        let key = ReplayKey::ResponseId(
+            saml_rs::model::MessageId::try_new("_response_replayed_once").unwrap(),
+        );
+        let expiry = std::time::SystemTime::now() + Duration::from_secs(60);
+        cache.check_and_store(key.clone(), expiry).unwrap();
+        let second = cache.check_and_store(key, expiry);
+        assert!(
+            matches!(second, Err(SamlError::ReplayDetected { .. })),
+            "got {second:?}"
+        );
+    }
+
+    #[test]
+    fn replay_cache_allows_distinct_assertions() {
+        let mut cache = InMemoryReplayCache::default();
+        let expiry = std::time::SystemTime::now() + Duration::from_secs(60);
+        cache
+            .check_and_store(
+                ReplayKey::ResponseId(saml_rs::model::MessageId::try_new("_r1").unwrap()),
+                expiry,
+            )
+            .unwrap();
+        cache
+            .check_and_store(
+                ReplayKey::ResponseId(saml_rs::model::MessageId::try_new("_r2").unwrap()),
+                expiry,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn pending_store_evicts_expired_entries_on_insert() {
+        let state = "rt-evict-old";
+        let config = begin(state);
+        backdate_pending(state, SAML_PENDING_TTL + Duration::from_secs(5));
+        let idp = local_idp(IDP_CERT, IDP_PRIVKEY);
+        let metadata = idp.metadata_xml().to_string();
+        SamlProvider::begin(config_with_metadata(&metadata), "rt-evict-new").unwrap();
+        let store = pending_store().lock().unwrap();
+        assert!(!store.requests.contains_key(state));
+        assert!(store.requests.contains_key("rt-evict-new"));
+        drop(store);
+        // Keep the config alive so the borrow checker sees it used.
+        assert_eq!(config.idp_entity_id, IDP_ENTITY);
     }
 }

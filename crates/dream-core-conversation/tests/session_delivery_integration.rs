@@ -220,3 +220,101 @@ async fn drainer_delivers_user_message_to_target_conversation() {
     );
     assert!(joined.contains("deliver this"));
 }
+
+#[tokio::test]
+async fn drainer_drops_pending_when_target_is_deleting() {
+    let (svc, task_mgr) = setup().await;
+    let a = svc.create(USER, make_create_req()).await.unwrap();
+    let b = svc.create(USER, make_create_req()).await.unwrap();
+
+    let content = format!("doomed delivery @@conv:{}", b.id);
+    svc.send_message(USER, &a.id, send_req(&content), &task_mgr)
+        .await
+        .unwrap();
+    assert!(svc.session_delivery_hub().pending_len() > 0);
+
+    // Hard-delete marker without going through the full service delete, to
+    // isolate the drainer's `is_deleting` branch (service-level delete also
+    // clears the queue, which would mask this branch).
+    svc.runtime_state().mark_deleting(&b.id);
+    svc.run_session_delivery_tick(&task_mgr).await;
+
+    assert_eq!(
+        svc.session_delivery_hub().pending_len(),
+        0,
+        "pending for a deleting target must be dropped, not retained"
+    );
+    let messages = svc
+        .list_messages(
+            USER,
+            &b.id,
+            ListMessagesQuery {
+                limit: Some(20),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        !messages.items.iter().any(|m| {
+            m.content.get("content").and_then(|v| v.as_str()).unwrap_or("").contains("doomed delivery")
+        }),
+        "deleting target must not receive the message"
+    );
+}
+
+#[tokio::test]
+async fn drainer_retains_pending_while_restarting_and_delivers_when_idle() {
+    let (svc, task_mgr) = setup().await;
+    let a = svc.create(USER, make_create_req()).await.unwrap();
+    let b = svc.create(USER, make_create_req()).await.unwrap();
+
+    let content = format!("patient delivery @@conv:{}", b.id);
+    svc.send_message(USER, &a.id, send_req(&content), &task_mgr)
+        .await
+        .unwrap();
+    let pending_before = svc.session_delivery_hub().pending_len();
+    assert!(pending_before > 0);
+
+    // Restarting target is busy: the tick must retain, not drop, not deliver.
+    svc.runtime_state().begin_restart(&b.id).unwrap();
+    svc.run_session_delivery_tick(&task_mgr).await;
+    assert_eq!(
+        svc.session_delivery_hub().pending_len(),
+        pending_before,
+        "restart must retain pending (retry next tick)"
+    );
+    let during = svc
+        .list_messages(
+            USER,
+            &b.id,
+            ListMessagesQuery {
+                limit: Some(20),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!during.items.iter().any(|m| {
+        m.content.get("content").and_then(|v| v.as_str()).unwrap_or("").contains("patient delivery")
+    }));
+
+    // Back to idle: the next tick delivers.
+    svc.runtime_state().clear_restarting(&b.id);
+    svc.run_session_delivery_tick(&task_mgr).await;
+    assert_eq!(svc.session_delivery_hub().pending_len(), 0);
+    let after = svc
+        .list_messages(
+            USER,
+            &b.id,
+            ListMessagesQuery {
+                limit: Some(20),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(after.items.iter().any(|m| {
+        m.content.get("content").and_then(|v| v.as_str()).unwrap_or("").contains("patient delivery")
+    }));
+}

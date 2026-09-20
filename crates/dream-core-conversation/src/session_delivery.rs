@@ -563,4 +563,24 @@ mod tests {
         let block = build_session_message_block("a", "T", Some("/a"), Some("/b"), "x", false);
         assert!(block.contains("\"same_workspace\":false"));
     }
+
+    #[test]
+    fn clear_for_conversation_removes_both_directions() {
+        // Cancel/delete of X must clear X→A and A→X, keep unrelated B→C —
+        // otherwise "stop" would be a lie or would kill unrelated traffic.
+        let hub = SessionDeliveryHub::new();
+        let item = |from: &str, to: &str| PendingDelivery {
+            from_conversation: from.into(),
+            to_conversation: to.into(),
+            user_id: "user_x".into(),
+            user_body: "body".into(),
+            reply_requested: false,
+            failures: 0,
+        };
+        hub.enqueue(item("x_conv", "a_conv"));
+        hub.enqueue(item("a_conv", "x_conv"));
+        hub.enqueue(item("b_conv", "c_conv"));
+        hub.clear_for_conversation("x_conv");
+        assert_eq!(hub.pending_len(), 1);
+    }
 }
