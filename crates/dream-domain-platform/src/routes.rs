@@ -69,6 +69,10 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
         )
         .route("/api/one/admin/platform/collaboration/probe", post(probe_collaboration))
         .route(
+            "/api/one/admin/platform/collaboration/relay",
+            post(relay_collaboration),
+        )
+        .route(
             "/api/one/admin/platform/ip-allowlist",
             get(get_ip_allowlist).put(set_ip_allowlist),
         )
@@ -387,6 +391,30 @@ async fn probe_collaboration(
 ) -> Result<Json<ApiResponse<CollaborationStatus>>, PlatformError> {
     Ok(Json(ApiResponse::ok(
         state.service.probe_collaboration(&actor.tenant_id).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RelayCollaborationBody {
+    #[serde(default = "default_relay_event")]
+    event_type: String,
+}
+
+fn default_relay_event() -> String {
+    "mention".to_owned()
+}
+
+async fn relay_collaboration(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Json(body): Json<RelayCollaborationBody>,
+) -> Result<Json<ApiResponse<CollaborationStatus>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .relay_collaboration(&actor.tenant_id, &body.event_type)
+            .await?,
     )))
 }
 

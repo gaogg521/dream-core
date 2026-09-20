@@ -538,6 +538,28 @@ impl PlatformService {
             .await)
     }
 
+    /// Send a lightweight collaboration signal through the configured relay backend.
+    pub async fn relay_collaboration(
+        &self,
+        tenant_id: &str,
+        event_type: &str,
+    ) -> Result<CollaborationStatus, PlatformError> {
+        let cfg = self.get_collaboration_config(tenant_id).await?;
+        let secret = self.collaboration_secret(tenant_id).await?;
+        Ok(self
+            .collaboration_provider
+            .relay_event(
+                CollaborationSettings {
+                    provider: cfg.provider.as_deref(),
+                    endpoint: cfg.endpoint.as_deref(),
+                    secret: secret.as_deref(),
+                    presence: cfg.presence,
+                },
+                event_type,
+            )
+            .await)
+    }
+
     // --- IP allowlist (P1-4) ---
 
     pub async fn get_ip_allowlist(&self, tenant_id: &str) -> Result<IpAllowlistConfigDto, PlatformError> {
