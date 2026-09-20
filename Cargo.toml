@@ -135,6 +135,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # toolchain like aws_lc_rs needs) and covers the HMAC (HS256) signing this
 # workspace uses.
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
+saml-rs = "0.5"
 bcrypt = "0.17"
 aes-gcm = "0.10"
 # Password-based key derivation for backup archives. Deliberately NOT the

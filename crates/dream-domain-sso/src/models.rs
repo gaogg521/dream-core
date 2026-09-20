@@ -13,6 +13,7 @@ pub enum SsoProviderKind {
     Wecom,
     Ldap,
     Oidc,
+    Saml,
 }
 
 impl SsoProviderKind {
@@ -23,6 +24,7 @@ impl SsoProviderKind {
             Self::Wecom => "wecom",
             Self::Ldap => "ldap",
             Self::Oidc => "oidc",
+            Self::Saml => "saml",
         }
     }
 
@@ -33,6 +35,7 @@ impl SsoProviderKind {
             "wecom" => Some(Self::Wecom),
             "ldap" => Some(Self::Ldap),
             "oidc" => Some(Self::Oidc),
+            "saml" => Some(Self::Saml),
             _ => None,
         }
     }

@@ -18,6 +18,7 @@ pub mod feishu;
 pub mod ldap;
 pub mod oidc;
 pub mod oidc_jwks;
+pub mod saml;
 pub mod wecom;
 
 pub use dingtalk::DingtalkProvider;

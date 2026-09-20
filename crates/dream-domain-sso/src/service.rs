@@ -27,7 +27,9 @@ use tokio::sync::Mutex;
 
 use crate::error::SsoError;
 use crate::models::{SsoIdentityRow, SsoProviderConfigDto, SsoProviderKind, SsoProviderRow};
-use crate::providers::{ProviderUserInfo, feishu::FeishuProviderConfig, oidc::OidcProviderConfig};
+use crate::providers::{
+    ProviderUserInfo, feishu::FeishuProviderConfig, oidc::OidcProviderConfig, saml::SamlProviderConfig,
+};
 
 /// Lifetime of an OAuth `state` nonce — same as the TS reference (10 min).
 const STATE_TTL: Duration = Duration::from_secs(10 * 60);
@@ -589,6 +591,14 @@ fn has_minimal_config(provider: &str, config_json: &str) -> bool {
         "dingtalk" => has_non_empty("appKey") && has_non_empty("appSecret"),
         "wecom" => has_non_empty("corpId") && has_non_empty("secret"),
         "oidc" => has_non_empty("issuer") && has_non_empty("clientId"),
+        "saml" => {
+            has_non_empty("idpEntityId")
+                && has_non_empty("idpMetadataXml")
+                && has_non_empty("spEntityId")
+                && has_non_empty("acsUrl")
+                && has_non_empty("spPrivateKeyPem")
+                && has_non_empty("spCertificatePem")
+        }
         "ldap" => obj
             .get("url")
             .and_then(|v| v.as_str())
@@ -607,6 +617,7 @@ fn secret_keys(provider: &str) -> &'static [&'static str] {
         "dingtalk" => &["appSecret"],
         "wecom" => &["secret"],
         "oidc" => &["clientSecret"],
+        "saml" => &["spPrivateKeyPem"],
         "ldap" => &["bindPassword"],
         _ => &[],
     }
@@ -712,6 +723,30 @@ pub fn parse_oidc_config(row: &SsoProviderRow) -> Option<OidcProviderConfig> {
         company_claim: get("companyClaim"),
         // Test-only field, never part of stored admin config.
         base_url: None,
+    })
+}
+
+/// Parse a SAML SP configuration. All identity-provider metadata and SP
+/// signing material are mandatory: accepting unsigned responses, or silently
+/// falling back to unsigned AuthnRequests, is never a compatibility mode.
+pub fn parse_saml_config(row: &SsoProviderRow) -> Option<SamlProviderConfig> {
+    let value: serde_json::Value = serde_json::from_str(&row.config).ok()?;
+    let get = |key: &str| {
+        value
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+            .filter(|s| !s.trim().is_empty() && s != "******")
+    };
+    Some(SamlProviderConfig {
+        idp_entity_id: get("idpEntityId")?,
+        idp_metadata_xml: get("idpMetadataXml")?,
+        sp_entity_id: get("spEntityId")?,
+        acs_url: get("acsUrl")?,
+        sp_private_key_pem: get("spPrivateKeyPem")?,
+        sp_certificate_pem: get("spCertificatePem")?,
+        external_id_attribute: get("externalIdAttribute").unwrap_or_default(),
+        name_attribute: get("nameAttribute").unwrap_or_default(),
     })
 }
 

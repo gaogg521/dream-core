@@ -9,7 +9,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post, put};
-use axum::{Extension, Json, Router};
+use axum::{Extension, Form, Json, Router};
 use serde::{Deserialize, Serialize};
 
 use dream_core_api_types::ApiResponse;
@@ -25,6 +25,7 @@ pub fn one_sso_public_routes(state: OneSsoRouterState) -> Router {
         .route("/api/one/sso/providers", get(list_providers))
         .route("/api/one/sso/{provider}/authorize", get(authorize))
         .route("/api/one/sso/{provider}/callback", get(callback))
+        .route("/api/one/sso/saml/callback", post(saml_callback))
         .route("/api/one/sso/ldap/login", post(ldap_login))
         .with_state(state)
 }
@@ -274,9 +275,10 @@ async fn build_authorize_goto(
     use crate::providers::dingtalk::DingtalkProviderConfig;
     use crate::providers::wecom::WecomProviderConfig;
     use crate::providers::{
-        dingtalk::DingtalkProvider, feishu::FeishuProvider, oidc::OidcProvider, wecom::WecomProvider,
+        dingtalk::DingtalkProvider, feishu::FeishuProvider, oidc::OidcProvider, saml::SamlProvider,
+        wecom::WecomProvider,
     };
-    use crate::service::{parse_feishu_config, parse_oidc_config};
+    use crate::service::{parse_feishu_config, parse_oidc_config, parse_saml_config};
 
     let state_token = service
         .state_store()
@@ -295,6 +297,10 @@ async fn build_authorize_goto(
             // 128-bit value bound to this login, and the IdP echoes it in
             // `id_token` so JWKS verification can check it.
             OidcProvider::build_authorize_url(&discovery, &cfg, &state_for_goto, &state_for_goto)
+        }
+        SsoProviderKind::Saml => {
+            let cfg = parse_saml_config(row).ok_or_else(|| SsoError::ProviderNotConfigured("saml".into()))?;
+            SamlProvider::begin(cfg, &state_for_goto)?
         }
         SsoProviderKind::Dingtalk => {
             let cfg: DingtalkProviderConfig = serde_json::from_str(&row.config)
@@ -501,6 +507,126 @@ async fn callback(
     }
 }
 
+#[derive(Deserialize)]
+struct SamlCallbackForm {
+    #[serde(rename = "SAMLResponse")]
+    saml_response: String,
+    #[serde(rename = "RelayState")]
+    relay_state: Option<String>,
+}
+
+/// SAML HTTP-POST assertion consumer endpoint. It deliberately has a separate
+/// handler from OAuth callback: SAML carries a signed XML form payload, never
+/// an OAuth authorization `code`.
+async fn saml_callback(
+    State(state): State<OneSsoRouterState>,
+    Form(form): Form<SamlCallbackForm>,
+) -> Result<Response, SsoError> {
+    let state_token = form
+        .relay_state
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or(SsoError::InvalidState)?;
+    let entry = state
+        .service
+        .state_store()
+        .consume(state_token)
+        .await
+        .ok_or(SsoError::InvalidState)?;
+    if entry.provider != SsoProviderKind::Saml {
+        return Err(SsoError::InvalidState);
+    }
+    let profile = crate::providers::saml::SamlProvider::complete(
+        state_token,
+        &form.saml_response,
+        form.relay_state.as_deref(),
+    )?;
+    finish_external_login(&state, entry, SsoProviderKind::Saml, profile).await
+}
+
+/// Shared post-authentication path for OAuth and SAML. Keeping SAML on this
+/// path makes its JIT provisioning, enterprise sync, onboarding, MFA and
+/// desktop deep-link semantics identical to OIDC.
+async fn finish_external_login(
+    state: &OneSsoRouterState,
+    entry: crate::service::OAuthStateEntry,
+    provider: SsoProviderKind,
+    profile: crate::providers::ProviderUserInfo,
+) -> Result<Response, SsoError> {
+    let display_name = profile.preferred_username.clone();
+    let org_external_id = profile.org_external_id.clone();
+    let org_unit_path = profile.org_unit_path.clone();
+    let job_title = profile.job_title.clone();
+    let personal_external_id = profile.external_id.clone();
+    let (user_id, username, _created) = state.service.resolve_or_provision_user(provider, profile).await?;
+
+    if let (Some(sync), Some(org_id)) = (state.enterprise_sync.as_ref(), org_external_id.as_deref()) {
+        sync.sync_member(
+            &user_id,
+            provider.as_str(),
+            org_id,
+            &personal_external_id,
+            Some(display_name.as_str()),
+            org_unit_path.as_deref(),
+            job_title.as_deref(),
+        )
+        .await;
+    }
+    if let (Some(hook), true) = (state.org_auto_join.as_ref(), display_name.contains('@')) {
+        hook.auto_join_by_email(&user_id, &display_name).await;
+    }
+    if let Some(hook) = state.org_auto_join.as_ref() {
+        hook.auto_join_after_sso(&user_id, &personal_external_id).await;
+    }
+    if let Some(mfa) = state.mfa.as_ref()
+        && let dream_core_auth::mfa::MfaDecision::Challenge(purpose) = mfa.decide_for_user(&user_id, &username).await?
+    {
+        let (mfa_token, _expires_at, _purpose) = mfa
+            .create_challenge_for_user(
+                &user_id,
+                &username,
+                purpose,
+                None,
+                entry.redirect_target.as_deref(),
+                entry.desktop,
+                Some(entry.deep_link_scheme),
+            )
+            .await?;
+        let login_path = format!(
+            "/admin/login?mfa_token={}&mfa_purpose={}",
+            urlencode(&mfa_token),
+            purpose.as_str()
+        );
+        return Ok(Redirect::to(&login_path).into_response());
+    }
+
+    let session = state
+        .service
+        .issue_session(&user_id, &username, entry.redirect_target.clone(), entry.desktop)?;
+    if entry.desktop {
+        let params = format!(
+            "token={}&userId={}&username={}&name={}",
+            urlencode(&session.token),
+            urlencode(&session.user_id),
+            urlencode(&session.username),
+            urlencode(&display_name),
+        );
+        let deep_link = format!("{}://sso-callback?{params}", entry.deep_link_scheme);
+        Ok(Html(desktop_callback_page(&deep_link)).into_response())
+    } else {
+        let target = session
+            .redirect_target
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .filter(|s| is_safe_local_redirect(s))
+            .map(str::to_owned)
+            .unwrap_or_else(|| "/#/guid".to_owned());
+        Ok(([(header::SET_COOKIE, session.cookie)], Redirect::to(&target)).into_response())
+    }
+}
+
 /// Run the provider-specific OAuth exchange + return normalized user info.
 async fn run_provider_oauth(
     provider: SsoProviderKind,
@@ -564,6 +690,9 @@ async fn run_provider_oauth(
             )
             .await
         }
+        SsoProviderKind::Saml => Err(SsoError::BadRequest(
+            "SAML uses POST /api/one/sso/saml/callback, not OAuth callback".into(),
+        )),
         SsoProviderKind::Ldap => Err(SsoError::BadRequest("LDAP has no OAuth callback".into())),
     }
 }
