@@ -29,6 +29,12 @@ pub enum SsoError {
     #[error("Bad request: {0}")]
     BadRequest(String),
 
+    #[error("Unauthorized")]
+    Unauthorized,
+
+    #[error("Not found: {0}")]
+    NotFound(String),
+
     #[error("Forbidden: {0}")]
     Forbidden(String),
 
@@ -46,6 +52,8 @@ impl SsoError {
             Self::IdentityMissing => "SSO_IDENTITY_MISSING",
             Self::InvalidCredentials => "SSO_INVALID_CREDENTIALS",
             Self::BadRequest(_) => "BAD_REQUEST",
+            Self::Unauthorized => "UNAUTHORIZED",
+            Self::NotFound(_) => "NOT_FOUND",
             Self::Forbidden(_) => "FORBIDDEN",
             Self::Internal(_) => "INTERNAL_ERROR",
         }
@@ -57,7 +65,8 @@ impl SsoError {
             Self::InvalidState | Self::MissingCode | Self::IdentityMissing | Self::BadRequest(_) => {
                 StatusCode::BAD_REQUEST
             }
-            Self::InvalidCredentials => StatusCode::UNAUTHORIZED,
+            Self::InvalidCredentials | Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }

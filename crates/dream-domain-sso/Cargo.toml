@@ -20,6 +20,8 @@ sqlx = { workspace = true, features = ["mysql"] }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+sha2 = { workspace = true }
+subtle = "2"
 uuid.workspace = true
 http-body-util.workspace = true
 tower = { workspace = true, features = ["util"] }

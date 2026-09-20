@@ -7,6 +7,7 @@
 //! merge in dream-app and public upstream service APIs (IUserRepository,
 //! JwtSecret, hash_password).
 
+pub mod scim;
 pub mod directory;
 pub mod enterprise;
 pub mod error;
@@ -27,5 +28,6 @@ pub use error::SsoError;
 pub use migrate::run_one_sso_migrations;
 pub use org_hooks::OrgAutoJoin;
 pub use routes::{one_sso_admin_routes, one_sso_public_routes};
+pub use scim::{ScimLifecycle, scim_routes};
 pub use service::SsoService;
 pub use state::OneSsoRouterState;

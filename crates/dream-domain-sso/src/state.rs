@@ -26,6 +26,9 @@ pub struct OneSsoRouterState {
     /// or any build without the enterprise dimension — means directory sync has
     /// nowhere to write and therefore never runs.
     pub directory_sink: Option<Arc<dyn DirectorySink>>,
+    /// SCIM deprovisioning: session revoke + ownership transfer. `None` in
+    /// unit tests that do not exercise PATCH/DELETE, and personal edition.
+    pub scim_lifecycle: Option<Arc<dyn crate::scim::ScimLifecycle>>,
     /// 登录二次认证（MFA · TOTP）服务。None —— 单机/测试组装未接 —— SSO
     /// 回调与 LDAP 登录不做第二步，管理端点返回 503。
     pub mfa: Option<Arc<dream_core_auth::mfa::MfaService>>,
@@ -39,6 +42,7 @@ impl OneSsoRouterState {
             company_admin_check: None,
             org_auto_join: None,
             directory_sink: None,
+            scim_lifecycle: None,
             mfa: None,
         }
     }
@@ -66,6 +70,11 @@ impl OneSsoRouterState {
 
     pub fn with_directory_sink(mut self, sink: Arc<dyn DirectorySink>) -> Self {
         self.directory_sink = Some(sink);
+        self
+    }
+
+    pub fn with_scim_lifecycle(mut self, hook: Arc<dyn crate::scim::ScimLifecycle>) -> Self {
+        self.scim_lifecycle = Some(hook);
         self
     }
 }

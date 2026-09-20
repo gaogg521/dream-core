@@ -236,6 +236,49 @@ impl dream_domain_enterprise::SessionRevoker for OrgSessionRevoker {
     }
 }
 
+/// SCIM DELETE / PATCH active=false: same session cut as company removal,
+/// plus devops ownership transfer onto another member of each project group.
+#[cfg(feature = "enterprise")]
+struct ScimLifecycleAdapter {
+    org: std::sync::Arc<dream_domain_org::OrgService>,
+    devops: std::sync::Arc<dream_domain_devops::DevopsService>,
+    enterprise: std::sync::Arc<dream_domain_enterprise::EnterpriseService>,
+}
+
+#[async_trait::async_trait]
+#[cfg(feature = "enterprise")]
+impl dream_domain_sso::ScimLifecycle for ScimLifecycleAdapter {
+    async fn revoke_sessions(&self, user_id: &str) {
+        if let Err(error) = self.org.invalidate_user_tokens(user_id).await {
+            tracing::error!(%error, user_id, "SCIM failed to revoke sessions");
+        }
+    }
+
+    async fn offboard(&self, user_id: &str) {
+        if let Ok(Some(eid)) = self.enterprise.deployment_company_id().await {
+            if let Ok(members) = self.enterprise.list_members(&eid).await {
+                if let Some(peer) = members.into_iter().find(|p| p.user_id != user_id) {
+                    if let Ok(memberships) = self.org.list_memberships(user_id).await {
+                        for m in memberships {
+                            if let Err(error) = self
+                                .devops
+                                .transfer_ownership(user_id, &peer.user_id, &m.tenant_id)
+                                .await
+                            {
+                                tracing::warn!(%error, user_id, "SCIM ownership transfer skipped");
+                            }
+                        }
+                    }
+                    if let Err(error) = self.enterprise.remove_member(&eid, &peer.user_id, user_id).await {
+                        tracing::warn!(%error, user_id, "SCIM company removal skipped");
+                    }
+                }
+            }
+        }
+        self.revoke_sessions(user_id).await;
+    }
+}
+
 /// Lets disbanding a company delete what it owns in one-org (every project
 /// group) and one-billing (every usage/license record) without
 /// one-enterprise depending on either (same layer). Best-effort per side, by
@@ -2828,8 +2871,14 @@ pub(crate) fn build_governance_plane(
         // machine actually holds the company's SSO config.
         .with_directory_sink(std::sync::Arc::new(DirectorySinkAdapter(
             one_enterprise_service.clone(),
-        )));
-    let one_sso_public = dream_domain_sso::one_sso_public_routes(one_sso_state.clone());
+        )))
+        .with_scim_lifecycle(std::sync::Arc::new(ScimLifecycleAdapter {
+            org: one_org_service.clone(),
+            devops: one_devops_service.clone(),
+            enterprise: one_enterprise_service.clone(),
+        }));
+    let one_sso_public = dream_domain_sso::one_sso_public_routes(one_sso_state.clone())
+        .merge(dream_domain_sso::scim_routes(one_sso_state.clone()));
     let one_sso_admin = dream_domain_sso::one_sso_admin_routes(one_sso_state)
         .route_layer(from_fn_with_state(license_gate.clone(), license_module_gate_middleware))
         .route_layer(from_fn_with_state(password_gate.clone(), require_password_changed_gate))

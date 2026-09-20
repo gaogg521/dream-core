@@ -141,6 +141,10 @@ impl SsoService {
         &self.state_store
     }
 
+    pub(crate) fn db(&self) -> &DbPool {
+        &self.db
+    }
+
     /// Effective role for the admin-route role gate (`rbac::RequireSsoAdmin`).
     ///
     /// `one-sso` doesn't own the `one_user_org` table (`one-org` does, and
@@ -339,6 +343,14 @@ impl SsoService {
         provider: SsoProviderKind,
         profile: ProviderUserInfo,
     ) -> Result<(String, String, bool), SsoError> {
+        self.resolve_or_provision_user_named(provider.as_str(), profile).await
+    }
+
+    pub async fn resolve_or_provision_user_named(
+        &self,
+        provider: &str,
+        profile: ProviderUserInfo,
+    ) -> Result<(String, String, bool), SsoError> {
         let external_id = profile.external_id.trim();
         if external_id.is_empty() {
             return Err(SsoError::IdentityMissing);
@@ -404,9 +416,9 @@ impl SsoService {
         })
     }
 
-    async fn find_identity(
+    pub async fn find_identity(
         &self,
-        provider: SsoProviderKind,
+        provider: &str,
         external_id: &str,
     ) -> Result<Option<SsoIdentityRow>, SsoError> {
         let row = self
@@ -414,15 +426,15 @@ impl SsoService {
             .fetch_optional_as::<SsoIdentityRow>(
                 "SELECT id, provider, external_id, user_id, tenant_id, last_seen_at, created_at \
              FROM one_sso_identities WHERE provider = ? AND external_id = ?",
-                &db_params![provider.as_str(), external_id],
+                &db_params![provider, external_id],
             )
             .await?;
         Ok(row)
     }
 
-    async fn bind_identity(
+    pub async fn bind_identity(
         &self,
-        provider: SsoProviderKind,
+        provider: &str,
         external_id: &str,
         user_id: &str,
         profile: &ProviderUserInfo,
@@ -437,7 +449,7 @@ impl SsoService {
              VALUES (?, ?, ?, ?, 'default', ?, ?, ?, ?, ?, ?)",
                 &db_params![
                     &id,
-                    provider.as_str(),
+                    provider,
                     external_id,
                     user_id,
                     &profile.preferred_username,
@@ -452,7 +464,7 @@ impl SsoService {
         Ok(())
     }
 
-    async fn touch_identity(&self, provider: SsoProviderKind, external_id: &str, profile: &ProviderUserInfo) {
+    pub async fn touch_identity(&self, provider: &str, external_id: &str, profile: &ProviderUserInfo) {
         let _ = self
             .db
             .execute(
@@ -465,7 +477,7 @@ impl SsoService {
                     profile.org_unit_path.as_deref(),
                     profile.job_title.as_deref(),
                     profile.org_external_id.as_deref(),
-                    provider.as_str(),
+                    provider,
                     external_id
                 ],
             )

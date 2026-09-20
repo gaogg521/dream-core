@@ -25,6 +25,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "sso_004_identity_org_external_id",
         include_str!("../migrations/004_identity_org_external_id.sql"),
     ),
+    ("sso_005_scim", include_str!("../migrations/005_scim.sql")),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -41,6 +42,7 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
         "sso_004_identity_org_external_id",
         include_str!("../migrations_mysql/004_identity_org_external_id.sql"),
     ),
+    ("sso_005_scim", include_str!("../migrations_mysql/005_scim.sql")),
 ];
 
 /// Run all pending one-sso migrations on the pool's backend. Idempotent.
@@ -71,7 +73,7 @@ mod tests {
             .await
             .unwrap();
 
-        for table in ["one_sso_providers", "one_sso_identities"] {
+        for table in ["one_sso_providers", "one_sso_identities", "one_scim_users"] {
             let exists: bool =
                 sqlx::query_scalar("SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?")
                     .bind(table)
@@ -94,7 +96,7 @@ mod tests {
         run_one_sso_migrations(&db.pool).await.unwrap();
         run_one_sso_migrations(&db.pool).await.unwrap();
 
-        for table in ["one_sso_providers", "one_sso_identities"] {
+        for table in ["one_sso_providers", "one_sso_identities", "one_scim_users"] {
             let exists: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?",
             )

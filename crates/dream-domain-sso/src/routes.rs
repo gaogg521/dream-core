@@ -33,6 +33,7 @@ pub fn one_sso_admin_routes(state: OneSsoRouterState) -> Router {
     Router::new()
         .route("/api/one/admin/sso/providers", get(list_provider_configs))
         .route("/api/one/admin/sso/{provider}", put(upsert_provider))
+        .route("/api/one/admin/scim/token", put(crate::scim::admin_put_scim_token))
         .route("/api/one/admin/sso/directory/sync", post(run_directory_sync_now))
         .route("/api/one/admin/mfa/policy", get(mfa_policy_get).put(mfa_policy_put))
         .route("/api/one/admin/mfa/users", get(mfa_users_overview))
