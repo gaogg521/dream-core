@@ -10,7 +10,7 @@ use axum::http::request::Parts;
 use dream_core_auth::CurrentUser;
 
 use crate::error::OrgError;
-use crate::models::{is_admin_role, is_enterprise_tenant_id, is_system_admin_role};
+use crate::models::{is_admin_role, is_enterprise_tenant_id, is_system_admin_role, role_allows, OrgCapability};
 use crate::state::OneOrgRouterState;
 
 /// Authenticated user + resolved enterprise membership.
@@ -57,6 +57,26 @@ impl FromRequestParts<OneOrgRouterState> for RequireOrgAdmin {
         }
         if !is_admin_role(&actor.role) {
             return Err(OrgError::Forbidden("Administrator role required".into()));
+        }
+        Ok(Self(actor))
+    }
+}
+
+/// Requires a tenant-scoped integration administrator (or either existing
+/// administrator). Kept separate from the broad organization-admin guard so
+/// integration credentials do not require user-management authority.
+#[derive(Debug, Clone)]
+pub struct RequireIntegrationAdmin(pub OrgActor);
+
+impl FromRequestParts<OneOrgRouterState> for RequireIntegrationAdmin {
+    type Rejection = OrgError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &OneOrgRouterState) -> Result<Self, Self::Rejection> {
+        let actor = OrgActor::from_request_parts(parts, state).await?;
+        if !is_enterprise_tenant_id(&actor.tenant_id)
+            || !role_allows(&actor.role, OrgCapability::IntegrationManage)
+        {
+            return Err(OrgError::Forbidden("Integration administrator role required".into()));
         }
         Ok(Self(actor))
     }

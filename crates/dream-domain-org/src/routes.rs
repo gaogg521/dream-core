@@ -17,9 +17,10 @@ use crate::integration::IntegrationTestResult;
 use crate::models::{
     AdminUserDto, AgentAuditEntry, AuditLogRow, DepartmentDto, DirectoryMapReport, EnterpriseTenantDto, IntegrationDto,
     InviteDto, MyTenantDto, OrgContextDto, ResetLocalResult, RuntimeNodeDto, SmtpConfigDto, TenantSummaryDto,
-    is_admin_role, is_enterprise_tenant_id, is_system_admin_role,
+    is_admin_role, is_enterprise_tenant_id, is_system_admin_role, ROLE_AUDITOR, ROLE_COLLABORATOR,
+    ROLE_INTEGRATION_ADMIN, ROLE_MEMBER, ROLE_ORG_ADMIN, ROLE_RESOURCE_ADMIN, ROLE_SYSTEM_ADMIN,
 };
-use crate::rbac::{OrgActor, RequireOrgAdmin, RequireSystemAdmin};
+use crate::rbac::{OrgActor, RequireIntegrationAdmin, RequireOrgAdmin, RequireSystemAdmin};
 use crate::state::OneOrgRouterState;
 
 pub fn one_org_routes(state: OneOrgRouterState) -> Router {
@@ -740,7 +741,7 @@ async fn admin_set_smtp_config(
 
 async fn admin_list_integrations(
     State(state): State<OneOrgRouterState>,
-    RequireOrgAdmin(actor): RequireOrgAdmin,
+    RequireIntegrationAdmin(actor): RequireIntegrationAdmin,
 ) -> Result<Json<ApiResponse<Vec<IntegrationDto>>>, OrgError> {
     Ok(Json(ApiResponse::ok(
         state.service.list_integrations(&actor.tenant_id).await?,
@@ -768,7 +769,7 @@ struct SetIntegrationBody {
 /// app layer (`OrgService::with_integration_provider`) when ready.
 async fn admin_set_integration(
     State(state): State<OneOrgRouterState>,
-    RequireOrgAdmin(actor): RequireOrgAdmin,
+    RequireIntegrationAdmin(actor): RequireIntegrationAdmin,
     Path(provider): Path<String>,
     Json(body): Json<SetIntegrationBody>,
 ) -> Result<Json<ApiResponse<IntegrationDto>>, OrgError> {
@@ -817,7 +818,7 @@ async fn admin_set_integration(
 
 async fn admin_test_integration(
     State(state): State<OneOrgRouterState>,
-    RequireOrgAdmin(actor): RequireOrgAdmin,
+    RequireIntegrationAdmin(actor): RequireIntegrationAdmin,
     Path(provider): Path<String>,
 ) -> Result<Json<ApiResponse<IntegrationTestResult>>, OrgError> {
     Ok(Json(ApiResponse::ok(
@@ -1012,7 +1013,16 @@ async fn admin_set_user_role(
     Json(body): Json<SetRoleBody>,
 ) -> Result<Json<ApiResponse<()>>, OrgError> {
     let role = body.role.trim();
-    if !matches!(role, "member" | "org_admin" | "system_admin") {
+    if !matches!(
+        role,
+        ROLE_MEMBER
+            | ROLE_AUDITOR
+            | ROLE_RESOURCE_ADMIN
+            | ROLE_INTEGRATION_ADMIN
+            | ROLE_COLLABORATOR
+            | ROLE_ORG_ADMIN
+            | ROLE_SYSTEM_ADMIN
+    ) {
         return Err(OrgError::BadRequest(format!("invalid role: {role}")));
     }
     // system_admin can only be set by an existing system_admin.

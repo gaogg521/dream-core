@@ -22,8 +22,46 @@ pub const DEFAULT_ENTERPRISE_TENANT_ID: &str = "enterprise";
 pub const SYSTEM_DEFAULT_USER_ID: &str = "system_default_user";
 
 pub const ROLE_MEMBER: &str = "member";
+/// Can inspect enterprise administration data and audit history, but cannot
+/// mutate configuration or membership.
+pub const ROLE_AUDITOR: &str = "auditor";
+/// Manages resource-grant matrices without being able to administer users,
+/// billing, SSO, or integrations.
+pub const ROLE_RESOURCE_ADMIN: &str = "resource_admin";
+/// Manages external integration credentials and synchronization settings.
+pub const ROLE_INTEGRATION_ADMIN: &str = "integration_admin";
+/// A named enterprise collaborator. It intentionally has the same baseline
+/// access as `member`; the separate value makes collaboration policy and audit
+/// assignments explicit without granting administrative powers.
+pub const ROLE_COLLABORATOR: &str = "collaborator";
 pub const ROLE_ORG_ADMIN: &str = "org_admin";
 pub const ROLE_SYSTEM_ADMIN: &str = "system_admin";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrgCapability {
+    AuditRead,
+    ResourceManage,
+    IntegrationManage,
+    CollaborationUse,
+    OrganizationManage,
+    SystemManage,
+}
+
+/// Single role-to-capability matrix used by HTTP guards and non-HTTP callers.
+/// System administrators retain all powers; organization administrators retain
+/// every tenant-scoped power but cannot perform instance-level operations.
+pub fn role_allows(role: &str, capability: OrgCapability) -> bool {
+    use OrgCapability::*;
+    match role {
+        ROLE_SYSTEM_ADMIN => true,
+        ROLE_ORG_ADMIN | "admin" => capability != SystemManage,
+        ROLE_AUDITOR => matches!(capability, AuditRead),
+        ROLE_RESOURCE_ADMIN => matches!(capability, ResourceManage),
+        ROLE_INTEGRATION_ADMIN => matches!(capability, IntegrationManage),
+        ROLE_COLLABORATOR | ROLE_MEMBER => matches!(capability, CollaborationUse),
+        _ => false,
+    }
+}
 
 pub fn is_enterprise_tenant_id(tenant_id: &str) -> bool {
     !tenant_id.is_empty() && tenant_id != DEFAULT_TENANT_ID
@@ -31,11 +69,34 @@ pub fn is_enterprise_tenant_id(tenant_id: &str) -> bool {
 
 /// `admin` is the legacy alias kept for parity with the 1ONE TS role model.
 pub fn is_admin_role(role: &str) -> bool {
-    role == ROLE_SYSTEM_ADMIN || role == ROLE_ORG_ADMIN || role == "admin"
+    role_allows(role, OrgCapability::OrganizationManage)
 }
 
 pub fn is_system_admin_role(role: &str) -> bool {
     role == ROLE_SYSTEM_ADMIN
+}
+
+#[cfg(test)]
+mod role_tests {
+    use super::*;
+
+    #[test]
+    fn built_in_roles_have_separate_least_privilege_capabilities() {
+        assert!(role_allows(ROLE_AUDITOR, OrgCapability::AuditRead));
+        assert!(!role_allows(ROLE_AUDITOR, OrgCapability::OrganizationManage));
+        assert!(role_allows(ROLE_RESOURCE_ADMIN, OrgCapability::ResourceManage));
+        assert!(!role_allows(ROLE_RESOURCE_ADMIN, OrgCapability::IntegrationManage));
+        assert!(role_allows(ROLE_INTEGRATION_ADMIN, OrgCapability::IntegrationManage));
+        assert!(role_allows(ROLE_COLLABORATOR, OrgCapability::CollaborationUse));
+        assert!(!role_allows(ROLE_COLLABORATOR, OrgCapability::AuditRead));
+    }
+
+    #[test]
+    fn existing_administrators_keep_their_scope() {
+        assert!(role_allows(ROLE_ORG_ADMIN, OrgCapability::OrganizationManage));
+        assert!(!role_allows(ROLE_ORG_ADMIN, OrgCapability::SystemManage));
+        assert!(role_allows(ROLE_SYSTEM_ADMIN, OrgCapability::SystemManage));
+    }
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
