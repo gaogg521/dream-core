@@ -125,6 +125,8 @@ pub(crate) enum Command {
     Diagnose(DiagnoseArgs),
     /// Agent-facing Team collaboration CLI fallback.
     Team(TeamArgs),
+    /// Read-only session listing for cross-conversation (@@) delivery.
+    Session(SessionArgs),
     /// PreToolUse permission gate for the Antigravity CLI (spawned by agy).
     /// Reads the tool request on stdin, asks the running Dream UI backend, and
     /// writes agy's decision to stdout.
@@ -155,6 +157,7 @@ impl Command {
             Self::Config(_) => "config",
             Self::Diagnose(_) => "diagnose",
             Self::Team(_) => "team",
+            Self::Session(_) => "session",
             Self::AntigravityHook => "antigravity-hook",
             Self::McpBridge => "mcp-bridge",
             Self::McpTeamStdio => "mcp-team-stdio",
@@ -211,6 +214,21 @@ pub(crate) struct CronHelperUpdateArgs {
 pub(crate) struct DiagnoseArgs {
     #[command(subcommand)]
     pub command: DiagnoseCommand,
+}
+
+#[derive(Args, Debug, Clone)]
+#[command(disable_help_subcommand = true)]
+pub(crate) struct SessionArgs {
+    #[command(subcommand)]
+    pub command: SessionCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub(crate) enum SessionCommand {
+    Capabilities,
+    List,
+    #[command(external_subcommand)]
+    Unknown(Vec<OsString>),
 }
 
 #[derive(Args, Debug, Clone)]

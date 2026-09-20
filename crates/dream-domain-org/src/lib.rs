@@ -16,6 +16,7 @@ pub mod directory_bridge;
 pub mod email;
 pub mod enterprise_hooks;
 pub mod error;
+pub mod connector_sync;
 pub mod integration;
 pub mod migrate;
 pub mod models;
@@ -31,8 +32,10 @@ pub use directory_bridge::{DirectoryDepartmentRef, DirectoryTreeSource, NoopDire
 pub use email::{EmailSender, SendEmailResult, StubEmailSender, send_invite_via_smtp};
 pub use enterprise_hooks::CompanySeatSync;
 pub use error::OrgError;
+pub use connector_sync::HttpConnectorProvider;
 pub use integration::{
-    IntegrationCredentials, IntegrationProvider, IntegrationTestResult, KNOWN_PROVIDERS, StubIntegrationProvider,
+    IntegrationCredentials, IntegrationProvider, IntegrationSyncResult, IntegrationTestResult, KNOWN_PROVIDERS,
+    StubIntegrationProvider,
 };
 pub use migrate::run_one_migrations;
 pub use node_review::NodeReviewSink;

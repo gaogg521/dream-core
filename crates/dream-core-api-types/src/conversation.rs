@@ -178,6 +178,21 @@ pub struct SendMessageRequest {
     pub inject_skills: Vec<String>,
     #[serde(default)]
     pub hidden: bool,
+    /// Cross-session delivery: when true, inbound blocks may include a reply address.
+    #[serde(default)]
+    pub reply_requested: bool,
+}
+
+impl Default for SendMessageRequest {
+    fn default() -> Self {
+        Self {
+            content: String::new(),
+            files: Vec::new(),
+            inject_skills: Vec::new(),
+            hidden: false,
+            reply_requested: false,
+        }
+    }
 }
 
 /// Response for `POST /api/conversations/:id/messages`.

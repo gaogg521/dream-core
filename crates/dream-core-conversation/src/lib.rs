@@ -7,6 +7,8 @@ mod background_stream;
 mod convert;
 pub mod error;
 pub(crate) mod message_cursor;
+pub mod markers;
+pub mod session_delivery;
 mod message_persistence;
 pub mod response_middleware;
 pub mod routes;

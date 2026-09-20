@@ -103,6 +103,10 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
             "/api/one/admin/integrations/{provider}/test",
             post(admin_test_integration),
         )
+        .route(
+            "/api/one/admin/integrations/{provider}/sync",
+            post(admin_sync_integration),
+        )
         .route("/api/one/admin/audit", get(admin_list_audit))
         .route("/api/one/admin/agent-audit", get(admin_list_agent_audit))
         .route("/api/one/admin/runtime/nodes", get(admin_list_runtime_nodes))
@@ -823,6 +827,22 @@ async fn admin_test_integration(
 ) -> Result<Json<ApiResponse<IntegrationTestResult>>, OrgError> {
     Ok(Json(ApiResponse::ok(
         state.service.test_integration(&actor.tenant_id, &provider).await?,
+    )))
+}
+
+async fn admin_sync_integration(
+    State(state): State<OneOrgRouterState>,
+    RequireIntegrationAdmin(actor): RequireIntegrationAdmin,
+    Path(provider): Path<String>,
+    body: Option<Json<serde_json::Value>>,
+) -> Result<Json<ApiResponse<crate::integration::IntegrationSyncResult>>, OrgError> {
+    let cursor = body
+        .and_then(|Json(v)| v.get("cursor").and_then(|c| c.as_str()).map(str::to_owned));
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .sync_integration(&actor.tenant_id, &provider, cursor.as_deref())
+            .await?,
     )))
 }
 

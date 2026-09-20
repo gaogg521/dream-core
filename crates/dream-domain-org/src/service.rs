@@ -22,7 +22,9 @@ use crate::credential_revoker::{CredentialRevoker, NoopCredentialRevoker};
 use crate::directory_bridge::DirectoryDepartmentRef;
 use crate::email::{EmailSender, SendEmailResult, StubEmailSender, send_invite_via_smtp};
 use crate::error::OrgError;
-use crate::integration::{IntegrationCredentials, IntegrationProvider, IntegrationTestResult, StubIntegrationProvider};
+use crate::integration::{
+    IntegrationCredentials, IntegrationProvider, IntegrationSyncResult, IntegrationTestResult, StubIntegrationProvider,
+};
 use crate::models::{
     AdminUserDto, AgentAuditEntry, AuditLogRow, DEFAULT_ENTERPRISE_TENANT_ID, DEFAULT_TENANT_ID, DepartmentDto,
     DirectoryMapReport, EnterpriseTenantDto, HeartbeatOutcome, IntegrationDto, InviteDto, InviteRow, MyTenantDto,
@@ -1318,6 +1320,28 @@ impl OrgService {
                 config: &dto.config,
                 secret: secret.as_deref(),
             })
+            .await)
+    }
+
+    pub async fn sync_integration(
+        &self,
+        tenant_id: &str,
+        provider: &str,
+        cursor: Option<&str>,
+    ) -> Result<IntegrationSyncResult, OrgError> {
+        let dto = self.get_integration(tenant_id, provider).await?;
+        let secret = self.integration_secret(tenant_id, provider).await?;
+        Ok(self
+            .integration_provider
+            .sync(
+                IntegrationCredentials {
+                    provider,
+                    base_url: dto.base_url.as_deref(),
+                    config: &dto.config,
+                    secret: secret.as_deref(),
+                },
+                cursor,
+            )
             .await)
     }
 

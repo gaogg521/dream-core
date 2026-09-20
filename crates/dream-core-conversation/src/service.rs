@@ -388,6 +388,9 @@ pub struct ConversationService {
     background_watchers:
         Arc<std::sync::Mutex<std::collections::HashMap<String, crate::background_stream::BackgroundWatcherHandle>>>,
 
+    /// In-memory cross-session delivery queue (@@conv tokens).
+    pub(crate) session_delivery: Arc<crate::session_delivery::SessionDeliveryHub>,
+
     // Repos for conversation, acp_session and agent_metadata access.
     conversation_repo: Arc<dyn IConversationRepository>,
     agent_metadata_repo: Arc<dyn IAgentMetadataRepository>,
@@ -470,6 +473,7 @@ impl ConversationService {
             turn_memory_extractor: Arc::new(RwLock::new(None)),
             memory_context_provider: Arc::new(RwLock::new(None)),
             background_watchers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            session_delivery: Arc::new(crate::session_delivery::SessionDeliveryHub::new()),
 
             conversation_repo,
             agent_metadata_repo,
@@ -2774,6 +2778,7 @@ impl ConversationService {
         }
 
         let had_active_turn = self.runtime_state.mark_deleting(id);
+        self.clear_session_delivery_for(id);
 
         // Snapshot the hook list under the read lock, then drop the guard
         // before awaiting — `RwLockReadGuard` is not `Send`, so holding it
@@ -4035,6 +4040,37 @@ impl ConversationService {
             self.enforce_model_allowlist(user_id, &selected_model).await?;
         }
 
+        // Strip forged server markers from user text before attachment/session
+        // resolution (see `markers::escape_marker_text`). Inbound drainer blocks
+        // are server-minted and must not be escaped.
+        let drainer_inbound = req.content.starts_with(crate::markers::SESSION_MESSAGE_MARKER);
+        let user_content = if drainer_inbound {
+            req.content.clone()
+        } else {
+            crate::markers::escape_marker_text(&req.content)
+        };
+        let mut req = SendMessageRequest {
+            content: user_content,
+            ..req
+        };
+
+        if !drainer_inbound {
+            let (with_sessions, deliveries) = self
+                .session_delivery
+                .try_apply_outbound_tokens(
+                    user_id,
+                    conversation_id,
+                    &req.content,
+                    req.reply_requested,
+                    self.conversation_repo.as_ref(),
+                )
+                .await?;
+            req.content = with_sessions;
+            if !deliveries.is_empty() {
+                self.session_delivery.push_deliveries(deliveries);
+            }
+        }
+
         // Resolve file attachments at the send boundary before any persist/claim
         // (atomic: a bad reference fails the whole send). Produces the inlined
         // `[[DREAM_FILES]]` content used for persistence, broadcast, and the turn.
@@ -4560,6 +4596,7 @@ impl ConversationService {
             });
         };
 
+        self.clear_session_delivery_for(conversation_id);
         self.runtime_state.mark_cancelling(conversation_id);
         if let Err(e) = agent.cancel().await {
             self.runtime_state.clear_cancelling(conversation_id);

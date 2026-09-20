@@ -87,6 +87,21 @@ fn data() -> Value {
                 }
             },
             {
+                "name": "session",
+                "mode": "read-only",
+                "description": "List the current user's conversations for cross-session (@@) delivery.",
+                "contract": "agent-facing-session-cli",
+                "contract_command": "session capabilities",
+                "invocation": "dreamcore session capabilities",
+                "runtime_required": ["ONE_BASE_URL", "ONE_CONVERSATION_ID", "ONE_USER_ID"],
+                "optional_runtime": ["ONE_RUNTIME_TOKEN"],
+                "safety": {
+                    "can_write": false,
+                    "read_only": true,
+                    "runtime_token_required_for_list": true
+                }
+            },
+            {
                 "name": "team",
                 "mode": "team-collaboration",
                 "description": "Agent-facing Team collaboration CLI fallback for agents without MCP injection.",

@@ -73,9 +73,7 @@ impl ChannelMessageService {
         // `conversation_id` + stream events instead of a client-provided id.
         let req = SendMessageRequest {
             content: text.to_owned(),
-            files: vec![],
-            inject_skills: vec![],
-            hidden: false,
+            ..Default::default()
         };
 
         let user_id = owner_user_id;

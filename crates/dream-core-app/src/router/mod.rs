@@ -8,6 +8,7 @@ mod fs_monitor;
 mod health;
 mod item_revealer;
 mod routes;
+mod session_delivery;
 mod runtime_team_tools;
 mod scm_monitor;
 mod state;

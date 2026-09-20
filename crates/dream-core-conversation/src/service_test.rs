@@ -6229,6 +6229,7 @@ async fn send_message_persists_openclaw_gateway_unreachable_tip_when_turn_build_
                 hidden: false,
                 files: vec![],
                 inject_skills: vec![],
+                reply_requested: false,
             },
             &task_mgr,
         )
@@ -6310,6 +6311,7 @@ async fn send_message_accepts_attachment_without_text_past_content_validation() 
         }],
         inject_skills: vec![],
         hidden: false,
+        reply_requested: false,
     };
 
     let error = svc.send_message("user_1", &conv.id, req, &task_mgr).await.unwrap_err();
