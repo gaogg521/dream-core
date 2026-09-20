@@ -417,10 +417,32 @@ pub struct TrialKeyResponse {
     /// that needs to tell issuers apart without parsing the display label.
     #[serde(default)]
     pub vendor: String,
+    /// ISO 4217 code the amount fields on `TrialQuotaStatusResponse` will be
+    /// denominated in for this vendor. Defaulted for compatibility with a
+    /// broker that predates multi-vendor mode A (every such broker only ever
+    /// issued USD-denominated OpenRouter keys).
+    #[serde(default = "default_trial_currency")]
+    pub currency: String,
 }
 
 fn default_trial_platform() -> String {
     "OpenRouter".to_owned()
+}
+
+fn default_trial_currency() -> String {
+    "USD".to_owned()
+}
+
+/// Request body for `POST /api/providers/trial-key`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrialKeyClaimRequest {
+    pub vendor: String,
+}
+
+/// Query for `GET /api/providers/trial-key/quota`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrialQuotaQuery {
+    pub vendor: String,
 }
 
 /// Where a trial key's spend allowance stands, as the broker reports it.
@@ -438,6 +460,10 @@ pub struct TrialQuotaStatusResponse {
     /// How the allowance renews: `monthly`, `daily`, or `cumulative` (never).
     pub reset: Option<String>,
     pub exhausted: bool,
+    /// ISO 4217 code the amount fields above are denominated in. See
+    /// `TrialKeyResponse::currency` for the compatibility default.
+    #[serde(default = "default_trial_currency")]
+    pub currency: String,
 }
 
 /// Request body for `POST /api/providers/metered/claim`.

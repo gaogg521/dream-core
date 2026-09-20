@@ -11,9 +11,9 @@ use dream_core_api_types::{
     EnsureNodeRuntimeResponse, FeedbackDiagnosticsQuery, FeedbackDiagnosticsResponse, FetchModelsAnonymousRequest,
     FetchModelsRequest, FetchModelsResponse, MeteredAccessResponse, MeteredClaimRequest, MeteredCreateOrderRequest,
     MeteredOrderResponse, MeteredQuotaQuery, MeteredQuotaStatusResponse, ModelPlatformsResponse,
-    ProtocolDetectionResponse, ProviderResponse, SystemInfoResponse, SystemSettingsResponse, TrialKeyResponse,
-    TrialQuotaStatusResponse, UpdateCheckRequest, UpdateCheckResult, UpdateClientPreferencesRequest,
-    UpdateProviderRequest, UpdateSettingsRequest,
+    ProtocolDetectionResponse, ProviderResponse, SystemInfoResponse, SystemSettingsResponse, TrialKeyClaimRequest,
+    TrialKeyResponse, TrialQuotaQuery, TrialQuotaStatusResponse, UpdateCheckRequest, UpdateCheckResult,
+    UpdateClientPreferencesRequest, UpdateProviderRequest, UpdateSettingsRequest,
 };
 use dream_core_auth::{CurrentUser, is_webui_proxied};
 use dream_core_common::ApiError;
@@ -590,23 +590,27 @@ async fn fetch_models_anonymous(
 /// install's own, resolved internally by `TrialKeyService`.
 async fn request_trial_key(
     State(state): State<SystemRouterState>,
+    body: Result<Json<TrialKeyClaimRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<TrialKeyResponse>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
     let result = state
         .trial_key_service
-        .request_trial_key()
+        .request_trial_key(&req.vendor)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(result)))
 }
 
-/// GET, not POST: this reads a status and takes no input — the install id is
-/// resolved locally, never supplied by the caller.
+/// GET, not POST: this reads a status and takes no body — the install id is
+/// resolved locally, never supplied by the caller. `vendor` rides in the
+/// query string, same as mode B's `metered_quota`.
 async fn trial_key_quota(
     State(state): State<SystemRouterState>,
+    Query(query): Query<TrialQuotaQuery>,
 ) -> Result<Json<ApiResponse<TrialQuotaStatusResponse>>, ApiError> {
     let result = state
         .trial_key_service
-        .read_quota_status()
+        .read_quota_status(&query.vendor)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(result)))

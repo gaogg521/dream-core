@@ -148,8 +148,8 @@ pub use provider::{
     MeteredQuotaStatusResponse, ModelCapability, ModelHealthStatus, ModelImageInputCapability, ModelInfo,
     ModelMaxTokensField, ModelOpenAiApiMode, ModelPlatformPreset, ModelPlatformsResponse, ModelSettings, ModelType,
     MultiKeyResult, ProtocolDetectionResponse, ProviderHealthCheckErrorKind, ProviderHealthCheckRequest,
-    ProviderHealthCheckResponse, ProviderKeyStatus, ProviderResponse, SuggestionType, TrialKeyResponse,
-    TrialQuotaStatusResponse, UpdateProviderRequest,
+    ProviderHealthCheckResponse, ProviderKeyStatus, ProviderResponse, SuggestionType, TrialKeyClaimRequest,
+    TrialKeyResponse, TrialQuotaQuery, TrialQuotaStatusResponse, UpdateProviderRequest,
 };
 pub use remote_agent::{
     CreateRemoteAgentRequest, HandshakeResponse, RemoteAgentListItem, RemoteAgentResponse,

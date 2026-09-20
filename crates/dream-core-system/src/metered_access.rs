@@ -222,7 +222,7 @@ mod tests {
 
         // Both unreachable; what matters is neither minted a second identity.
         let _ = metered.claim("baoyun").await;
-        let _ = trial.request_trial_key().await;
+        let _ = trial.request_trial_key("openrouter").await;
 
         let a = get_or_create_install_id(&repo).await.unwrap();
         let b = metered.install_id().await.unwrap();

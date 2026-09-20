@@ -53,7 +53,7 @@ impl TrialKeyService {
         }
     }
 
-    pub async fn request_trial_key(&self) -> Result<TrialKeyResponse, SystemError> {
+    pub async fn request_trial_key(&self, vendor: &str) -> Result<TrialKeyResponse, SystemError> {
         let Some(base_url) = self.broker_base_url.as_deref() else {
             return Err(SystemError::BadRequest(
                 "trial key issuance is not configured on this deployment".into(),
@@ -66,7 +66,7 @@ impl TrialKeyService {
         let response = self
             .http_client
             .post(&url)
-            .json(&serde_json::json!({ "install_id": install_id }))
+            .json(&serde_json::json!({ "install_id": install_id, "vendor": vendor }))
             .send()
             .await
             .map_err(|e| SystemError::BadGateway(format!("could not reach trial key broker: {e}")))?;
@@ -85,6 +85,7 @@ impl TrialKeyService {
             .unwrap_or_default();
 
         Err(match status.as_u16() {
+            404 => SystemError::NotFound("no trial vendor by that id on this broker".into()),
             409 => SystemError::Conflict("this device has already claimed a trial model key".into()),
             429 => SystemError::RateLimited,
             503 => SystemError::ServiceUnavailable(
@@ -100,7 +101,7 @@ impl TrialKeyService {
     /// only way it learns the allowance is spent is by being refused
     /// mid-request. The broker reads the position from the upstream by the
     /// key's handle — neither it nor this service ever holds the key itself.
-    pub async fn read_quota_status(&self) -> Result<TrialQuotaStatusResponse, SystemError> {
+    pub async fn read_quota_status(&self, vendor: &str) -> Result<TrialQuotaStatusResponse, SystemError> {
         let Some(base_url) = self.broker_base_url.as_deref() else {
             return Err(SystemError::BadRequest(
                 "trial key issuance is not configured on this deployment".into(),
@@ -113,7 +114,7 @@ impl TrialKeyService {
         let response = self
             .http_client
             .post(&url)
-            .json(&serde_json::json!({ "install_id": install_id }))
+            .json(&serde_json::json!({ "install_id": install_id, "vendor": vendor }))
             .send()
             .await
             .map_err(|e| SystemError::BadGateway(format!("could not reach trial key broker: {e}")))?;
@@ -131,10 +132,15 @@ impl TrialKeyService {
             .map(|b| b.error)
             .unwrap_or_default();
 
+        // Both "no such vendor" and "never claimed" are 404 on the broker,
+        // told apart by `reason` — see `metered_access.rs` for the same
+        // pattern on mode B. Either way there is nothing to show, which is
+        // why both stay `NotFound` rather than splitting into a new variant.
         Err(match status.as_u16() {
-            // Never claimed a key here. Not a failure — the honest answer, and
-            // the caller uses it to know there is nothing to show.
-            404 => SystemError::NotFound("this device has not claimed a trial model key".into()),
+            404 => SystemError::NotFound(match reason.as_str() {
+                "vendor_unknown" => "no trial vendor by that id on this broker".into(),
+                _ => "this device has not claimed a trial model key".into(),
+            }),
             429 => SystemError::RateLimited,
             _ => SystemError::BadGateway(format!("trial key broker rejected the request ({status}): {reason}")),
         })
@@ -164,7 +170,7 @@ mod tests {
     #[tokio::test]
     async fn no_broker_configured_reports_plainly() {
         let service = service_with_broker(None).await;
-        let err = service.request_trial_key().await.unwrap_err();
+        let err = service.request_trial_key("openrouter").await.unwrap_err();
         assert!(matches!(err, SystemError::BadRequest(_)));
     }
 
@@ -174,7 +180,7 @@ mod tests {
     #[tokio::test]
     async fn quota_without_a_broker_reports_plainly_too() {
         let service = service_with_broker(None).await;
-        let err = service.read_quota_status().await.unwrap_err();
+        let err = service.read_quota_status("openrouter").await.unwrap_err();
         assert!(matches!(err, SystemError::BadRequest(_)));
     }
 
@@ -188,8 +194,8 @@ mod tests {
 
         // Both paths are unreachable at this address; what matters is that
         // neither minted a second identity on the way.
-        let _ = service.request_trial_key().await;
-        let _ = service.read_quota_status().await;
+        let _ = service.request_trial_key("openrouter").await;
+        let _ = service.read_quota_status("openrouter").await;
 
         assert_eq!(service.get_or_create_install_id().await.unwrap(), first);
     }
