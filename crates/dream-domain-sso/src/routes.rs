@@ -290,7 +290,10 @@ async fn build_authorize_goto(
         SsoProviderKind::Oidc => {
             let cfg = parse_oidc_config(row).ok_or_else(|| SsoError::ProviderNotConfigured("oidc".into()))?;
             let discovery = OidcProvider::discover(&cfg).await?;
-            OidcProvider::build_authorize_url(&discovery, &cfg, &state_for_goto)
+            // `nonce` reuses the CSRF `state` token: it is already a one-time
+            // 128-bit value bound to this login, and the IdP echoes it in
+            // `id_token` so JWKS verification can check it.
+            OidcProvider::build_authorize_url(&discovery, &cfg, &state_for_goto, &state_for_goto)
         }
         SsoProviderKind::Dingtalk => {
             let cfg: DingtalkProviderConfig = serde_json::from_str(&row.config)
@@ -346,7 +349,7 @@ async fn callback(
         return Err(SsoError::InvalidState);
     }
 
-    let profile = run_provider_oauth(provider, &state.service, code).await?;
+    let profile = run_provider_oauth(provider, &state.service, code, state_token).await?;
     // Human-readable display name (e.g. Feishu's 赵高). The login `username` is
     // sanitized to ASCII and often collapses to `sso_<id>` for CJK names, so
     // the desktop needs this separately to show a real name instead of the code.
@@ -502,6 +505,7 @@ async fn run_provider_oauth(
     provider: SsoProviderKind,
     service: &Arc<crate::service::SsoService>,
     code: &str,
+    oauth_nonce: &str,
 ) -> Result<crate::providers::ProviderUserInfo, SsoError> {
     use crate::providers::dingtalk::DingtalkProviderConfig;
     use crate::providers::wecom::WecomProviderConfig;
@@ -550,11 +554,14 @@ async fn run_provider_oauth(
         SsoProviderKind::Oidc => {
             let cfg = parse_oidc_config(&row).ok_or_else(|| SsoError::ProviderNotConfigured("oidc".into()))?;
             let discovery = OidcProvider::discover(&cfg).await?;
-            let token = OidcProvider::exchange_code(&discovery, &cfg, code).await?;
-            let claims = OidcProvider::fetch_user_info(&discovery, &token).await?;
-            let external_id = OidcProvider::resolve_external_id(&claims, cfg.external_id_claim_or_default())
-                .ok_or(SsoError::IdentityMissing)?;
-            Ok(OidcProvider::to_provider_user_info(&claims, &external_id, &cfg))
+            OidcProvider::complete_login(
+                &discovery,
+                &cfg,
+                code,
+                oauth_nonce,
+                crate::providers::oidc_jwks::JwksCache::process_global(),
+            )
+            .await
         }
         SsoProviderKind::Ldap => Err(SsoError::BadRequest("LDAP has no OAuth callback".into())),
     }

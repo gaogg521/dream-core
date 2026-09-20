@@ -2743,11 +2743,13 @@ version = "0.1.74"
 dependencies = [
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "dream-core-api-types",
  "dream-core-auth",
  "dream-core-common",
  "dream-core-db",
  "http-body-util",
+ "jsonwebtoken",
  "ldap3",
  "reqwest",
  "serde",
