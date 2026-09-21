@@ -57,11 +57,19 @@ pub async fn csrf_middleware(
     // hook reads that as "no answer" and denies (measured 2026-08-14: 9/9 then
     // 12/12 calls rejected across two live runs).
     let is_antigravity_hook = path.starts_with("/internal/antigravity-hook/");
+    //
+    // SAML ACS is a POST initiated by the external IdP's browser form — no
+    // CSRF cookie/header pair can exist there by construction. Anti-CSRF for
+    // this route is the one-time RelayState bound server-side to the pending
+    // login plus the IdP-signed assertion; an attacker able to forge either
+    // is not stopped by Double Submit Cookie either.
+    let is_saml_acs = path == "/api/one/sso/saml/callback";
     let is_exempt = path == "/login"
         || path == "/api/auth/qr-login"
         || path.starts_with("/api/auth/internal/external-users/")
         || path.starts_with("/api/auth/internal/external-sessions")
         || is_antigravity_hook
+        || is_saml_acs
         || is_runtime_token_request;
 
     // Requests authenticated via `Authorization: Bearer <token>` carry no
