@@ -14,7 +14,7 @@
 
 | 不做 | 理由 |
 | --- | --- |
-| 期 1 归档 | 独立工作包；不做归档时 4.3 走 `is_deleting` 丢弃分支，功能完整 |
+| 期 1 归档 | 独立工作包；不做归档时 4.3 走 `is_deleting` 丢弃分支，功能完整。**仍未做（2026-09-21 状态）** |
 | 新建 crate / 数据库迁移 | 队列是内存的（设计 §3.2 刻意如此：待投递不是用户数据，重启即丢） |
 | 常驻注入的 `session` 技能 | 设计 §4.2：挂进已有 `domains` 索引，auto-inject 预算刚压到 197 字符且有 200 字符守卫 |
 | 回信默认 | §6.2：单向投递，回信地址仅在 `reply_requested=true` 时出现在收件块里 |
@@ -35,7 +35,7 @@
 
 ## 2. 工作包分解（建议 4 个 commit，按序）
 
-### WP1：发送边界标记串转义（期 2，小，先做不吃亏）
+### WP1：发送边界标记串转义（期 2，小，先做不吃亏）——✅ `d3f6fc9`（markers.rs + send_message 接入 + 3 条测试）
 
 - 新文件 `dream-core-conversation/src/markers.rs`：
   - 常量：三个标记前缀 `[[DREAM_FILES]]` / `[[DREAM_SESSIONS]]` / `[[DREAM_SESSION_MESSAGE]]`；
@@ -44,13 +44,13 @@
 - 接入点：`send_message` 里 `resolve_message_attachments` 之前，只对**用户原始文本**转义（服务端自己生成的块在转义之后注入，不受影响）。
 - 测试：模块单测——三种标记都被打断、正常 `[[`/`]]` 文本不受影响、转义后引擎侧不再识别（负向验证）。
 
-### WP2：`session` 域 CLI（期 3，中）
+### WP2：`session` 域 CLI（期 3，中）——✅ `d3f6fc9`（cmd_session.rs + capabilities 索引 + ONE_RUNTIME_TOKEN 鉴权）
 
 - `cmd_capabilities.rs`：`domains` 加第四项 `session`（mode: read-only；`contract_command: "session capabilities"`）。
 - 新文件 `crates/dream-core-app/src/commands/cmd_session.rs`：只读 `session list`——当前用户的会话（id、标题、workspace 标记、更新时间），复用 `ConversationService::list` 的过滤语义；走 `ONE_RUNTIME_TOKEN` 鉴权（与 team 域同款）。
 - 测试：域出现在 capabilities 索引；list 只返回调用者自己的会话；无 token 拒绝。
 
-### WP3：投递核心（期 4，大——本次的主体）
+### WP3：投递核心（期 4，大——本次的主体）——✅ `d3f6fc9` + `ca6b757`（session_delivery.rs 566 行 + 集成测试；drainer 分支钉子 `3457921` 补齐）
 
 新文件 `dream-core-conversation/src/session_delivery.rs`（类型 + 队列 + 限流，可单测）+ `dream-core-app` 侧接线：
 
@@ -74,7 +74,7 @@
    - 限流先于目标查询（无 DB 读即可拒绝）；
    - 取消清空、重启保留。
 
-### WP4：前端 `@@`（期 5，中，dream-ui）
+### WP4：前端 `@@`（期 5，中，dream-ui）——✅ dream-ui `60cb9a5`（picker/toast/设置开关/13 语言）；样式卡渲染为计划外追加（`dd9fc09`）
 
 - SendBox：`@@` 触发会话选择器（数据走现有会话列表 bridge），选中插入 `@@conv:<id>` token；
 - 有 token 时显示"要求回信"开关（默认关 → `reply_requested`）；
@@ -84,17 +84,21 @@
 
 ## 3. 验收清单（发版前必查，ACP §2.6 同款地位）
 
-1. team 会话拒绝的测试存在且绿（§4.4 的钉子）；
-2. 用户文本里的伪标记串转义后不被引擎识别（负向验证做过）；
-3. 限流闸在目标 DB 查询之前；
-4. `reply_requested=false` 时收件块无回信地址（结构性收口，不是文案承诺）;
-5. 跨 workspace 的收件块带不一致标记；
-6. 开关三层默认全开 = 上线即生效（所以本清单 1–5 是上线硬前置，设计 §6.3）；
-7. 更新记录：按 S1 全量 commit 检测流程列入本轮条目。
+> ✅ **2026-09-21 逐项核销**（dream-core `3457921` 时点，另见 0921 会话文档）：
 
-## 4. 动工前要拍板的两个小决定（不阻塞准备工作）
+1. ✅ team 会话拒绝的测试存在且绿（§4.4 的钉子）——`cross_session_send_rejects_team_owned_target`；
+2. ✅ 用户文本里的伪标记串转义后不被引擎识别（负向验证做过）——`markers.rs` 三条测试，含 `escaped_files_marker_no_longer_matches_literal_constant`；
+3. ✅ 限流闸在目标 DB 查询之前——单测 `rate_limit_blocks_before_db` + 集成 `send_message_rate_limit_before_bad_target_reference`（用假目标 id 证明先撞限流）；
+4. ✅ `reply_requested=false` 时收件块无回信地址（结构性收口，不是文案承诺）——`reply_block_omits_reply_address_when_false`；
+5. ✅ 跨 workspace 的收件块带不一致标记——`cross_workspace_flag`；
+6. ✅ 开关三层默认全开 = 上线即生效——`ClientPrefSessionDeliveryGate` 无偏好/读取失败均回落 true，无 gate 时 `gate_allows` 恒真；enterprise 闸默认开（无租户 fail-open）；
+7. ⬜ 更新记录：按 S1 全量 commit 检测流程列入本轮条目——**发版时执行**（代码侧已就绪）。
 
-| # | 问题 | 建议 |
+另：drainer 的三个分支（`is_deleting` 丢弃 / 重启保留→空闲投递 / 取消删除双向清队）在 0920 拆解时无测试，`3457921` 已补（session_delivery_integration 5 条全绿）。
+
+## 4. 动工前要拍板的两个小决定（均已定，2026-09-20 落地）
+
+| # | 问题 | 结论 |
 | --- | --- | --- |
-| 1 | `@@` token 的文本形态 | `@@conv:<id>`；composer 插入，服务端解析后从用户可见文本中替换为块 |
-| 2 | 开关关闭时 `session list` CLI 是否保留 | 保留（只读、只出调用者自己的数据）；上游关的是"两个列表出口"指 UI 出口。需要你确认 |
+| 1 | `@@` token 的文本形态 | ✅ 采用建议：`@@conv:<id>`（`CONV_TOKEN_PREFIX`，session_delivery.rs），composer 插入、服务端解析后替换为 `[[DREAM_SESSIONS]]` 块 |
+| 2 | 开关关闭时 `session list` CLI 是否保留 | ✅ 保留——`cmd_session.rs` 已实现且不受用户偏好开关影响（只读、只出调用者自己的数据） |
