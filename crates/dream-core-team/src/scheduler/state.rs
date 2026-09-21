@@ -61,16 +61,40 @@ impl TeammateManager {
         if let Some(lead_slot_id) = self.find_lead_slot_id().await
             && lead_slot_id != slot_id
         {
-            self.mailbox
-                .write(
-                    &self.team_id,
-                    &lead_slot_id,
-                    slot_id,
-                    MailboxMessageType::IdleNotification,
-                    summary.unwrap_or("idle"),
-                    summary,
-                )
-                .await?;
+            // Deduplicated per slot, for the same reason the delivery-exhaustion
+            // notice is: this fires at the end of EVERY teammate turn, and the
+            // lead reads them in batches. While one from this slot is still
+            // unread, a second says nothing the first did not — with `summary`
+            // absent (the `finalize_turn` path, which is every ordinary turn)
+            // the two rows are the literal string "idle".
+            //
+            // Without this the lead's queue grows with teammate activity rather
+            // than with anything it can act on: a live team reported 176 queued
+            // items, and the lead's own reading of them was "mostly idle
+            // notifications". They also crowd the real messages out of its
+            // context. The all-settled wake in `maybe_wake_leader_when_all_idle`
+            // below is unaffected — that is a signal, not a mailbox row.
+            let already_pending = self
+                .mailbox
+                .peek_unread(&self.team_id, &lead_slot_id)
+                .await
+                .unwrap_or_default()
+                .iter()
+                .any(|message| {
+                    message.from_agent_id == slot_id && message.msg_type == MailboxMessageType::IdleNotification
+                });
+            if !already_pending {
+                self.mailbox
+                    .write(
+                        &self.team_id,
+                        &lead_slot_id,
+                        slot_id,
+                        MailboxMessageType::IdleNotification,
+                        summary.unwrap_or("idle"),
+                        summary,
+                    )
+                    .await?;
+            }
         }
 
         self.maybe_wake_leader_when_all_idle().await

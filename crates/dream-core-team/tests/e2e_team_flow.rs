@@ -1423,7 +1423,12 @@ async fn s5_consecutive_finish_events_after_dedup_clear() {
         "second finish (after dedup clear) must also return wake target; got {second_result:?}"
     );
 
-    // Lead mailbox should have two IdleNotification entries (one per finish)
+    // Both finishes woke the lead — that is what this scenario is about, and
+    // both assertions above cover it. The mailbox rows behind those wakes are
+    // merged while the first is still unread: the lead has not read it, so the
+    // second row would repeat it verbatim ("idle", same sender). Asserting 2
+    // here used to stand in for "the second finish was not dropped"; the wake
+    // target asserts that directly, so this now pins the merge instead.
     let state = repo.state.lock().unwrap();
     let idle_count = state
         .messages
@@ -1431,8 +1436,8 @@ async fn s5_consecutive_finish_events_after_dedup_clear() {
         .filter(|m| m.to_agent_id == "lead-1" && m.msg_type == "idle_notification")
         .count();
     assert_eq!(
-        idle_count, 2,
-        "both finish events must produce IdleNotification; got {idle_count}"
+        idle_count, 1,
+        "the unread idle notice must absorb the second finish; got {idle_count}"
     );
 
     session.stop();

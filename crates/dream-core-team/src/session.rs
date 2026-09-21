@@ -3208,6 +3208,59 @@ mod tests {
 
     // -- D7a new method tests ------------------------------------------------
 
+    /// The idle notice fires at the end of every teammate turn. Unmerged, the
+    /// lead's queue grows with teammate ACTIVITY rather than with anything it
+    /// can act on — a live team reached 176 queued items that the lead itself
+    /// read as "mostly idle notifications".
+    #[tokio::test]
+    async fn idle_notices_merge_while_the_previous_one_is_unread() {
+        let session = start_session().await;
+        let lead = session.scheduler().find_lead_slot_id().await.expect("lead");
+        assert_ne!(lead, "worker-1");
+
+        let unread_idle = || async {
+            session
+                .mailbox()
+                .peek_unread(session.team_id(), &lead)
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|message| {
+                    message.from_agent_id == "worker-1" && message.msg_type == MailboxMessageType::IdleNotification
+                })
+                .count()
+        };
+
+        // Ten ordinary turns by the same teammate.
+        for _ in 0..10 {
+            session.scheduler().finalize_turn("worker-1").await.unwrap();
+        }
+        assert_eq!(
+            unread_idle().await,
+            1,
+            "an unread idle notice must absorb the teammate's later turns"
+        );
+
+        // Once the lead has consumed it, the next turn notifies afresh.
+        let consumed: Vec<String> = session
+            .mailbox()
+            .peek_unread(session.team_id(), &lead)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|message| message.from_agent_id == "worker-1")
+            .map(|message| message.id)
+            .collect();
+        session
+            .mailbox()
+            .mark_read_batch(session.team_id(), &consumed)
+            .await
+            .unwrap();
+        session.scheduler().finalize_turn("worker-1").await.unwrap();
+        assert_eq!(unread_idle().await, 1, "a turn after consumption must notify again");
+        session.stop();
+    }
+
     #[tokio::test]
     async fn delivery_exhausted_notice_merges_while_previous_is_unread() {
         let session = start_session().await;
