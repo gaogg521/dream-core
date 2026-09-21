@@ -572,6 +572,9 @@ flamegraph.svg
 
 # Runtime data (never commit DBs)
 data/
+data-en-cdp/
+data-en-cdp2/
+data-en-cdp*/
 
 
 .graphify_python
