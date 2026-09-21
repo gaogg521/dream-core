@@ -1,6 +1,6 @@
 # 实施拆解：跨会话消息投递（@@）
 
-> 日期：2026-09-19 ｜ 状态：**拆解完成，未实现，等通知开工**
+> 日期：2026-09-19 ｜ 状态：**已实现并真机验收（2026-09-20/21，dream-core d3f6fc9+ca6b757+3457921，dream-ui 60cb9a5 等）**——验收清单 8/8 钉子有测试且绿；样式卡 + 个人版 SESSION_SHARE 分享 + 点对点分享 + 导入接管见 0921 会话文档；期 1 归档仍未做（独立工作包）
 > 设计依据：[`design-cross-conversation-message-delivery.zh-CN.md`](design-cross-conversation-message-delivery.zh-CN.md)（分层决定 + 产品决定 §6 已拍板）。
 > 本文只回答"动手时改哪些文件、按什么顺序、每个包怎么验收"，不重复设计论证。
 
