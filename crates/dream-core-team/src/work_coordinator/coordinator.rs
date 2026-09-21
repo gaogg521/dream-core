@@ -1250,6 +1250,58 @@ impl SlotWorkCoordinator {
             .collect()
     }
 
+    /// Cancel the slot's QUEUED intents that carry one of `message_ids`, leaving
+    /// the active batch alone (the caller cancels that separately).
+    ///
+    /// Used to drop bookkeeping rows the lead will never act on. Returns the
+    /// message ids that actually had a queued intent, so the caller can tell
+    /// how much was discarded; messages with no queued intent are the caller's
+    /// to retire.
+    pub(crate) fn discard_queued_mailbox_messages(&self, slot_id: &str, message_ids: &HashSet<String>) -> Vec<String> {
+        let mut state = self.lock_state();
+        let discarded = state
+            .intents
+            .values()
+            .filter(|intent| {
+                intent.slot_id == slot_id
+                    && matches!(intent.state, WorkIntentState::Queued)
+                    && intent
+                        .mailbox_message_id
+                        .as_deref()
+                        .is_some_and(|id| message_ids.contains(id))
+            })
+            .map(|intent| (intent.intent_id.clone(), intent.mailbox_message_id.clone()))
+            .collect::<Vec<_>>();
+        if discarded.is_empty() {
+            return Vec::new();
+        }
+        let mut discarded_message_ids = Vec::new();
+        for (intent_id, message_id) in &discarded {
+            if let Some(intent) = state.intents.get_mut(intent_id) {
+                intent.state = WorkIntentState::Cancelled {
+                    classification: "queue_discarded",
+                };
+            }
+            if let Some(slot) = state.slots.get_mut(slot_id) {
+                slot.remove_queued(intent_id);
+            }
+            if let Some(message_id) = message_id {
+                discarded_message_ids.push(message_id.clone());
+            }
+        }
+        let snapshot = Self::slot_snapshot_locked(&state, slot_id);
+        drop(state);
+        self.publish_slot_work_snapshot(snapshot);
+        info!(
+            team_id = %self.team_id,
+            session_generation = %self.session_generation,
+            slot_id,
+            discarded_count = discarded_message_ids.len(),
+            "team work queue discarded bookkeeping intents"
+        );
+        discarded_message_ids
+    }
+
     pub(crate) fn pause_slot(&self, slot_id: &str) -> PauseWorkResult {
         let mut state = self.lock_state();
         let slot = state

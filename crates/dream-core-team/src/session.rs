@@ -1339,7 +1339,85 @@ impl TeamSession {
                 self.notify_leader_child_interrupted(slot_id, reason).await?;
             }
         }
+        // Run AFTER the active batch is cancelled, so rows it had claimed (which
+        // go back to unread) are considered too.
+        self.discard_queued_idle_notices(slot_id).await;
         Ok(())
+    }
+
+    /// Drop the idle notices sitting in this slot's queue when the user stops it.
+    ///
+    /// An idle notice is bookkeeping: it fires at the end of every teammate turn
+    /// and its body is the literal string "idle" (the conversation projection
+    /// already skips the type entirely). A backlog of them is the one thing a
+    /// stop can throw away without losing work — teammate reports are
+    /// `Message`, are not touched here, and stay queued.
+    ///
+    /// Nothing is dropped silently: if any went, the lead is told to re-ask
+    /// every teammate for its latest state before carrying on, so a report that
+    /// arrived while the backlog built cannot be missed.
+    async fn discard_queued_idle_notices(&self, slot_id: &str) {
+        let unread = match self.mailbox.peek_unread(&self.team.id, slot_id).await {
+            Ok(unread) => unread,
+            Err(error) => {
+                warn!(
+                    team_id = %self.team.id,
+                    slot_id,
+                    error = %error,
+                    "stop could not read the mailbox to discard idle notices"
+                );
+                return;
+            }
+        };
+        let idle_ids = unread
+            .into_iter()
+            .filter(|message| message.msg_type == MailboxMessageType::IdleNotification)
+            .map(|message| message.id)
+            .collect::<std::collections::HashSet<_>>();
+        if idle_ids.is_empty() {
+            return;
+        }
+        self.work_coordinator
+            .discard_queued_mailbox_messages(slot_id, &idle_ids);
+        let discarded = idle_ids.len();
+        let ids = idle_ids.into_iter().collect::<Vec<_>>();
+        if let Err(error) = self.mailbox.mark_read_batch(&self.team.id, &ids).await {
+            warn!(
+                team_id = %self.team.id,
+                slot_id,
+                error = %error,
+                "stop could not retire the discarded idle notices"
+            );
+            return;
+        }
+        info!(
+            team_id = %self.team.id,
+            slot_id,
+            discarded,
+            "stop discarded queued idle notices"
+        );
+        let content = format!(
+            "The user stopped you, and {discarded} queued idle notification(s) were discarded. Those are              bookkeeping only — no teammate report was dropped. Before continuing, send one              team_send_message to \"*\" asking every teammate to restate its latest status and anything              still outstanding, so nothing that arrived while the backlog built is missed."
+        );
+        if let Err(error) = self
+            .mailbox
+            .write(
+                &self.team.id,
+                slot_id,
+                "user",
+                MailboxMessageType::Message,
+                &content,
+                Some("Queue cleared — re-sync the team"),
+            )
+            .await
+        {
+            warn!(
+                team_id = %self.team.id,
+                slot_id,
+                error = %error,
+                "stop could not queue the team re-sync instruction"
+            );
+        }
     }
 
     /// Halt the whole team because the model provider refused this batch on
@@ -3212,6 +3290,87 @@ mod tests {
     /// lead's queue grows with teammate ACTIVITY rather than with anything it
     /// can act on — a live team reached 176 queued items that the lead itself
     /// read as "mostly idle notifications".
+    /// Stopping the lead is the one moment a backlog of bookkeeping rows can be
+    /// thrown away. Teammate reports must survive it, and the lead must be told
+    /// to re-ask the team so a report that landed during the backlog is not
+    /// missed.
+    #[tokio::test]
+    async fn stopping_the_lead_drops_idle_notices_but_keeps_reports() {
+        let session = start_session().await;
+        let lead = session.scheduler().find_lead_slot_id().await.expect("lead");
+
+        // A real report from a teammate, plus a backlog of idle notices.
+        session
+            .mailbox()
+            .write(
+                session.team_id(),
+                &lead,
+                "worker-1",
+                MailboxMessageType::Message,
+                "API schema is done, see docs/api.md",
+                Some("Report"),
+            )
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            session
+                .mailbox()
+                .write(
+                    session.team_id(),
+                    &lead,
+                    "worker-1",
+                    MailboxMessageType::IdleNotification,
+                    "idle",
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        session.discard_queued_idle_notices(&lead).await;
+
+        let unread = session.mailbox().peek_unread(session.team_id(), &lead).await.unwrap();
+        assert_eq!(
+            unread
+                .iter()
+                .filter(|m| m.msg_type == MailboxMessageType::IdleNotification)
+                .count(),
+            0,
+            "every idle notice must be discarded"
+        );
+        assert!(
+            unread.iter().any(|m| m.content.contains("API schema is done")),
+            "a teammate report must survive the stop"
+        );
+        let resync = unread
+            .iter()
+            .find(|m| m.from_agent_id == "user")
+            .expect("the lead must be told to re-sync");
+        assert!(
+            resync.content.contains("team_send_message") && resync.content.contains('*'),
+            "the re-sync instruction must name the broadcast it should send; got {}",
+            resync.content
+        );
+
+        // Nothing to discard on a clean queue means no spurious re-sync nag.
+        let before = session
+            .mailbox()
+            .peek_unread(session.team_id(), &lead)
+            .await
+            .unwrap()
+            .len();
+        session.discard_queued_idle_notices(&lead).await;
+        let after = session
+            .mailbox()
+            .peek_unread(session.team_id(), &lead)
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(before, after, "a stop with no idle backlog must add nothing");
+
+        session.stop();
+    }
+
     #[tokio::test]
     async fn idle_notices_merge_while_the_previous_one_is_unread() {
         let session = start_session().await;
