@@ -30,7 +30,10 @@ pub use agent_bridge::{
 };
 pub use backend_capabilities::{CapabilityOrigin, McpTransportCapabilities, ResolvedBackendCapabilities};
 pub use case_convert::{camel_to_snake, normalize_keys_to_snake_case};
-pub use crypto::{CryptoError, decrypt_string, encrypt_string};
+pub use crypto::{
+    CryptoError, ENCRYPTED_FIELD_PREFIX, decrypt_field, decrypt_string, encrypt_field, encrypt_string,
+    is_encrypted_field,
+};
 pub use data_paths::{
     AGENT_SESSIONS_DIR, AdoptOutcome, BACKEND_DB_NAME, LEGACY_AGENT_SESSIONS_DIR, LEGACY_BACKEND_DB_NAME,
     LEGACY_PROCESS_REGISTRY_DIR, PROCESS_REGISTRY_DIR, adopt_current_name, agent_sessions_dir, backend_db_path,

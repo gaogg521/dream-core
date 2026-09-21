@@ -226,6 +226,9 @@ impl From<DbError> for ConversationError {
             DbError::Init(reason) => Self::Internal {
                 reason: format!("Database init error: {reason}"),
             },
+            DbError::Crypto(reason) => Self::Internal {
+                reason: format!("Encryption error: {reason}"),
+            },
         }
     }
 }

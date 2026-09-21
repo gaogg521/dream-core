@@ -13,7 +13,7 @@ const USER_ID: &str = "system_default_user";
 
 async fn repo() -> (Arc<dyn IOAuthTokenRepository>, dream_core_db::Database) {
     let db = init_database_memory().await.unwrap();
-    let r = Arc::new(SqliteOAuthTokenRepository::new(db.pool().clone()));
+    let r = Arc::new(SqliteOAuthTokenRepository::new(db.pool().clone(), [0x88; 32]));
     (r as Arc<dyn IOAuthTokenRepository>, db)
 }
 

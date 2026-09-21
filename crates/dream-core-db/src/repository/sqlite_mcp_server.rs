@@ -9,14 +9,42 @@ use crate::models::McpServerRow;
 use crate::repository::mcp_server::{CreateMcpServerParams, IMcpServerRepository, UpdateMcpServerParams};
 
 /// SQLite-backed implementation of [`IMcpServerRepository`].
+///
+/// `transport_config` can carry secrets (stdio `env` vars, SSE/HTTP `headers`
+/// such as bearer tokens) so it is encrypted at rest with
+/// [`dream_core_common::encrypt_field`]/[`dream_core_common::decrypt_field`]
+/// under `encryption_key`. Every method that writes the column encrypts just
+/// before binding it to SQL; every method that reads a row decrypts it right
+/// after fetching, so every caller of [`IMcpServerRepository`] — this crate's
+/// tests, `McpConfigService`, and the several direct consumers in
+/// `dream-core-ai-agent`/`dream-core-mcp` that read rows to spawn or connect
+/// to a server — sees plaintext transparently, without having to know about
+/// encryption at all.
 #[derive(Clone, Debug)]
 pub struct SqliteMcpServerRepository {
     pool: SqlitePool,
+    encryption_key: [u8; 32],
 }
 
 impl SqliteMcpServerRepository {
-    pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub fn new(pool: SqlitePool, encryption_key: [u8; 32]) -> Self {
+        Self { pool, encryption_key }
+    }
+
+    fn encrypt_config(&self, plaintext: &str) -> Result<String, DbError> {
+        Ok(dream_core_common::encrypt_field(plaintext, &self.encryption_key)?)
+    }
+
+    /// Decrypt `row.transport_config` in place. Legacy plaintext rows (not yet
+    /// covered by `dream_core_db::encrypt_legacy_plaintext`) pass through
+    /// unchanged — see [`dream_core_common::decrypt_field`].
+    fn decrypt_row(&self, mut row: McpServerRow) -> Result<McpServerRow, DbError> {
+        row.transport_config = dream_core_common::decrypt_field(&row.transport_config, &self.encryption_key)?;
+        Ok(row)
+    }
+
+    fn decrypt_rows(&self, rows: Vec<McpServerRow>) -> Result<Vec<McpServerRow>, DbError> {
+        rows.into_iter().map(|row| self.decrypt_row(row)).collect()
     }
 }
 
@@ -30,7 +58,7 @@ impl IMcpServerRepository for SqliteMcpServerRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows)
+        self.decrypt_rows(rows)
     }
 
     async fn find_by_id(&self, user_id: &str, id: &str) -> Result<Option<McpServerRow>, DbError> {
@@ -42,7 +70,7 @@ impl IMcpServerRepository for SqliteMcpServerRepository {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row)
+        row.map(|row| self.decrypt_row(row)).transpose()
     }
 
     async fn find_by_name(&self, user_id: &str, name: &str) -> Result<Option<McpServerRow>, DbError> {
@@ -54,7 +82,7 @@ impl IMcpServerRepository for SqliteMcpServerRepository {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row)
+        row.map(|row| self.decrypt_row(row)).transpose()
     }
 
     async fn find_by_id_any(&self, user_id: &str, id: &str) -> Result<Option<McpServerRow>, DbError> {
@@ -64,7 +92,7 @@ impl IMcpServerRepository for SqliteMcpServerRepository {
             .fetch_optional(&self.pool)
             .await?;
 
-        Ok(row)
+        row.map(|row| self.decrypt_row(row)).transpose()
     }
 
     async fn find_by_name_any(&self, user_id: &str, name: &str) -> Result<Option<McpServerRow>, DbError> {
@@ -74,7 +102,7 @@ impl IMcpServerRepository for SqliteMcpServerRepository {
             .fetch_optional(&self.pool)
             .await?;
 
-        Ok(row)
+        row.map(|row| self.decrypt_row(row)).transpose()
     }
 
     async fn list_by_ids_any(&self, user_id: &str, ids: &[String]) -> Result<Vec<McpServerRow>, DbError> {
@@ -92,6 +120,7 @@ impl IMcpServerRepository for SqliteMcpServerRepository {
         separated.push_unseparated(") ORDER BY created_at ASC, rowid ASC");
 
         let rows = query.build_query_as::<McpServerRow>().fetch_all(&self.pool).await?;
+        let rows = self.decrypt_rows(rows)?;
         let rows_by_id: HashMap<_, _> = rows.into_iter().map(|row| (row.id.clone(), row)).collect();
 
         Ok(ids.iter().filter_map(|id| rows_by_id.get(id).cloned()).collect())
@@ -101,6 +130,7 @@ impl IMcpServerRepository for SqliteMcpServerRepository {
         let id = dream_core_common::generate_prefixed_id("mcp");
         let now = dream_core_common::now_ms();
         let last_test_status = "disconnected";
+        let encrypted_config = self.encrypt_config(params.transport_config)?;
 
         sqlx::query(
             "INSERT INTO mcp_servers \
@@ -115,7 +145,7 @@ impl IMcpServerRepository for SqliteMcpServerRepository {
         .bind(params.description)
         .bind(params.enabled)
         .bind(params.transport_type)
-        .bind(params.transport_config)
+        .bind(&encrypted_config)
         .bind(params.tools)
         .bind(last_test_status)
         .bind(Option::<TimestampMs>::None)
@@ -164,6 +194,9 @@ impl IMcpServerRepository for SqliteMcpServerRepository {
             .ok_or_else(|| DbError::NotFound(format!("MCP server '{id}' not found")))?;
 
         let merged = merge_update(existing, params);
+        // `merged.transport_config` stays plaintext (it's what this method
+        // returns to the caller); only the bound SQL value is encrypted.
+        let encrypted_config = self.encrypt_config(&merged.transport_config)?;
 
         sqlx::query(
             "UPDATE mcp_servers SET \
@@ -176,7 +209,7 @@ impl IMcpServerRepository for SqliteMcpServerRepository {
         .bind(&merged.description)
         .bind(merged.enabled)
         .bind(&merged.transport_type)
-        .bind(&merged.transport_config)
+        .bind(&encrypted_config)
         .bind(&merged.tools)
         .bind(&merged.original_json)
         .bind(merged.builtin)
@@ -335,6 +368,7 @@ mod tests {
 
     const USER_A: &str = "system_default_user";
     const USER_B: &str = "user_b";
+    const TEST_KEY: [u8; 32] = [0x11; 32];
 
     async fn setup() -> (SqliteMcpServerRepository, crate::Database) {
         let db = init_database_memory().await.unwrap();
@@ -347,7 +381,7 @@ mod tests {
         .execute(db.pool())
         .await
         .unwrap();
-        let repo = SqliteMcpServerRepository::new(db.pool().clone());
+        let repo = SqliteMcpServerRepository::new(db.pool().clone(), TEST_KEY);
         (repo, db)
     }
 
@@ -696,5 +730,98 @@ mod tests {
         repo.delete(USER_B, &server_b.id).await.unwrap();
         assert_eq!(repo.list(USER_A).await.unwrap().len(), 1);
         assert!(repo.list(USER_B).await.unwrap().is_empty());
+    }
+
+    // -- transport_config encryption at rest ----------------------------------
+
+    /// Read the raw `transport_config` column value directly from SQLite,
+    /// bypassing the repository so the test observes exactly what's on disk.
+    async fn raw_transport_config(db: &crate::Database, id: &str) -> String {
+        sqlx::query_scalar("SELECT transport_config FROM mcp_servers WHERE id = ?")
+            .bind(id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn transport_config_is_encrypted_at_rest_on_create() {
+        let (repo, db) = setup().await;
+        let created = repo
+            .create(CreateMcpServerParams {
+                transport_config: r#"{"command":"npx","args":[],"env":{"SECRET_TOKEN":"sk-super-secret"}}"#,
+                ..stdio_params()
+            })
+            .await
+            .unwrap();
+
+        let raw = raw_transport_config(&db, &created.id).await;
+        assert!(
+            dream_core_common::is_encrypted_field(&raw),
+            "stored transport_config must carry the encryption envelope, got {raw}"
+        );
+        assert!(
+            !raw.contains("sk-super-secret"),
+            "the secret must not appear in plaintext in the stored column"
+        );
+
+        // The repository API still hands back plaintext transparently.
+        assert!(created.transport_config.contains("sk-super-secret"));
+        let reloaded = repo.find_by_id(USER_A, &created.id).await.unwrap().unwrap();
+        assert_eq!(reloaded.transport_config, created.transport_config);
+    }
+
+    #[tokio::test]
+    async fn transport_config_is_re_encrypted_at_rest_on_update() {
+        let (repo, db) = setup().await;
+        let created = repo.create(stdio_params()).await.unwrap();
+
+        let updated = repo
+            .update(
+                USER_A,
+                &created.id,
+                UpdateMcpServerParams {
+                    transport_config: Some(r#"{"command":"npx","args":[],"env":{"TOKEN":"rotated-secret"}}"#),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let raw = raw_transport_config(&db, &created.id).await;
+        assert!(dream_core_common::is_encrypted_field(&raw));
+        assert!(!raw.contains("rotated-secret"));
+        assert!(updated.transport_config.contains("rotated-secret"));
+    }
+
+    #[tokio::test]
+    async fn list_and_list_by_ids_any_decrypt_transport_config() {
+        let (repo, _db) = setup().await;
+        let created = repo
+            .create(CreateMcpServerParams {
+                transport_config: r#"{"url":"https://example.com/mcp","headers":{"Authorization":"Bearer tok-xyz"}}"#,
+                transport_type: "http",
+                ..stdio_params()
+            })
+            .await
+            .unwrap();
+
+        let listed = repo.list(USER_A).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].transport_config.contains("tok-xyz"));
+
+        let by_ids = repo.list_by_ids_any(USER_A, &[created.id.clone()]).await.unwrap();
+        assert_eq!(by_ids.len(), 1);
+        assert!(by_ids[0].transport_config.contains("tok-xyz"));
+    }
+
+    #[tokio::test]
+    async fn wrong_encryption_key_fails_to_decrypt() {
+        let (repo, db) = setup().await;
+        let created = repo.create(stdio_params()).await.unwrap();
+
+        let wrong_key_repo = SqliteMcpServerRepository::new(db.pool().clone(), [0xAA; 32]);
+        let err = wrong_key_repo.find_by_id(USER_A, &created.id).await.unwrap_err();
+        assert!(matches!(err, DbError::Crypto(_)));
     }
 }

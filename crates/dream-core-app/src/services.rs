@@ -135,6 +135,7 @@ impl AppServices {
             runtime_base_url: self.runtime_base_url.clone(),
             runtime_token_service: self.runtime_token_service.clone(),
             project_service: self.project_service.clone(),
+            encryption_key: derive_encryption_key(&self.data_secret_raw),
         });
         self
     }
@@ -338,12 +339,21 @@ impl AppServices {
 
         let encryption_key = derive_encryption_key(&data_secret);
 
+        // Encrypt any MCP server transport config / OAuth tokens still
+        // stored in plaintext from before this field was covered by
+        // encryption-at-rest. Idempotent — see `encrypt_legacy_plaintext`'s
+        // doc comment for why this can't be a normal sqlx `.sql` migration
+        // (the key isn't derivable until `data_secret` above exists).
+        dream_core_db::encrypt_legacy_plaintext(database.pool(), &encryption_key)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to encrypt legacy plaintext MCP/OAuth credentials: {e}"))?;
+
         let provider_repo = Arc::new(SqliteProviderRepository::new(database.pool().clone()));
         let event_bus = Arc::new(BroadcastEventBus::new(256));
         // User-configured MCP servers — injected into ACP `session/new`
         // so the agent gets the operator's tools (ELECTRON-1JG fix).
         let mcp_server_repo: Arc<dyn IMcpServerRepository> =
-            Arc::new(SqliteMcpServerRepository::new(database.pool().clone()));
+            Arc::new(SqliteMcpServerRepository::new(database.pool().clone(), encryption_key));
         let codex_bridge_config_repo: Arc<dyn dream_core_db::ICodexBridgeConfigRepository> = Arc::new(
             dream_core_db::SqliteCodexBridgeConfigRepository::new(database.pool().clone()),
         );
@@ -595,6 +605,7 @@ impl AppServices {
             runtime_base_url: runtime_base_url.clone(),
             runtime_token_service: runtime_token_service.clone(),
             project_service: project_service.clone(),
+            encryption_key,
         });
 
         Ok(Self {
@@ -659,6 +670,7 @@ struct ConversationServiceDeps<'a> {
     runtime_base_url: String,
     runtime_token_service: Arc<RuntimeTokenService>,
     project_service: ProjectService,
+    encryption_key: [u8; 32],
 }
 
 fn build_conversation_service(deps: ConversationServiceDeps<'_>) -> ConversationService {
@@ -678,7 +690,10 @@ fn build_conversation_service(deps: ConversationServiceDeps<'_>) -> Conversation
     .with_runtime_state(deps.conversation_runtime_state)
     .with_runtime_helper_context(deps.runtime_helper_bin, deps.runtime_base_url)
     .with_runtime_token_service(deps.runtime_token_service);
-    service.with_mcp_server_repo(Arc::new(SqliteMcpServerRepository::new(deps.database.pool().clone())));
+    service.with_mcp_server_repo(Arc::new(SqliteMcpServerRepository::new(
+        deps.database.pool().clone(),
+        deps.encryption_key,
+    )));
     service.with_assistant_definition_repo(Arc::new(SqliteAssistantDefinitionRepository::new(
         deps.database.pool().clone(),
     )));

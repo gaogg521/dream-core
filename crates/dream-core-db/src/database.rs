@@ -889,7 +889,11 @@ fn should_attempt_recovery(err: &DbError) -> bool {
     match err {
         DbError::Migration(sqlx::migrate::MigrateError::VersionMismatch(_)) => false,
         DbError::Migration(_) => is_corruption_like_error(err),
-        DbError::NotFound(_) | DbError::Conflict(_) => false,
+        // A decrypt/encrypt failure means the AES key doesn't match the data
+        // (e.g. `data_secret` changed without re-encrypting), not a corrupted
+        // database file — recovering by nuking and recreating the DB would
+        // destroy data that a correct key could still read.
+        DbError::NotFound(_) | DbError::Conflict(_) | DbError::Crypto(_) => false,
         DbError::Query(_) | DbError::Init(_) => is_corruption_like_error(err),
     }
 }

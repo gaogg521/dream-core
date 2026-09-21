@@ -14,7 +14,7 @@ const TEST_USER_ID: &str = "system_default_user";
 
 async fn make_service() -> (McpOAuthService, Arc<dyn IOAuthTokenRepository>) {
     let db = dream_core_db::init_database_memory().await.unwrap();
-    let repo: Arc<dyn IOAuthTokenRepository> = Arc::new(SqliteOAuthTokenRepository::new(db.pool().clone()));
+    let repo: Arc<dyn IOAuthTokenRepository> = Arc::new(SqliteOAuthTokenRepository::new(db.pool().clone(), [0x66; 32]));
     let svc = McpOAuthService::new(repo.clone(), reqwest::Client::new());
     // Keep db alive by leaking it (integration test only).
     std::mem::forget(db);

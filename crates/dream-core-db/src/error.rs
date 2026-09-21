@@ -15,6 +15,15 @@ pub enum DbError {
 
     #[error("Database initialization failed: {0}")]
     Init(String),
+
+    #[error("Field encryption/decryption failed: {0}")]
+    Crypto(String),
+}
+
+impl From<dream_core_common::CryptoError> for DbError {
+    fn from(e: dream_core_common::CryptoError) -> Self {
+        DbError::Crypto(e.to_string())
+    }
 }
 
 /// Case-insensitive substrings identifying transient SQLite contention

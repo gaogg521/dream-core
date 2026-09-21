@@ -40,6 +40,7 @@ impl From<DbError> for SystemError {
             DbError::Query(e) => Self::Internal(format!("Database error: {e}")),
             DbError::Migration(e) => Self::Internal(format!("Migration error: {e}")),
             DbError::Init(reason) => Self::Internal(format!("Database init error: {reason}")),
+            DbError::Crypto(reason) => Self::Internal(format!("Encryption error: {reason}")),
         }
     }
 }

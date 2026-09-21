@@ -103,6 +103,60 @@ fn validate_key_size(key: &[u8]) -> Result<(), CryptoError> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Versioned field envelope
+// ---------------------------------------------------------------------------
+//
+// `encrypt_string`/`decrypt_string` above assume the caller always knows
+// whether a stored value is encrypted. That's true for columns that were
+// encrypted from the day they were introduced (e.g. `providers.api_key`), but
+// it breaks down for a column that started out storing plaintext and is being
+// migrated to encryption-at-rest later: an in-place data migration needs to
+// tell "already encrypted" apart from "still legacy plaintext" for the same
+// column, and it needs to do so idempotently (safe to re-run after a crash
+// mid-migration without double-encrypting a row and turning it into
+// unrecoverable garbage on the next decrypt).
+//
+// `encrypt_field`/`decrypt_field` solve this with an explicit version prefix:
+// the ciphertext this module produces is base64, which never happens to start
+// with `ENCRYPTED_FIELD_PREFIX` (`:` is not in the base64 alphabet), so the
+// prefix is an unambiguous, self-describing marker rather than a heuristic.
+
+/// Prefix marking a value as produced by [`encrypt_field`]. Anything stored
+/// without this prefix is legacy plaintext that predates encryption of that
+/// field.
+pub const ENCRYPTED_FIELD_PREFIX: &str = "encv1:";
+
+/// Returns true if `value` carries the [`encrypt_field`] envelope prefix.
+///
+/// Used by data migrations to skip rows that are already encrypted, making
+/// the migration idempotent — safe to re-run after an interrupted pass.
+pub fn is_encrypted_field(value: &str) -> bool {
+    value.starts_with(ENCRYPTED_FIELD_PREFIX)
+}
+
+/// Encrypt a field for storage, tagging the result with [`ENCRYPTED_FIELD_PREFIX`]
+/// so a later read (or an idempotent migration) can tell it apart from legacy
+/// plaintext written before this field was covered by encryption.
+pub fn encrypt_field(plaintext: &str, key: &[u8]) -> Result<String, CryptoError> {
+    let encrypted = encrypt_string(plaintext, key)?;
+    Ok(format!("{ENCRYPTED_FIELD_PREFIX}{encrypted}"))
+}
+
+/// Decrypt a field written by [`encrypt_field`].
+///
+/// If `value` does not carry the envelope prefix, it is treated as
+/// not-yet-migrated legacy plaintext and returned unchanged rather than
+/// erroring — this keeps reads safe even if the one-time migration that
+/// encrypts historical rows (see `dream_core_db::encrypt_legacy_plaintext`)
+/// has not run yet, or a row was written directly outside the app.
+pub fn decrypt_field(value: &str, key: &[u8]) -> Result<String, CryptoError> {
+    match value.strip_prefix(ENCRYPTED_FIELD_PREFIX) {
+        Some(ciphertext) => decrypt_string(ciphertext, key),
+        None => Ok(value.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +244,70 @@ mod tests {
         assert!(matches!(
             decrypt_string(&short, &key),
             Err(CryptoError::CiphertextTooShort)
+        ));
+    }
+
+    // -- Versioned field envelope --------------------------------------------
+
+    #[test]
+    fn field_roundtrip() {
+        let key = test_key();
+        let encrypted = encrypt_field("sk-super-secret", &key).unwrap();
+        assert!(is_encrypted_field(&encrypted));
+        assert!(encrypted.starts_with(ENCRYPTED_FIELD_PREFIX));
+        let decrypted = decrypt_field(&encrypted, &key).unwrap();
+        assert_eq!(decrypted, "sk-super-secret");
+    }
+
+    #[test]
+    fn field_empty_string_roundtrip() {
+        let key = test_key();
+        let encrypted = encrypt_field("", &key).unwrap();
+        assert_eq!(decrypt_field(&encrypted, &key).unwrap(), "");
+    }
+
+    #[test]
+    fn decrypt_field_passes_through_legacy_plaintext_unchanged() {
+        let key = test_key();
+        // A pre-migration value with no envelope prefix — e.g. a raw JSON blob
+        // or an opaque OAuth token written before this field was encrypted.
+        let legacy = r#"{"command":"npx","args":["-y","server"],"env":{"TOKEN":"abc123"}}"#;
+        assert!(!is_encrypted_field(legacy));
+        assert_eq!(decrypt_field(legacy, &key).unwrap(), legacy);
+    }
+
+    #[test]
+    fn is_encrypted_field_distinguishes_prefix() {
+        assert!(!is_encrypted_field("plain value"));
+        assert!(!is_encrypted_field(""));
+        assert!(is_encrypted_field("encv1:AAAA"));
+    }
+
+    #[test]
+    fn encrypt_field_is_not_idempotent_by_itself_callers_must_check_first() {
+        // encrypt_field always wraps again — it is the caller's job (via
+        // is_encrypted_field) to avoid double-encrypting an already-encrypted
+        // value. This test documents that double-wrapping is technically
+        // reversible (decrypt_field can be called twice) but callers should
+        // never rely on it; the migration is expected to check first.
+        let key = test_key();
+        let once = encrypt_field("secret", &key).unwrap();
+        let twice = encrypt_field(&once, &key).unwrap();
+        assert_ne!(once, twice);
+        let back_once = decrypt_field(&twice, &key).unwrap();
+        assert_eq!(back_once, once);
+        let back_twice = decrypt_field(&back_once, &key).unwrap();
+        assert_eq!(back_twice, "secret");
+    }
+
+    #[test]
+    fn decrypt_field_wrong_key_fails_for_actually_encrypted_value() {
+        let key = test_key();
+        let wrong_key = [0x99u8; 32];
+        let encrypted = encrypt_field("secret", &key).unwrap();
+        assert!(matches!(
+            decrypt_field(&encrypted, &wrong_key),
+            Err(CryptoError::DecryptionFailed)
         ));
     }
 }

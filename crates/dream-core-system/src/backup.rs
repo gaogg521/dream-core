@@ -931,13 +931,41 @@ async fn restore_local_data_secret(conn: &mut sqlx::SqliteConnection, secret: &s
     Ok(())
 }
 
+/// On-disk shape of an encrypted column, since not all of them agree.
+///
+/// `providers.api_key_encrypted` has been encrypted since the column existed,
+/// so it stores the raw `encrypt_string` output with no marker. The MCP
+/// columns added later (`mcp_servers.transport_config`,
+/// `oauth_tokens.{access_token,refresh_token}`) were plaintext for a while
+/// before being covered by `dream_core_db::encrypt_legacy_plaintext`, so they
+/// use the versioned envelope (`encrypt_field`/`decrypt_field`,
+/// `ENCRYPTED_FIELD_PREFIX`) that tells encrypted apart from not-yet-migrated
+/// plaintext. Rekeying has to use the matching pair for each column or it
+/// corrupts the value: calling the raw functions on an enveloped value ignores
+/// the prefix and AES-decrypts the wrong bytes, and calling the enveloped
+/// functions on a raw value silently treats real ciphertext as "legacy
+/// plaintext" and passes it through unchanged instead of decrypting it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EncryptedColumnFormat {
+    /// `dream_core_common::{encrypt_string, decrypt_string}` — no envelope.
+    Raw,
+    /// `dream_core_common::{encrypt_field, decrypt_field}` — `encv1:` envelope;
+    /// a value with no prefix is legacy plaintext and passes through untouched.
+    Field,
+}
+
 /// Columns holding a value encrypted with this install's data secret, by table.
 ///
 /// These cannot simply be copied across. The value is sealed with
 /// `derive_encryption_key(users.data_secret)`, and the archive's secret is not
 /// the target machine's: merging the rows verbatim hands the target ciphertext
 /// it has no key for. See [`rekey_restored_secrets`].
-const ENCRYPTED_COLUMNS: &[(&str, &str)] = &[("providers", "api_key_encrypted")];
+const ENCRYPTED_COLUMNS: &[(&str, &str, EncryptedColumnFormat)] = &[
+    ("providers", "api_key_encrypted", EncryptedColumnFormat::Raw),
+    ("mcp_servers", "transport_config", EncryptedColumnFormat::Field),
+    ("oauth_tokens", "access_token", EncryptedColumnFormat::Field),
+    ("oauth_tokens", "refresh_token", EncryptedColumnFormat::Field),
+];
 
 /// Re-encrypts values that arrived sealed with the archive's data secret.
 ///
@@ -966,7 +994,7 @@ async fn rekey_restored_secrets(
     let to = dream_core_app_key(local_secret);
 
     let mut rekeyed = 0u64;
-    for (table, column) in ENCRYPTED_COLUMNS {
+    for (table, column, format) in ENCRYPTED_COLUMNS {
         if !table_exists(&mut *live, table).await? {
             continue;
         }
@@ -981,11 +1009,14 @@ async fn rekey_restored_secrets(
             let rowid: i64 = row.try_get(0).unwrap_or_default();
             let sealed: String = row.try_get(1).unwrap_or_default();
             // Already readable with the local key: a row the target machine
-            // owned before this restore. Leave it alone.
-            if dream_core_common::decrypt_string(&sealed, &to).is_ok() {
+            // owned before this restore, OR (Field format only) a value that
+            // was never encrypted in the first place — decrypt_field passes
+            // unprefixed legacy plaintext through as "success" by design, and
+            // there is nothing to re-key for either case. Leave it alone.
+            if decrypt_by_format(*format, &sealed, &to).is_ok() {
                 continue;
             }
-            let Ok(plaintext) = dream_core_common::decrypt_string(&sealed, &from) else {
+            let Ok(plaintext) = decrypt_by_format(*format, &sealed, &from) else {
                 tracing::warn!(
                     table,
                     rowid,
@@ -993,7 +1024,7 @@ async fn rekey_restored_secrets(
                 );
                 continue;
             };
-            let resealed = dream_core_common::encrypt_string(&plaintext, &to)
+            let resealed = encrypt_by_format(*format, &plaintext, &to)
                 .map_err(|error| SystemError::Internal(format!("Could not re-key {table}: {error}")))?;
             sqlx::query(&format!("UPDATE main.\"{table}\" SET \"{column}\" = ? WHERE rowid = ?"))
                 .bind(resealed)
@@ -1005,6 +1036,33 @@ async fn rekey_restored_secrets(
         }
     }
     Ok(rekeyed)
+}
+
+/// Decrypt one column value with the pair matching its on-disk format. See
+/// [`EncryptedColumnFormat`].
+fn decrypt_by_format(
+    format: EncryptedColumnFormat,
+    sealed: &str,
+    key: &[u8],
+) -> Result<String, dream_core_common::CryptoError> {
+    match format {
+        EncryptedColumnFormat::Raw => dream_core_common::decrypt_string(sealed, key),
+        EncryptedColumnFormat::Field => dream_core_common::decrypt_field(sealed, key),
+    }
+}
+
+/// Encrypt one column value with the pair matching its on-disk format,
+/// preserving the envelope for `Field`-format columns. See
+/// [`EncryptedColumnFormat`].
+fn encrypt_by_format(
+    format: EncryptedColumnFormat,
+    plaintext: &str,
+    key: &[u8],
+) -> Result<String, dream_core_common::CryptoError> {
+    match format {
+        EncryptedColumnFormat::Raw => dream_core_common::encrypt_string(plaintext, key),
+        EncryptedColumnFormat::Field => dream_core_common::encrypt_field(plaintext, key),
+    }
 }
 
 /// The same derivation `dream-core-app` uses, duplicated rather than imported:

@@ -22,7 +22,7 @@ async fn make_service_with_other_user() -> (McpConfigService, String) {
     let db = dream_core_db::init_database_memory().await.unwrap();
     let user_repo = SqliteUserRepository::new(db.pool().clone());
     let other_user = user_repo.create_user(OTHER_USERNAME, "hash").await.unwrap();
-    let repo = Arc::new(SqliteMcpServerRepository::new(db.pool().clone()));
+    let repo = Arc::new(SqliteMcpServerRepository::new(db.pool().clone(), [0x55; 32]));
     (McpConfigService::new(repo), other_user.id)
 }
 

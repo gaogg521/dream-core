@@ -62,7 +62,7 @@ impl McpAgentAdapter for MockAdapter {
 async fn make_service(adapters: Vec<Arc<dyn McpAgentAdapter>>) -> McpSyncService {
     let db = dream_core_db::init_database_memory().await.unwrap();
     let repo: Arc<dyn dream_core_db::IMcpServerRepository> =
-        Arc::new(SqliteMcpServerRepository::new(db.pool().clone()));
+        Arc::new(SqliteMcpServerRepository::new(db.pool().clone(), [0x44; 32]));
     McpSyncService::new(repo, adapters)
 }
 

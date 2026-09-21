@@ -4,6 +4,7 @@
 mod agent_binding;
 mod database;
 mod dialect;
+mod encryption_migration;
 mod error;
 mod instance_lock;
 mod legacy_handoff;
@@ -26,6 +27,7 @@ pub use database::{
     latest_known_migration_version, maybe_copy_legacy_database,
 };
 pub use dialect::{DbValue, day_bucket_expr};
+pub use encryption_migration::{EncryptionMigrationReport, encrypt_legacy_plaintext};
 pub use error::{
     DbError, MISSING_TABLE_MESSAGE_MARKERS, SQLITE_BUSY_MESSAGE_MARKERS, SQLITE_UNIQUE_VIOLATION_MARKER,
     message_indicates_busy, message_indicates_missing_table, message_indicates_unique_violation,

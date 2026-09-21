@@ -588,8 +588,9 @@ pub fn build_project_state(services: &AppServices) -> ProjectRouterState {
 /// Build the default `McpRouterState` from application services.
 pub fn build_mcp_state(services: &AppServices) -> McpRouterState {
     let pool = services.database.pool().clone();
+    let encryption_key = derive_encryption_key(&services.data_secret_raw);
     let repo: Arc<dyn dream_core_db::IMcpServerRepository> =
-        Arc::new(dream_core_db::SqliteMcpServerRepository::new(pool));
+        Arc::new(dream_core_db::SqliteMcpServerRepository::new(pool, encryption_key));
 
     let adapters: Vec<Arc<dyn McpAgentAdapter>> = vec![
         // Bound to the Claude bridge's isolated CLAUDE_CONFIG_DIR so MCP
@@ -607,7 +608,7 @@ pub fn build_mcp_state(services: &AppServices) -> McpRouterState {
     ];
 
     let oauth_token_repo: Arc<dyn dream_core_db::IOAuthTokenRepository> = Arc::new(
-        dream_core_db::SqliteOAuthTokenRepository::new(services.database.pool().clone()),
+        dream_core_db::SqliteOAuthTokenRepository::new(services.database.pool().clone(), encryption_key),
     );
     let http_client = reqwest::Client::new();
 

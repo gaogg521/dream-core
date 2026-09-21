@@ -14,7 +14,7 @@ const USER_ID: &str = "system_default_user";
 
 async fn repo() -> (Arc<dyn IMcpServerRepository>, dream_core_db::Database) {
     let db = init_database_memory().await.unwrap();
-    let r = Arc::new(SqliteMcpServerRepository::new(db.pool().clone()));
+    let r = Arc::new(SqliteMcpServerRepository::new(db.pool().clone(), [0x77; 32]));
     (r as Arc<dyn IMcpServerRepository>, db)
 }
 

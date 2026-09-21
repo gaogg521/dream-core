@@ -765,7 +765,10 @@ async fn rn1c_run_now_new_conversation_preset_assistant_uses_fixed_assistant_mcp
     let (mut app, services) = build_app_with_mock_agents().await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
 
-    let mcp_repo = SqliteMcpServerRepository::new(services.database.pool().clone());
+    let mcp_repo = SqliteMcpServerRepository::new(
+        services.database.pool().clone(),
+        dream_core_app::derive_encryption_key(&services.data_secret_raw),
+    );
     let fixed_mcp = mcp_repo
         .create(CreateMcpServerParams {
             user_id: "system_default_user",

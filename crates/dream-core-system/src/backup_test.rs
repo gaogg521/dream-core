@@ -97,6 +97,19 @@ async fn seeded_catalog(path: &Path) -> SqlitePool {
              api_key TEXT NOT NULL,
              api_key_encrypted TEXT
          );
+         CREATE TABLE mcp_servers (
+             id TEXT PRIMARY KEY NOT NULL,
+             user_id TEXT NOT NULL REFERENCES users(id),
+             name TEXT NOT NULL,
+             transport_config TEXT NOT NULL
+         );
+         CREATE TABLE oauth_tokens (
+             user_id TEXT NOT NULL REFERENCES users(id),
+             server_url TEXT NOT NULL,
+             access_token TEXT NOT NULL,
+             refresh_token TEXT,
+             PRIMARY KEY (user_id, server_url)
+         );
          CREATE TABLE skills (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL);
          CREATE TABLE assistants (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL);
          CREATE TABLE projects (
@@ -839,6 +852,115 @@ async fn restored_credentials_are_re_keyed_and_local_ones_survive() {
         .await
         .unwrap();
     assert_eq!(secret, TARGET_SECRET);
+}
+
+/// Same failure mode as `restored_credentials_are_re_keyed_and_local_ones_survive`,
+/// for the two columns that used to be plaintext and are now sealed with the
+/// `encv1:` envelope (`encrypt_field`/`decrypt_field`) rather than the raw
+/// `encrypt_string` providers use — a format `rekey_restored_secrets` has to
+/// dispatch on correctly (see `EncryptedColumnFormat`), or it either decrypts
+/// the wrong bytes or silently treats real ciphertext as untouched plaintext.
+#[tokio::test]
+async fn mcp_and_oauth_credentials_are_re_keyed_with_the_field_envelope() {
+    const SOURCE_SECRET: &str = "source-machine-data-secret";
+    const TARGET_SECRET: &str = "target-machine-data-secret";
+
+    let source = tempfile::tempdir().unwrap();
+    let source_pool = seeded_catalog(&source.path().join("one-backend.db")).await;
+    let source_key = dream_core_app_key(SOURCE_SECRET);
+    let sealed_transport_config =
+        dream_core_common::encrypt_field(r#"{"command":"npx","env":{"TOKEN":"from-old-machine"}}"#, &source_key)
+            .unwrap();
+    let sealed_access = dream_core_common::encrypt_field("access-from-old-machine", &source_key).unwrap();
+    let sealed_refresh = dream_core_common::encrypt_field("refresh-from-old-machine", &source_key).unwrap();
+    sqlx::query("INSERT INTO mcp_servers VALUES ('mcp1', 'u1', 'fixed-mcp', ?)")
+        .bind(&sealed_transport_config)
+        .execute(&source_pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO oauth_tokens VALUES ('u1', 'https://mcp.example.com', ?, ?)")
+        .bind(&sealed_access)
+        .bind(&sealed_refresh)
+        .execute(&source_pool)
+        .await
+        .unwrap();
+
+    let archive = source.path().join("with-mcp-secrets.zip");
+    service(source.path())
+        .export(
+            &DbPool::Sqlite(source_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
+        .await
+        .unwrap();
+
+    // A target machine with its own secret and its own MCP credential already
+    // set up, sealed under ITS key — this must survive the restore untouched.
+    let target = tempfile::tempdir().unwrap();
+    let target_pool = empty_catalog(&target.path().join("one-backend.db")).await;
+    let target_key = dream_core_app_key(TARGET_SECRET);
+    let local_sealed = dream_core_common::encrypt_field("access-already-here", &target_key).unwrap();
+    sqlx::query("INSERT INTO users VALUES ('u-local', 'them', 'local-jwt', ?)")
+        .bind(TARGET_SECRET)
+        .execute(&target_pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO oauth_tokens VALUES ('u-local', 'https://already-here.example.com', ?, NULL)")
+        .bind(&local_sealed)
+        .execute(&target_pool)
+        .await
+        .unwrap();
+
+    service(target.path())
+        .restore(
+            &DbPool::Sqlite(target_pool.clone()),
+            &archive,
+            BackupScope::all(),
+            PASSPHRASE,
+        )
+        .await
+        .unwrap();
+
+    // The restored MCP server config and OAuth tokens now open with THIS
+    // machine's key — no restart required.
+    let restored_config: String = sqlx::query_scalar("SELECT transport_config FROM mcp_servers WHERE id = 'mcp1'")
+        .fetch_one(&target_pool)
+        .await
+        .unwrap();
+    assert!(dream_core_common::is_encrypted_field(&restored_config));
+    assert_eq!(
+        dream_core_common::decrypt_field(&restored_config, &target_key).unwrap(),
+        r#"{"command":"npx","env":{"TOKEN":"from-old-machine"}}"#
+    );
+
+    let (restored_access, restored_refresh): (String, Option<String>) = sqlx::query_as(
+        "SELECT access_token, refresh_token FROM oauth_tokens WHERE user_id = 'u1' AND server_url = 'https://mcp.example.com'",
+    )
+    .fetch_one(&target_pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        dream_core_common::decrypt_field(&restored_access, &target_key).unwrap(),
+        "access-from-old-machine"
+    );
+    assert_eq!(
+        dream_core_common::decrypt_field(&restored_refresh.unwrap(), &target_key).unwrap(),
+        "refresh-from-old-machine"
+    );
+
+    // And the local one that was already here still opens.
+    let (untouched_access, _): (String, Option<String>) = sqlx::query_as(
+        "SELECT access_token, refresh_token FROM oauth_tokens WHERE user_id = 'u-local' AND server_url = 'https://already-here.example.com'",
+    )
+    .fetch_one(&target_pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        dream_core_common::decrypt_field(&untouched_access, &target_key).unwrap(),
+        "access-already-here"
+    );
 }
 
 /// `projects.id` is an auto-assigned INTEGER key: the number means nothing
