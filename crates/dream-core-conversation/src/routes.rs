@@ -7,12 +7,14 @@ use axum::http::StatusCode;
 use axum::routing::{get, patch, post};
 
 use dream_core_api_types::{
+
     ActiveCountResponse, ApiResponse, ApprovalCheckQuery, ApprovalCheckResponse, CancelConversationRequest,
     CancelConversationResponse, CloneConversationRequest, ConfirmRequest, ConfirmationListResponse,
     ConversationArtifactListResponse, ConversationArtifactResponse, ConversationListResponse, ConversationResponse,
     CreateConversationRequest, EnsureConversationRuntimeResponse, ForkConversationRequest, ListConversationsQuery,
     ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchResponse, SearchMessagesQuery,
     SendMessageRequest, SendMessageResponse, UpdateConversationArtifactRequest, UpdateConversationRequest,
+    ImportSharedConversationRequest, ImportSharedConversationResponse,
 };
 use dream_core_auth::CurrentUser;
 use dream_core_common::ApiError;
@@ -129,6 +131,7 @@ impl From<ConversationError> for ApiError {
 pub fn conversation_routes(state: ConversationRouterState) -> Router {
     Router::new()
         .route("/api/conversations", post(create).get(list))
+        .route("/api/conversations/import-shared", post(import_shared))
         .route("/api/conversations/{id}", get(get_one).patch(update).delete(delete_one))
         .route("/api/conversations/{id}/reset", post(reset))
         .route("/api/conversations/{id}/fork", post(fork))
@@ -166,6 +169,20 @@ async fn create(
     let Json(req) = body.map_err(ApiError::from)?;
     let conversation = state.service.create(&user.id, req).await.map_err(ApiError::from)?;
     Ok((StatusCode::CREATED, Json(ApiResponse::ok(conversation))))
+}
+
+async fn import_shared(
+    State(state): State<ConversationRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    body: Result<Json<ImportSharedConversationRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<ImportSharedConversationResponse>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    let response = state
+        .service
+        .import_shared_conversation(&user.id, req)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(ApiResponse::ok(response)))
 }
 
 async fn list(

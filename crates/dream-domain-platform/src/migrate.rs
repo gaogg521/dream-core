@@ -60,6 +60,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "018_config_set_governance",
         include_str!("../migrations/018_config_set_governance.sql"),
     ),
+    (
+        "019_conversation_share_user_target",
+        include_str!("../migrations/019_conversation_share_user_target.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -119,6 +123,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "018_config_set_governance",
         include_str!("../migrations_mysql/018_config_set_governance.sql"),
+    ),
+    (
+        "019_conversation_share_user_target",
+        include_str!("../migrations_mysql/019_conversation_share_user_target.sql"),
     ),
 ];
 

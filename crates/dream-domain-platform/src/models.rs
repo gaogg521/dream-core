@@ -165,6 +165,7 @@ pub const CONVERSATION_SHARE_ENTERPRISE: &str = "enterprise";
 /// offered when the policy mode is `enterprise`).
 pub const SHARE_SCOPE_TENANT: &str = "tenant";
 pub const SHARE_SCOPE_ENTERPRISE: &str = "enterprise";
+pub const SHARE_SCOPE_USER: &str = "user";
 
 /// One conversation a member shared with the organization (P2-2).
 #[derive(Debug, Clone, Serialize)]
@@ -177,13 +178,15 @@ pub struct ConversationShareDto {
     pub name: String,
     pub tenant_id: String,
     pub enterprise_id: String,
-    /// `"tenant" | "enterprise"`.
+    /// `"tenant" | "enterprise" | "user"`.
     pub scope: String,
     pub shared_at: i64,
     /// True when the share points at a snapshot the owner's client uploaded
     /// at share time (desktop/client-mode conversations) rather than at a
     /// conversation that lives on the server natively (WebUI).
     pub uploaded: bool,
+    #[serde(default)]
+    pub target_user_id: Option<String>,
 }
 
 /// One security policy template (P1-8 安全策略模板层, second layer of the
@@ -512,8 +515,11 @@ pub struct ShareConversationInput {
     /// Snapshot title override. Defaults to the conversation's own name.
     #[serde(default)]
     pub name: Option<String>,
-    /// `"tenant" | "enterprise"` — who may see the share. Policy-gated.
+    /// `"tenant" | "enterprise" | "user"` — who may see the share. Policy-gated.
     pub scope: String,
+    /// Recipient for `scope = "user"` — required in that case, ignored otherwise.
+    #[serde(default)]
+    pub target_user_id: Option<String>,
     #[serde(default)]
     pub messages: Option<Vec<SharedMessageInput>>,
 }
@@ -583,11 +589,14 @@ pub struct ConversationShareRow {
     pub name: String,
     pub uploaded: i64,
     pub shared_at: i64,
+    #[sqlx(default)]
+    pub target_user_id: Option<String>,
 }
 
 impl From<ConversationShareRow> for ConversationShareDto {
     fn from(row: ConversationShareRow) -> Self {
         Self {
+            target_user_id: row.target_user_id,
             conversation_id: row.conversation_id,
             owner_user_id: row.owner_user_id,
             name: row.name,

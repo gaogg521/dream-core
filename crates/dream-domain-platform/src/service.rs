@@ -4372,11 +4372,21 @@ impl PlatformService {
                 "conversation sharing is disabled by company policy".into(),
             ));
         }
-        if input.scope != crate::models::SHARE_SCOPE_TENANT && input.scope != crate::models::SHARE_SCOPE_ENTERPRISE {
+        if input.scope != crate::models::SHARE_SCOPE_TENANT
+            && input.scope != crate::models::SHARE_SCOPE_ENTERPRISE
+            && input.scope != crate::models::SHARE_SCOPE_USER
+        {
             return Err(PlatformError::BadRequest(format!(
-                "scope must be tenant or enterprise, got '{}'",
+                "scope must be tenant, enterprise or user, got '{}'",
                 input.scope
             )));
+        }
+        if input.scope == crate::models::SHARE_SCOPE_USER
+            && input.target_user_id.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_none()
+        {
+            return Err(PlatformError::BadRequest(
+                "scope 'user' requires the recipient's user id (targetUserId)".into(),
+            ));
         }
         if input.scope == crate::models::SHARE_SCOPE_ENTERPRISE && mode != crate::models::CONVERSATION_SHARE_ENTERPRISE
         {
@@ -4501,9 +4511,11 @@ impl PlatformService {
                 &input.scope,
                 &name,
                 uploaded,
+                input.target_user_id.as_deref(),
             )
             .await?;
             return Ok(ConversationShareDto {
+                target_user_id: input.target_user_id,
                 conversation_id,
                 owner_user_id: user_id.to_owned(),
                 name,
@@ -4531,9 +4543,11 @@ impl PlatformService {
             &input.scope,
             &name,
             uploaded,
+                input.target_user_id.as_deref(),
         )
         .await?;
         Ok(ConversationShareDto {
+            target_user_id: input.target_user_id,
             conversation_id: input.conversation_id.clone(),
             owner_user_id: user_id.to_owned(),
             name,
@@ -4555,11 +4569,12 @@ impl PlatformService {
         scope: &str,
         name: &str,
         uploaded: bool,
+        target_user_id: Option<&str>,
     ) -> Result<(), PlatformError> {
         self.upsert(
             "INSERT INTO one_conversation_shares \
-             (id, conversation_id, owner_user_id, enterprise_id, tenant_id, scope, name, uploaded, shared_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             (id, conversation_id, owner_user_id, enterprise_id, tenant_id, scope, name, uploaded, shared_at, target_user_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(conversation_id) DO UPDATE SET \
                  owner_user_id = excluded.owner_user_id, \
                  enterprise_id = excluded.enterprise_id, \
@@ -4569,8 +4584,8 @@ impl PlatformService {
                  uploaded = excluded.uploaded, \
                  shared_at = excluded.shared_at",
             "INSERT INTO one_conversation_shares \
-             (id, conversation_id, owner_user_id, enterprise_id, tenant_id, scope, name, uploaded, shared_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
+             (id, conversation_id, owner_user_id, enterprise_id, tenant_id, scope, name, uploaded, shared_at, target_user_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
              ON DUPLICATE KEY UPDATE \
                  owner_user_id = new.owner_user_id, \
                  enterprise_id = new.enterprise_id, \
@@ -4589,6 +4604,7 @@ impl PlatformService {
                 name,
                 uploaded as i64,
                 now_ms() as i64,
+                target_user_id,
             ],
         )
         .await?;
@@ -4650,7 +4666,7 @@ impl PlatformService {
         let rows = self
             .db
             .fetch_all_as::<ConversationShareRow>(
-                "SELECT conversation_id, owner_user_id, enterprise_id, tenant_id, scope, name, uploaded, shared_at \
+                "SELECT conversation_id, owner_user_id, enterprise_id, tenant_id, scope, name, uploaded, shared_at, target_user_id \
                  FROM one_conversation_shares WHERE owner_user_id = ? ORDER BY shared_at DESC LIMIT 200",
                 &db_params![user_id],
             )
@@ -4671,11 +4687,12 @@ impl PlatformService {
         let rows = self
             .db
             .fetch_all_as::<ConversationShareRow>(
-                "SELECT conversation_id, owner_user_id, enterprise_id, tenant_id, scope, name, uploaded, shared_at \
+                "SELECT conversation_id, owner_user_id, enterprise_id, tenant_id, scope, name, uploaded, shared_at, target_user_id \
                  FROM one_conversation_shares \
                  WHERE (scope = 'tenant' AND tenant_id = ?) OR (scope = 'enterprise' AND enterprise_id = ?) \
+                    OR (scope = 'user' AND target_user_id = ?) \
                  ORDER BY shared_at DESC LIMIT 200",
-                &db_params![&actor.tenant_id, &enterprise_id],
+                &db_params![&actor.tenant_id, &enterprise_id, user_id],
             )
             .await?;
         Ok(rows.into_iter().map(Into::into).collect())
@@ -4693,7 +4710,7 @@ impl PlatformService {
         let share = self
             .db
             .fetch_optional_as::<ConversationShareRow>(
-                "SELECT conversation_id, owner_user_id, enterprise_id, tenant_id, scope, name, uploaded, shared_at \
+                "SELECT conversation_id, owner_user_id, enterprise_id, tenant_id, scope, name, uploaded, shared_at, target_user_id \
                  FROM one_conversation_shares WHERE conversation_id = ?",
                 &db_params![conversation_id],
             )
@@ -4702,6 +4719,7 @@ impl PlatformService {
         if share.owner_user_id != user_id {
             let allowed = match share.scope.as_str() {
                 crate::models::SHARE_SCOPE_TENANT => share.tenant_id == actor.tenant_id,
+                crate::models::SHARE_SCOPE_USER => share.target_user_id.as_deref() == Some(user_id),
                 _ => {
                     let enterprise_id = self.enterprise_id_of(user_id).await?.unwrap_or_default();
                     !enterprise_id.is_empty() && share.enterprise_id == enterprise_id
@@ -4813,6 +4831,7 @@ mod tests {
 
     fn snapshot(conv_id: &str) -> ShareConversationInput {
         ShareConversationInput {
+            target_user_id: None,
             conversation_id: conv_id.to_owned(),
             name: Some("Weekly ops".to_owned()),
             scope: crate::models::SHARE_SCOPE_TENANT.to_owned(),
@@ -5021,6 +5040,92 @@ mod tests {
                 .all(|s| s.conversation_id != snap("member-1", "conv-1")),
             "cross-tenant inbox must stay empty"
         );
+    }
+
+
+    /// `scope = "user"` shares reach exactly one recipient: the target
+    /// member's inbox shows it and reads it; the owner and every other
+    /// same-tenant member must not. Policy still gates sharing at all.
+    #[tokio::test]
+    async fn user_scope_shares_point_to_point() {
+        let (db, service) = share_setup().await;
+        service
+            .set_security_policy(
+                "t1",
+                false,
+                false,
+                &[],
+                false,
+                false,
+                false,
+                None,
+                crate::models::CONVERSATION_SHARE_TENANT,
+            )
+            .await
+            .unwrap();
+
+        let share = service
+            .share_conversation(
+                &actor("t1"),
+                "member-1",
+                ShareConversationInput {
+                    scope: crate::models::SHARE_SCOPE_USER.to_owned(),
+                    target_user_id: Some("member-3".to_owned()),
+                    ..snapshot("conv-1")
+                },
+            )
+            .await
+            .unwrap();
+        assert!(share.uploaded);
+        assert_eq!(share.target_user_id.as_deref(), Some("member-3"));
+
+        // The target member sees it in the inbox and can read it.
+        let inbox = service
+            .list_shared_conversations(&actor("t1"), "member-3")
+            .await
+            .unwrap();
+        assert!(inbox.iter().any(|s| s.conversation_id == snap("member-1", "conv-1")));
+        let detail = service
+            .read_shared_conversation(&actor("t1"), "member-3", &snap("member-1", "conv-1"))
+            .await
+            .unwrap();
+        assert_eq!(detail.share.target_user_id.as_deref(), Some("member-3"));
+
+        // A same-tenant member who is NOT the target must not see or read it.
+        assert!(
+            service
+                .list_shared_conversations(&actor("t1"), "member-2")
+                .await
+                .unwrap()
+                .iter()
+                .all(|s| s.conversation_id != snap("member-1", "conv-1")),
+            "non-target member inbox must stay empty"
+        );
+        assert!(
+            service
+                .read_shared_conversation(&actor("t1"), "member-2", &snap("member-1", "conv-1"))
+                .await
+                .is_err(),
+            "non-target member read must refuse"
+        );
+
+        // scope = "user" without a target is a bad request.
+        let error = service
+            .share_conversation(
+                &actor("t1"),
+                "member-1",
+                ShareConversationInput {
+                    scope: crate::models::SHARE_SCOPE_USER.to_owned(),
+                    target_user_id: None,
+                    ..snapshot("conv-2")
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, PlatformError::BadRequest(_)));
+
+        // The offboard path stays untouched: dropping the unused repo handle.
+        drop(db);
     }
 
     /// Mode `enterprise` opens enterprise scope; a member of the same

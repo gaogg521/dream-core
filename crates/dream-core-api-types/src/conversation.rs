@@ -169,7 +169,42 @@ pub struct CloneConversationRequest {
 /// Body for `POST /api/conversations/:id/messages`.
 ///
 /// `msg_id` is server-generated — clients must not provide one.
+/// Body for `POST /api/conversations/import-shared` — import another
+/// member's shared conversation (or one of my own shares) as a NEW local
+/// conversation owned by the caller. Messages keep their original type,
+/// position and timestamps; the copy carries no model, so the importer picks
+/// one on first send.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSharedConversationRequest {
+    pub name: String,
+    #[serde(default)]
+    pub messages: Vec<ImportSharedMessage>,
+}
+
+/// One message of a shared snapshot. `content` stays the raw JSON string —
+/// the same wire shape the enterprise share read returns.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSharedMessage {
+    #[serde(rename = "type")]
+    pub message_type: String,
+    pub content: String,
+    #[serde(default)]
+    pub position: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSharedConversationResponse {
+    pub conversation_id: String,
+    pub imported_messages: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SendMessageRequest {
     pub content: String,
     #[serde(default)]

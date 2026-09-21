@@ -1315,8 +1315,11 @@ struct ShareConversationBody {
     conversation_id: String,
     #[serde(default)]
     name: Option<String>,
-    /// `"tenant" | "enterprise"` — policy-gated (see the service impl).
+    /// `"tenant" | "enterprise" | "user"` — policy-gated (see the service impl).
     scope: String,
+    /// Recipient for scope = "user".
+    #[serde(default)]
+    target_user_id: Option<String>,
     /// Some = client-mode desktop uploading the snapshot in the same call.
     #[serde(default)]
     messages: Option<Vec<SharedMessageInput>>,
@@ -1337,6 +1340,7 @@ async fn share_conversation(
                 conversation_id: body.conversation_id,
                 name: body.name,
                 scope: body.scope,
+                target_user_id: body.target_user_id,
                 messages: body.messages,
             },
         )

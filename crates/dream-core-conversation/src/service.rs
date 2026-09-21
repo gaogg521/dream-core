@@ -23,6 +23,7 @@ use dream_core_api_types::{
     ConfirmationListResponse, ConversationArtifactKind, ConversationArtifactListResponse, ConversationArtifactResponse,
     ConversationArtifactStatus, ConversationListResponse, ConversationMcpStatus, ConversationMcpStatusKind,
     ConversationNameUpdatedPayload, ConversationResponse, ConversationRuntimeSummary, CreateConversationRequest,
+    ImportSharedConversationRequest, ImportSharedConversationResponse,
     EnsureConversationRuntimeResponse, ForkCapabilityView, ForkConversationRequest, ListConversationsQuery,
     ListMessagesQuery, McpRuntimeSnapshot, MessageListResponse, MessageResponse, MessageSearchResponse,
     PromptCapabilityView, SearchMessagesQuery, SendMessageRequest, SendMessageResponse, SessionMcpServer,
@@ -1131,6 +1132,72 @@ impl ConversationService {
             .get_by_assistant_id_for_user(user_id, assistant_id)
             .await
             .map_err(|e| ConversationError::internal(format!("assistant definition lookup failed: {e}")))
+    }
+
+    /// Import a shared conversation snapshot as a NEW conversation owned by
+    /// `user_id`. The copy carries no model — the importer picks one on first
+    /// send — and messages keep their original type, position and timestamps
+    /// so the history reads exactly like the original.
+    pub async fn import_shared_conversation(
+        &self,
+        user_id: &str,
+        req: ImportSharedConversationRequest,
+    ) -> Result<ImportSharedConversationResponse, ConversationError> {
+        if req.name.trim().is_empty() {
+            return Err(ConversationError::BadRequest { reason: "name is required".into() });
+        }
+        let created = self
+            .create(
+                user_id,
+                CreateConversationRequest {
+                    name: Some(req.name.clone()),
+                    r#type: Some(AgentType::DreamEngine),
+                    model: None,
+                    assistant: None,
+                    source: None,
+                    channel_chat_id: None,
+                    extra: serde_json::json!({ "importedShared": true }),
+                },
+            )
+            .await?;
+        let conversation_id = created.id.clone();
+        let now = now_ms();
+        let mut imported = 0usize;
+        for message in &req.messages {
+            if message.message_type.trim().is_empty() {
+                continue;
+            }
+            let content_value: serde_json::Value = match serde_json::from_str::<serde_json::Value>(&message.content) {
+                Ok(value) if value.is_object() => value,
+                _ => serde_json::json!({ "content": message.content }),
+            };
+            let position = match message.position.as_deref() {
+                Some("left") => "left",
+                Some("center") => "center",
+                Some("pop") => "pop",
+                _ => "right",
+            };
+            self.conversation_repo
+                .insert_message(
+                    user_id,
+                    &dream_core_db::models::MessageRow {
+                        id: generate_short_id(),
+                        conversation_id: conversation_id.clone(),
+                        msg_id: None,
+                        r#type: message.message_type.clone(),
+                        content: content_value.to_string(),
+                        position: Some(position.to_owned()),
+                        status: Some("finish".to_owned()),
+                        hidden: false,
+                        created_at: message.created_at.unwrap_or(now),
+                        backend_turn_id: None,
+                    },
+                )
+                .await
+                .map_err(ConversationError::from)?;
+            imported += 1;
+        }
+        Ok(ImportSharedConversationResponse { conversation_id, imported_messages: imported })
     }
 
     /// Create a new conversation.
