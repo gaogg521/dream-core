@@ -6,6 +6,11 @@
 >
 > 上下文窗口/压缩阈值的**权威定义在 dream-engine**，不要再在 dream-core 打补丁——本次就是
 > 先走了这条弯路然后回退的，见第一节。
+>
+> ⚠️ **续篇**：「队长堆了 N 条无效排队」这个症状**至少有三个互不相干的根因**，本文档只覆盖
+> 其中两个。看到这个现象先读
+> [`session-2026-09-21-leader-queue-backlog.zh-CN.md`](./session-2026-09-21-leader-queue-backlog.zh-CN.md) §1
+> 的区分表，别拿这里的修复去解释一个它并不负责的现场。
 
 ## 一句话总结
 
@@ -226,11 +231,13 @@ team paused: the model provider refused on spend grounds; waiting for the user
   "已暂停"通知还挂着时，重复的那条不再写、也不再唤醒；队长消费掉之后新的失败照常通知。
 - ~~`engine.rs:1102` 截断工具调用直接发英文串~~ —— **09-19 已做**
   （dream-engine `feat(engine): let the host translate the truncated-tool-call notice`
-  + dream-ui 的 `TRUNCATED_TOOL_CALL_RETRY` 词条）。⚠️ **dream-core 的 `Cargo.lock` 还没对齐
-  到引擎的那个提交**，所以这条词条目前还不会真的被触发；等 billing 的在途改动提交完就做
-  （`Cargo.lock` 里混着它新加的 `hex` 依赖，现在动会把别人的改动扫进来）。
+  + dream-ui 的 `TRUNCATED_TOOL_CALL_RETRY` 词条）。锁也已对齐到那个引擎提交
+  （`chore(deps)`，09-19），验证方式是在 cargo 的检出里 grep `TRUNCATED_TOOL_CALL_RETRY`
+  而不是比时间戳。
 - `DEFAULT_CHAR_BUDGET` 那句 "2% of 200k × 4" 的注释已过时（`bootstrap.rs` 传的是 `None`，
   固定 16k 字符），**别照着它改成 80_000**。
 - 队长自动下线不用的专家：用户明确说先不做。
+- **队长队列堆积还有第三个根因**（闲置通知按成员活跃度无限增长），09-21 才发现并修复，
+  见 [`session-2026-09-21-leader-queue-backlog.zh-CN.md`](./session-2026-09-21-leader-queue-backlog.zh-CN.md)。
 - 团队不活动看门狗（inactivity watchdog）：上游 `iOfficeAI/AionCore` 也只有定义没接线
   （58 个 `aionui-team/*.rs` 全扫过），用户决定跟着不做。
