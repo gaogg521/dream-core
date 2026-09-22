@@ -13,6 +13,19 @@
 > 跨仓完整叙述（含前端 bug 与 CodeMirror 排查）见 dream-ui 同名文档。本 CLAUDE.md 只保留
 > 长期有效的规则，过程性细节请去读那份文档。
 
+> **2026-09-22（安全审计+四项修复）**：四路并行审计 dream-ui/dream-core+engine/dream-en/
+> dream-trial-broker，确认的真实问题里落在本仓库的一项已修：`mcp_servers.transport_config`
+> （stdio env、SSE/HTTP headers，常带 token）和 `oauth_tokens.{access_token,refresh_token}`
+> 之前明文入库，和同库的 Provider API Key/MFA 密钥加密标准不一致。新增版本化字段信封
+> （`encrypt_field`/`decrypt_field`，`encv1:` 前缀区分新老数据）+ 启动时跑一次幂等、可中断
+> 的存量数据迁移（不能是普通 sqlx migration，因为加密密钥要等 `data_secret` 建好才能派生，
+> 那已经在所有 schema migration 跑完之后）。顺带把 `should_attempt_recovery` 里"解密失败"
+> 和"数据库损坏"分开，避免密钥不对时把数据库当成损坏的重建掉。4625 个测试全过。
+> ❗ **部署 trial-broker 的限流修复时发现该仓库生产环境落后本地好几个 commit**——「测试
+> 通过」记的是本地验证，不是线上状态，两者不能划等号；以后确认某个 broker 功能是否线上
+> 生效，必须用 checksum 逐文件比对实际部署的代码，不能信任何一条"完成"记录。完整报告见
+> [session-2026-09-22-security-audit-and-fixes.zh-CN.md](./docs/guides/session-2026-09-22-security-audit-and-fixes.zh-CN.md)。
+
 > **2026-09-21**：「队长堆了 N 条无效排队」**至少有三个互不相干的根因**——陈旧信号卡住、
 > 服务商额度拒绝、闲置通知无限增长。用户装了带 09-18 修复的包后报"没解决"，查下来是第三个：
 > `mark_idle` 在每个成员每轮结束时无条件往队长信箱写一条 `"idle"`，队列按**成员活跃度**
