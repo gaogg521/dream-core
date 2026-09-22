@@ -27,9 +27,19 @@ use tracing::warn;
 /// much larger decision than "the operator configured a media model".
 ///
 /// These names are the MCP server names agents see, and they are a public
-/// identifier — they must stay in step with `BUILTIN_IMAGE_GEN_NAME` and
-/// `BUILTIN_IMAGE_GEN_LEGACY_NAMES` in the desktop shell
-/// (`packages/desktop/src/process/resources/builtinMcp/constants.ts`).
+/// identifier — they must stay in step with the desktop shell, which registers
+/// the rows under them:
+///
+/// - `BUILTIN_IMAGE_GEN_NAME` / `BUILTIN_IMAGE_GEN_LEGACY_NAMES` in
+///   `packages/desktop/src/process/resources/builtinMcp/constants.ts`
+/// - `BUILTIN_BROWSER_MCP_NAME` / `BUILTIN_BROWSER_MCP_LEGACY_NAMES` in
+///   `packages/desktop/src/common/config/constants.ts`
+/// - `BUILTIN_PAGE_READER_MCP_NAME` in
+///   `packages/desktop/src/process/utils/runBackendMigrations.ts`
+///
+/// A name that drifts out of step does not fail — it silently stops being
+/// injected, which is exactly how the browser regression documented below
+/// stayed invisible.
 const AUTO_INJECTED_BUILTIN_NAMES: &[&str] = &[
     "one-image-generation",
     // Legacy names, kept so installs that predate the rename keep working.
@@ -44,6 +54,28 @@ const AUTO_INJECTED_BUILTIN_NAMES: &[&str] = &[
     // for an unrelated skill, with nothing anywhere saying why.
     "one-web-search",
     "builtin-web-search",
+    // The in-app browser, on a different reasoning: it is not gated by a key,
+    // it is gated by the user opening the browser preview panel — an act at
+    // least as explicit as pasting one, and one that happens mid-conversation,
+    // long after the new-conversation screen (the only place that writes a
+    // snapshot) is gone. So the snapshot can never carry it.
+    //
+    // Observed before this was added: `one-browser` was enabled, its row said
+    // `connected` with 26 tools, the settings page listed every one of them —
+    // and a conversation with the browser panel open and a page loaded was
+    // injected with `mcp_count=2 mcp_names=["one-image-generation",
+    // "one-web-search"]`. Asked "what site did I just open", the model
+    // correctly answered that it had no such tool. Nothing anywhere reported a
+    // failure, and the `connected` status was read as proof the capability
+    // worked, which sent a long debugging effort into the CDP bridge and the
+    // chrome-devtools-mcp version — both downstream of a gate that was never
+    // open.
+    "one-browser",
+    "aionui-browser",
+    // Reading the open page is the same capability minus the automation, and
+    // ships as its own server so a model reaches for text extraction instead of
+    // screenshot-and-OCR. Injected on the same terms, for the same reason.
+    "one-page-reader",
 ];
 
 pub(crate) fn is_auto_injected_builtin(name: &str) -> bool {
@@ -212,6 +244,66 @@ mod tests {
     async fn disabled_web_search_is_not_injected() {
         let repo = FakeRepo {
             rows: vec![row("b1", "one-web-search", false, true)],
+        };
+        assert!(load_session_mcp_rows(&repo, None, "u", "c1").await.is_empty());
+    }
+
+    /// The in-app browser must reach a conversation the same way.
+    ///
+    /// The regression this pins: the browser panel is opened mid-conversation,
+    /// so the new-conversation snapshot — the only other way in for a built-in
+    /// — cannot possibly carry it. Without the allowlist entry the model is
+    /// simply never offered a browser tool, and says so, while every surface a
+    /// human checks (enabled flag, `connected` status, the settings tool list)
+    /// keeps reporting success.
+    #[tokio::test]
+    async fn browser_builtins_reach_a_conversation_with_no_snapshot() {
+        let repo = FakeRepo {
+            rows: vec![
+                row("b1", "one-browser", true, true),
+                row("b2", "one-page-reader", true, true),
+                row("b3", "one-export-pdf", true, true),
+                row("b4", "one-team-knowledge", true, true),
+            ],
+        };
+        let rows = load_session_mcp_rows(&repo, None, "u", "c1").await;
+        assert_eq!(names(&rows), vec!["one-browser", "one-page-reader"]);
+    }
+
+    /// The pre-rebrand browser name still rides in, so an install that never
+    /// got renamed forward does not silently lose the capability.
+    #[tokio::test]
+    async fn legacy_browser_name_is_injected() {
+        let repo = FakeRepo {
+            rows: vec![row("b1", "aionui-browser", true, true)],
+        };
+        let rows = load_session_mcp_rows(&repo, None, "u", "c1").await;
+        assert_eq!(names(&rows), vec!["aionui-browser"]);
+    }
+
+    /// Disabled still means disabled — turning the browser MCP off in settings
+    /// has to keep it out of every conversation.
+    #[tokio::test]
+    async fn disabled_browser_builtins_are_not_injected() {
+        let repo = FakeRepo {
+            rows: vec![
+                row("b1", "one-browser", false, true),
+                row("b2", "one-page-reader", false, true),
+            ],
+        };
+        assert!(load_session_mcp_rows(&repo, None, "u", "c1").await.is_empty());
+    }
+
+    /// The list stays short on purpose: adding a built-in here hands it to
+    /// every agent, including scheduled tasks and digital employees. These two
+    /// are the ones a conversation must never be expected to tick for itself.
+    #[tokio::test]
+    async fn heavy_builtins_stay_out() {
+        let repo = FakeRepo {
+            rows: vec![
+                row("b1", "one-export-pdf", true, true),
+                row("b2", "one-team-knowledge", true, true),
+            ],
         };
         assert!(load_session_mcp_rows(&repo, None, "u", "c1").await.is_empty());
     }
