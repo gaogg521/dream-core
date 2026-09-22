@@ -41,7 +41,7 @@ members = [
 [workspace.package]
 version = "0.1.74"
 edition = "2024"
-license = "MIT"
+license = "LicenseRef-All-Rights-Reserved"
 
 [workspace.dependencies]
 # Internal crates

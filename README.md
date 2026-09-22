@@ -8,7 +8,7 @@
 <p align="center">
   <img src="https://img.shields.io/github/v/release/gaogg521/dream-ui?display_name=tag&sort=semver&style=flat-square&color=32CD32" alt="Bundled Version">
   &nbsp;
-  <img src="https://img.shields.io/badge/license-Apache--2.0-32CD32?style=flat-square" alt="License">
+  <img src="https://img.shields.io/badge/license-Proprietary-64748b?style=flat-square" alt="License">
   &nbsp;
   <img src="https://img.shields.io/badge/Rust-stable-orange?style=flat-square&logo=rust" alt="Rust">
   &nbsp;
@@ -197,5 +197,5 @@ cd ..
 - 官网：[1one.1oneclaw.com](https://1one.1oneclaw.com)
 
 <p align="center">
-  <sub>Part of <strong>One Work</strong> · <a href="https://github.com/gaogg521">gaogg521</a> · Apache-2.0</sub>
+  <sub>Part of <strong>One Work</strong> · © 2026 One Work · 专有软件，保留所有权利</sub>
 </p>
