@@ -1,0 +1,58 @@
+[
+  {
+    "id": "G-001",
+    "branch": "general",
+    "trigger": "简报翻译深度选择",
+    "content": "默认提供完整中英对照翻译（英文原文+中文翻译），保留结构化标记如【目的】【方法】【结果】【结论】。如用户明确要求简化，则切换为要点提取模式（仅翻译核心结论和关键数据）。",
+    "evidence": "技能默认设计（种子技能）",
+    "source_date": null,
+    "utility": 0.80,
+    "total_uses": 0,
+    "positive_adoptions": 0,
+    "negative_adoptions": 0,
+    "last_used": null,
+    "mature": false
+  },
+  {
+    "id": "G-002",
+    "branch": "general",
+    "trigger": "期刊分区筛选和标注",
+    "content": "简报中优先展示JCR分区Q1/Q2期刊文献。分区信息以彩色徽章形式标注（Q1绿色、Q2橙色、IF紫色）。无法查询到分区的文献保留但标注'未查询到分区'，不直接剔除。",
+    "evidence": "技能默认设计（种子技能）",
+    "source_date": null,
+    "utility": 0.75,
+    "total_uses": 0,
+    "positive_adoptions": 0,
+    "negative_adoptions": 0,
+    "last_used": null,
+    "mature": false
+  },
+  {
+    "id": "G-003",
+    "branch": "general",
+    "trigger": "简报推送频率和时机",
+    "content": "默认每周推送一次。推送后应主动引导用户讨论，而非仅发送完就结束。简报末尾附'深入解读提示'，鼓励用户下载PDF进行深度分析。推送时间建议避开周末和深夜。",
+    "evidence": "技能默认设计（种子技能）",
+    "source_date": null,
+    "utility": 0.70,
+    "total_uses": 0,
+    "positive_adoptions": 0,
+    "negative_adoptions": 0,
+    "last_used": null,
+    "mature": false
+  },
+  {
+    "id": "G-004",
+    "branch": "general",
+    "trigger": "文献推荐数量控制",
+    "content": "每次个性化推荐不超过5篇，避免信息过载。推荐文献需标注明确的推荐理由。推荐策略优先级：兴趣延伸>新兴主题>交叉领域。用户反馈'太多了'时，下次推荐缩减至2-3篇。",
+    "evidence": "技能默认设计（种子技能）",
+    "source_date": null,
+    "utility": 0.72,
+    "total_uses": 0,
+    "positive_adoptions": 0,
+    "negative_adoptions": 0,
+    "last_used": null,
+    "mature": false
+  }
+]

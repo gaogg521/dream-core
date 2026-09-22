@@ -1,0 +1,3 @@
+display_name: eRoad 关键人才识别
+short_description: 从用户提供的人才资料中识别关键人才并给出证据、分层和补证计划。
+default_prompt: 请使用关键人才识别能力，根据我提供的资料完成分析，并明确假设、限制和需要人工确认的事项。

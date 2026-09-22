@@ -1,0 +1,77 @@
+{
+  "_comment": "每周文献简报配置文件 - 复制为 config.json 并填写你的信息",
+  "_setup_guide": "详细填写说明请阅读 references/setup-guide.md",
+
+  "profile": {
+    "name": "你的名字",
+    "title": "你的职称/单位"
+  },
+
+  "search": {
+    "topics": [
+      {
+        "name": "静脉血栓栓塞症",
+        "queries": [
+          "(\"venous thromboembolism\"[MeSH] OR \"VTE\"[tiab] OR \"deep vein thrombosis\"[tiab] OR \"pulmonary embolism\"[tiab])",
+          "(\"anticoagulation\"[MeSH] OR \"anticoagulant\"[tiab] OR \"DOAC\"[tiab] OR \"low molecular weight heparin\"[tiab])"
+        ],
+        "journal_filter": ["J Vasc Surg", "Eur J Vasc Endovasc Surg", "Blood", "Circulation", "Thromb Res"]
+      },
+      {
+        "name": "AI与医学教育",
+        "queries": [
+          "(\"artificial intelligence\"[MeSH] OR \"AI\"[tiab] OR \"ChatGPT\"[tiab] OR \"large language model\"[tiab])",
+          "(\"medical education\"[MeSH] OR \"clinical teaching\"[tiab] OR \"residency training\"[tiab])"
+        ],
+        "journal_filter": ["Acad Med", "Med Teach", "BMC Med Educ", "J Med Internet Res"]
+      }
+    ],
+    "date_range_days": 7,
+    "max_results_per_topic": 20,
+    "min_journal_rank": "Q2"
+  },
+
+  "email": {
+    "enabled": true,
+    "smtp": {
+      "host": "smtp.example.com",
+      "port": 465,
+      "user": "your-email@example.com",
+      "auth_code": "YOUR_SMTP_AUTH_CODE_HERE"
+    },
+    "recipient": "your-email@example.com",
+    "sender_name": "文献简报助手"
+  },
+
+  "feishu": {
+    "enabled": false,
+    "app_id": "",
+    "app_secret": "",
+    "open_id": ""
+  },
+
+  "easyScholar": {
+    "enabled": true,
+    "secret_key": "YOUR_EASYSCHOLAR_SECRET_KEY"
+  },
+
+  "zotero": {
+    "enabled": false,
+    "user_id": "",
+    "api_key": ""
+  },
+
+  "output": {
+    "report_dir": "/sandbox/workspace/outputs/briefing",
+    "write_ima_note": true,
+    "notebook_name": ""
+  },
+
+  "push_schedule": {
+    "cycle": "weekly",
+    "day": "Monday",
+    "time": "07:00"
+  },
+
+  "deep_reading_tip": true
+}

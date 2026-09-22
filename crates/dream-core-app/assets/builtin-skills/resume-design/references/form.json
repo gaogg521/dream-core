@@ -1,0 +1,107 @@
+{
+  "form": {
+    "fields": [
+      {
+        "key": "content",
+        "label": "简历内容",
+        "maxLength": 5000,
+        "placeholder": "粘贴或输入教育经历、工作经历、项目经历等简历内容",
+        "required": true,
+        "type": "textarea"
+      },
+      {
+        "file_types": [
+          "word",
+          "pdf",
+          "image"
+        ],
+        "hint": "支持上传现有简历、个人照片等材料",
+        "key": "ref",
+        "label": "简历材料（可选）",
+        "maxCount": 3,
+        "required": false,
+        "type": "file_upload"
+      },
+      {
+        "key": "job_target",
+        "label": "目标岗位",
+        "placeholder": "如：产品经理、UI设计师",
+        "type": "text"
+      },
+      {
+        "default": "auto",
+        "key": "language",
+        "label": "简历语言",
+        "options": [
+          {
+            "key": "auto",
+            "label": "自动匹配"
+          },
+          {
+            "key": "chinese",
+            "label": "中文"
+          },
+          {
+            "key": "english",
+            "label": "英文"
+          },
+          {
+            "key": "japanese",
+            "label": "日语"
+          },
+          {
+            "key": "korean",
+            "label": "韩语"
+          },
+          {
+            "key": "portuguese_brazil",
+            "label": "葡萄牙语（巴西）"
+          },
+          {
+            "key": "spanish_mexico",
+            "label": "西班牙语（墨西哥）"
+          },
+          {
+            "key": "russian",
+            "label": "俄语"
+          }
+        ],
+        "required": false,
+        "type": "select"
+      },
+      {
+        "default": "auto",
+        "key": "style",
+        "label": "简历风格",
+        "options": [
+          {
+            "key": "auto",
+            "label": "自动匹配"
+          },
+          {
+            "key": "clean_formal",
+            "label": "简洁正式"
+          },
+          {
+            "key": "eye_catching_professional",
+            "label": "吸睛专业"
+          },
+          {
+            "key": "creative_standout",
+            "label": "创意突出"
+          }
+        ],
+        "required": false,
+        "type": "radio_tags"
+      }
+    ],
+    "prompt": "[简历设计]设计简历。\n简历内容：{content}\n简历材料：{ref}\n目标岗位：{job_target}\n简历语言：{language}\n简历风格：{style}"
+  },
+  "schema_version": 1,
+  "skill": {
+    "category": "办公设计",
+    "description": "简历版式设计，模板复刻",
+    "id": "resume-design",
+    "title": "简历设计"
+  }
+}

@@ -1,0 +1,44 @@
+[
+  {
+    "id": "R-001",
+    "branch": "recommendation_skills",
+    "trigger": "用户在简报后对某篇文献展开详细讨论",
+    "content": "兴趣延伸推荐（策略A）：提取用户最关注的文献，搜索其cited by和references中的高质量文献，用兴趣画像过滤后推荐3-5篇。优先推荐同一作者/团队近期发表的文章。每篇标注'与您讨论的XXX直接相关'。",
+    "evidence": "技能默认设计（种子策略）",
+    "source_date": null,
+    "utility": 0.60,
+    "total_uses": 0,
+    "positive_adoptions": 0,
+    "negative_adoptions": 0,
+    "last_used": null,
+    "mature": false
+  },
+  {
+    "id": "R-002",
+    "branch": "recommendation_skills",
+    "trigger": "记忆库中某新兴主题interest_level持续上升但尚未纳入正式检索主题",
+    "content": "新兴主题推荐（策略B）：从literature_interests.json提取trend=increasing且interest_level 0.4-0.8的主题，执行PubMed检索，筛选近1个月高质量文献，推荐2-3篇。说明'检测到您近期对XXX关注增加'。如interest_level连续3次交互≥0.7，建议用户将该主题纳入正式检索配置。",
+    "evidence": "技能默认设计（种子策略）",
+    "source_date": null,
+    "utility": 0.55,
+    "total_uses": 0,
+    "positive_adoptions": 0,
+    "negative_adoptions": 0,
+    "last_used": null,
+    "mature": false
+  },
+  {
+    "id": "R-003",
+    "branch": "recommendation_skills",
+    "trigger": "用户拥有多个高兴趣主题（≥2个主题interest_level≥0.7）",
+    "content": "交叉领域推荐（策略C）：识别用户的高兴趣主题组合（如VTE+AI），检索交叉领域文献，推荐1-2篇，标注'跨领域推荐'。此策略优先级最低，仅在策略A/B无足够推荐时启用。",
+    "evidence": "技能默认设计（种子策略）",
+    "source_date": null,
+    "utility": 0.50,
+    "total_uses": 0,
+    "positive_adoptions": 0,
+    "negative_adoptions": 0,
+    "last_used": null,
+    "mature": false
+  }
+]

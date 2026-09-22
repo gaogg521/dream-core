@@ -1,0 +1,44 @@
+; setup_drawing.scr — AutoCAD 绘图环境初始化脚本
+; 用途：在已打开的 AutoCAD 中，用 SCRIPT 命令运行本文件，
+;       一键建立单位、图层、线型、文字样式、标注样式（符合国标）。
+; 用法：命令行输入 SCRIPT -> 选择本文件，或 FILE->SCRIPT 加载。
+
+; --- 单位：毫米 ---
+UNITS 2 2 3 0 0 N
+LIMITS 0,0 420,297
+ZOOM ALL
+
+; --- 线型加载 ---
+-LINETYPE L CENTER "" "" N
+-LINETYPE L DASHED "" "" N
+-LINETYPE L PHANTOM "" "" N
+
+; --- 图层（名称, 颜色号, 线型）---
+-LAYER N 粗实线 C 7 粗实线
+-LAYER N 细实线 C 4 细实线
+-LAYER N 虚线 C 2 虚线
+-LAYER N 点划线 C 1 点划线
+-LAYER N 双点划线 C 6 双点划线
+-LAYER N 标注 C 3 标注
+-LAYER N 文字 C 7 文字
+-LAYER N 图框 C 7 图框
+-LAYER S 粗实线
+
+; --- 文字样式（含中文大字体）---
+-STYLE GB gbeitc.shx,gbcbig.shx 0 1 0 N N N
+
+; --- 标注样式 ---
+-DIMSTYLE N GB
+DIMTXSTY GB
+DIMTXT 3.5
+DIMASZ 3
+DIMEXE 2
+DIMEXO 0.5
+DIMDLI 7
+DIMDEC 0
+DIMTAD 1
+DIMSTYLE S GB
+
+; 完成
+; 注意：以上图层/样式名称含中文，脚本文件须以 ANSI/GBK 或 UTF-8 保存，
+;       且 AutoCAD 版本需支持中文（2007+）。

@@ -1,0 +1,21 @@
+{
+  "name": "comfyui-ops",
+  "version": "1.0.0",
+  "description": "ComfyUI 部署运维与排障助手：安装、CUDA 与依赖环境、节点与模型管理、显存溢出、工作流修复——直接在你的电脑上操作完成。",
+  "description_en": "ComfyUI deployment and incident expert: clean install, CUDA/dependency env, custom nodes, model paths, startup errors, VRAM overflow and broken workflows - handled directly on your machine.",
+  "author": {
+    "name": "xtgxiso"
+  },
+  "repository": "https://github.com/comfyanonymous/ComfyUI",
+  "homepage": "https://github.com/comfyanonymous/ComfyUI",
+  "license": "MIT",
+  "keywords": [
+    "comfyui",
+    "部署",
+    "排障",
+    "运维",
+    "stable-diffusion",
+    "节点",
+    "模型"
+  ]
+}

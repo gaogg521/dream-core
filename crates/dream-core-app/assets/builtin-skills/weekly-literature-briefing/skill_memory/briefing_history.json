@@ -1,0 +1,16 @@
+{
+  "version": "2.0",
+  "framework": "SkeMex-inspired self-evolving skill memory",
+  "last_updated": null,
+  "briefings": [],
+  "stats": {
+    "total_briefings": 0,
+    "total_papers_delivered": 0,
+    "total_papers_discussed": 0,
+    "total_papers_deep_read": 0,
+    "total_recommendations_made": 0,
+    "total_recommendations_adopted": 0,
+    "avg_user_satisfaction": null
+  },
+  "notes": "空白初始化模板。每次简报交互后由 Phase 6 追加蒸馏记录。stats 字段自动维护累计统计。"
+}

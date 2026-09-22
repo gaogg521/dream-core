@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>一人公司 · 整月跑通实录（林晓·品牌设计师·8月）</title>
+<style>
+  :root{
+    --bg:#0f0a1e; --card:#1b1333; --card2:#231a40; --line:#342755;
+    --purple:#a78bfa; --pink:#ec4899; --cyan:#22d3ee; --green:#34d399;
+    --yellow:#fbbf24; --text:#ece7f6; --muted:#a99bc7;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:linear-gradient(160deg,#0f0a1e,#14092b 60%,#0f0a1e);color:var(--text);
+    font-family:"PingFang SC","Microsoft YaHei","WenQuanYi Micro Hei",sans-serif;line-height:1.7}
+  .wrap{max-width:960px;margin:0 auto;padding:32px 20px 80px}
+  header{text-align:center;padding:44px 20px;background:radial-gradient(ellipse at top,rgba(167,139,250,.25),transparent 70%)}
+  header h1{font-size:clamp(1.6rem,4vw,2.4rem);background:linear-gradient(90deg,var(--purple),var(--pink));-webkit-background-clip:text;background-clip:text;color:transparent}
+  header p{color:var(--muted);margin-top:10px;font-size:.95rem}
+  .hero{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin:26px 0 10px}
+  .metric{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;text-align:center}
+  .metric .n{font-size:1.9rem;font-weight:800}
+  .metric .l{font-size:.8rem;color:var(--muted);margin-top:4px}
+  .p0{color:var(--purple)}.p1{color:var(--pink)}.p2{color:var(--cyan)}.p3{color:var(--green)}
+  section{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:26px;margin:22px 0}
+  h2{font-size:1.35rem;margin-bottom:14px;display:flex;align-items:center;gap:10px}
+  .num{background:linear-gradient(135deg,var(--purple),var(--pink));width:30px;height:30px;border-radius:9px;
+    display:inline-flex;align-items:center;justify-content:center;font-size:.9rem;font-weight:800;color:#fff;flex:none}
+  h3{font-size:1rem;color:var(--cyan);margin:18px 0 8px;border-left:3px solid var(--cyan);padding-left:10px}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:.9rem}
+  th,td{border:1px solid var(--line);padding:9px 10px;text-align:left}
+  th{background:var(--card2);color:var(--purple)}
+  td:nth-child(n+2){text-align:center}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0}
+  .chip{background:var(--card2);border:1px solid var(--line);border-radius:999px;padding:7px 14px;font-size:.85rem}
+  .chip.hot{border-color:var(--pink);color:var(--pink)}
+  .arrow{color:var(--muted)}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+  .box{background:var(--card2);border:1px solid var(--line);border-radius:14px;padding:16px}
+  .box h4{color:var(--yellow);font-size:.95rem;margin-bottom:8px}
+  ul{padding-left:20px;margin:8px 0}
+  li{margin:5px 0;color:#d9d0ee}
+  .fill{background:rgba(251,191,36,.08);border:1px dashed var(--yellow);border-radius:12px;padding:14px;margin:10px 0}
+  .fill b{color:var(--yellow)}
+  .barrow{display:grid;grid-template-columns:120px 1fr 60px;gap:10px;align-items:center;margin:8px 0;font-size:.88rem}
+  .bar{height:12px;background:var(--card2);border-radius:8px;overflow:hidden}
+  .bar>i{display:block;height:100%;border-radius:8px;background:linear-gradient(90deg,var(--purple),var(--pink))}
+  .good{color:var(--green)} .warn{color:var(--yellow)}
+  .footer{text-align:center;color:var(--muted);font-size:.82rem;margin-top:30px}
+  @media(max-width:560px){.barrow{grid-template-columns:90px 1fr 44px;font-size:.78rem}}
+</style>
+</head>
+<body>
+<header>
+  <h1>一人公司 · 整月跑通实录</h1>
+  <p>主角：林晓 · 独立品牌设计师 · 2026年8月 ｜ 从月初仪表盘 → 月末复盘的真实闭环</p>
+</header>
+<div class="wrap">
+
+  <div class="hero">
+    <div class="metric"><div class="n p0">¥21,600</div><div class="l">8月营收</div></div>
+    <div class="metric"><div class="n p1">¥18,930</div><div class="l">毛利</div></div>
+    <div class="metric"><div class="n p2">105h</div><div class="l">本月工时</div></div>
+    <div class="metric"><div class="n p3">¥206/h</div><div class="l">时间ROI</div></div>
+  </div>
+
+  <section>
+    <h2><span class="num">0</span>经营仪表盘（月初打表，定位短板）</h2>
+    <div class="barrow"><span>定位</span><div class="bar"><i style="width:100%"></i></div><b class="good">5/5</b></div>
+    <div class="barrow"><span>产品</span><div class="bar"><i style="width:80%"></i></div><b class="good">4/5</b></div>
+    <div class="barrow"><span>获客</span><div class="bar"><i style="width:60%"></i></div><b class="warn">3/5</b></div>
+    <div class="barrow"><span>交付</span><div class="bar"><i style="width:60%"></i></div><b class="warn">3/5</b></div>
+    <div class="barrow"><span>财务</span><div class="bar"><i style="width:60%"></i></div><b class="warn">3/5</b></div>
+    <p style="color:var(--muted);font-size:.88rem;margin-top:12px">短板：获客 3分、交付 3分 → 本周主攻「SOP化 + 成交1单」。上游（定位/产品）已稳，不追下游盲目扩张。</p>
+  </section>
+
+  <section>
+    <h2><span class="num">1</span>定位锚定 · 三圈交叉</h2>
+    <div class="flow">
+      <span class="chip">擅长：品牌视觉</span>
+      <span class="arrow">×</span>
+      <span class="chip hot">市场：中小餐饮/零售</span>
+      <span class="arrow">×</span>
+      <span class="chip">愿付费：需要整套VI</span>
+    </div>
+    <div class="fill"><b>一句话定位：</b>帮中小餐饮/零售店主，用一套完整的品牌视觉（Logo+VI+物料）解决「开店却不像品牌」的问题。</div>
+    <div class="fill"><b>客户画像：</b>30-45岁实体店主，痛点=辨识度低，付费能力 ¥5,000-20,000，出现在本地商圈/餐饮社群/小红书。</div>
+  </section>
+
+  <section>
+    <h2><span class="num">2</span>产品设计 · 三档矩阵</h2>
+    <table>
+      <tr><th>档位</th><th>品名</th><th>定价</th><th>交付形式</th><th>毛利率</th></tr>
+      <tr><td>引流品</td><td>品牌诊断</td><td>¥199</td><td>线上报告</td><td>~90%</td></tr>
+      <tr><td>利润品</td><td>品牌基础包</td><td>¥4,800</td><td>标准化VI</td><td>~80%</td></tr>
+      <tr><td>高端品</td><td>全案定制</td><td>¥18,000</td><td>1v1定制</td><td>~75%</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2><span class="num">3</span>定价与成交 · 时间定价法</h2>
+    <div class="box">
+      <h4>报价公式（服务类）</h4>
+      <p>底线 = 时薪 × 3 × 项目天数 = <b>150 × 3 × 10 = ¥4,500</b></p>
+      <ul>
+        <li>试探价 ¥4,500 / 标准价 <b>¥4,800</b>（取整数+溢价）/ 理想价 ¥6,000</li>
+        <li>「品牌基础包」最终定价 <b>¥4,800</b>，落在标准价区间 ✓</li>
+      </ul>
+    </div>
+    <div class="fill"><b>异议话术：</b>「太贵了」→ 拆到每天成本；「再想想」→ 给限时权益；「别人更便宜」→ 比交付深度与售后。</div>
+  </section>
+
+  <section>
+    <h2><span class="num">4</span>交付标准化 · SOP化</h2>
+    <table>
+      <tr><th>步骤</th><th>动作</th><th>耗时</th><th>可外包/自动化</th></tr>
+      <tr><td>1 需求</td><td>问卷+沟通</td><td>3h</td><td>问卷工具</td></tr>
+      <tr><td>2 调研</td><td>竞品/风格</td><td>5h</td><td>—</td></tr>
+      <tr><td>3 提案</td><td>出2套方案</td><td>10h</td><td>模板库</td></tr>
+      <tr><td>4 定稿</td><td>修改交付</td><td>12h</td><td>部分外包</td></tr>
+      <tr><td>5 落地</td><td>VI手册+物料</td><td>10h</td><td>外包</td></tr>
+    </table>
+    <p style="margin-top:10px">总耗时 <span class="warn">40h → 30h</span>（用模板库），外包后 <span class="good">≈20h</span>。单人月产能上限提升约 2 倍。</p>
+  </section>
+
+  <section>
+    <h2><span class="num">5</span>记账 · 极简四科目（8月）</h2>
+    <table>
+      <tr><th>周</th><th>收入</th><th>获客成本</th><th>工具成本</th><th>时间成本(h)</th></tr>
+      <tr><td>第1周</td><td>¥3,000</td><td>¥200</td><td>¥180</td><td>20</td></tr>
+      <tr><td>第2周</td><td>¥4,800</td><td>¥300</td><td>¥200</td><td>28</td></tr>
+      <tr><td>第3周</td><td>¥0</td><td>¥150</td><td>¥120</td><td>22</td></tr>
+      <tr><td>第4周</td><td>¥13,800</td><td>¥500</td><td>¥300</td><td>35</td></tr>
+      <tr><td><b>合计</b></td><td><b>¥21,600</b></td><td><b>¥1,150</b></td><td><b>¥800</b></td><td><b>105</b></td></tr>
+    </table>
+    <p style="color:var(--muted);font-size:.88rem">注：工具成本含软件订阅等；时间成本=投入工时（用于算ROI）。</p>
+  </section>
+
+  <section>
+    <h2><span class="num">6</span>月度复盘 · 闭环回灌</h2>
+    <div class="grid2">
+      <div class="box"><h4>关键指标</h4>
+        <ul>
+          <li>营收：<b>¥21,600</b></li>
+          <li>毛利：<b>¥18,930</b>（=21600−1150−1520 含外包）</li>
+          <li>时间ROI：<b>¥206/h</b>（=21600÷105）</li>
+          <li>成交：3单（引流1 + 利润1 + 高端1）</li>
+        </ul>
+      </div>
+      <div class="box"><h4>下月调整（3动作）</h4>
+        <ul>
+          <li><b>主攻获客</b>：补齐内容获客链路（获客仅3分）</li>
+          <li>稳住交付：SOP持续复用，目标单均 ≤25h</li>
+          <li>提价测试：利润品试探 ¥5,200</li>
+        </ul>
+      </div>
+    </div>
+    <div class="flow" style="margin-top:18px">
+      <span class="chip">定位✓</span><span class="arrow">→</span>
+      <span class="chip">产品✓</span><span class="arrow">→</span>
+      <span class="chip hot">获客↑</span><span class="arrow">→</span>
+      <span class="chip">交付↑</span><span class="arrow">→</span>
+      <span class="chip">财务✓</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>📋 空白模板 · 填写速查</h2>
+    <p style="color:var(--muted)">把你自己的数据替换上方黄色虚线框（.fill）即可重跑。关键字段：</p>
+    <ul>
+      <li><b>定位：</b>一句话定位 + 客户画像（年龄/痛点/付费能力/出现渠道）</li>
+      <li><b>产品矩阵：</b>引流品 / 利润品 / 高端品（品名·定价·交付·毛利率）</li>
+      <li><b>定价：</b>时薪×3×天数=底线，定三档价</li>
+      <li><b>交付SOP：</b>每步 输入/动作/输出/耗时 + 可外包项</li>
+      <li><b>记账：</b>每周填 4 科目，月底算毛利 & ROI</li>
+      <li><b>复盘：</b>营收·毛利·获客成本·复购·ROI → 定下月3动作</li>
+    </ul>
+  </section>
+
+  <p class="footer">一人公司教练 v2 · 示例数据（林晓·2026年8月）· 数据自洽：收入合计21600 / 毛利18930 / ROI≈206元/h · 可离线浏览器打开</p>
+</div>
+</body>
+</html>

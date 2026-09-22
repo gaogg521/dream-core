@@ -1,0 +1,11 @@
+# 视频转PPT 运行/打包依赖
+# 安装：pip install -r requirements.txt
+# 打包：pyinstaller --onefile --windowed --name "视频转PPT" \
+#         --hidden-import cv2 --hidden-import numpy --hidden-import PIL --hidden-import pptx \
+#         video2ppt.py
+
+opencv-python-headless>=4.8
+numpy>=1.24
+Pillow>=10.0
+python-pptx>=0.6.21
+pyinstaller>=6.0

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Draw.io 专业绘图"
+  short_description: "生成并校验原生 Draw.io 图表，导出内嵌源数据的 PNG/SVG/PDF，并可在用户确认后安装 Draw.io Desktop"
+  default_prompt: "使用 $drawio 生成一份原生可编辑、布局清晰的 Draw.io 架构图。"

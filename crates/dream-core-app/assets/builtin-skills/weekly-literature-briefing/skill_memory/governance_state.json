@@ -1,0 +1,54 @@
+{
+  "version": "2.0",
+  "framework": "SkeMex-inspired self-evolving skill memory",
+  "last_governance_time": null,
+  "governance_threshold_interactions": 20,
+  "governance_threshold_days": 7,
+  "total_interactions_since_governance": 0,
+  "branches": {
+    "general": {
+      "count": 4,
+      "max_capacity": 50,
+      "mature_count": 0
+    },
+    "literature_interests": {
+      "count": 0,
+      "max_capacity": 30,
+      "mature_count": 0
+    },
+    "briefing_history": {
+      "count": 0,
+      "max_capacity": 100,
+      "mature_count": 0
+    },
+    "recommendation_skills": {
+      "count": 3,
+      "max_capacity": 20,
+      "mature_count": 0
+    }
+  },
+  "scoring_weights": {
+    "lambda_sim": 0.40,
+    "lambda_utility": 0.35,
+    "lambda_recency": 0.25
+  },
+  "interest_decay_rules": {
+    "inactive_threshold_days": 30,
+    "decay_per_week": 0.02,
+    "minimum_interest_level": 0.1
+  },
+  "utility_update_rules": {
+    "positive_adoption": "+0.05 to +0.10",
+    "partial_correction": "+0.00 to +0.03",
+    "negative_overturn": "-0.10 to -0.20",
+    "ignored": "+0.00"
+  },
+  "governance_rules": {
+    "merge_threshold": "触发条件相似度>0.8且内容互补",
+    "demote_threshold": "utility < 0.3",
+    "evict_threshold": "utility < 0.1 or 5 consecutive negative adoptions",
+    "promote_threshold": "utility >= 0.8 AND positive_adoptions >= 5",
+    "emerging_topic_promotion": "interest_level >= 0.7 AND trend=increasing for 3 consecutive interactions → suggest adding to formal search config",
+    "history_archive_threshold": "briefing_history > 50 records → archive to briefing_archive.json"
+  }
+}

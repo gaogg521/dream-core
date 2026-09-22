@@ -1,0 +1,39 @@
+# ComfyUI 共享模型路径配置
+# 使用：复制为 extra_model_paths.yaml 放在 ComfyUI 根目录，或启动时用
+#   python main.py --extra-model-paths-config D:/path/extra_model_paths.yaml
+# 注意：路径统一用正斜杠 / 或双反斜杠 \\，改完必须重启 ComfyUI
+
+# ---------- 示例 1：共享 SD WebUI (A1111) 的模型 ----------
+a111:
+    base_path: D:/stable-diffusion-webui/
+    checkpoints: models/Stable-diffusion
+    vae: models/VAE
+    loras: models/Lora
+    embeddings: embeddings
+    controlnet: models/ControlNet
+    upscale_models: models/ESRGAN
+
+# ---------- 示例 2：模型放在另一个大容量盘 ----------
+# bigdisk:
+#     base_path: E:/AI-Models/
+#     checkpoints: checkpoints
+#     loras: loras
+#     vae: vae
+#     controlnet: controlnet
+#     embeddings: embeddings
+#     upscale_models: upscale_models
+#     unet: unet
+#     clip: clip
+#     clip_vision: clip_vision
+
+# ---------- 字段与目录对应关系 ----------
+# checkpoints     -> models/checkpoints/      大模型
+# unet            -> models/unet/             UNET（含 GGUF 量化）
+# clip            -> models/clip/             CLIP
+# loras           -> models/loras/            LoRA
+# vae             -> models/vae/              VAE
+# controlnet      -> models/controlnet/       ControlNet
+# embeddings      -> models/embeddings/       Embedding / Textual Inversion
+# upscale_models  -> models/upscale_models/   放大模型
+# clip_vision     -> models/clip_vision/      CLIP Vision
+# style_models    -> models/style_models/     Style Model

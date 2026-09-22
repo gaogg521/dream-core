@@ -1,0 +1,190 @@
+/* wenyan 自定义主题：redwhite
+ * 科技蓝 · 技术教程/深度分析 · wenyan 自定义主题（融合红白正文观感 + wenyan 简洁居中标题，API 发布调优）
+ * 正文观感取自 gzh-design 红白：15px / 行高1.8 / #374151 / 淡粉下划线标重点
+ * 标题取 wenyan 简洁：一行居中，仅红色加粗点缀，不堆叠标签/下划线
+ * 偏好：无 letter-spacing / justify / 缩进
+ */
+
+/* 全局 */
+#wenyan {
+    font-size: 15px;
+    line-height: 1.8;
+    color: #374151;
+    letter-spacing: 0;
+}
+#wenyan * {
+    box-sizing: border-box;
+}
+#wenyan h1,
+#wenyan h2,
+#wenyan h3,
+#wenyan h4,
+#wenyan h5,
+#wenyan h6,
+#wenyan p {
+    margin: 1em 0;
+}
+
+/* 标题：简洁居中（wenyan 稳定性），红白只用红色加粗点睛 */
+#wenyan h1 {
+    text-align: center;
+    font-size: 1.6em;
+    font-weight: 800;
+    color: #1C1917;
+}
+#wenyan h2 {
+    text-align: center;
+    font-size: 1.25em;
+    font-weight: 800;
+    color: #2563EB;
+    margin: 1.6em 0 1em;
+}
+#wenyan h3 {
+    font-size: 1.05em;
+    font-weight: 800;
+    color: #1C1917;
+    border-left: 3px solid #2563EB;
+    padding-left: 10px;
+}
+#wenyan h4,
+#wenyan h5,
+#wenyan h6 {
+    font-size: 1em;
+    font-weight: 700;
+    color: #1C1917;
+}
+
+/* 段落：红白正文观感 */
+#wenyan p {
+    font-size: 15px;
+    line-height: 1.8;
+    color: #374151;
+    margin: 1em 0;
+}
+
+/* 重点：markdown **关键词** → 红白淡粉下划线标记 */
+#wenyan strong {
+    color: #1C1917;
+    font-weight: 600;
+    border-bottom: 2px solid #BFDBFE;
+}
+
+/* 引用块：红白淡粉左竖条 */
+#wenyan blockquote {
+    display: block;
+    font-size: 0.9em;
+    color: #374151;
+    border-left: 3px solid #BFDBFE;
+    background: #EFF6FF;
+    padding: 0.6em 1em;
+    margin: 1.2em 0;
+}
+
+/* 行内代码：红白浅红底深红字 */
+#wenyan p code,
+#wenyan li code {
+    font-size: 0.85em;
+    color: #2563EB;
+    background: #F5F8FF;
+    padding: 2px 5px;
+    border-radius: 3px;
+    word-break: break-all;
+}
+
+/* 代码块 */
+#wenyan pre {
+    border-radius: 5px;
+    line-height: 2;
+    margin: 1em 0.5em;
+    padding: 0.8em;
+    background: #FAFAFA;
+    border: 1px solid #F3E8E8;
+    font-size: 12px;
+}
+#wenyan pre code {
+    display: block;
+    overflow-x: auto;
+    margin: 0.5em;
+    padding: 0;
+    background: transparent;
+}
+
+/* 列表 */
+#wenyan ul,
+#wenyan ol {
+    margin-left: 1rem;
+    font-size: 0.9em;
+}
+#wenyan ul {
+    list-style-type: disc;
+}
+#wenyan ul ul {
+    list-style-type: circle;
+}
+#wenyan ol {
+    list-style-type: decimal;
+}
+
+/* 图片 */
+#wenyan img {
+    max-width: 100%;
+    height: auto;
+    margin: 0 auto;
+    display: block;
+    border-radius: 4px;
+}
+
+/* 表格 */
+#wenyan table {
+    border-collapse: collapse;
+    margin: 1.4em auto;
+    max-width: 100%;
+    table-layout: fixed;
+    text-align: left;
+    overflow: auto;
+    word-wrap: break-word;
+    word-break: break-all;
+}
+#wenyan table th,
+#wenyan table td {
+    font-size: 0.8em;
+    padding: 8px 12px;
+    line-height: 1.7;
+    border: 1px solid #F3E8E8;
+}
+#wenyan table th {
+    font-weight: 700;
+    color: #2563EB;
+    background: #EFF6FF;
+}
+
+/* 分割线 */
+#wenyan hr {
+    border: none;
+    border-top: 1px solid #BFDBFE;
+    margin: 2em auto;
+}
+
+/* 链接 */
+#wenyan a {
+    word-wrap: break-word;
+    color: #2563EB;
+}
+#wenyan .footnote {
+    color: #2563EB;
+}
+#wenyan #footnotes p {
+    display: flex;
+    margin: 0;
+    font-size: 0.9em;
+}
+#wenyan .footnote-num {
+    display: inline;
+    width: 10%;
+}
+#wenyan .footnote-txt {
+    display: inline;
+    width: 90%;
+    word-wrap: break-word;
+    word-break: break-all;
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "屏幕自动化"
+  short_description: "增强屏幕理解与控制，安全完成当前本地屏幕任务"
+  default_prompt: "使用 $screen-automation，先读取当前小助手状态和真实能力，确认目标窗口后完成这次屏幕任务；每次操作后验证可见结果。"

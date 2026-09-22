@@ -1,0 +1,4 @@
+interface:
+  display_name: "专利技术交底书撰写助手"
+  short_description: "自动增强专利构思并分别输出专利分析与技术交底书两个文件"
+  default_prompt: "使用 $patent-disclosure-writer 自动增强下面的构思，并分别生成专利分析文件和专利技术交底书文件。"

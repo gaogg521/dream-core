@@ -1,0 +1,8 @@
+numpy
+Pillow
+opencv-python
+
+# AI 路线（可选）：注意用 --no-deps 安装，否则其过时的依赖 pin
+# （numpy<2、pillow<10、opencv<5）会强制降级现有库并导致构建失败。
+#   python -m pip install simple-lama-inpainting --no-deps
+# simple-lama-inpainting
