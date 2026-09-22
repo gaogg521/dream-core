@@ -11,9 +11,10 @@ use dream_core_api_types::{
     EnsureNodeRuntimeResponse, FeedbackDiagnosticsQuery, FeedbackDiagnosticsResponse, FetchModelsAnonymousRequest,
     FetchModelsRequest, FetchModelsResponse, MeteredAccessResponse, MeteredClaimRequest, MeteredCreateOrderRequest,
     MeteredOrderResponse, MeteredQuotaQuery, MeteredQuotaStatusResponse, ModelPlatformsResponse,
-    ProtocolDetectionResponse, ProviderResponse, SystemInfoResponse, SystemSettingsResponse, TrialKeyClaimRequest,
-    TrialKeyResponse, TrialQuotaQuery, TrialQuotaStatusResponse, UpdateCheckRequest, UpdateCheckResult,
-    UpdateClientPreferencesRequest, UpdateProviderRequest, UpdateSettingsRequest,
+    ProtocolDetectionResponse, ProviderResponse, SystemInfoResponse, SystemSettingsResponse, TopupOrderCreateRequest,
+    TopupOrderQuery, TopupOrderResponse, TrialKeyClaimRequest, TrialKeyResponse, TrialQuotaQuery,
+    TrialQuotaStatusResponse, UpdateCheckRequest, UpdateCheckResult, UpdateClientPreferencesRequest,
+    UpdateProviderRequest, UpdateSettingsRequest,
 };
 use dream_core_auth::{CurrentUser, is_webui_proxied};
 use dream_core_common::ApiError;
@@ -27,6 +28,7 @@ use crate::protocol::ProtocolDetectionService;
 use crate::provider::ProviderService;
 use crate::runtime_prepare::RuntimePrepareService;
 use crate::settings::SettingsService;
+use crate::topup::TopupService;
 use crate::trial_key::TrialKeyService;
 use crate::version::VersionCheckService;
 
@@ -48,6 +50,11 @@ pub struct SystemRouterState {
     /// Mode B: relays metered-proxy trial claims / quota / orders to the same
     /// broker. `TrialKeyService` and this share nothing but the install id.
     pub metered_access_service: MeteredAccessService,
+    /// Mode A's real-money top-up: relays scan-to-pay order create/poll to
+    /// the same broker. Only vendors whose `TokenVendor` impl supports it
+    /// (Baoyun, so far) accept these; the broker answers `topup_unsupported`
+    /// for any other vendor id.
+    pub topup_service: TopupService,
     /// Materializes company model channels as local providers. `None` on
     /// deployments that never wire it — the endpoint then reports plainly
     /// instead of silently doing nothing.
@@ -116,6 +123,8 @@ impl From<SystemError> for ApiError {
 /// - `GET  /api/providers/metered/quota`     — where this install's metered balance stands
 /// - `POST /api/providers/metered/orders`    — create a top-up order
 /// - `GET  /api/providers/metered/orders/{id}` — poll a top-up order
+/// - `POST /api/providers/topup/orders`      — create a real-money top-up order (mode A)
+/// - `GET  /api/providers/topup/orders/{id}` — poll a real-money top-up order
 /// - `POST /api/providers/detect-protocol`   — detect API protocol
 /// - `GET  /api/model-platforms`             — canonical model platform preset list
 /// - `GET  /api/system/info`                 — system directory & platform info
@@ -144,6 +153,9 @@ pub fn system_routes(state: SystemRouterState) -> Router {
         .route("/api/providers/metered/quota", get(metered_quota))
         .route("/api/providers/metered/orders", post(metered_create_order))
         .route("/api/providers/metered/orders/{id}", get(metered_get_order))
+        // Mode A's real-money top-up. Same literal-segment-first reasoning.
+        .route("/api/providers/topup/orders", post(create_topup_order))
+        .route("/api/providers/topup/orders/{id}", get(get_topup_order))
         .route("/api/providers/{id}", delete(delete_provider).put(update_provider))
         .route("/api/providers/{id}/models", post(fetch_models))
         .route("/api/providers/sync-model-channels", post(sync_model_channels))
@@ -668,6 +680,37 @@ async fn metered_get_order(
     let result = state
         .metered_access_service
         .get_order(&id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+/// Creates a real-money top-up order (mode A); the response carries the
+/// broker's scan-to-pay QR. Only for a vendor whose `TokenVendor` supports
+/// it — see `crate::topup`.
+async fn create_topup_order(
+    State(state): State<SystemRouterState>,
+    body: Result<Json<TopupOrderCreateRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<TopupOrderResponse>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    let result = state
+        .topup_service
+        .create_order(&req.vendor, req.amount)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+/// Polls one real-money top-up order's status. `vendor` rides in the query
+/// string, same as `metered_quota`/`trial_key_quota`.
+async fn get_topup_order(
+    State(state): State<SystemRouterState>,
+    Path(id): Path<String>,
+    Query(query): Query<TopupOrderQuery>,
+) -> Result<Json<ApiResponse<TopupOrderResponse>>, ApiError> {
+    let result = state
+        .topup_service
+        .get_order(&query.vendor, &id)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(result)))

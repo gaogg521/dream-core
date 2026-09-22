@@ -39,6 +39,11 @@ fn build_state(db: &Database, broker_url: Option<String>) -> SystemRouterState {
             Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone())),
         ),
         metered_access_service: MeteredAccessService::new(
+            broker_url.clone(),
+            http_client.clone(),
+            Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone())),
+        ),
+        topup_service: dream_core_system::TopupService::new(
             broker_url,
             http_client.clone(),
             Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone())),

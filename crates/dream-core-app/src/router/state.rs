@@ -455,6 +455,12 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
         http_client.clone(),
         client_pref_repo.clone(),
     );
+    // Mode A's real-money top-up talks to the same broker too.
+    let topup_service = dream_core_system::TopupService::new(
+        std::env::var("DREAM_TRIAL_BROKER_URL").ok(),
+        http_client.clone(),
+        client_pref_repo.clone(),
+    );
     let keep_awake_controller = Arc::new(dream_core_system::SystemKeepAwakeController::new());
     let client_pref_service = if services.identity_mode.is_local() {
         ClientPrefService::with_keep_awake_controller(client_pref_repo, keep_awake_controller, "system_default_user")
@@ -472,6 +478,7 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
         ))),
         trial_key_service,
         metered_access_service,
+        topup_service,
         model_fetch_service: ModelFetchService::new(provider_repo, encryption_key, http_client.clone()),
         protocol_detection_service: ProtocolDetectionService::new(http_client.clone()),
         version_check_service: VersionCheckService::new(http_client, env!("CARGO_PKG_VERSION").to_owned()),

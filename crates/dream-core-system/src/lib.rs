@@ -71,6 +71,7 @@ pub mod settings;
 pub mod sysinfo;
 pub mod team_memory;
 pub mod tool_security;
+pub mod topup;
 pub mod trial_key;
 pub mod version;
 
@@ -93,5 +94,6 @@ pub use send_policy::{SendPolicy, SendPolicyService};
 pub use settings::SettingsService;
 pub use team_memory::{TeamMemoryItem, TeamMemoryService, TeamMemorySnapshot};
 pub use tool_security::{ToolSecurityPolicy, ToolSecurityService};
+pub use topup::TopupService;
 pub use trial_key::TrialKeyService;
 pub use version::VersionCheckService;

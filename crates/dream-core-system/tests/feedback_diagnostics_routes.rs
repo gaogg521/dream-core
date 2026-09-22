@@ -37,6 +37,11 @@ fn build_state(db: &dream_core_db::Database) -> SystemRouterState {
             http_client.clone(),
             Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone())),
         ),
+        topup_service: dream_core_system::TopupService::new(
+            None,
+            http_client.clone(),
+            Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone())),
+        ),
         content_inspection: std::sync::Arc::new(dream_core_system::ContentInspectionService::new()),
         tool_security: std::sync::Arc::new(dream_core_system::ToolSecurityService::new()),
         team_memory: std::sync::Arc::new(dream_core_system::TeamMemoryService::new()),

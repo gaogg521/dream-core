@@ -559,6 +559,46 @@ pub struct MeteredOrderResponse {
     pub payment: Option<serde_json::Value>,
 }
 
+/// Request body for `POST /api/providers/topup/orders`.
+///
+/// Mode A's real-money top-up (as opposed to mode B's package-based
+/// [`MeteredCreateOrderRequest`]): a scan-to-pay QR order for an arbitrary
+/// amount, settling into the vendor's shared account balance and then
+/// credited to this install's own key once paid — see the broker's
+/// `src/topup.rs` for why those are two separate steps.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopupOrderCreateRequest {
+    pub vendor: String,
+    /// In the vendor's own currency (CNY for Baoyun).
+    pub amount: f64,
+}
+
+/// Query for `GET /api/providers/topup/orders/{id}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopupOrderQuery {
+    pub vendor: String,
+}
+
+/// A real-money top-up order, as the broker reports it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopupOrderResponse {
+    pub id: String,
+    pub vendor: String,
+    /// `pending` | `success` | `failed` | `expired`.
+    pub status: String,
+    pub currency: String,
+    pub amount: f64,
+    /// A scannable pay link/QR payload. Present only while `pending`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qr_code: Option<String>,
+    /// Unix seconds. Present only while `pending`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    /// Unix seconds. Present only once `success`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<i64>,
+}
+
 /// Request body for `POST /api/providers/detect-protocol`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectProtocolRequest {
