@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use dream_core_api_types::{TrialKeyResponse, TrialQuotaStatusResponse};
+use dream_core_api_types::{KeyUsageQueryResponse, TrialKeyResponse, TrialQuotaStatusResponse};
 use dream_core_db::IClientPreferenceRepository;
 use serde::Deserialize;
 
@@ -152,6 +152,51 @@ impl TrialKeyService {
     async fn get_or_create_install_id(&self) -> Result<String, SystemError> {
         crate::install_id::get_or_create_install_id(&self.client_pref_repo).await
     }
+
+    /// "Paste your key, see your usage" — unlike every other call in this
+    /// service, this one carries no install id at all: the broker identifies
+    /// the key by its own hash, so possessing the plaintext *is* the
+    /// authorization. Works for a key this install never claimed itself
+    /// (support/troubleshooting a key pasted from anywhere), which is the
+    /// point.
+    pub async fn query_usage_by_key(&self, vendor: &str, key: &str) -> Result<KeyUsageQueryResponse, SystemError> {
+        let Some(base_url) = self.broker_base_url.as_deref() else {
+            return Err(SystemError::BadRequest(
+                "trial key issuance is not configured on this deployment".into(),
+            ));
+        };
+
+        let url = format!("{}/v1/keys/usage", base_url.trim_end_matches('/'));
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&serde_json::json!({ "vendor": vendor, "key": key }))
+            .send()
+            .await
+            .map_err(|e| SystemError::BadGateway(format!("could not reach trial key broker: {e}")))?;
+
+        let status = response.status();
+        if status.is_success() {
+            return response.json::<KeyUsageQueryResponse>().await.map_err(|e| {
+                SystemError::BadGateway(format!("trial key broker returned an unexpected response: {e}"))
+            });
+        }
+
+        let reason = response
+            .json::<BrokerErrorBody>()
+            .await
+            .map(|b| b.error)
+            .unwrap_or_default();
+
+        Err(match status.as_u16() {
+            404 => SystemError::NotFound(match reason.as_str() {
+                "vendor_unknown" => "no trial vendor by that id on this broker".into(),
+                _ => "no active key matches the one you pasted".into(),
+            }),
+            429 => SystemError::RateLimited,
+            _ => SystemError::BadGateway(format!("trial key broker rejected the request ({status}): {reason}")),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -181,6 +226,15 @@ mod tests {
     async fn quota_without_a_broker_reports_plainly_too() {
         let service = service_with_broker(None).await;
         let err = service.read_quota_status("openrouter").await.unwrap_err();
+        assert!(matches!(err, SystemError::BadRequest(_)));
+    }
+
+    /// Same for the paste-key usage query — it has its own early return for
+    /// an unconfigured broker, separate from the install-id-based calls.
+    #[tokio::test]
+    async fn usage_query_without_a_broker_reports_plainly_too() {
+        let service = service_with_broker(None).await;
+        let err = service.query_usage_by_key("baoyun", "sk-whatever").await.unwrap_err();
         assert!(matches!(err, SystemError::BadRequest(_)));
     }
 

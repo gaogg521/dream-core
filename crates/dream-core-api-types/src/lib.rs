@@ -146,13 +146,13 @@ pub use project::{
 pub use provider::{
     BedrockAuthMethod, BedrockConfig, CreateProviderRequest, DetectProtocolRequest, DetectionSuggestion,
     FetchModelsAnonymousRequest, FetchModelsRequest, FetchModelsResponse, HealthStatus, KeyTestResult,
-    MeteredAccessResponse, MeteredClaimRequest, MeteredCreateOrderRequest, MeteredOrderResponse, MeteredQuotaQuery,
-    MeteredQuotaStatusResponse, ModelCapability, ModelHealthStatus, ModelImageInputCapability, ModelInfo,
-    ModelMaxTokensField, ModelOpenAiApiMode, ModelPlatformPreset, ModelPlatformsResponse, ModelSettings, ModelType,
-    MultiKeyResult, ProtocolDetectionResponse, ProviderHealthCheckErrorKind, ProviderHealthCheckRequest,
-    ProviderHealthCheckResponse, ProviderKeyStatus, ProviderResponse, SuggestionType, TopupOrderCreateRequest,
-    TopupOrderQuery, TopupOrderResponse, TrialKeyClaimRequest, TrialKeyResponse, TrialQuotaQuery,
-    TrialQuotaStatusResponse, UpdateProviderRequest,
+    KeyUsageLogEntry, KeyUsageQueryRequest, KeyUsageQueryResponse, MeteredAccessResponse, MeteredClaimRequest,
+    MeteredCreateOrderRequest, MeteredOrderResponse, MeteredQuotaQuery, MeteredQuotaStatusResponse, ModelCapability,
+    ModelHealthStatus, ModelImageInputCapability, ModelInfo, ModelMaxTokensField, ModelOpenAiApiMode,
+    ModelPlatformPreset, ModelPlatformsResponse, ModelSettings, ModelType, MultiKeyResult, ProtocolDetectionResponse,
+    ProviderHealthCheckErrorKind, ProviderHealthCheckRequest, ProviderHealthCheckResponse, ProviderKeyStatus,
+    ProviderResponse, SuggestionType, TopupOrderCreateRequest, TopupOrderQuery, TopupOrderResponse,
+    TrialKeyClaimRequest, TrialKeyResponse, TrialQuotaQuery, TrialQuotaStatusResponse, UpdateProviderRequest,
 };
 pub use remote_agent::{
     CreateRemoteAgentRequest, HandshakeResponse, RemoteAgentListItem, RemoteAgentResponse,

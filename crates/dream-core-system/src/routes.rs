@@ -9,12 +9,12 @@ use axum::routing::{delete, get, post};
 use dream_core_api_types::{
     ApiResponse, ClientPreferencesResponse, CreateProviderRequest, DetectProtocolRequest, EnsureNodeRuntimeRequest,
     EnsureNodeRuntimeResponse, FeedbackDiagnosticsQuery, FeedbackDiagnosticsResponse, FetchModelsAnonymousRequest,
-    FetchModelsRequest, FetchModelsResponse, MeteredAccessResponse, MeteredClaimRequest, MeteredCreateOrderRequest,
-    MeteredOrderResponse, MeteredQuotaQuery, MeteredQuotaStatusResponse, ModelPlatformsResponse,
-    ProtocolDetectionResponse, ProviderResponse, SystemInfoResponse, SystemSettingsResponse, TopupOrderCreateRequest,
-    TopupOrderQuery, TopupOrderResponse, TrialKeyClaimRequest, TrialKeyResponse, TrialQuotaQuery,
-    TrialQuotaStatusResponse, UpdateCheckRequest, UpdateCheckResult, UpdateClientPreferencesRequest,
-    UpdateProviderRequest, UpdateSettingsRequest,
+    FetchModelsRequest, FetchModelsResponse, KeyUsageQueryRequest, KeyUsageQueryResponse, MeteredAccessResponse,
+    MeteredClaimRequest, MeteredCreateOrderRequest, MeteredOrderResponse, MeteredQuotaQuery,
+    MeteredQuotaStatusResponse, ModelPlatformsResponse, ProtocolDetectionResponse, ProviderResponse,
+    SystemInfoResponse, SystemSettingsResponse, TopupOrderCreateRequest, TopupOrderQuery, TopupOrderResponse,
+    TrialKeyClaimRequest, TrialKeyResponse, TrialQuotaQuery, TrialQuotaStatusResponse, UpdateCheckRequest,
+    UpdateCheckResult, UpdateClientPreferencesRequest, UpdateProviderRequest, UpdateSettingsRequest,
 };
 use dream_core_auth::{CurrentUser, is_webui_proxied};
 use dream_core_common::ApiError;
@@ -119,6 +119,7 @@ impl From<SystemError> for ApiError {
 /// - `POST /api/providers/fetch-models`      — fetch models anonymously (pre-create preview)
 /// - `POST /api/providers/trial-key`         — issue a capped-spend trial model key for first-time users
 /// - `GET  /api/providers/trial-key/quota`   — where this install's trial allowance stands
+/// - `POST /api/providers/trial-key/usage`   — paste a key, see its usage (no install id needed)
 /// - `POST /api/providers/metered/claim`     — open a metered-proxy trial account (mode B)
 /// - `GET  /api/providers/metered/quota`     — where this install's metered balance stands
 /// - `POST /api/providers/metered/orders`    — create a top-up order
@@ -147,6 +148,7 @@ pub fn system_routes(state: SystemRouterState) -> Router {
         .route("/api/providers/fetch-models", post(fetch_models_anonymous))
         .route("/api/providers/trial-key", post(request_trial_key))
         .route("/api/providers/trial-key/quota", get(trial_key_quota))
+        .route("/api/providers/trial-key/usage", post(query_key_usage))
         // Mode B: metered proxy. Literal segments, registered before `/{id}`
         // for the same reason as the routes above.
         .route("/api/providers/metered/claim", post(metered_claim))
@@ -623,6 +625,22 @@ async fn trial_key_quota(
     let result = state
         .trial_key_service
         .read_quota_status(&query.vendor)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+/// "Paste your key, see your usage" — unlike `trial_key_quota`, this carries
+/// no install id at all; the broker identifies the key by its own hash, so
+/// possessing the plaintext is the authorization.
+async fn query_key_usage(
+    State(state): State<SystemRouterState>,
+    body: Result<Json<KeyUsageQueryRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<KeyUsageQueryResponse>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    let result = state
+        .trial_key_service
+        .query_usage_by_key(&req.vendor, &req.key)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(result)))
