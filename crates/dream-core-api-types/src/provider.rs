@@ -599,47 +599,6 @@ pub struct TopupOrderResponse {
     pub completed_at: Option<i64>,
 }
 
-/// Request body for `POST /api/providers/trial-key/usage` — the "paste your
-/// key, see your usage" self-service query. Identity here is proving
-/// possession of the key itself (the broker matches it by hash, never
-/// storing the plaintext), not this install — unlike every other trial-key
-/// call, this one carries no install id at all.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KeyUsageQueryRequest {
-    pub vendor: String,
-    pub key: String,
-}
-
-/// One usage-log entry, as the broker reports it (mirrors its own
-/// `UsageLogView`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KeyUsageLogEntry {
-    pub id: String,
-    /// `charge`, `error`, or `refund`.
-    pub kind: String,
-    /// Unix seconds.
-    pub created_at: i64,
-    pub model: String,
-    pub amount: f64,
-    pub prompt_tokens: i64,
-    pub completion_tokens: i64,
-    pub use_time_ms: i64,
-    pub request_id: String,
-    pub is_stream: bool,
-}
-
-/// Response for `POST /api/providers/trial-key/usage`: the matched key's
-/// current spend position plus its recent per-call usage.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KeyUsageQueryResponse {
-    pub vendor: String,
-    pub limit_usd: Option<f64>,
-    pub used_usd: f64,
-    pub remaining_usd: Option<f64>,
-    pub currency: String,
-    pub logs: Vec<KeyUsageLogEntry>,
-}
-
 /// Request body for `POST /api/providers/detect-protocol`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectProtocolRequest {
