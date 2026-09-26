@@ -255,24 +255,22 @@ impl dream_domain_sso::ScimLifecycle for ScimLifecycleAdapter {
     }
 
     async fn offboard(&self, user_id: &str) {
-        if let Ok(Some(eid)) = self.enterprise.deployment_company_id().await {
-            if let Ok(members) = self.enterprise.list_members(&eid).await {
-                if let Some(peer) = members.into_iter().find(|p| p.user_id != user_id) {
-                    if let Ok(memberships) = self.org.list_memberships(user_id).await {
-                        for m in memberships {
-                            if let Err(error) = self
-                                .devops
-                                .transfer_ownership(user_id, &peer.user_id, &m.tenant_id)
-                                .await
-                            {
-                                tracing::warn!(%error, user_id, "SCIM ownership transfer skipped");
-                            }
-                        }
-                    }
-                    if let Err(error) = self.enterprise.remove_member(&eid, &peer.user_id, user_id).await {
-                        tracing::warn!(%error, user_id, "SCIM company removal skipped");
-                    }
+        if let Ok(Some(eid)) = self.enterprise.deployment_company_id().await
+            && let Ok(members) = self.enterprise.list_members(&eid).await
+            && let Some(peer) = members.into_iter().find(|p| p.user_id != user_id)
+            && let Ok(memberships) = self.org.list_memberships(user_id).await
+        {
+            for m in memberships {
+                if let Err(error) = self
+                    .devops
+                    .transfer_ownership(user_id, &peer.user_id, &m.tenant_id)
+                    .await
+                {
+                    tracing::warn!(%error, user_id, "SCIM ownership transfer skipped");
                 }
+            }
+            if let Err(error) = self.enterprise.remove_member(&eid, &peer.user_id, user_id).await {
+                tracing::warn!(%error, user_id, "SCIM company removal skipped");
             }
         }
         self.revoke_sessions(user_id).await;
