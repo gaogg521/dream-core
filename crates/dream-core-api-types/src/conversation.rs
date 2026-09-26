@@ -1019,7 +1019,7 @@ mod tests {
                 { "kind": "upload", "path": "/tmp/a.rs" },
                 { "kind": "local", "path": "/Users/me/notes.txt" }
             ],
-            "inject_skills": ["security-review"],
+            "injectSkills": ["security-review"],
             "hidden": true
         });
         let req: SendMessageRequest = serde_json::from_value(raw).unwrap();
