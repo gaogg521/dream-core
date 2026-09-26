@@ -16,9 +16,9 @@ use crate::error::OrgError;
 use crate::integration::IntegrationTestResult;
 use crate::models::{
     AdminUserDto, AgentAuditEntry, AuditLogRow, DepartmentDto, DirectoryMapReport, EnterpriseTenantDto, IntegrationDto,
-    InviteDto, MyTenantDto, OrgContextDto, ResetLocalResult, RuntimeNodeDto, SmtpConfigDto, TenantSummaryDto,
-    is_admin_role, is_enterprise_tenant_id, is_system_admin_role, ROLE_AUDITOR, ROLE_COLLABORATOR,
-    ROLE_INTEGRATION_ADMIN, ROLE_MEMBER, ROLE_ORG_ADMIN, ROLE_RESOURCE_ADMIN, ROLE_SYSTEM_ADMIN,
+    InviteDto, MyTenantDto, OrgContextDto, ROLE_AUDITOR, ROLE_COLLABORATOR, ROLE_INTEGRATION_ADMIN, ROLE_MEMBER,
+    ROLE_ORG_ADMIN, ROLE_RESOURCE_ADMIN, ROLE_SYSTEM_ADMIN, ResetLocalResult, RuntimeNodeDto, SmtpConfigDto,
+    TenantSummaryDto, is_admin_role, is_enterprise_tenant_id, is_system_admin_role,
 };
 use crate::rbac::{OrgActor, RequireIntegrationAdmin, RequireOrgAdmin, RequireSystemAdmin};
 use crate::state::OneOrgRouterState;
@@ -836,8 +836,7 @@ async fn admin_sync_integration(
     Path(provider): Path<String>,
     body: Option<Json<serde_json::Value>>,
 ) -> Result<Json<ApiResponse<crate::integration::IntegrationSyncResult>>, OrgError> {
-    let cursor = body
-        .and_then(|Json(v)| v.get("cursor").and_then(|c| c.as_str()).map(str::to_owned));
+    let cursor = body.and_then(|Json(v)| v.get("cursor").and_then(|c| c.as_str()).map(str::to_owned));
     Ok(Json(ApiResponse::ok(
         state
             .service

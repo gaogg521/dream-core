@@ -266,8 +266,8 @@ mod tests {
     use std::time::Duration;
 
     use saml_rs::binding::{base64_decode, base64_encode};
-    use saml_rs::constants::signature_algorithm::RSA_SHA256;
     use saml_rs::constants::Binding;
+    use saml_rs::constants::signature_algorithm::RSA_SHA256;
     use saml_rs::entity::{EntitySetting, User};
     use saml_rs::idp::LoginResponseOptions;
     use saml_rs::metadata::{Endpoint, IdpMetadataConfig, SpMetadataConfig};
@@ -381,10 +381,15 @@ mod tests {
     }
 
     fn backdate_pending(state: &str, age: Duration) {
-        pending_store().lock().unwrap().requests.get_mut(state).unwrap().issued_at =
-            std::time::SystemTime::now()
-                .checked_sub(age)
-                .expect("backdate under test clocks");
+        pending_store()
+            .lock()
+            .unwrap()
+            .requests
+            .get_mut(state)
+            .unwrap()
+            .issued_at = std::time::SystemTime::now()
+            .checked_sub(age)
+            .expect("backdate under test clocks");
     }
 
     #[test]
@@ -407,11 +412,7 @@ mod tests {
     fn full_roundtrip_accepts_signed_response_and_maps_identity() {
         let state = "rt-ok";
         let _config = begin(state);
-        let response = issue_response(
-            &local_idp(IDP_CERT, IDP_PRIVKEY),
-            &pending_request_id(state),
-            state,
-        );
+        let response = issue_response(&local_idp(IDP_CERT, IDP_PRIVKEY), &pending_request_id(state), state);
         let user = SamlProvider::complete(state, &response, Some(state)).unwrap();
         assert_eq!(user.external_id, "alice@example.test");
         assert_eq!(user.preferred_username, "Alice Example");
@@ -434,11 +435,7 @@ mod tests {
     fn tampered_assertion_is_rejected() {
         let state = "rt-tamper";
         let _config = begin(state);
-        let response = issue_response(
-            &local_idp(IDP_CERT, IDP_PRIVKEY),
-            &pending_request_id(state),
-            state,
-        );
+        let response = issue_response(&local_idp(IDP_CERT, IDP_PRIVKEY), &pending_request_id(state), state);
         let xml = base64_decode(&response).unwrap();
         let xml = String::from_utf8(xml).unwrap();
         assert!(xml.contains("alice@example.test"), "fixture NameID missing");
@@ -472,11 +469,7 @@ mod tests {
         let state = "rt-expired";
         let _config = begin(state);
         backdate_pending(state, SAML_PENDING_TTL + Duration::from_secs(5));
-        let response = issue_response(
-            &local_idp(IDP_CERT, IDP_PRIVKEY),
-            &pending_request_id(state),
-            state,
-        );
+        let response = issue_response(&local_idp(IDP_CERT, IDP_PRIVKEY), &pending_request_id(state), state);
         let result = SamlProvider::complete(state, &response, Some(state));
         assert!(matches!(result, Err(SsoError::InvalidState)), "got {result:?}");
     }
@@ -485,11 +478,7 @@ mod tests {
     fn relay_state_mismatch_is_rejected() {
         let state = "rt-relay";
         let _config = begin(state);
-        let response = issue_response(
-            &local_idp(IDP_CERT, IDP_PRIVKEY),
-            &pending_request_id(state),
-            state,
-        );
+        let response = issue_response(&local_idp(IDP_CERT, IDP_PRIVKEY), &pending_request_id(state), state);
         let result = SamlProvider::complete(state, &response, Some("relay-forged"));
         assert!(matches!(result, Err(SsoError::InvalidState)), "got {result:?}");
     }
@@ -511,9 +500,7 @@ mod tests {
     #[test]
     fn replay_cache_rejects_second_use_of_same_assertion() {
         let mut cache = InMemoryReplayCache::default();
-        let key = ReplayKey::ResponseId(
-            saml_rs::model::MessageId::try_new("_response_replayed_once").unwrap(),
-        );
+        let key = ReplayKey::ResponseId(saml_rs::model::MessageId::try_new("_response_replayed_once").unwrap());
         let expiry = std::time::SystemTime::now() + Duration::from_secs(60);
         cache.check_and_store(key.clone(), expiry).unwrap();
         let second = cache.check_and_store(key, expiry);

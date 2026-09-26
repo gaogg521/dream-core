@@ -11,12 +11,12 @@
 
 pub mod backup;
 pub mod bridge;
+pub mod connector_sync;
 pub mod credential_revoker;
 pub mod directory_bridge;
 pub mod email;
 pub mod enterprise_hooks;
 pub mod error;
-pub mod connector_sync;
 pub mod integration;
 pub mod migrate;
 pub mod models;
@@ -27,12 +27,12 @@ pub mod service;
 pub mod state;
 
 pub use bridge::CompanyAdminResolver;
+pub use connector_sync::HttpConnectorProvider;
 pub use credential_revoker::{CredentialRevoker, NoopCredentialRevoker};
 pub use directory_bridge::{DirectoryDepartmentRef, DirectoryTreeSource, NoopDirectoryTreeSource};
 pub use email::{EmailSender, SendEmailResult, StubEmailSender, send_invite_via_smtp};
 pub use enterprise_hooks::CompanySeatSync;
 pub use error::OrgError;
-pub use connector_sync::HttpConnectorProvider;
 pub use integration::{
     IntegrationCredentials, IntegrationProvider, IntegrationSyncResult, IntegrationTestResult, KNOWN_PROVIDERS,
     StubIntegrationProvider,

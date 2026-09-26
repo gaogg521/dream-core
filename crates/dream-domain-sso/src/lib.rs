@@ -7,7 +7,6 @@
 //! merge in dream-app and public upstream service APIs (IUserRepository,
 //! JwtSecret, hash_password).
 
-pub mod scim;
 pub mod directory;
 pub mod enterprise;
 pub mod error;
@@ -17,6 +16,7 @@ pub mod org_hooks;
 pub mod providers;
 pub mod rbac;
 pub mod routes;
+pub mod scim;
 pub mod service;
 pub mod state;
 

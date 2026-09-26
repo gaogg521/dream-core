@@ -123,10 +123,7 @@ async fn verify_token(state: &OneSsoRouterState, presented: &str) -> Result<bool
     let row: Option<(String, i64)> = state
         .service
         .db()
-        .fetch_optional_as(
-            "SELECT token_sha256, enabled FROM one_scim_settings WHERE id = 1",
-            &[],
-        )
+        .fetch_optional_as("SELECT token_sha256, enabled FROM one_scim_settings WHERE id = 1", &[])
         .await?;
     let Some((stored, enabled)) = row else {
         return Ok(false);
@@ -333,7 +330,13 @@ async fn replace_user_inner(state: &OneSsoRouterState, id: &str, body: Value) ->
         .db()
         .execute(
             "UPDATE one_scim_users SET user_name = ?, display_name = ?, active = ?, updated_at = ? WHERE id = ?",
-            &db_params![&user_name, display_name.as_deref(), if active { 1 } else { 0 }, now_ms(), id],
+            &db_params![
+                &user_name,
+                display_name.as_deref(),
+                if active { 1 } else { 0 },
+                now_ms(),
+                id
+            ],
         )
         .await?;
     Ok(user_resource(&load_user(state, id).await?.expect("updated")))
@@ -361,12 +364,12 @@ async fn patch_user_inner(state: &OneSsoRouterState, id: &str, body: Value) -> R
     for op in ops {
         match op.path.as_deref() {
             Some("active") | None if op.is_replace() && op.path.is_none() => {
-                if let Some(v) = op.value.as_ref().and_then(json_bool).or_else(|| {
-                    op.value
-                        .as_ref()
-                        .and_then(|v| v.get("active"))
-                        .and_then(json_bool)
-                }) {
+                if let Some(v) = op
+                    .value
+                    .as_ref()
+                    .and_then(json_bool)
+                    .or_else(|| op.value.as_ref().and_then(|v| v.get("active")).and_then(json_bool))
+                {
                     active = v;
                 }
             }
@@ -390,7 +393,13 @@ async fn patch_user_inner(state: &OneSsoRouterState, id: &str, body: Value) -> R
         .db()
         .execute(
             "UPDATE one_scim_users SET user_name = ?, display_name = ?, active = ?, updated_at = ? WHERE id = ?",
-            &db_params![&user_name, display_name.as_deref(), if active { 1 } else { 0 }, now_ms(), id],
+            &db_params![
+                &user_name,
+                display_name.as_deref(),
+                if active { 1 } else { 0 },
+                now_ms(),
+                id
+            ],
         )
         .await?;
     row = load_user(state, id).await?.expect("updated");
@@ -398,10 +407,12 @@ async fn patch_user_inner(state: &OneSsoRouterState, id: &str, body: Value) -> R
 }
 
 async fn apply_active_change(state: &OneSsoRouterState, row: &ScimUserRow, active: bool) -> Result<(), SsoError> {
-    if row.active != 0 && !active
-        && let Some(hook) = state.scim_lifecycle.as_ref() {
-            hook.revoke_sessions(&row.user_id).await;
-        }
+    if row.active != 0
+        && !active
+        && let Some(hook) = state.scim_lifecycle.as_ref()
+    {
+        hook.revoke_sessions(&row.user_id).await;
+    }
     Ok(())
 }
 
@@ -577,7 +588,12 @@ async fn patch_group_inner(state: &OneSsoRouterState, id: &str, body: Value) -> 
     Ok(group_resource(&row, members))
 }
 
-async fn apply_member_op(state: &OneSsoRouterState, group_id: &str, op: &str, value: Option<&Value>) -> Result<(), SsoError> {
+async fn apply_member_op(
+    state: &OneSsoRouterState,
+    group_id: &str,
+    op: &str,
+    value: Option<&Value>,
+) -> Result<(), SsoError> {
     let op = op.to_ascii_lowercase();
     let values: Vec<&Value> = match value {
         Some(Value::Array(a)) => a.iter().collect(),
@@ -620,7 +636,10 @@ async fn delete_group(State(state): State<OneSsoRouterState>, Path(id): Path<Str
     match state
         .service
         .db()
-        .execute("DELETE FROM one_scim_group_members WHERE group_id = ?", &db_params![&id])
+        .execute(
+            "DELETE FROM one_scim_group_members WHERE group_id = ?",
+            &db_params![&id],
+        )
         .await
     {
         Ok(_) => {}
@@ -677,12 +696,11 @@ fn patch_ops(body: &Value) -> Result<Vec<PatchOp>, SsoError> {
     Ok(ops
         .iter()
         .map(|op| PatchOp {
-            op: op
-                .get("op")
+            op: op.get("op").and_then(|v| v.as_str()).unwrap_or("replace").to_owned(),
+            path: op
+                .get("path")
                 .and_then(|v| v.as_str())
-                .unwrap_or("replace")
-                .to_owned(),
-            path: op.get("path").and_then(|v| v.as_str()).map(|s| s.trim_start_matches('/').to_owned()),
+                .map(|s| s.trim_start_matches('/').to_owned()),
             value: op.get("value").cloned(),
         })
         .collect())
@@ -731,7 +749,9 @@ pub async fn admin_put_scim_token(
         return Err(SsoError::BadRequest("bearerToken required".into()));
     }
     set_bearer_token(&state, body.bearer_token.trim()).await?;
-    Ok(Json(dream_core_api_types::ApiResponse::ok(json!({ "configured": true }))))
+    Ok(Json(dream_core_api_types::ApiResponse::ok(
+        json!({ "configured": true }),
+    )))
 }
 
 // Silence unused imports used only by tests / wiring.
@@ -927,15 +947,12 @@ mod tests {
         let (app, rec, token) = harness().await;
         let (_, created) = call(
             app.clone(),
-            authed(
-                &token,
-                axum::http::Request::post("/scim/v2/Users"),
-            )
-            .header("content-type", "application/json")
-            .body(axum::body::Body::from(
-                json!({ "userName": "az", "externalId": "az-1" }).to_string(),
-            ))
-            .unwrap(),
+            authed(&token, axum::http::Request::post("/scim/v2/Users"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    json!({ "userName": "az", "externalId": "az-1" }).to_string(),
+                ))
+                .unwrap(),
         )
         .await;
         let id = created["id"].as_str().unwrap();
@@ -961,7 +978,9 @@ mod tests {
             app.clone(),
             authed(&token, axum::http::Request::post("/scim/v2/Users"))
                 .header("content-type", "application/json")
-                .body(axum::body::Body::from(json!({"userName":"m","externalId":"m1"}).to_string()))
+                .body(axum::body::Body::from(
+                    json!({"userName":"m","externalId":"m1"}).to_string(),
+                ))
                 .unwrap(),
         )
         .await;

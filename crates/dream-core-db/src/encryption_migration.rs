@@ -57,7 +57,9 @@ pub struct EncryptionMigrationReport {
 
 impl EncryptionMigrationReport {
     fn is_empty(&self) -> bool {
-        self.mcp_servers_encrypted == 0 && self.oauth_access_tokens_encrypted == 0 && self.oauth_refresh_tokens_encrypted == 0
+        self.mcp_servers_encrypted == 0
+            && self.oauth_access_tokens_encrypted == 0
+            && self.oauth_refresh_tokens_encrypted == 0
     }
 }
 
@@ -66,7 +68,10 @@ impl EncryptionMigrationReport {
 /// `encryption_key` (the same 32-byte AES-256 key the repositories use for
 /// new writes). Safe to call on every startup — see the module docs for why
 /// this is idempotent and interruption-safe.
-pub async fn encrypt_legacy_plaintext(pool: &SqlitePool, encryption_key: &[u8]) -> Result<EncryptionMigrationReport, DbError> {
+pub async fn encrypt_legacy_plaintext(
+    pool: &SqlitePool,
+    encryption_key: &[u8],
+) -> Result<EncryptionMigrationReport, DbError> {
     let mut report = EncryptionMigrationReport {
         mcp_servers_encrypted: encrypt_mcp_server_configs(pool, encryption_key).await?,
         ..Default::default()
@@ -238,14 +243,25 @@ mod tests {
         let db = init_database_memory().await.unwrap();
         let pool = db.pool();
 
-        seed_mcp_server(pool, "mcp_1", r#"{"command":"npx","args":[],"env":{"TOKEN":"secret-1"}}"#).await;
+        seed_mcp_server(
+            pool,
+            "mcp_1",
+            r#"{"command":"npx","args":[],"env":{"TOKEN":"secret-1"}}"#,
+        )
+        .await;
         seed_mcp_server(
             pool,
             "mcp_2",
             r#"{"url":"https://x","headers":{"Authorization":"Bearer secret-2"}}"#,
         )
         .await;
-        seed_oauth_token(pool, "https://a.example.com", "access-secret-a", Some("refresh-secret-a")).await;
+        seed_oauth_token(
+            pool,
+            "https://a.example.com",
+            "access-secret-a",
+            Some("refresh-secret-a"),
+        )
+        .await;
         seed_oauth_token(pool, "https://b.example.com", "access-secret-b", None).await;
 
         let report = encrypt_legacy_plaintext(pool, &TEST_KEY).await.unwrap();
@@ -281,7 +297,13 @@ mod tests {
         let db = init_database_memory().await.unwrap();
         let pool = db.pool();
         seed_mcp_server(pool, "mcp_1", r#"{"command":"npx","args":[],"env":{}}"#).await;
-        seed_oauth_token(pool, "https://a.example.com", "access-secret-a", Some("refresh-secret-a")).await;
+        seed_oauth_token(
+            pool,
+            "https://a.example.com",
+            "access-secret-a",
+            Some("refresh-secret-a"),
+        )
+        .await;
 
         let first = encrypt_legacy_plaintext(pool, &TEST_KEY).await.unwrap();
         assert!(!first.is_empty());
@@ -327,10 +349,14 @@ mod tests {
         seed_mcp_server(pool, "mcp_pending", "still-plaintext").await;
 
         let report = encrypt_legacy_plaintext(pool, &TEST_KEY).await.unwrap();
-        assert_eq!(report.mcp_servers_encrypted, 1, "only the plaintext row should be touched");
+        assert_eq!(
+            report.mcp_servers_encrypted, 1,
+            "only the plaintext row should be touched"
+        );
 
         assert_eq!(
-            raw_mcp_config(pool, "mcp_done").await, already_encrypted,
+            raw_mcp_config(pool, "mcp_done").await,
+            already_encrypted,
             "already-encrypted row must be left byte-for-byte untouched"
         );
         assert!(is_encrypted_field(&raw_mcp_config(pool, "mcp_pending").await));

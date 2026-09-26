@@ -68,10 +68,7 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
             get(get_collaboration).put(set_collaboration),
         )
         .route("/api/one/admin/platform/collaboration/probe", post(probe_collaboration))
-        .route(
-            "/api/one/admin/platform/collaboration/relay",
-            post(relay_collaboration),
-        )
+        .route("/api/one/admin/platform/collaboration/relay", post(relay_collaboration))
         .route(
             "/api/one/admin/platform/ip-allowlist",
             get(get_ip_allowlist).put(set_ip_allowlist),

@@ -537,11 +537,8 @@ async fn saml_callback(
     if entry.provider != SsoProviderKind::Saml {
         return Err(SsoError::InvalidState);
     }
-    let profile = crate::providers::saml::SamlProvider::complete(
-        state_token,
-        &form.saml_response,
-        form.relay_state.as_deref(),
-    )?;
+    let profile =
+        crate::providers::saml::SamlProvider::complete(state_token, &form.saml_response, form.relay_state.as_deref())?;
     finish_external_login(&state, entry, SsoProviderKind::Saml, profile).await
 }
 

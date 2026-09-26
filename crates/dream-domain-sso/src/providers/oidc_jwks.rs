@@ -61,9 +61,8 @@ impl JwksCache {
 
     fn cached(&self, uri: &str) -> Option<JwkSet> {
         let map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        map.get(uri).and_then(|c| {
-            (c.fetched_at.elapsed() < JWKS_TTL).then(|| c.set.clone())
-        })
+        map.get(uri)
+            .and_then(|c| (c.fetched_at.elapsed() < JWKS_TTL).then(|| c.set.clone()))
     }
 
     fn find_in(set: &JwkSet, kid: Option<&str>) -> Option<Jwk> {
@@ -209,8 +208,7 @@ pub(crate) async fn verify_id_token(
     let header = reject_insecure_alg(id_token)?;
     let kid = header.kid.as_deref();
     let jwk = cache.key_for_kid(client, jwks_uri, kid).await?;
-    let decoding_key =
-        DecodingKey::from_jwk(&jwk).map_err(|e| SsoError::Internal(format!("OIDC JWKS key: {e}")))?;
+    let decoding_key = DecodingKey::from_jwk(&jwk).map_err(|e| SsoError::Internal(format!("OIDC JWKS key: {e}")))?;
 
     let mut validation = Validation::new(header.alg);
     // Only the token's own algorithm. Mixing RSA and EC in `algorithms`

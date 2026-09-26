@@ -2736,9 +2736,7 @@ pub(crate) fn build_governance_plane(
             std::sync::Arc::new(ModelChannelRevoker(one_devops_service.clone())),
             std::sync::Arc::new(ApiKeyRevoker(one_platform_service.clone())),
         ])))
-        .with_integration_provider(std::sync::Arc::new(
-            dream_domain_org::HttpConnectorProvider::default(),
-        )),
+        .with_integration_provider(std::sync::Arc::new(dream_domain_org::HttpConnectorProvider::default())),
     );
     // one-enterprise service (真实企业 / company tier) — constructed here so its
     // company-admin bridges can be wired into one-org and one-sso below, and so
@@ -3511,11 +3509,14 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
             rate: SecurityPolicySendRateGate::new(one_platform_service.clone(), policy_grace.clone()),
         }));
 
-    states.conversation.service.with_session_delivery_gate(std::sync::Arc::new(
-        crate::router::session_delivery::ClientPrefSessionDeliveryGate {
-            client_pref: session_delivery_client_pref,
-        },
-    ));
+    states
+        .conversation
+        .service
+        .with_session_delivery_gate(std::sync::Arc::new(
+            crate::router::session_delivery::ClientPrefSessionDeliveryGate {
+                client_pref: session_delivery_client_pref,
+            },
+        ));
     {
         let conversation_service = states.conversation.service.clone();
         let task_manager = services.worker_task_manager.clone();
@@ -3523,9 +3524,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
             loop {
                 tick.tick().await;
-                conversation_service
-                    .run_session_delivery_tick(&task_manager)
-                    .await;
+                conversation_service.run_session_delivery_tick(&task_manager).await;
             }
         });
     }

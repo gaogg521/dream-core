@@ -4382,7 +4382,12 @@ impl PlatformService {
             )));
         }
         if input.scope == crate::models::SHARE_SCOPE_USER
-            && input.target_user_id.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_none()
+            && input
+                .target_user_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_none()
         {
             return Err(PlatformError::BadRequest(
                 "scope 'user' requires the recipient's user id (targetUserId)".into(),
@@ -4543,7 +4548,7 @@ impl PlatformService {
             &input.scope,
             &name,
             uploaded,
-                input.target_user_id.as_deref(),
+            input.target_user_id.as_deref(),
         )
         .await?;
         Ok(ConversationShareDto {
@@ -5041,7 +5046,6 @@ mod tests {
             "cross-tenant inbox must stay empty"
         );
     }
-
 
     /// `scope = "user"` shares reach exactly one recipient: the target
     /// member's inbox shows it and reads it; the owner and every other

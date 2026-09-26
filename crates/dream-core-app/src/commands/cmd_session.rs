@@ -29,11 +29,7 @@ async fn run_inner(args: SessionArgs) -> Result<(), ExitCode> {
         })),
         SessionCommand::List => run_list().await,
         SessionCommand::Unknown(path) => {
-            let sub = path
-                .iter()
-                .map(|p| p.to_string_lossy())
-                .collect::<Vec<_>>()
-                .join(" ");
+            let sub = path.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join(" ");
             eprintln!("SESSION_CLI_UNKNOWN_COMMAND command=\"session\": unknown subcommand {sub}");
             Err(ExitCode::from(2))
         }
@@ -42,10 +38,7 @@ async fn run_inner(args: SessionArgs) -> Result<(), ExitCode> {
 
 async fn run_list() -> Result<(), ExitCode> {
     let env = runtime_env("session list")?;
-    let url = format!(
-        "{}/api/conversations?limit=100",
-        env.base_url.trim_end_matches('/')
-    );
+    let url = format!("{}/api/conversations?limit=100", env.base_url.trim_end_matches('/'));
     let mut request = reqwest::Client::new()
         .get(&url)
         .header("content-type", "application/json")

@@ -203,10 +203,7 @@ impl OidcProvider {
             .id_token
             .filter(|t| !t.trim().is_empty())
             .ok_or_else(|| SsoError::Internal("OIDC token exchange: missing id_token".into()))?;
-        Ok(OidcTokens {
-            access_token,
-            id_token,
-        })
+        Ok(OidcTokens { access_token, id_token })
     }
 
     /// Code exchange + JWKS verify + userinfo, with subject agreement.
@@ -219,10 +216,9 @@ impl OidcProvider {
     ) -> Result<ProviderUserInfo, SsoError> {
         let tokens = Self::exchange_code(discovery, config, code).await?;
         let client = Self::client()?;
-        let id_claims = crate::providers::oidc_jwks::verify_id_token(
-            &client, cache, discovery, config, &tokens.id_token, nonce,
-        )
-        .await?;
+        let id_claims =
+            crate::providers::oidc_jwks::verify_id_token(&client, cache, discovery, config, &tokens.id_token, nonce)
+                .await?;
         let userinfo = Self::fetch_user_info(discovery, &tokens.access_token).await?;
         crate::providers::oidc_jwks::identities_must_match(
             &id_claims,
@@ -690,15 +686,10 @@ LHIbJB+Lsdt0yBmT2Gm0
         let cache = crate::providers::oidc_jwks::JwksCache::new();
         let client = OidcProvider::client().unwrap();
         let jwks_uri = d.jwks_uri.as_deref().unwrap();
-        cache
-            .key_for_kid(&client, jwks_uri, Some("other-kid"))
+        cache.key_for_kid(&client, jwks_uri, Some("other-kid")).await.unwrap();
+        let err = crate::providers::oidc_jwks::verify_id_token(&client, &cache, &d, &cfg, &id_token, TEST_NONCE)
             .await
-            .unwrap();
-        let err = crate::providers::oidc_jwks::verify_id_token(
-            &client, &cache, &d, &cfg, &id_token, TEST_NONCE,
-        )
-        .await
-        .unwrap_err();
+            .unwrap_err();
         assert!(format!("{err}").contains("not present in JWKS after refresh"));
         server.verify().await;
     }
@@ -737,9 +728,9 @@ LHIbJB+Lsdt0yBmT2Gm0
         assert!(crate::providers::oidc_jwks::test_header_alg_is_none(
             "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJ1In0."
         ));
-        assert!(!crate::providers::oidc_jwks::test_header_alg_is_none(
-            &sign_id_token(TEST_KID, TEST_NONCE, TEST_SUB, 3600)
-        ));
+        assert!(!crate::providers::oidc_jwks::test_header_alg_is_none(&sign_id_token(
+            TEST_KID, TEST_NONCE, TEST_SUB, 3600
+        )));
     }
 
     #[tokio::test]
@@ -757,11 +748,9 @@ LHIbJB+Lsdt0yBmT2Gm0
         let d = OidcProvider::discover(&cfg).await.unwrap();
         let cache = crate::providers::oidc_jwks::JwksCache::new();
         let client = OidcProvider::client().unwrap();
-        let err = crate::providers::oidc_jwks::verify_id_token(
-            &client, &cache, &d, &cfg, none_token, TEST_NONCE,
-        )
-        .await
-        .unwrap_err();
+        let err = crate::providers::oidc_jwks::verify_id_token(&client, &cache, &d, &cfg, none_token, TEST_NONCE)
+            .await
+            .unwrap_err();
         assert!(format!("{err}").contains("alg none"));
         server.verify().await;
     }
@@ -776,11 +765,9 @@ LHIbJB+Lsdt0yBmT2Gm0
         let d = OidcProvider::discover(&cfg).await.unwrap();
         let cache = crate::providers::oidc_jwks::JwksCache::new();
         let client = OidcProvider::client().unwrap();
-        let err = crate::providers::oidc_jwks::verify_id_token(
-            &client, &cache, &d, &cfg, &id_token, TEST_NONCE,
-        )
-        .await
-        .unwrap_err();
+        let err = crate::providers::oidc_jwks::verify_id_token(&client, &cache, &d, &cfg, &id_token, TEST_NONCE)
+            .await
+            .unwrap_err();
         assert!(format!("{err}").contains("id_token verify"));
     }
 
@@ -794,11 +781,9 @@ LHIbJB+Lsdt0yBmT2Gm0
         let d = OidcProvider::discover(&cfg).await.unwrap();
         let cache = crate::providers::oidc_jwks::JwksCache::new();
         let client = OidcProvider::client().unwrap();
-        let err = crate::providers::oidc_jwks::verify_id_token(
-            &client, &cache, &d, &cfg, &id_token, TEST_NONCE,
-        )
-        .await
-        .unwrap_err();
+        let err = crate::providers::oidc_jwks::verify_id_token(&client, &cache, &d, &cfg, &id_token, TEST_NONCE)
+            .await
+            .unwrap_err();
         assert!(format!("{err}").contains("nonce mismatch"));
     }
 
@@ -864,11 +849,9 @@ LHIbJB+Lsdt0yBmT2Gm0
         let d = OidcProvider::discover(&cfg).await.unwrap();
         let cache = crate::providers::oidc_jwks::JwksCache::new();
         let client = OidcProvider::client().unwrap();
-        let err = crate::providers::oidc_jwks::verify_id_token(
-            &client, &cache, &d, &cfg, &id_token, TEST_NONCE,
-        )
-        .await
-        .unwrap_err();
+        let err = crate::providers::oidc_jwks::verify_id_token(&client, &cache, &d, &cfg, &id_token, TEST_NONCE)
+            .await
+            .unwrap_err();
         assert!(format!("{err}").contains("JWKS"));
     }
 }

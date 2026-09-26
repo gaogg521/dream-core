@@ -1,7 +1,7 @@
 //! Client-preference gate for cross-session delivery.
 
 use async_trait::async_trait;
-use dream_core_conversation::session_delivery::{SessionDeliveryGate, CLIENT_PREF_CROSS_SESSION};
+use dream_core_conversation::session_delivery::{CLIENT_PREF_CROSS_SESSION, SessionDeliveryGate};
 use dream_core_system::ClientPrefService;
 
 #[derive(Clone)]

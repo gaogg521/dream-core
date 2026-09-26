@@ -418,11 +418,7 @@ impl SsoService {
         })
     }
 
-    pub async fn find_identity(
-        &self,
-        provider: &str,
-        external_id: &str,
-    ) -> Result<Option<SsoIdentityRow>, SsoError> {
+    pub async fn find_identity(&self, provider: &str, external_id: &str) -> Result<Option<SsoIdentityRow>, SsoError> {
         let row = self
             .db
             .fetch_optional_as::<SsoIdentityRow>(

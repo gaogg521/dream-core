@@ -1129,13 +1129,7 @@ mod tests {
     }
 
     /// Captures what the billing plane would have been told.
-    type RecordedUsage = (
-        String,
-        Option<String>,
-        Option<String>,
-        Option<i64>,
-        Option<i64>,
-    );
+    type RecordedUsage = (String, Option<String>, Option<String>, Option<i64>, Option<i64>);
 
     #[derive(Default)]
     struct RecordingUsageRecorder(std::sync::Mutex<Vec<RecordedUsage>>);
