@@ -71,6 +71,9 @@ const AUTO_INJECTED_BUILTIN_NAMES: &[&str] = &[
     // chrome-devtools-mcp version — both downstream of a gate that was never
     // open.
     "one-browser",
+    // Pre-rebrand legacy alias: sessions created before the rename still ask
+    // for the browser MCP under this name (dream-ui's
+    // BUILTIN_BROWSER_MCP_LEGACY_NAMES mirrors it). Deliberate, keep.
     "aionui-browser",
     // Reading the open page is the same capability minus the automation, and
     // ships as its own server so a model reaches for text extraction instead of
