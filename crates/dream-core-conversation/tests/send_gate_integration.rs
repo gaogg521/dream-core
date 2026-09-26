@@ -147,6 +147,9 @@ fn make_send_req() -> SendMessageRequest {
         files: Vec::<ChatFileRef>::new(),
         inject_skills: Vec::new(),
         hidden: false,
+        // 普通用户的门禁发送：默认期待回信（@@ 投递才传 false，见
+        // session_delivery 的 reply_requested 语义）。
+        reply_requested: true,
     }
 }
 

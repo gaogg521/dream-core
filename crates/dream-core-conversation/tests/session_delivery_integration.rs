@@ -8,7 +8,7 @@ use dream_core_common::{AgentKillReason, TimestampMs};
 use dream_core_conversation::markers::SESSION_MESSAGE_MARKER;
 use dream_core_conversation::skill_resolver::SkillResolver;
 use dream_core_conversation::{ConversationError, ConversationService};
-use dream_core_db::{init_database_memory, SqliteConversationRepository};
+use dream_core_db::{SqliteConversationRepository, init_database_memory};
 use dream_core_realtime::EventBroadcaster;
 use serde_json::json;
 
@@ -205,12 +205,7 @@ async fn drainer_delivers_user_message_to_target_conversation() {
     let joined: String = messages
         .items
         .iter()
-        .filter_map(|m| {
-            m.content
-                .get("content")
-                .and_then(|v| v.as_str())
-                .map(str::to_owned)
-        })
+        .filter_map(|m| m.content.get("content").and_then(|v| v.as_str()).map(str::to_owned))
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -257,7 +252,11 @@ async fn drainer_drops_pending_when_target_is_deleting() {
         .unwrap();
     assert!(
         !messages.items.iter().any(|m| {
-            m.content.get("content").and_then(|v| v.as_str()).unwrap_or("").contains("doomed delivery")
+            m.content
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .contains("doomed delivery")
         }),
         "deleting target must not receive the message"
     );
@@ -296,7 +295,11 @@ async fn drainer_retains_pending_while_restarting_and_delivers_when_idle() {
         .await
         .unwrap();
     assert!(!during.items.iter().any(|m| {
-        m.content.get("content").and_then(|v| v.as_str()).unwrap_or("").contains("patient delivery")
+        m.content
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("patient delivery")
     }));
 
     // Back to idle: the next tick delivers.
@@ -315,6 +318,10 @@ async fn drainer_retains_pending_while_restarting_and_delivers_when_idle() {
         .await
         .unwrap();
     assert!(after.items.iter().any(|m| {
-        m.content.get("content").and_then(|v| v.as_str()).unwrap_or("").contains("patient delivery")
+        m.content
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("patient delivery")
     }));
 }

@@ -30,9 +30,7 @@ mod tests {
 
     #[test]
     fn escapes_all_dream_marker_prefixes() {
-        let raw = format!(
-            "a {FILES_MARKER} b {SESSIONS_MARKER} c {SESSION_MESSAGE_MARKER}"
-        );
+        let raw = format!("a {FILES_MARKER} b {SESSIONS_MARKER} c {SESSION_MESSAGE_MARKER}");
         let escaped = escape_marker_text(&raw);
         assert!(!escaped.contains(MARKER_NEEDLE));
         assert!(escaped.contains("[[\u{200B}DREAM_FILES]]"));

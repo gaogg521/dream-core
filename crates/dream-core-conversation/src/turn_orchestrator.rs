@@ -1103,19 +1103,17 @@ mod tests {
 
     /// Captures what the per-call trace plane would have been told (P2-5,
     /// P1-3 added the duration slot).
-    #[derive(Default)]
-    struct RecordingLlmTraceRecorder(
-        std::sync::Mutex<
-            Vec<(
-                String,
-                Option<String>,
-                Option<i64>,
-                Option<i64>,
-                Option<i64>,
-                Option<String>,
-            )>,
-        >,
+    type RecordedLlmCall = (
+        String,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
     );
+
+    #[derive(Default)]
+    struct RecordingLlmTraceRecorder(std::sync::Mutex<Vec<RecordedLlmCall>>);
 
     impl crate::state::LlmCallTraceRecorder for RecordingLlmTraceRecorder {
         fn record_call(&self, user_id: String, _conversation_id: String, trace: crate::state::LlmCallTrace) {
@@ -1131,10 +1129,16 @@ mod tests {
     }
 
     /// Captures what the billing plane would have been told.
-    #[derive(Default)]
-    struct RecordingUsageRecorder(
-        std::sync::Mutex<Vec<(String, Option<String>, Option<String>, Option<i64>, Option<i64>)>>,
+    type RecordedUsage = (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
     );
+
+    #[derive(Default)]
+    struct RecordingUsageRecorder(std::sync::Mutex<Vec<RecordedUsage>>);
 
     impl crate::state::UsageRecorder for RecordingUsageRecorder {
         fn record_turn(

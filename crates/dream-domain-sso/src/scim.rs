@@ -398,11 +398,10 @@ async fn patch_user_inner(state: &OneSsoRouterState, id: &str, body: Value) -> R
 }
 
 async fn apply_active_change(state: &OneSsoRouterState, row: &ScimUserRow, active: bool) -> Result<(), SsoError> {
-    if row.active != 0 && !active {
-        if let Some(hook) = state.scim_lifecycle.as_ref() {
+    if row.active != 0 && !active
+        && let Some(hook) = state.scim_lifecycle.as_ref() {
             hook.revoke_sessions(&row.user_id).await;
         }
-    }
     Ok(())
 }
 

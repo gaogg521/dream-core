@@ -5,15 +5,15 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use dream_core_api_types::{SendMessageRequest, WebSocketMessage};
 use dream_core_ai_agent::IWorkerTaskManager;
 use dream_core_api_types::TeamSessionBinding;
+use dream_core_api_types::{SendMessageRequest, WebSocketMessage};
 use dream_core_db::IConversationRepository;
 use serde_json::json;
 use tracing::{info, warn};
 
 use crate::error::ConversationError;
-use crate::markers::{SESSIONS_MARKER, SESSION_MESSAGE_MARKER};
+use crate::markers::{SESSION_MESSAGE_MARKER, SESSIONS_MARKER};
 use crate::service::ConversationService;
 
 pub const CONV_TOKEN_PREFIX: &str = "@@conv:";
@@ -220,7 +220,7 @@ impl SessionDeliveryHub {
 
         if !self.gate_allows(user_id).await {
             return Err(ConversationError::PolicyDenied {
-                code: "SESSION_DELIVERY_DISABLED".into(),
+                code: "SESSION_DELIVERY_DISABLED",
                 message: "Cross-session delivery is disabled".into(),
                 details: None,
             });
@@ -229,7 +229,7 @@ impl SessionDeliveryHub {
         for to_id in &target_ids {
             if self.rate_limit_would_block(from_conversation, to_id) {
                 return Err(ConversationError::PolicyDenied {
-                    code: "SESSION_DELIVERY_RATE_LIMIT".into(),
+                    code: "SESSION_DELIVERY_RATE_LIMIT",
                     message: "Cross-session delivery rate limit exceeded".into(),
                     details: Some(json!({ "to_conversation_id": to_id })),
                 });
@@ -389,10 +389,7 @@ impl ConversationService {
         self.session_delivery.set_gate(gate);
     }
 
-    pub async fn run_session_delivery_tick(
-        &self,
-        task_manager: &std::sync::Arc<dyn IWorkerTaskManager>,
-    ) {
+    pub async fn run_session_delivery_tick(&self, task_manager: &std::sync::Arc<dyn IWorkerTaskManager>) {
         let pending: Vec<PendingDelivery> = self
             .session_delivery
             .queue
@@ -416,11 +413,7 @@ impl ConversationService {
                 continue;
             }
 
-            let Ok(Some(to_row)) = self
-                .conversation_repo()
-                .get(&item.user_id, &item.to_conversation)
-                .await
-            else {
+            let Ok(Some(to_row)) = self.conversation_repo().get(&item.user_id, &item.to_conversation).await else {
                 continue;
             };
             if TeamSessionBinding::team_id_marker_from_extra_str(&to_row.extra).is_some() {
@@ -506,20 +499,13 @@ impl ConversationService {
         }
     }
 
-    fn broadcast_session_event(
-        &self,
-        event_type: &str,
-        user_id: &str,
-        conversation_id: &str,
-        peer_id: &str,
-    ) {
+    fn broadcast_session_event(&self, event_type: &str, user_id: &str, conversation_id: &str, peer_id: &str) {
         let payload = json!({
             "user_id": user_id,
             "conversation_id": conversation_id,
             "peer_conversation_id": peer_id,
         });
-        self.broadcaster()
-            .broadcast(WebSocketMessage::new(event_type, payload));
+        self.broadcaster().broadcast(WebSocketMessage::new(event_type, payload));
     }
 
     pub fn clear_session_delivery_for(&self, conversation_id: &str) {

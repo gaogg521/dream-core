@@ -7,13 +7,15 @@ use std::sync::Arc;
 
 use dream_core_ai_agent::{AgentError, IWorkerTaskManager};
 use dream_core_api_types::{
-    CreateConversationRequest, ImportSharedConversationRequest, ImportSharedMessage, ListConversationsQuery,
-    ListMessagesQuery, SendMessageRequest,
+    ImportSharedConversationRequest, ImportSharedMessage, ListConversationsQuery, ListMessagesQuery,
+    SendMessageRequest,
 };
 use dream_core_common::{AgentKillReason, TimestampMs};
 use dream_core_conversation::skill_resolver::SkillResolver;
 use dream_core_conversation::{ConversationError, ConversationService};
-use dream_core_db::{init_database_memory, SqliteAcpSessionRepository, SqliteAgentMetadataRepository, SqliteConversationRepository};
+use dream_core_db::{
+    SqliteConversationRepository, init_database_memory,
+};
 use dream_core_realtime::EventBroadcaster;
 use serde_json::json;
 
@@ -126,7 +128,10 @@ async fn import_creates_new_conversation_with_snapshot_messages() {
         .list_messages(
             USER,
             &response.conversation_id,
-            ListMessagesQuery { limit: Some(10), ..Default::default() },
+            ListMessagesQuery {
+                limit: Some(10),
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -142,7 +147,10 @@ async fn import_creates_new_conversation_with_snapshot_messages() {
     let list = svc
         .list(
             USER,
-            ListConversationsQuery { limit: Some(10), ..Default::default() },
+            ListConversationsQuery {
+                limit: Some(10),
+                ..Default::default()
+            },
         )
         .await
         .unwrap();

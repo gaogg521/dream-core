@@ -23,13 +23,13 @@ use dream_core_api_types::{
     ConfirmationListResponse, ConversationArtifactKind, ConversationArtifactListResponse, ConversationArtifactResponse,
     ConversationArtifactStatus, ConversationListResponse, ConversationMcpStatus, ConversationMcpStatusKind,
     ConversationNameUpdatedPayload, ConversationResponse, ConversationRuntimeSummary, CreateConversationRequest,
-    ImportSharedConversationRequest, ImportSharedConversationResponse,
-    EnsureConversationRuntimeResponse, ForkCapabilityView, ForkConversationRequest, ListConversationsQuery,
-    ListMessagesQuery, McpRuntimeSnapshot, MessageListResponse, MessageResponse, MessageSearchResponse,
-    PromptCapabilityView, SearchMessagesQuery, SendMessageRequest, SendMessageResponse, SessionMcpServer,
-    SessionMcpTransport, TEAM_MCP_SERVER_NAME, TeamMcpSelection, TeamSessionBinding, UpdateConversationArtifactRequest,
-    UpdateConversationRequest, WebSocketMessage, assistant_avatar_response_value,
-    assistant_avatar_response_value_with_version, assistant_mcp_binding_fingerprint, is_team_mcp_server_name,
+    EnsureConversationRuntimeResponse, ForkCapabilityView, ForkConversationRequest, ImportSharedConversationRequest,
+    ImportSharedConversationResponse, ListConversationsQuery, ListMessagesQuery, McpRuntimeSnapshot,
+    MessageListResponse, MessageResponse, MessageSearchResponse, PromptCapabilityView, SearchMessagesQuery,
+    SendMessageRequest, SendMessageResponse, SessionMcpServer, SessionMcpTransport, TEAM_MCP_SERVER_NAME,
+    TeamMcpSelection, TeamSessionBinding, UpdateConversationArtifactRequest, UpdateConversationRequest,
+    WebSocketMessage, assistant_avatar_response_value, assistant_avatar_response_value_with_version,
+    assistant_mcp_binding_fingerprint, is_team_mcp_server_name,
 };
 use dream_core_common::{
     AgentKillReason, AgentType, ConversationSource, ConversationStatus, ErrorChain, MessageType, OnConversationDelete,
@@ -1144,7 +1144,9 @@ impl ConversationService {
         req: ImportSharedConversationRequest,
     ) -> Result<ImportSharedConversationResponse, ConversationError> {
         if req.name.trim().is_empty() {
-            return Err(ConversationError::BadRequest { reason: "name is required".into() });
+            return Err(ConversationError::BadRequest {
+                reason: "name is required".into(),
+            });
         }
         let created = self
             .create(
@@ -1197,7 +1199,10 @@ impl ConversationService {
                 .map_err(ConversationError::from)?;
             imported += 1;
         }
-        Ok(ImportSharedConversationResponse { conversation_id, imported_messages: imported })
+        Ok(ImportSharedConversationResponse {
+            conversation_id,
+            imported_messages: imported,
+        })
     }
 
     /// Create a new conversation.

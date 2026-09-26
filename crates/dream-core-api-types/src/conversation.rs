@@ -203,7 +203,7 @@ pub struct ImportSharedConversationResponse {
     pub imported_messages: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendMessageRequest {
     pub content: String,
@@ -216,18 +216,6 @@ pub struct SendMessageRequest {
     /// Cross-session delivery: when true, inbound blocks may include a reply address.
     #[serde(default)]
     pub reply_requested: bool,
-}
-
-impl Default for SendMessageRequest {
-    fn default() -> Self {
-        Self {
-            content: String::new(),
-            files: Vec::new(),
-            inject_skills: Vec::new(),
-            hidden: false,
-            reply_requested: false,
-        }
-    }
 }
 
 /// Response for `POST /api/conversations/:id/messages`.

@@ -183,7 +183,7 @@ fn header_alg_is_none(token: &str) -> bool {
 fn decode_b64url(s: &str) -> Result<Vec<u8>, ()> {
     use base64::Engine as _;
     let mut padded = s.replace('-', "+").replace('_', "/");
-    while padded.len() % 4 != 0 {
+    while !padded.len().is_multiple_of(4) {
         padded.push('=');
     }
     base64::engine::general_purpose::STANDARD
