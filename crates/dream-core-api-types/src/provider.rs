@@ -457,6 +457,18 @@ pub struct TrialQuotaStatusResponse {
     pub limit_usd: Option<f64>,
     pub used_usd: f64,
     pub remaining_usd: Option<f64>,
+    /// The free-grant pool this install was given, broken out separately
+    /// from `paid_*` so a client can show "free" and "topped up" as two
+    /// numbers — the broker spends the grant pool first, at 1:1, before
+    /// ever touching the paid pool (where the resale markup lives, and
+    /// which never reaches this response either way — see the broker's
+    /// `crate::visible_balance`). `None` only when the vendor has no cap
+    /// concept at all, same condition as `limit_usd` being `None`.
+    pub grant_limit_usd: Option<f64>,
+    pub grant_remaining_usd: Option<f64>,
+    /// Everything this install has ever paid, at face value (never marked up).
+    pub paid_limit_usd: Option<f64>,
+    pub paid_remaining_usd: Option<f64>,
     /// How the allowance renews: `monthly`, `daily`, or `cumulative` (never).
     pub reset: Option<String>,
     pub exhausted: bool,
@@ -464,13 +476,6 @@ pub struct TrialQuotaStatusResponse {
     /// `TrialKeyResponse::currency` for the compatibility default.
     #[serde(default = "default_trial_currency")]
     pub currency: String,
-    /// The resale markup applied wherever a real-money top-up turns into
-    /// vendor spending power. A top-up preview must divide the amount about
-    /// to be paid by this before adding it to `remaining_usd` — see the
-    /// broker's `QuotaStatusResponse::topup_price_markup` doc comment.
-    /// `None` for a broker predating this field.
-    #[serde(default)]
-    pub topup_price_markup: Option<f64>,
 }
 
 /// Request body for `POST /api/providers/metered/claim`.
