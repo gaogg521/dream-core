@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.76](https://github.com/gaogg521/dream-core/compare/v0.1.75...v0.1.76) (2026-09-27)
+
+
+### Bug Fixes
+
+* **system:** mirror the broker's topup_price_markup field ([96d2b08](https://github.com/gaogg521/dream-core/commit/96d2b08a1d2d24e727959e4e7347fe9eba6f0501))
+
 ## [0.1.75](https://github.com/gaogg521/dream-core/compare/v0.1.74...v0.1.75) (2026-09-26)
 
 
