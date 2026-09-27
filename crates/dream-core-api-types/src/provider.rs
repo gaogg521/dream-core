@@ -464,6 +464,13 @@ pub struct TrialQuotaStatusResponse {
     /// `TrialKeyResponse::currency` for the compatibility default.
     #[serde(default = "default_trial_currency")]
     pub currency: String,
+    /// The resale markup applied wherever a real-money top-up turns into
+    /// vendor spending power. A top-up preview must divide the amount about
+    /// to be paid by this before adding it to `remaining_usd` — see the
+    /// broker's `QuotaStatusResponse::topup_price_markup` doc comment.
+    /// `None` for a broker predating this field.
+    #[serde(default)]
+    pub topup_price_markup: Option<f64>,
 }
 
 /// Request body for `POST /api/providers/metered/claim`.
