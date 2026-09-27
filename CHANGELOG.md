@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.77](https://github.com/gaogg521/dream-core/compare/v0.1.76...v0.1.77) (2026-09-27)
+
+
+### Bug Fixes
+
+* **provider:** mirror the broker's grant/paid balance split ([4b26bc3](https://github.com/gaogg521/dream-core/commit/4b26bc34ce76ac53905188bff041f91a7726c3fa))
+
 ## [0.1.76](https://github.com/gaogg521/dream-core/compare/v0.1.75...v0.1.76) (2026-09-27)
 
 
