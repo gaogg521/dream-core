@@ -35,7 +35,14 @@ pub async fn transcribe(
     mime_type: &str,
     language_hint: Option<&str>,
 ) -> Result<SpeechToTextResult, SttError> {
-    if config.api_key.is_empty() {
+    // The settings UI marks the API key optional only for a custom base_url
+    // (self-hosted OpenAI-compatible servers often run without auth); the
+    // official api.openai.com endpoint always requires one. Rejecting on an
+    // empty key regardless of base_url made every custom-source test fail
+    // with "not configured" for a user who filled in every field the UI
+    // asked for.
+    let is_official_endpoint = config.base_url.as_deref().map(str::trim).is_none_or(str::is_empty);
+    if is_official_endpoint && config.api_key.is_empty() {
         return Err(SttError::OpenaiNotConfigured);
     }
 
@@ -74,10 +81,11 @@ pub async fn transcribe(
         form = form.text("temperature", temp.to_string());
     }
 
-    let response = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", config.api_key))
-        .multipart(form)
+    let mut request = client.post(&url).multipart(form);
+    if !config.api_key.is_empty() {
+        request = request.header("Authorization", format!("Bearer {}", config.api_key));
+    }
+    let response = request
         .send()
         .await
         .map_err(|e| SttError::RequestFailed(format!("OpenAI request error: {e}")))?;
@@ -158,5 +166,23 @@ mod tests {
         };
         let result = transcribe(&Client::new(), &config, vec![0u8; 10], "test.wav", "audio/wav", None).await;
         assert!(matches!(result, Err(SttError::OpenaiNotConfigured)));
+    }
+
+    /// The settings UI marks the API key optional for a custom base_url
+    /// (self-hosted servers often run without auth). An empty key there must
+    /// not be short-circuited into `OpenaiNotConfigured` — it should reach
+    /// the network and fail for whatever reason the endpoint actually gives.
+    #[tokio::test]
+    async fn empty_api_key_with_custom_base_url_is_not_rejected_as_unconfigured() {
+        let config = OpenAISpeechToTextConfig {
+            api_key: String::new(),
+            base_url: Some("http://127.0.0.1:1".into()), // nothing listens here
+            model: "whisper-1".into(),
+            language: None,
+            prompt: None,
+            temperature: None,
+        };
+        let result = transcribe(&Client::new(), &config, vec![0u8; 10], "test.wav", "audio/wav", None).await;
+        assert!(matches!(result, Err(SttError::RequestFailed(_))));
     }
 }
