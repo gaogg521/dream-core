@@ -3159,6 +3159,7 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
         runtime_token_verifier: None,
         ip_allowlist,
         api_key_gate,
+        webui_devices: Some(services.webui_device_repo.clone()),
     };
 
     let one_devops_service = std::sync::Arc::new(
@@ -3354,6 +3355,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         local: services.local,
         dreampro_mode: services.identity_mode == crate::config::IdentityMode::DreamPro,
         login_risk,
+        webui_devices: Some(services.webui_device_repo.clone()),
     };
 
     // one-platform service (IP allowlist among other deployment-infra config)
@@ -3411,6 +3413,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         })),
         ip_allowlist,
         api_key_gate,
+        webui_devices: Some(services.webui_device_repo.clone()),
     };
 
     let session_delivery_client_pref = states.system.client_pref_service.clone();

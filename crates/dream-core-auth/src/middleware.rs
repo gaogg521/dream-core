@@ -10,7 +10,7 @@ use axum::middleware::Next;
 use axum::response::Response;
 
 use dream_core_common::ApiError;
-use dream_core_db::{IUserRepository, UserStatus, UserType};
+use dream_core_db::{IUserRepository, IWebuiDeviceRepository, UserStatus, UserType};
 
 use crate::JwtService;
 use crate::extract::extract_token_from_headers;
@@ -221,6 +221,9 @@ pub struct AuthState {
     /// than falling through to JWT verification (which would also fail, but
     /// with a less accurate error).
     pub api_key_gate: Option<Arc<dyn ApiKeyGate>>,
+    /// WebUI browser/PWA device registry. When a JWT declares a device, it
+    /// must still be active; legacy desktop tokens have no device claim.
+    pub webui_devices: Option<Arc<dyn IWebuiDeviceRepository>>,
 }
 
 /// Authentication middleware that verifies JWT tokens and injects `CurrentUser`.
@@ -314,6 +317,21 @@ pub async fn auth_middleware(
 
     if payload.session_generation != user.session_generation {
         return Err(ApiError::Unauthorized("Invalid authentication session".into()));
+    }
+
+    if let (Some(device_id), Some(devices)) = (payload.device_id.as_deref(), &state.webui_devices) {
+        let active = devices
+            .is_active(&user.id, device_id)
+            .await
+            .map_err(|_| ApiError::Internal("Device authorization unavailable".into()))?;
+        if !active {
+            return Err(ApiError::Unauthorized("This device session has been revoked".into()));
+        }
+        let ip = crate::extract::extract_client_ip(&request);
+        devices
+            .touch(&user.id, device_id, (ip != "unknown").then_some(ip.as_str()))
+            .await
+            .map_err(|_| ApiError::Internal("Device authorization unavailable".into()))?;
     }
 
     // IP-allowlist enforcement. Only reachable here — the operator-fallback
@@ -538,6 +556,7 @@ mod tests {
             runtime_token_verifier: None,
             ip_allowlist: None,
             api_key_gate: None,
+            webui_devices: None,
         };
         Router::new()
             .route("/test", get(echo_user))
@@ -764,6 +783,7 @@ mod tests {
             runtime_token_verifier: None,
             ip_allowlist,
             api_key_gate: None,
+            webui_devices: None,
         };
         Router::new()
             .route("/test", get(echo_user))
@@ -961,6 +981,7 @@ mod tests {
             runtime_token_verifier: None,
             ip_allowlist: Some(Arc::new(DenyGate)),
             api_key_gate: None,
+            webui_devices: None,
         };
         let app = Router::new()
             .route("/test", get(echo_user))
@@ -991,6 +1012,7 @@ mod tests {
             runtime_token_verifier: None,
             ip_allowlist: Some(Arc::new(DenyGate)),
             api_key_gate: None,
+            webui_devices: None,
         };
         let app = Router::new()
             .route("/test", get(echo_user))
@@ -1036,6 +1058,7 @@ mod tests {
             runtime_token_verifier: None,
             ip_allowlist: None,
             api_key_gate,
+            webui_devices: None,
         };
         Router::new()
             .route("/test", get(echo_user))

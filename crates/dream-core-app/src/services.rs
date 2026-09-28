@@ -16,10 +16,10 @@ use dream_core_common::OnConversationDelete;
 use dream_core_conversation::{ConversationService, runtime_state::ConversationRuntimeStateService};
 use dream_core_db::{
     Database, IAcpSessionRepository, IAgentMetadataRepository, IConversationRepository, IMcpServerRepository,
-    IProjectStore, ISkillRepository, IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
-    SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository, SqliteAssistantPreferenceRepository,
-    SqliteConversationRepository, SqliteMcpServerRepository, SqliteProjectStore, SqliteProviderRepository,
-    SqliteSkillRepository, SqliteUserRepository,
+    IProjectStore, ISkillRepository, IUserRepository, IWebuiDeviceRepository, SqliteAcpSessionRepository,
+    SqliteAgentMetadataRepository, SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository,
+    SqliteAssistantPreferenceRepository, SqliteConversationRepository, SqliteMcpServerRepository, SqliteProjectStore,
+    SqliteProviderRepository, SqliteSkillRepository, SqliteUserRepository, SqliteWebuiDeviceRepository,
 };
 use dream_core_project::ProjectService;
 use dream_core_realtime::{BroadcastEventBus, WebSocketManager};
@@ -35,6 +35,7 @@ pub struct AppServices {
     pub jwt_service: Arc<JwtService>,
     pub user_repo: Arc<dyn IUserRepository>,
     pub mfa_store: Arc<dyn dream_core_db::MfaStore>,
+    pub webui_device_repo: Arc<dyn IWebuiDeviceRepository>,
     pub cookie_config: Arc<CookieConfig>,
     pub qr_token_store: Arc<QrTokenStore>,
     pub ws_manager: Arc<WebSocketManager>,
@@ -172,6 +173,8 @@ impl AppServices {
         let user_repo: Arc<dyn IUserRepository> = Arc::new(SqliteUserRepository::new(database.pool().clone()));
         let mfa_store: Arc<dyn dream_core_db::MfaStore> =
             Arc::new(dream_core_db::SqliteMfaStore::new(database.pool().clone()));
+        let webui_device_repo: Arc<dyn IWebuiDeviceRepository> =
+            Arc::new(SqliteWebuiDeviceRepository::new(database.pool().clone()));
 
         // Resolve JWT secret: env var → system user db field → random generation
         let env_secret = std::env::var("JWT_SECRET").ok();
@@ -635,6 +638,7 @@ impl AppServices {
             jwt_secret_raw: secret,
             data_secret_raw: data_secret.clone(),
             mfa_store,
+            webui_device_repo,
             data_dir,
             dump_prompts,
             work_dir,

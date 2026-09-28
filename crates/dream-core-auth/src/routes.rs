@@ -19,9 +19,11 @@ use dream_core_api_types::{
     WebuiChangePasswordRequest, WebuiChangeUsernameRequest, WebuiChangeUsernameResponse, WebuiGenerateQrTokenResponse,
     WebuiResetPasswordResponse, WsTokenResponse,
 };
-use dream_core_common::ApiError;
 use dream_core_common::constants::COOKIE_MAX_AGE_DAYS;
-use dream_core_db::{DbError, IUserRepository, UserStatus, UserType, models::User};
+use dream_core_common::{ApiError, generate_prefixed_id, now_ms};
+use dream_core_db::{
+    DbError, IUserRepository, IWebuiDeviceRepository, UserStatus, UserType, WebuiDeviceSession, models::User,
+};
 
 use crate::error::AuthError;
 use crate::extract::extract_token_from_headers;
@@ -95,6 +97,9 @@ pub struct AuthRouterState {
     pub mfa: Option<Arc<crate::mfa::MfaService>>,
     /// Optional enterprise console risk policy (lockout + session TTL).
     pub login_risk: Option<Arc<dyn LoginRiskGate>>,
+    /// Persistent browser/PWA device registry. None retains legacy behaviour
+    /// for standalone unit tests and non-WebUI callers.
+    pub webui_devices: Option<Arc<dyn IWebuiDeviceRepository>>,
 }
 
 async fn mint_session(
@@ -103,6 +108,16 @@ async fn mint_session(
     username: &str,
     session_generation: i64,
 ) -> Result<(String, String), ApiError> {
+    mint_session_for_device(state, user_id, username, session_generation, None).await
+}
+
+async fn mint_session_for_device(
+    state: &AuthRouterState,
+    user_id: &str,
+    username: &str,
+    session_generation: i64,
+    device_id: Option<&str>,
+) -> Result<(String, String), ApiError> {
     let ttl = if let Some(gate) = &state.login_risk {
         gate.session_ttl().await
     } else {
@@ -110,7 +125,7 @@ async fn mint_session(
     };
     let token = state
         .jwt_service
-        .sign_with_session_generation_and_ttl(user_id, username, session_generation, ttl)
+        .sign_device_session(user_id, username, session_generation, ttl, device_id)
         .map_err(|e| ApiError::Internal(format!("Token signing error: {e}")))?;
     let cookie = match ttl {
         Some(d) if d.as_secs() > 0 => state
@@ -118,6 +133,50 @@ async fn mint_session(
             .build_session_cookie_with_max_age(&token, d.as_secs().max(60)),
         _ => state.cookie_config.build_session_cookie(&token),
     };
+    Ok((token, cookie))
+}
+
+/// Sign a session that can be revoked independently when the WebUI device
+/// registry is enabled. Desktop/test assemblers that deliberately omit the
+/// registry keep the legacy session format.
+async fn mint_paired_webui_session(
+    state: &AuthRouterState,
+    user_id: &str,
+    username: &str,
+    session_generation: i64,
+    device_id: Option<String>,
+    device_label: Option<String>,
+) -> Result<(String, String), ApiError> {
+    let Some(devices) = &state.webui_devices else {
+        return mint_session(state, user_id, username, session_generation).await;
+    };
+    let device_id = device_id
+        .filter(|id| id.len() <= 128 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+        .unwrap_or_else(|| generate_prefixed_id("webui_device"));
+    let device_label = device_label
+        .map(|label| label.trim().chars().take(80).collect::<String>())
+        .filter(|label| !label.is_empty())
+        .unwrap_or_else(|| "浏览器登录".to_string());
+    let (token, cookie) =
+        mint_session_for_device(state, user_id, username, session_generation, Some(&device_id)).await?;
+    let now = now_ms();
+    devices
+        .create(&WebuiDeviceSession {
+            id: device_id.clone(),
+            user_id: user_id.to_owned(),
+            label: device_label.clone(),
+            token_hash: JwtService::token_fingerprint(&token),
+            paired_at: now,
+            last_seen_at: now,
+            last_ip: None,
+            revoked_at: None,
+        })
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to create device session: {e}")))?;
+    devices
+        .audit(user_id, Some(&device_id), "paired", Some(&device_label), None)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to audit device session: {e}")))?;
     Ok((token, cookie))
 }
 
@@ -320,6 +379,7 @@ pub fn auth_routes(state: AuthRouterState) -> Router {
         runtime_token_verifier: None,
         ip_allowlist: None,
         api_key_gate: None,
+        webui_devices: state.webui_devices.clone(),
     };
 
     // Auth rate limited routes (login, qr-login)
@@ -398,6 +458,8 @@ pub fn auth_routes(state: AuthRouterState) -> Router {
     let authenticated = Router::new()
         .route("/logout", post(logout_handler))
         .route("/api/auth/user", get(user_handler))
+        .route("/api/auth/devices", get(list_devices_handler))
+        .route("/api/auth/devices/{device_id}/revoke", post(revoke_device_handler))
         .route("/api/auth/change-password", post(change_password_handler))
         .route("/api/ws-token", get(ws_token_handler))
         .route_layer(from_fn_with_state(
@@ -428,6 +490,63 @@ pub fn auth_routes(state: AuthRouterState) -> Router {
         .merge(authenticated)
         .merge(api_action_limited)
         .merge(static_routes)
+}
+
+#[derive(Debug, Serialize)]
+struct WebuiDeviceResponse {
+    id: String,
+    label: String,
+    paired_at: i64,
+    last_seen_at: i64,
+    last_ip: Option<String>,
+}
+
+async fn list_devices_handler(
+    State(state): State<AuthRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<WebuiDeviceResponse>>>, ApiError> {
+    let devices = state
+        .webui_devices
+        .as_ref()
+        .ok_or_else(|| ApiError::NotFound("Device management is unavailable".into()))?;
+    let rows = devices
+        .list_active(&user.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to list devices: {e}")))?;
+    Ok(Json(ApiResponse::ok(
+        rows.into_iter()
+            .map(|row| WebuiDeviceResponse {
+                id: row.id,
+                label: row.label,
+                paired_at: row.paired_at,
+                last_seen_at: row.last_seen_at,
+                last_ip: row.last_ip,
+            })
+            .collect(),
+    )))
+}
+
+async fn revoke_device_handler(
+    State(state): State<AuthRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(device_id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    let devices = state
+        .webui_devices
+        .as_ref()
+        .ok_or_else(|| ApiError::NotFound("Device management is unavailable".into()))?;
+    if !devices
+        .revoke(&user.id, &device_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to revoke device: {e}")))?
+    {
+        return Err(ApiError::NotFound("Device session not found".into()));
+    }
+    devices
+        .audit(&user.id, Some(&device_id), "revoked", None, None)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to audit device revocation: {e}")))?;
+    Ok(Json(ApiResponse::message("Device session revoked")))
 }
 
 // ---------------------------------------------------------------------------
@@ -602,11 +721,13 @@ async fn login_handler(
         }
     }
 
-    let (token, cookie) = mint_session(
+    let (token, cookie) = mint_paired_webui_session(
         &state,
         &user.id,
         user.username.as_deref().unwrap_or("external_user"),
         user.session_generation,
+        None,
+        None,
     )
     .await?;
 
@@ -731,7 +852,15 @@ async fn mfa_verify_handler(
             .map(|u| u.session_generation)
             .unwrap_or(0)
     };
-    let (token, cookie) = mint_session(&state, &user.0, user.1.as_str(), session_generation).await?;
+    let (token, cookie) = mint_paired_webui_session(
+        &state,
+        &user.0,
+        user.1.as_str(),
+        session_generation,
+        None,
+        Some("MFA 浏览器登录".to_string()),
+    )
+    .await?;
     let resp = LoginResponse::new(
         PublicUser {
             id: user.0,
@@ -1083,13 +1212,35 @@ async fn refresh_handler(
         return Err(ApiError::Unauthorized("Invalid authentication session".into()));
     }
 
-    let (new_token, _cookie) = mint_session(
-        &state,
-        &user.id,
-        user.username.as_deref().unwrap_or("external_user"),
-        user.session_generation,
-    )
-    .await?;
+    let (new_token, _cookie) = if let Some(devices) = &state.webui_devices {
+        let device_id = payload
+            .device_id
+            .as_deref()
+            .ok_or_else(|| ApiError::Unauthorized("Please sign in again to pair this browser".into()))?;
+        if !devices
+            .is_active(&user.id, device_id)
+            .await
+            .map_err(|_| ApiError::Internal("Device authorization unavailable".into()))?
+        {
+            return Err(ApiError::Unauthorized("This device session has been revoked".into()));
+        }
+        mint_session_for_device(
+            &state,
+            &user.id,
+            user.username.as_deref().unwrap_or("external_user"),
+            user.session_generation,
+            Some(device_id),
+        )
+        .await?
+    } else {
+        mint_session(
+            &state,
+            &user.id,
+            user.username.as_deref().unwrap_or("external_user"),
+            user.session_generation,
+        )
+        .await?
+    };
 
     Ok(Json(RefreshResponse {
         success: true,
@@ -1162,13 +1313,43 @@ async fn qr_login_handler(
         ));
     }
 
-    let (token, cookie) = mint_session(
+    let device_id = req
+        .device_id
+        .filter(|id| id.len() <= 128 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+        .unwrap_or_else(|| generate_prefixed_id("webui_device"));
+    let device_label = req
+        .device_label
+        .map(|label| label.trim().chars().take(80).collect::<String>())
+        .filter(|label| !label.is_empty())
+        .unwrap_or_else(|| "手机浏览器".to_string());
+    let (token, cookie) = mint_session_for_device(
         &state,
         &user.id,
         user.username.as_deref().unwrap_or("external_user"),
         user.session_generation,
+        Some(&device_id),
     )
     .await?;
+    if let Some(devices) = &state.webui_devices {
+        let now = now_ms();
+        devices
+            .create(&WebuiDeviceSession {
+                id: device_id.clone(),
+                user_id: user.id.clone(),
+                label: device_label.clone(),
+                token_hash: JwtService::token_fingerprint(&token),
+                paired_at: now,
+                last_seen_at: now,
+                last_ip: None,
+                revoked_at: None,
+            })
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to create device session: {e}")))?;
+        devices
+            .audit(&user.id, Some(&device_id), "paired", Some(&device_label), None)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to audit device session: {e}")))?;
+    }
 
     // Update last login (best-effort)
     if let Err(e) = state.user_repo.update_last_login(&user.id).await {
@@ -1225,10 +1406,15 @@ const QR_LOGIN_HTML: &str = r#"<!DOCTYPE html>
     el.className = 'status error';
     return;
   }
+  var deviceId = localStorage.getItem('one-work-webui-device-id');
+  if (!deviceId) {
+    deviceId = 'browser-' + (self.crypto && crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(16).slice(2));
+    localStorage.setItem('one-work-webui-device-id', deviceId);
+  }
   fetch('/api/auth/qr-login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ qrToken: token })
+    body: JSON.stringify({ qrToken: token, deviceId: deviceId, deviceLabel: navigator.userAgent.slice(0, 80) })
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {

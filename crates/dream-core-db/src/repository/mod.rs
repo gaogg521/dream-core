@@ -38,8 +38,10 @@ mod sqlite_settings;
 mod sqlite_skill;
 mod sqlite_team;
 mod sqlite_user;
+mod sqlite_webui_device;
 pub mod team;
 mod user;
+pub mod webui_device;
 
 pub use acp_session::{CreateAcpSessionParams, IAcpSessionRepository, PersistedSessionState, SaveRuntimeStateParams};
 pub use agent_metadata::IAgentMetadataRepository;
@@ -88,5 +90,7 @@ pub use sqlite_settings::SqliteSettingsRepository;
 pub use sqlite_skill::SqliteSkillRepository;
 pub use sqlite_team::SqliteTeamRepository;
 pub use sqlite_user::SqliteUserRepository;
+pub use sqlite_webui_device::SqliteWebuiDeviceRepository;
 pub use team::{ActivityCursor, ITeamRepository, PageDirection};
 pub use user::IUserRepository;
+pub use webui_device::{IWebuiDeviceRepository, WebuiDeviceSession};

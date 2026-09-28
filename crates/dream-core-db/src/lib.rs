@@ -68,14 +68,15 @@ pub use repository::{
     IChannelRepository, IClaudeBridgeConfigRepository, IClientPreferenceRepository, ICodexBridgeConfigRepository,
     IConversationRepository, ICronRepository, IFeedbackDiagnosticsRepository, IMcpServerRepository,
     IOAuthTokenRepository, IProjectStore, IProviderRepository, IRemoteAgentRepository, ISettingsRepository,
-    ISkillRepository, ITeamRepository, IUserRepository, PageDirection, PersistedSessionState, SaveRuntimeStateParams,
-    SqliteAcpSessionRepository, SqliteAgentMetadataRepository, SqliteAssistantDefinitionRepository,
-    SqliteAssistantMarketplaceRepository, SqliteAssistantOverlayRepository, SqliteAssistantOverrideRepository,
-    SqliteAssistantPreferenceRepository, SqliteAssistantRepository, SqliteChannelRepository,
-    SqliteClaudeBridgeConfigRepository, SqliteClientPreferenceRepository, SqliteCodexBridgeConfigRepository,
-    SqliteConversationRepository, SqliteCronRepository, SqliteFeedbackDiagnosticsRepository, SqliteMcpServerRepository,
-    SqliteOAuthTokenRepository, SqliteProjectStore, SqliteProviderRepository, SqliteRemoteAgentRepository,
-    SqliteSettingsRepository, SqliteSkillRepository, SqliteTeamRepository, SqliteUserRepository,
+    ISkillRepository, ITeamRepository, IUserRepository, IWebuiDeviceRepository, PageDirection, PersistedSessionState,
+    SaveRuntimeStateParams, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
+    SqliteAssistantDefinitionRepository, SqliteAssistantMarketplaceRepository, SqliteAssistantOverlayRepository,
+    SqliteAssistantOverrideRepository, SqliteAssistantPreferenceRepository, SqliteAssistantRepository,
+    SqliteChannelRepository, SqliteClaudeBridgeConfigRepository, SqliteClientPreferenceRepository,
+    SqliteCodexBridgeConfigRepository, SqliteConversationRepository, SqliteCronRepository,
+    SqliteFeedbackDiagnosticsRepository, SqliteMcpServerRepository, SqliteOAuthTokenRepository, SqliteProjectStore,
+    SqliteProviderRepository, SqliteRemoteAgentRepository, SqliteSettingsRepository, SqliteSkillRepository,
+    SqliteTeamRepository, SqliteUserRepository, SqliteWebuiDeviceRepository, WebuiDeviceSession,
 };
 
 // Re-export sqlx pool type for downstream crates

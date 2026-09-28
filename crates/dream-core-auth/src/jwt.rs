@@ -51,6 +51,9 @@ pub struct TokenPayload {
     /// User session generation at token issuance time.
     #[serde(default)]
     pub session_generation: i64,
+    /// Browser/PWA device that owns this session. Older desktop tokens omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
 }
 
 /// JWT service for signing, verification, and token blacklisting.
@@ -97,6 +100,18 @@ impl JwtService {
         session_generation: i64,
         ttl: Option<Duration>,
     ) -> Result<String, AuthError> {
+        self.sign_device_session(user_id, username, session_generation, ttl, None)
+    }
+
+    /// Sign a browser session bound to a revocable WebUI device.
+    pub fn sign_device_session(
+        &self,
+        user_id: &str,
+        username: &str,
+        session_generation: i64,
+        ttl: Option<Duration>,
+        device_id: Option<&str>,
+    ) -> Result<String, AuthError> {
         let now = now_secs()?;
         let lifetime = ttl.filter(|d| *d > Duration::from_secs(0)).unwrap_or(TOKEN_EXPIRY);
         let exp = now + lifetime.as_secs();
@@ -109,6 +124,7 @@ impl JwtService {
             iss: JWT_ISSUER.to_owned(),
             aud: JWT_AUDIENCE.to_owned(),
             session_generation,
+            device_id: device_id.map(str::to_owned),
         };
 
         let secret = self
@@ -149,6 +165,12 @@ impl JwtService {
             })?;
 
         Ok(token_data.claims)
+    }
+
+    /// Stable SHA-256 fingerprint used for server-side device-session auditing.
+    /// The raw bearer token must never be persisted.
+    pub fn token_fingerprint(token: &str) -> String {
+        token_hash(token)
     }
 
     /// Add a token to the blacklist.
@@ -336,6 +358,7 @@ mod tests {
             iss: JWT_ISSUER.into(),
             aud: JWT_AUDIENCE.into(),
             session_generation: 0,
+            device_id: None,
         };
         let token = encode(
             &Header::default(),
@@ -418,6 +441,7 @@ mod tests {
             iss: JWT_ISSUER.into(),
             aud: JWT_AUDIENCE.into(),
             session_generation: 0,
+            device_id: None,
         };
         let token = encode(
             &Header::default(),

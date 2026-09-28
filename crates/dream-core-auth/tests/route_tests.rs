@@ -69,6 +69,7 @@ async fn test_app_with_options_and_hook(
         local,
         dreampro_mode,
         login_risk: None,
+        webui_devices: None,
     };
 
     let app = auth_routes(state);

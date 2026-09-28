@@ -185,6 +185,7 @@ fn protected_auth_app_with_mode_and_verifier(
         runtime_token_verifier,
         ip_allowlist: None,
         api_key_gate: None,
+        webui_devices: None,
     };
 
     Router::new()
@@ -207,6 +208,7 @@ fn identity_echo_app(
         runtime_token_verifier,
         ip_allowlist: None,
         api_key_gate: None,
+        webui_devices: None,
     };
 
     Router::new()
