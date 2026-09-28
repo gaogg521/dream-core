@@ -358,9 +358,11 @@ async fn st5_openai_not_configured() {
     assert_eq!(json["code"], "STT_OPENAI_NOT_CONFIGURED");
 }
 
-// ST-6: Deepgram not configured (missing API key)
+// ST-6: hosted provider (mode D) with no broker configured on this
+// deployment (the e2e test harness never sets DREAM_TRIAL_BROKER_URL) —
+// must surface a clean, catchable error, not a panic or a 500.
 #[tokio::test]
-async fn st6_deepgram_not_configured() {
+async fn st6_hosted_without_a_broker() {
     let (mut app, services) = build_app_with_noop_opener().await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
 
@@ -368,11 +370,7 @@ async fn st6_deepgram_not_configured() {
         &mut app,
         &token,
         &csrf,
-        json!({
-            "enabled": true,
-            "provider": "deepgram",
-            "deepgram": { "api_key": "", "model": "nova-2" }
-        }),
+        json!({ "enabled": true, "provider": "hosted" }),
     )
     .await;
 
@@ -384,9 +382,9 @@ async fn st6_deepgram_not_configured() {
 
     let req = multipart_request("/api/stt", &content_type, body, &token, &csrf);
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     let json = body_json(resp).await;
-    assert_eq!(json["code"], "STT_DEEPGRAM_NOT_CONFIGURED");
+    assert_eq!(json["code"], "STT_REQUEST_FAILED");
 }
 
 // ST-7: STT third-party API failure (fake API key → 401)
@@ -526,62 +524,6 @@ async fn st1_openai_transcription_success() {
     assert_eq!(json["data"]["text"], "hello world");
     assert_eq!(json["data"]["model"], "whisper-1");
     assert_eq!(json["data"]["provider"], "openai");
-}
-
-// ST-2: Deepgram transcription success (mocked)
-#[tokio::test]
-async fn st2_deepgram_transcription_success() {
-    let mock_server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "metadata": {
-                "model_info": {
-                    "key": { "name": "nova-2-general" }
-                }
-            },
-            "results": {
-                "channels": [{
-                    "alternatives": [{
-                        "transcript": "hello from deepgram"
-                    }]
-                }]
-            }
-        })))
-        .mount(&mock_server)
-        .await;
-
-    let (mut app, services) = build_app_with_noop_opener().await;
-    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
-
-    set_stt_config(
-        &mut app,
-        &token,
-        &csrf,
-        json!({
-            "enabled": true,
-            "provider": "deepgram",
-            "deepgram": {
-                "api_key": "dg-test-key",
-                "base_url": mock_server.uri(),
-                "model": "nova-2"
-            }
-        }),
-    )
-    .await;
-
-    let (content_type, body) = MultipartBuilder::new()
-        .add_file("file", "test.wav", "audio/wav", b"fake audio data")
-        .add_text("fileName", "test.wav")
-        .add_text("mimeType", "audio/wav")
-        .build();
-
-    let req = multipart_request("/api/stt", &content_type, body, &token, &csrf);
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let json = body_json(resp).await;
-    assert_eq!(json["success"], true);
-    assert_eq!(json["data"]["text"], "hello from deepgram");
-    assert_eq!(json["data"]["provider"], "deepgram");
 }
 
 // ST-10: languageHint passed through

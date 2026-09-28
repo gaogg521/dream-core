@@ -56,6 +56,7 @@ pub mod content_inspection;
 pub mod diagnostics;
 pub mod enterprise_upstream;
 pub mod error;
+pub mod hosted_stt;
 pub mod install_id;
 pub mod keep_awake;
 pub mod managed_provider;
@@ -83,6 +84,7 @@ pub use content_inspection::{ContentBlock, ContentInspectionService, PendingFind
 pub use diagnostics::FeedbackDiagnosticsService;
 pub use enterprise_upstream::{EnterpriseUpstream, EnterpriseUpstreamService};
 pub use error::SystemError;
+pub use hosted_stt::{HostedSttQuota, HostedSttResponse, HostedSttService};
 pub use keep_awake::{KeepAwakeController, NoopKeepAwakeController, SystemKeepAwakeController};
 pub use metered_access::MeteredAccessService;
 pub use model_fetcher::ModelFetchService;

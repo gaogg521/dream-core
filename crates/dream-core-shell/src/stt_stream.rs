@@ -40,7 +40,7 @@ pub enum UpstreamEvent {
 pub trait UpstreamStream: Send {
     async fn send_audio(&mut self, pcm: &[u8]) -> Result<(), SttError>;
 
-    /// Signal end of audio (OpenAI: buffer commit; Deepgram: CloseStream).
+    /// Signal end of audio (OpenAI: buffer commit).
     async fn finish(&mut self) -> Result<(), SttError>;
 
     /// Next transcript event.
@@ -56,7 +56,7 @@ pub trait UpstreamStream: Send {
 /// Factory that opens an upstream connection for a validated config.
 ///
 /// Boxed return so tests can inject mocks and Tasks 3/4 can plug in the real
-/// OpenAI/Deepgram providers.
+/// OpenAI provider.
 #[async_trait::async_trait]
 pub trait UpstreamFactory: Send + Sync {
     async fn connect(
@@ -126,11 +126,12 @@ fn parse_start_frame(frame: ClientFrame) -> Result<Option<StartParams>, SttError
 
 /// Validate the stored STT config for streaming use.
 ///
-/// Mirrors the file-endpoint checks (`stt.rs` / `stt_openai.rs` /
-/// `stt_deepgram.rs`): disabled config and missing provider config or empty
-/// API key are rejected — an empty API key is rejected even when a custom
-/// `base_url` is set, matching `stt_openai::transcribe`. Additionally rejects
-/// OpenAI models that only support the file endpoint.
+/// Mirrors the file-endpoint checks (`stt.rs` / `stt_openai.rs`): disabled
+/// config and missing provider config are rejected. An empty API key is only
+/// rejected against the official endpoint — a custom `base_url` may point at
+/// a self-hosted server with no auth, matching `stt_openai::transcribe`.
+/// Additionally rejects OpenAI models that only support the file endpoint.
+/// The hosted broker path (mode D) has no realtime protocol at all.
 fn validate_config(config: &SpeechToTextConfig) -> Result<(), SttError> {
     if !config.enabled {
         return Err(SttError::Disabled);
@@ -139,19 +140,15 @@ fn validate_config(config: &SpeechToTextConfig) -> Result<(), SttError> {
     match config.provider {
         SpeechToTextProvider::Openai => {
             let openai = config.openai.as_ref().ok_or(SttError::OpenaiNotConfigured)?;
-            if openai.api_key.is_empty() {
+            let is_official_endpoint = openai.base_url.as_deref().map(str::trim).is_none_or(str::is_empty);
+            if is_official_endpoint && openai.api_key.is_empty() {
                 return Err(SttError::OpenaiNotConfigured);
             }
             if NON_STREAMING_OPENAI_MODELS.contains(&openai.model.as_str()) {
                 return Err(SttError::StreamUnsupported);
             }
         }
-        SpeechToTextProvider::Deepgram => {
-            let deepgram = config.deepgram.as_ref().ok_or(SttError::DeepgramNotConfigured)?;
-            if deepgram.api_key.is_empty() {
-                return Err(SttError::DeepgramNotConfigured);
-            }
-        }
+        SpeechToTextProvider::Hosted => return Err(SttError::StreamUnsupported),
     }
 
     Ok(())
@@ -162,7 +159,7 @@ fn validate_config(config: &SpeechToTextConfig) -> Result<(), SttError> {
 fn config_language(config: &SpeechToTextConfig) -> Option<&str> {
     let language = match config.provider {
         SpeechToTextProvider::Openai => config.openai.as_ref().and_then(|c| c.language.as_deref()),
-        SpeechToTextProvider::Deepgram => config.deepgram.as_ref().and_then(|c| c.language.as_deref()),
+        SpeechToTextProvider::Hosted => None,
     };
     language.map(str::trim).filter(|s| !s.is_empty())
 }
@@ -291,7 +288,7 @@ pub async fn run_stream_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dream_core_api_types::{DeepgramSpeechToTextConfig, OpenAISpeechToTextConfig};
+    use dream_core_api_types::OpenAISpeechToTextConfig;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -407,25 +404,15 @@ mod tests {
                 prompt: None,
                 temperature: None,
             }),
-            deepgram: None,
         }
     }
 
-    fn make_deepgram_config(api_key: &str) -> SpeechToTextConfig {
+    fn make_hosted_config() -> SpeechToTextConfig {
         SpeechToTextConfig {
             enabled: true,
-            provider: SpeechToTextProvider::Deepgram,
+            provider: SpeechToTextProvider::Hosted,
             auto_send: None,
             openai: None,
-            deepgram: Some(DeepgramSpeechToTextConfig {
-                api_key: api_key.to_owned(),
-                base_url: None,
-                model: "nova-2".into(),
-                language: None,
-                detect_language: None,
-                punctuate: None,
-                smart_format: None,
-            }),
         }
     }
 
@@ -540,28 +527,55 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_api_key_is_rejected_even_with_custom_base_url() {
-        // Mirrors stt_openai::transcribe: empty API key is not configured,
-        // regardless of base_url.
+    async fn empty_api_key_is_rejected_for_the_official_endpoint_but_not_custom() {
+        // Mirrors stt_openai::transcribe: an empty API key is only rejected
+        // against the official endpoint — a custom base_url may be a
+        // self-hosted server with no auth, and the settings UI marks the key
+        // optional there.
         let factory = MockFactory::with_error(SttError::Unknown("must not connect".into()));
-        let mut config = make_openai_config("gpt-4o-transcribe");
-        config.openai.as_mut().unwrap().api_key = String::new();
-        config.openai.as_mut().unwrap().base_url = Some("https://api.groq.com/openai".into());
-        let messages = run_with_frames(vec![start_frame(None)], config, &factory).await;
-
+        let mut official = make_openai_config("gpt-4o-transcribe");
+        official.openai.as_mut().unwrap().api_key = String::new();
+        let messages = run_with_frames(vec![start_frame(None)], official, &factory).await;
         assert_eq!(messages.len(), 1);
         assert_error_code(&messages[0], "STT_OPENAI_NOT_CONFIGURED");
         assert!(!factory.connect_called());
     }
 
     #[tokio::test]
-    async fn deepgram_empty_api_key_is_rejected_without_connect() {
+    async fn hosted_provider_is_rejected_without_connect() {
         let factory = MockFactory::with_error(SttError::Unknown("must not connect".into()));
-        let messages = run_with_frames(vec![start_frame(None)], make_deepgram_config(""), &factory).await;
+        let messages = run_with_frames(vec![start_frame(None)], make_hosted_config(), &factory).await;
 
         assert_eq!(messages.len(), 1);
-        assert_error_code(&messages[0], "STT_DEEPGRAM_NOT_CONFIGURED");
+        assert_error_code(&messages[0], "STT_STREAM_UNSUPPORTED");
         assert!(!factory.connect_called());
+    }
+
+    /// The bug this guards against: the backend used to reject an empty API
+    /// key unconditionally, even for a custom `base_url` the settings UI
+    /// marks optional (self-hosted servers often run without auth).
+    #[tokio::test]
+    async fn custom_base_url_with_empty_api_key_is_not_rejected_as_unconfigured() {
+        let config = SpeechToTextConfig {
+            enabled: true,
+            provider: SpeechToTextProvider::Openai,
+            auto_send: None,
+            openai: Some(OpenAISpeechToTextConfig {
+                api_key: String::new(),
+                base_url: Some("http://127.0.0.1:9".into()),
+                model: "custom-model".into(),
+                language: None,
+                prompt: None,
+                temperature: None,
+            }),
+        };
+        // Connect is allowed to be attempted (and fail on its own terms); the
+        // point is it must not be rejected purely for the empty key.
+        let factory = MockFactory::with_error(SttError::RequestFailed("connect refused".into()));
+        let messages = run_with_frames(vec![start_frame(None)], config, &factory).await;
+        assert_eq!(messages.len(), 1);
+        assert_error_code(&messages[0], "STT_REQUEST_FAILED");
+        assert!(factory.connect_called());
     }
 
     #[tokio::test]

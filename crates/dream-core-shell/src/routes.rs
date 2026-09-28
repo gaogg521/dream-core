@@ -43,9 +43,7 @@ impl From<ShellError> for ApiError {
 impl From<SttError> for ApiError {
     fn from(err: SttError) -> Self {
         match &err {
-            SttError::Disabled | SttError::OpenaiNotConfigured | SttError::DeepgramNotConfigured => {
-                ApiError::BadRequest(err.to_string())
-            }
+            SttError::Disabled | SttError::OpenaiNotConfigured => ApiError::BadRequest(err.to_string()),
             SttError::RequestFailed(_) => ApiError::BadGateway(err.to_string()),
             SttError::Unknown(_) => ApiError::Internal(err.to_string()),
             SttError::StreamUnsupported | SttError::StreamProtocol(_) => ApiError::BadRequest(err.to_string()),
@@ -205,18 +203,23 @@ async fn speech_to_text(
         (status, Json(body))
     })?;
 
-    let config = load_stt_config(&state.client_pref_service, state.provider_service.as_ref(), &user.id)
-        .await
-        .map_err(|e| {
-            let e = ApiError::from(e);
-            let status = e.status_code();
-            let body = serde_json::json!({
-                "success": false,
-                "error": e.to_string(),
-                "code": e.error_code(),
-            });
-            (status, Json(body))
-        })?;
+    let config = load_stt_config(
+        &state.client_pref_service,
+        state.provider_service.as_ref(),
+        &state.hosted_stt_service,
+        &user.id,
+    )
+    .await
+    .map_err(|e| {
+        let e = ApiError::from(e);
+        let status = e.status_code();
+        let body = serde_json::json!({
+            "success": false,
+            "error": e.to_string(),
+            "code": e.error_code(),
+        });
+        (status, Json(body))
+    })?;
 
     let result = state
         .stt_service
@@ -251,12 +254,21 @@ fn stt_error_response(err: &SttError) -> (StatusCode, Json<serde_json::Value>) {
 ///
 /// Key mismatch fix: the DreamUI frontend stores the config under
 /// "tools.speechToText" while older backends used "speechToText"; both keys
-/// are queried and the namespaced key wins. A missing or malformed config
-/// falls back to a disabled default so callers surface a uniform
-/// `STT_DISABLED` error.
+/// are queried and the namespaced key wins.
+///
+/// A user who has never touched the speech settings has no key at all under
+/// either name — that is the zero-config case, not a disabled one: it
+/// defaults to the hosted broker (mode D) so the microphone works out of the
+/// box, provided this deployment actually has one configured (every packaged
+/// build does; a dev build without `DREAM_TRIAL_BROKER_URL` falls back to
+/// disabled rather than promising a feature that will only fail). A
+/// genuinely malformed persisted config is different — that is a user who
+/// *did* configure something and it broke, so it falls back to disabled
+/// rather than silently switching them onto the hosted default.
 pub(crate) async fn load_stt_config(
     client_pref_service: &ClientPrefService,
     provider_service: Option<&ProviderService>,
+    hosted_stt_service: &dream_core_system::HostedSttService,
     user_id: &str,
 ) -> Result<SpeechToTextConfig, dream_core_system::SystemError> {
     let prefs = client_pref_service
@@ -268,11 +280,10 @@ pub(crate) async fn load_stt_config(
         .cloned()
     else {
         return Ok(SpeechToTextConfig {
-            enabled: false,
-            provider: dream_core_api_types::SpeechToTextProvider::Openai,
+            enabled: hosted_stt_service.is_configured(),
+            provider: dream_core_api_types::SpeechToTextProvider::Hosted,
             auto_send: None,
             openai: None,
-            deepgram: None,
         });
     };
 
@@ -333,7 +344,6 @@ pub(crate) async fn load_stt_config(
                 provider: dream_core_api_types::SpeechToTextProvider::Openai,
                 auto_send: None,
                 openai: None,
-                deepgram: None,
             })
         }
     }
@@ -365,7 +375,14 @@ async fn speech_to_text_stream(
 async fn speech_to_text_stream_socket(socket: WebSocket, state: ShellRouterState, user_id: String) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    let config = match load_stt_config(&state.client_pref_service, state.provider_service.as_ref(), &user_id).await {
+    let config = match load_stt_config(
+        &state.client_pref_service,
+        state.provider_service.as_ref(),
+        &state.hosted_stt_service,
+        &user_id,
+    )
+    .await
+    {
         Ok(config) => config,
         Err(e) => {
             tracing::error!(error = %e, "stt stream: failed to load config");
@@ -440,13 +457,15 @@ mod tests {
 
         let pool = sqlx::SqlitePool::connect_lazy("sqlite::memory:").unwrap();
         let repo = Arc::new(dream_core_db::SqliteClientPreferenceRepository::new(pool));
+        let hosted_stt_service = dream_core_system::HostedSttService::new(None, reqwest::Client::new(), repo.clone());
         let client_pref_service = dream_core_system::ClientPrefService::new(repo);
 
         ShellRouterState {
             shell_service: Arc::new(ShellService::new(Arc::new(NoopSystemOpener))),
-            stt_service: Arc::new(SttService::new(reqwest::Client::new())),
+            stt_service: Arc::new(SttService::new(reqwest::Client::new(), hosted_stt_service.clone())),
             client_pref_service,
             provider_service: None,
+            hosted_stt_service,
         }
     }
 
@@ -618,12 +637,6 @@ mod tests {
     fn stt_openai_not_configured_maps_to_bad_request() {
         let err = ApiError::from(SttError::OpenaiNotConfigured);
         assert!(matches!(err, ApiError::BadRequest(msg) if msg.contains("OpenAI")));
-    }
-
-    #[test]
-    fn stt_deepgram_not_configured_maps_to_bad_request() {
-        let err = ApiError::from(SttError::DeepgramNotConfigured);
-        assert!(matches!(err, ApiError::BadRequest(msg) if msg.contains("Deepgram")));
     }
 
     #[test]

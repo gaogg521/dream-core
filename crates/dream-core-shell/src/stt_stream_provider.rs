@@ -8,11 +8,12 @@ use dream_core_api_types::{SpeechToTextConfig, SpeechToTextProvider};
 
 use crate::error::SttError;
 use crate::stt_stream::{UpstreamFactory, UpstreamStream};
-use crate::stt_stream_deepgram::DeepgramUpstreamFactory;
 use crate::stt_stream_openai::OpenAIRealtimeUpstreamFactory;
 
-/// Dispatches to [`OpenAIRealtimeUpstreamFactory`] or
-/// [`DeepgramUpstreamFactory`] based on `config.provider`.
+/// Dispatches to [`OpenAIRealtimeUpstreamFactory`] for `Openai`. The hosted
+/// broker path (mode D) has no realtime protocol — the client already
+/// degrades a streaming attempt to the whole-blob `/api/stt` fallback on
+/// `STT_STREAM_UNSUPPORTED` and remembers not to retry streaming for it.
 pub struct ProviderUpstreamFactory;
 
 #[async_trait::async_trait]
@@ -29,11 +30,7 @@ impl UpstreamFactory for ProviderUpstreamFactory {
                     .connect(config, sample_rate, language_hint)
                     .await
             }
-            SpeechToTextProvider::Deepgram => {
-                DeepgramUpstreamFactory
-                    .connect(config, sample_rate, language_hint)
-                    .await
-            }
+            SpeechToTextProvider::Hosted => Err(SttError::StreamUnsupported),
         }
     }
 }
@@ -51,7 +48,6 @@ mod tests {
             provider: SpeechToTextProvider::Openai,
             auto_send: None,
             openai: None,
-            deepgram: None,
         };
         let err = ProviderUpstreamFactory
             .connect(&config, 16000, None)
@@ -62,19 +58,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatches_deepgram_to_deepgram_factory() {
+    async fn hosted_provider_has_no_streaming_protocol() {
         let config = SpeechToTextConfig {
             enabled: true,
-            provider: SpeechToTextProvider::Deepgram,
+            provider: SpeechToTextProvider::Hosted,
             auto_send: None,
             openai: None,
-            deepgram: None,
         };
         let err = ProviderUpstreamFactory
             .connect(&config, 16000, None)
             .await
             .map(|_| ())
-            .expect_err("expected Deepgram factory error");
-        assert!(matches!(err, SttError::DeepgramNotConfigured));
+            .expect_err("hosted has no realtime protocol");
+        assert!(matches!(err, SttError::StreamUnsupported));
     }
 }

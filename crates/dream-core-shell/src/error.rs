@@ -36,9 +36,6 @@ pub enum SttError {
     #[error("OpenAI STT is not configured: missing API key")]
     OpenaiNotConfigured,
 
-    #[error("Deepgram STT is not configured: missing API key")]
-    DeepgramNotConfigured,
-
     #[error("STT request failed: {0}")]
     RequestFailed(String),
 
@@ -57,7 +54,6 @@ impl SttError {
         match self {
             Self::Disabled => "STT_DISABLED",
             Self::OpenaiNotConfigured => "STT_OPENAI_NOT_CONFIGURED",
-            Self::DeepgramNotConfigured => "STT_DEEPGRAM_NOT_CONFIGURED",
             Self::RequestFailed(_) => "STT_REQUEST_FAILED",
             Self::Unknown(_) => "STT_UNKNOWN",
             Self::StreamUnsupported => "STT_STREAM_UNSUPPORTED",
@@ -67,7 +63,7 @@ impl SttError {
 
     pub fn status_code(&self) -> u16 {
         match self {
-            Self::Disabled | Self::OpenaiNotConfigured | Self::DeepgramNotConfigured => 400,
+            Self::Disabled | Self::OpenaiNotConfigured => 400,
             Self::RequestFailed(_) => 502,
             Self::Unknown(_) => 500,
             Self::StreamUnsupported | Self::StreamProtocol(_) => 400,
@@ -121,10 +117,6 @@ mod tests {
     fn stt_error_codes() {
         assert_eq!(SttError::Disabled.error_code(), "STT_DISABLED");
         assert_eq!(SttError::OpenaiNotConfigured.error_code(), "STT_OPENAI_NOT_CONFIGURED");
-        assert_eq!(
-            SttError::DeepgramNotConfigured.error_code(),
-            "STT_DEEPGRAM_NOT_CONFIGURED"
-        );
         assert_eq!(SttError::RequestFailed("x".into()).error_code(), "STT_REQUEST_FAILED");
         assert_eq!(SttError::Unknown("x".into()).error_code(), "STT_UNKNOWN");
         assert_eq!(SttError::StreamUnsupported.error_code(), "STT_STREAM_UNSUPPORTED");
@@ -138,7 +130,6 @@ mod tests {
     fn stt_status_codes() {
         assert_eq!(SttError::Disabled.status_code(), 400);
         assert_eq!(SttError::OpenaiNotConfigured.status_code(), 400);
-        assert_eq!(SttError::DeepgramNotConfigured.status_code(), 400);
         assert_eq!(SttError::RequestFailed("x".into()).status_code(), 502);
         assert_eq!(SttError::Unknown("x".into()).status_code(), 500);
         assert_eq!(SttError::StreamUnsupported.status_code(), 400);
@@ -151,10 +142,6 @@ mod tests {
         assert_eq!(
             SttError::OpenaiNotConfigured.to_string(),
             "OpenAI STT is not configured: missing API key"
-        );
-        assert_eq!(
-            SttError::DeepgramNotConfigured.to_string(),
-            "Deepgram STT is not configured: missing API key"
         );
         assert_eq!(
             SttError::RequestFailed("timeout".into()).to_string(),

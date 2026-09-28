@@ -163,9 +163,9 @@ pub use runtime::{
     RuntimeStatusPhase, RuntimeStatusScope, RuntimeStatusScopeKind,
 };
 pub use shell::{
-    CheckToolInstalledRequest, CheckToolInstalledResponse, DeepgramSpeechToTextConfig, OpenAISpeechToTextConfig,
-    OpenExternalRequest, OpenFileRequest, OpenFolderWithRequest, ShowItemInFolderRequest, SpeechToTextConfig,
-    SpeechToTextProvider, SpeechToTextResult, SttStreamClientMessage, SttStreamServerMessage, ToolType,
+    CheckToolInstalledRequest, CheckToolInstalledResponse, OpenAISpeechToTextConfig, OpenExternalRequest,
+    OpenFileRequest, OpenFolderWithRequest, ShowItemInFolderRequest, SpeechToTextConfig, SpeechToTextProvider,
+    SpeechToTextResult, SttStreamClientMessage, SttStreamServerMessage, ToolType,
 };
 pub use skill::{
     AddExternalPathRequest, DeleteSkillRequest, ExportSkillRequest, ExternalSkillSourceResponse,

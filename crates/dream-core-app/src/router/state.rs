@@ -1054,6 +1054,12 @@ pub fn build_claude_bridge_state(services: &AppServices) -> ClaudeBridgeRouterSt
 pub fn build_shell_state(services: &AppServices) -> ShellRouterState {
     let pool = services.database.pool().clone();
     let client_pref_repo = Arc::new(SqliteClientPreferenceRepository::new(pool));
+    // Mode D (hosted default STT) talks to the same broker as modes A/B/C.
+    let hosted_stt_service = dream_core_system::HostedSttService::new(
+        std::env::var("DREAM_TRIAL_BROKER_URL").ok(),
+        reqwest::Client::new(),
+        client_pref_repo.clone(),
+    );
     let client_pref_service = ClientPrefService::new(client_pref_repo);
     let provider_repo = Arc::new(SqliteProviderRepository::new(services.database.pool().clone()));
     let provider_service = ProviderService::new(provider_repo, derive_encryption_key(&services.data_secret_raw));
@@ -1062,9 +1068,13 @@ pub fn build_shell_state(services: &AppServices) -> ShellRouterState {
         shell_service: Arc::new(dream_core_shell::ShellService::new(Arc::new(
             dream_core_shell::DefaultSystemOpener,
         ))),
-        stt_service: Arc::new(dream_core_shell::SttService::new(reqwest::Client::new())),
+        stt_service: Arc::new(dream_core_shell::SttService::new(
+            reqwest::Client::new(),
+            hosted_stt_service.clone(),
+        )),
         client_pref_service,
         provider_service: Some(provider_service),
+        hosted_stt_service,
     }
 }
 

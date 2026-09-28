@@ -46,9 +46,12 @@ impl UpstreamFactory for OpenAIRealtimeUpstreamFactory {
         language_hint: Option<&str>,
     ) -> Result<Box<dyn UpstreamStream>, SttError> {
         // The session validates the config before connecting, but re-check
-        // here so the factory is safe standalone (mirrors stt_openai::transcribe).
+        // here so the factory is safe standalone (mirrors stt_openai::transcribe:
+        // an empty key is only rejected against the official endpoint — a
+        // custom base_url may be a self-hosted server with no auth).
         let openai = config.openai.as_ref().ok_or(SttError::OpenaiNotConfigured)?;
-        if openai.api_key.is_empty() {
+        let is_official_endpoint = openai.base_url.as_deref().map(str::trim).is_none_or(str::is_empty);
+        if is_official_endpoint && openai.api_key.is_empty() {
             return Err(SttError::OpenaiNotConfigured);
         }
         Ok(Box::new(connect(openai, sample_rate, language_hint).await?))

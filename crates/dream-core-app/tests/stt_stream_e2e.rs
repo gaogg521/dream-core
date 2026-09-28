@@ -1,10 +1,11 @@
 //! End-to-end tests for the `GET /api/stt/stream` WebSocket endpoint.
 //!
 //! Exercises the full app stack: auth middleware on the upgrade request,
-//! preference-backed config loading, the streaming session protocol, and the
-//! Deepgram upstream against a local mock WebSocket server (wiremock cannot
-//! speak WebSocket, so the mock is a small tokio-tungstenite server,
-//! mirroring `dream-shell/tests/stt_stream_deepgram_integration.rs`).
+//! preference-backed config loading, and the streaming session protocol.
+//! wiremock cannot speak WebSocket, so `dream-shell`'s own OpenAI-realtime
+//! integration tests use a small tokio-tungstenite server instead — this
+//! file only needs the app-level auth/protocol paths, which don't require a
+//! live upstream at all.
 //!
 //! Hang-safety: every potentially blocking await is wrapped in a 5s timeout.
 
@@ -117,40 +118,6 @@ fn start_frame() -> Message {
     Message::Text(r#"{"type":"start","format":"pcm16","sampleRate":16000,"channels":1}"#.into())
 }
 
-// ---------------------------------------------------------------------------
-// Mock Deepgram live server (minimal copy of the dream-shell integration
-// test pattern; duplicated here to avoid a cross-crate test dependency)
-// ---------------------------------------------------------------------------
-
-fn results_frame(transcript: &str, is_final: bool) -> Message {
-    Message::Text(
-        json!({
-            "type": "Results",
-            "is_final": is_final,
-            "channel": { "alternatives": [{ "transcript": transcript, "confidence": 0.98 }] },
-        })
-        .to_string()
-        .into(),
-    )
-}
-
-/// Start a one-connection mock Deepgram WS server; returns its HTTP base URL
-/// and the server task handle (await it to propagate in-handler panics).
-async fn spawn_deepgram_mock<F, Fut>(handler: F) -> (String, tokio::task::JoinHandle<()>)
-where
-    F: FnOnce(WebSocketStream<TcpStream>) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = ()> + Send,
-{
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
-        handler(ws).await;
-    });
-    (format!("http://{addr}"), handle)
-}
-
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -207,55 +174,24 @@ async fn disabled_stt_yields_error_frame_then_close() {
     read_until_close(&mut ws).await;
 }
 
-// 3. Full happy path against a mock Deepgram live server:
-//    start → ready → binary audio → partial → final → stop → done → close.
+// 3. The hosted provider (mode D) has no realtime protocol: a streaming
+//    attempt must be rejected immediately with STT_STREAM_UNSUPPORTED,
+//    before any upstream work happens — the client already degrades this to
+//    the whole-blob /api/stt fallback on exactly this code.
 #[tokio::test]
-async fn deepgram_full_flow_streams_exact_frame_sequence() {
-    let (base_url, mock) = spawn_deepgram_mock(|mut ws| async move {
-        // The audio chunk must arrive as a raw binary frame with exact bytes.
-        match ws.next().await {
-            Some(Ok(Message::Binary(bytes))) => assert_eq!(bytes.as_ref(), &[1u8, 2, 3][..]),
-            other => panic!("expected binary audio frame, got {other:?}"),
-        }
-        ws.send(results_frame("hel", false)).await.unwrap();
-        ws.send(results_frame("hello", true)).await.unwrap();
-        // `stop` must arrive as Deepgram's CloseStream control message.
-        match ws.next().await {
-            Some(Ok(Message::Text(text))) => assert_eq!(text.as_str(), r#"{"type":"CloseStream"}"#),
-            other => panic!("expected CloseStream text frame, got {other:?}"),
-        }
-        ws.send(Message::Close(None)).await.unwrap();
-    })
-    .await;
-
+async fn hosted_provider_rejects_streaming_as_unsupported() {
     let app = start_app().await;
-    seed_stt_prefs(
-        &app,
-        json!({
-            "enabled": true,
-            "provider": "deepgram",
-            "deepgram": { "api_key": "dg-test-key", "base_url": base_url, "model": "nova-3" }
-        }),
-    )
-    .await;
+    seed_stt_prefs(&app, json!({ "enabled": true, "provider": "hosted" })).await;
     let token = sign_token(&app);
 
     let mut ws = connect_stream(app.addr, &token).await;
     within(ws.send(start_frame())).await.unwrap();
 
-    assert_eq!(read_frame(&mut ws).await, json!({ "type": "ready" }));
-
-    within(ws.send(Message::Binary(vec![1u8, 2, 3].into()))).await.unwrap();
-    assert_eq!(read_frame(&mut ws).await, json!({ "type": "partial", "text": "hel" }));
-    assert_eq!(read_frame(&mut ws).await, json!({ "type": "final", "text": "hello" }));
-
-    within(ws.send(Message::Text(r#"{"type":"stop"}"#.into())))
-        .await
-        .unwrap();
-    assert_eq!(read_frame(&mut ws).await, json!({ "type": "done" }));
+    let frame = read_frame(&mut ws).await;
+    assert_eq!(frame["type"], "error");
+    assert_eq!(frame["code"], "STT_STREAM_UNSUPPORTED");
 
     read_until_close(&mut ws).await;
-    within(mock).await.unwrap();
 }
 
 // 4. Protocol violation: a binary frame before `start` is rejected with

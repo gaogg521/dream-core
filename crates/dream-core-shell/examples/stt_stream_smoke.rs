@@ -1,11 +1,9 @@
-//! Manual smoke test for the STT streaming upstream adapters against REAL APIs.
-//! Not committed / not part of CI. Run:
+//! Manual smoke test for the OpenAI realtime STT streaming upstream against
+//! the REAL API. Not committed / not part of CI. Run:
 //!   STT_SMOKE_API_KEY=sk-... STT_SMOKE_MODEL=gpt-4o-mini-transcribe \
 //!   cargo run -p dream-shell --example stt_stream_smoke -- /path/to/pcm16-24k-mono.wav
 
-use dream_core_api_types::{
-    DeepgramSpeechToTextConfig, OpenAISpeechToTextConfig, SpeechToTextConfig, SpeechToTextProvider,
-};
+use dream_core_api_types::{OpenAISpeechToTextConfig, SpeechToTextConfig, SpeechToTextProvider};
 use dream_core_shell::{ProviderUpstreamFactory, UpstreamEvent, UpstreamFactory};
 use std::time::Duration;
 
@@ -27,14 +25,8 @@ fn wav_pcm_payload(bytes: &[u8]) -> &[u8] {
 
 #[tokio::main]
 async fn main() {
-    let provider = std::env::var("STT_SMOKE_PROVIDER").unwrap_or_else(|_| "openai".into());
     let api_key = std::env::var("STT_SMOKE_API_KEY").expect("STT_SMOKE_API_KEY required");
-    let default_model = if provider == "deepgram" {
-        "nova-3"
-    } else {
-        "gpt-4o-mini-transcribe"
-    };
-    let model = std::env::var("STT_SMOKE_MODEL").unwrap_or_else(|_| default_model.into());
+    let model = std::env::var("STT_SMOKE_MODEL").unwrap_or_else(|_| "gpt-4o-mini-transcribe".into());
     let wav_path = std::env::args().nth(1).expect("usage: stt_stream_smoke <wav>");
 
     let wav = std::fs::read(&wav_path).expect("read wav");
@@ -45,39 +37,21 @@ async fn main() {
         pcm.len() as f64 / 48000.0
     );
 
-    let config = match provider.as_str() {
-        "deepgram" => SpeechToTextConfig {
-            enabled: true,
-            provider: SpeechToTextProvider::Deepgram,
-            auto_send: None,
-            openai: None,
-            deepgram: Some(DeepgramSpeechToTextConfig {
-                api_key,
-                base_url: None,
-                model: model.clone(),
-                language: None,
-                detect_language: None,
-                punctuate: Some(true),
-                smart_format: Some(true),
-            }),
-        },
-        _ => SpeechToTextConfig {
-            enabled: true,
-            provider: SpeechToTextProvider::Openai,
-            auto_send: None,
-            openai: Some(OpenAISpeechToTextConfig {
-                api_key,
-                base_url: None,
-                model: model.clone(),
-                language: None,
-                prompt: None,
-                temperature: None,
-            }),
-            deepgram: None,
-        },
+    let config = SpeechToTextConfig {
+        enabled: true,
+        provider: SpeechToTextProvider::Openai,
+        auto_send: None,
+        openai: Some(OpenAISpeechToTextConfig {
+            api_key,
+            base_url: None,
+            model: model.clone(),
+            language: None,
+            prompt: None,
+            temperature: None,
+        }),
     };
 
-    println!("[smoke] connecting upstream (provider={provider}, model={model})...");
+    println!("[smoke] connecting upstream (model={model})...");
     let t0 = std::time::Instant::now();
     let mut upstream = ProviderUpstreamFactory
         .connect(

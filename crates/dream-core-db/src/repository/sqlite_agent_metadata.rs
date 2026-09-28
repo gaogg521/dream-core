@@ -977,8 +977,12 @@ mod tests {
             .iter()
             .find(|row| row.agent_type == "dream" && row.agent_source == "internal")
             .expect("seeded Aion CLI row");
-        // Fork: migration 021 rebrands the dream row icon to the 1ONE logo.
-        assert_eq!(dream_engine.icon.as_deref(), Some("/api/assets/logos/brand/1one.png"));
+        // Fork: migration 021 rebrands the dream row icon to the 1ONE logo;
+        // migration 059 later replaces the mascot with the supplied CLI avatar.
+        assert_eq!(
+            dream_engine.icon.as_deref(),
+            Some("/api/assets/logos/brand/1one-cli.png")
+        );
         let dream_engine_modes: serde_json::Value = serde_json::from_str(
             dream_engine
                 .available_modes

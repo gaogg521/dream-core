@@ -13,6 +13,25 @@
 > 跨仓完整叙述（含前端 bug 与 CodeMirror 排查）见 dream-ui 同名文档。本 CLAUDE.md 只保留
 > 长期有效的规则，过程性细节请去读那份文档。
 
+> **2026-09-29（语音转字：阿里云托管默认 + 删除 Deepgram）**：新增 `SpeechToTextProvider::Hosted`
+> 走 broker（`dream-trial-broker` mode D，仿照 mode C 联网搜索——真实 vendor key 不进客户端），
+> **彻底删除** `Deepgram`/`DeepgramSpeechToTextConfig`/`stt_deepgram.rs`/`stt_stream_deepgram.rs`
+> 整条代码路径。`load_stt_config` 在"两个 preference key 都查不到"（用户从没碰过语音设置）时，
+> 如果这套部署配了 `DREAM_TRIAL_BROKER_URL`（打包版天生有）就直接返回 `{enabled:true,
+> provider:Hosted}`——前端必须同步这个默认值，否则会出现"设置里显示已启用、点麦克风却提示未
+> 配置"。阿里云 `qwen3-asr-flash` **不是**走 OpenAI 兼容的 `/v1/audio/transcriptions`（实测
+> 404），真正能用的是 DashScope 自己的 `multimodal-generation` 聊天式接口，音频塞 `data:` URI；
+> 静音返回空 `content` 数组（没有 `text` 字段，是合法结果不是错误）。顺带修了 `stt_openai.rs` /
+> `stt_stream_openai.rs` / `stt_stream.rs` 的一个真实 bug：三处都不分来源强制要求 `api_key`
+> 非空，但设置 UI 对自定义 base_url 明确把 Key 标成可选（自建服务常不鉴权）——改成只有官方
+> endpoint（`base_url` 为空）才强制要求。`cargo test --workspace` 全量跑两轮才归零：第一轮抓出
+> `dream-core-app/tests/{shell_e2e,stt_stream_e2e}.rs` 里两个还在用 `"provider":"deepgram"`
+> JSON 字面量的 e2e 测试（枚举变体删除后编译期测不出来，运行时反序列化失败才暴露）+
+> `dream-core-shell/src/stt_stream.rs` 一个断言"空 key 必须被拒绝"的旧测试（跟本轮修复的方向
+> 正好相反，得改）+ 1 个跟本次无关的预存失败（`dream-core-db` 品牌图标路径断言还停在改名前的
+> 值）。完整跨仓背景见 dream-ui 同名文档
+> [session-2026-09-29-hosted-stt-and-legacy-provider-removal.zh-CN.md](https://github.com/gaogg521/dream-ui/blob/main/docs/guides/session-2026-09-29-hosted-stt-and-legacy-provider-removal.zh-CN.md)。
+
 > **2026-09-22（安全审计+四项修复）**：四路并行审计 dream-ui/dream-core+engine/dream-en/
 > dream-trial-broker，确认的真实问题里落在本仓库的一项已修：`mcp_servers.transport_config`
 > （stdio env、SSE/HTTP headers，常带 token）和 `oauth_tokens.{access_token,refresh_token}`

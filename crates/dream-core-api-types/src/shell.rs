@@ -51,7 +51,10 @@ pub struct OpenFolderWithRequest {
 #[serde(rename_all = "lowercase")]
 pub enum SpeechToTextProvider {
     Openai,
-    Deepgram,
+    /// The broker-backed default (mode D): dream-core resolves this
+    /// deployment's install id and forwards the audio, never holding a
+    /// vendor key itself. See `crates/dream-core-shell/src/stt_hosted.rs`.
+    Hosted,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -78,22 +81,6 @@ pub struct OpenAISpeechToTextConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct DeepgramSpeechToTextConfig {
-    pub api_key: String,
-    #[serde(default)]
-    pub base_url: Option<String>,
-    pub model: String,
-    #[serde(default)]
-    pub language: Option<String>,
-    #[serde(default)]
-    pub detect_language: Option<bool>,
-    #[serde(default)]
-    pub punctuate: Option<bool>,
-    #[serde(default)]
-    pub smart_format: Option<bool>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct SpeechToTextConfig {
     pub enabled: bool,
     pub provider: SpeechToTextProvider,
@@ -101,8 +88,6 @@ pub struct SpeechToTextConfig {
     pub auto_send: Option<bool>,
     #[serde(default)]
     pub openai: Option<OpenAISpeechToTextConfig>,
-    #[serde(default)]
-    pub deepgram: Option<DeepgramSpeechToTextConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -221,18 +206,25 @@ mod tests {
     #[test]
     fn stt_provider_serializes_lowercase() {
         assert_eq!(serde_json::to_value(SpeechToTextProvider::Openai).unwrap(), "openai");
-        assert_eq!(
-            serde_json::to_value(SpeechToTextProvider::Deepgram).unwrap(),
-            "deepgram"
-        );
+        assert_eq!(serde_json::to_value(SpeechToTextProvider::Hosted).unwrap(), "hosted");
     }
 
     #[test]
     fn stt_provider_deserializes_lowercase() {
         let o: SpeechToTextProvider = serde_json::from_str(r#""openai""#).unwrap();
         assert_eq!(o, SpeechToTextProvider::Openai);
-        let d: SpeechToTextProvider = serde_json::from_str(r#""deepgram""#).unwrap();
-        assert_eq!(d, SpeechToTextProvider::Deepgram);
+        let h: SpeechToTextProvider = serde_json::from_str(r#""hosted""#).unwrap();
+        assert_eq!(h, SpeechToTextProvider::Hosted);
+    }
+
+    /// A config persisted by an older build with `provider: "deepgram"` must
+    /// not crash the app on load — it should be rejected the same clean way
+    /// any other unrecognized value is, so `load_stt_config`'s malformed-
+    /// config fallback (disabled) kicks in rather than a panic.
+    #[test]
+    fn stt_provider_rejects_retired_deepgram_value() {
+        let result = serde_json::from_str::<SpeechToTextProvider>(r#""deepgram""#);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -262,8 +254,8 @@ mod tests {
     fn stt_result_omits_null_language() {
         let result = SpeechToTextResult {
             text: "test".to_owned(),
-            model: "nova-2".to_owned(),
-            provider: SpeechToTextProvider::Deepgram,
+            model: "qwen3-asr-flash".to_owned(),
+            provider: SpeechToTextProvider::Hosted,
             language: None,
         };
         let json = serde_json::to_value(&result).unwrap();
@@ -298,36 +290,18 @@ mod tests {
         assert_eq!(openai.language.as_deref(), Some("en"));
         assert_eq!(openai.prompt.as_deref(), Some("technical terms"));
         assert_eq!(openai.temperature, Some(0.2));
-        assert!(config.deepgram.is_none());
     }
 
     #[test]
-    fn stt_config_full_deepgram() {
+    fn stt_config_hosted() {
         let raw = json!({
             "enabled": true,
-            "provider": "deepgram",
-            "deepgram": {
-                "api_key": "dg-test",
-                "model": "nova-2",
-                "language": "zh",
-                "detect_language": true,
-                "punctuate": true,
-                "smart_format": false
-            }
+            "provider": "hosted"
         });
         let config: SpeechToTextConfig = serde_json::from_value(raw).unwrap();
         assert!(config.enabled);
-        assert_eq!(config.provider, SpeechToTextProvider::Deepgram);
-        assert!(config.auto_send.is_none());
+        assert_eq!(config.provider, SpeechToTextProvider::Hosted);
         assert!(config.openai.is_none());
-        let dg = config.deepgram.unwrap();
-        assert_eq!(dg.api_key, "dg-test");
-        assert!(dg.base_url.is_none());
-        assert_eq!(dg.model, "nova-2");
-        assert_eq!(dg.language.as_deref(), Some("zh"));
-        assert_eq!(dg.detect_language, Some(true));
-        assert_eq!(dg.punctuate, Some(true));
-        assert_eq!(dg.smart_format, Some(false));
     }
 
     #[test]
@@ -341,7 +315,6 @@ mod tests {
         assert_eq!(config.provider, SpeechToTextProvider::Openai);
         assert!(config.auto_send.is_none());
         assert!(config.openai.is_none());
-        assert!(config.deepgram.is_none());
     }
 
     #[test]
@@ -470,23 +443,5 @@ mod tests {
         assert!(config.language.is_none());
         assert!(config.prompt.is_none());
         assert!(config.temperature.is_none());
-    }
-
-    // -- DeepgramSpeechToTextConfig --
-
-    #[test]
-    fn deepgram_config_minimal() {
-        let raw = json!({
-            "api_key": "dg-key",
-            "model": "nova-2"
-        });
-        let config: DeepgramSpeechToTextConfig = serde_json::from_value(raw).unwrap();
-        assert_eq!(config.api_key, "dg-key");
-        assert_eq!(config.model, "nova-2");
-        assert!(config.base_url.is_none());
-        assert!(config.language.is_none());
-        assert!(config.detect_language.is_none());
-        assert!(config.punctuate.is_none());
-        assert!(config.smart_format.is_none());
     }
 }

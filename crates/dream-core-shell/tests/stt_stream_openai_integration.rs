@@ -5,9 +5,9 @@
 //! and headers, and each test drives a scripted frame exchange.
 //!
 //! Hang-safety: every potentially blocking await is wrapped in a 5s timeout
-//! (`within`). Unlike the Deepgram tests, several handlers DO wait for the
-//! client's `Close` frame: the OpenAI adapter initiates the close handshake
-//! itself after commit + final transcript, and that behavior is pinned here.
+//! (`within`). Several handlers DO wait for the client's `Close` frame: the
+//! OpenAI adapter initiates the close handshake itself after commit + final
+//! transcript, and that behavior is pinned here.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -536,7 +536,6 @@ async fn factory_rejects_missing_openai_config() {
         provider: SpeechToTextProvider::Openai,
         auto_send: None,
         openai: None,
-        deepgram: None,
     };
     let err = within(OpenAIRealtimeUpstreamFactory.connect(&config, 24000, None))
         .await
@@ -546,7 +545,29 @@ async fn factory_rejects_missing_openai_config() {
 }
 
 #[tokio::test]
-async fn factory_rejects_empty_api_key() {
+async fn factory_rejects_empty_api_key_for_the_official_endpoint() {
+    let mut openai = make_config("http://127.0.0.1:1");
+    openai.base_url = None; // official api.openai.com — key is required
+    openai.api_key = String::new();
+    let config = SpeechToTextConfig {
+        enabled: true,
+        provider: SpeechToTextProvider::Openai,
+        auto_send: None,
+        openai: Some(openai),
+    };
+    let err = within(OpenAIRealtimeUpstreamFactory.connect(&config, 24000, None))
+        .await
+        .map(|_| ())
+        .expect_err("expected missing-key error");
+    assert!(matches!(err, SttError::OpenaiNotConfigured));
+}
+
+/// The bug this guards against: a custom base_url (the settings UI marks its
+/// API key optional, for self-hosted servers with no auth) used to be
+/// rejected the same way as a missing official key. It must instead reach
+/// the network and fail on its own terms.
+#[tokio::test]
+async fn factory_allows_empty_api_key_for_a_custom_base_url() {
     let mut openai = make_config("http://127.0.0.1:1");
     openai.api_key = String::new();
     let config = SpeechToTextConfig {
@@ -554,13 +575,15 @@ async fn factory_rejects_empty_api_key() {
         provider: SpeechToTextProvider::Openai,
         auto_send: None,
         openai: Some(openai),
-        deepgram: None,
     };
     let err = within(OpenAIRealtimeUpstreamFactory.connect(&config, 24000, None))
         .await
         .map(|_| ())
-        .expect_err("expected missing-key error");
-    assert!(matches!(err, SttError::OpenaiNotConfigured));
+        .expect_err("nothing listens on 127.0.0.1:1");
+    assert!(
+        matches!(err, SttError::RequestFailed(_)),
+        "expected a connection failure, not a config rejection: {err:?}"
+    );
 }
 
 #[tokio::test]
@@ -577,7 +600,6 @@ async fn factory_connects_through_upstream_stream_trait() {
         provider: SpeechToTextProvider::Openai,
         auto_send: None,
         openai: Some(make_config(&base_url)),
-        deepgram: None,
     };
     let mut stream = within(OpenAIRealtimeUpstreamFactory.connect(&config, 24000, None))
         .await
