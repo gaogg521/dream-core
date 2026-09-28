@@ -347,9 +347,11 @@ async fn agent_logos_endpoint_returns_backend_to_logo_catalog() {
     );
 
     // Dream CLI has no vendor `backend` (NULL); it must still be keyed by its
-    // agent_type ("dream") so dream conversations resolve a logo. Migration
-    // 021 repointed the seeded icon at the 1ONE mascot; 057 swept the rest.
-    assert_eq!(logo_for("dream").as_deref(), Some("/api/assets/logos/brand/1one.png"));
+    // agent_type ("dream") so dream conversations resolve the 1ONE CLI product mark.
+    assert_eq!(
+        logo_for("dream").as_deref(),
+        Some("/api/assets/logos/brand/1one-cli.svg")
+    );
 
     // Every entry carries a non-empty backend + logo, and backends are unique.
     let mut seen = std::collections::HashSet::new();

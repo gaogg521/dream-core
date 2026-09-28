@@ -117,6 +117,17 @@ mod tests {
     }
 
     #[test]
+    fn get_logo_returns_the_1one_cli_product_mark() {
+        let service = AssetService;
+        let asset = service
+            .get_logo("brand/1one-cli.svg")
+            .expect("1ONE CLI product mark present");
+
+        assert_eq!(asset.content_type, HeaderValue::from_static("image/svg+xml"));
+        assert!(asset.bytes.starts_with(b"<svg"));
+    }
+
+    #[test]
     fn registry_agent_logos_are_embedded_as_svg() {
         let service = AssetService;
         for name in [
