@@ -138,7 +138,7 @@ fn build_ws_url(base_url: Option<&str>) -> String {
         format!("ws://{rest}")
     } else {
         // Already a ws:// / wss:// custom base: pass through unchanged.
-        base.to_owned()
+        base.into_owned()
     };
     format!("{ws_base}/v1/realtime?intent=transcription")
 }

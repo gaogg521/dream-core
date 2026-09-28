@@ -10,12 +10,12 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
 use dream_core_api_types::{
-    ApiResponse, CheckToolInstalledRequest, CheckToolInstalledResponse, OpenExternalRequest, OpenFileRequest,
-    OpenFolderWithRequest, ShowItemInFolderRequest, SpeechToTextConfig, SttStreamServerMessage,
+    ApiResponse, CheckToolInstalledRequest, CheckToolInstalledResponse, ModelKind, OpenExternalRequest,
+    OpenFileRequest, OpenFolderWithRequest, ShowItemInFolderRequest, SpeechToTextConfig, SttStreamServerMessage,
 };
 use dream_core_auth::CurrentUser;
 use dream_core_common::ApiError;
-use dream_core_system::ClientPrefService;
+use dream_core_system::{ClientPrefService, ProviderService};
 
 use crate::error::{ShellError, SttError};
 use crate::state::ShellRouterState;
@@ -205,7 +205,7 @@ async fn speech_to_text(
         (status, Json(body))
     })?;
 
-    let config = load_stt_config(&state.client_pref_service, &user.id)
+    let config = load_stt_config(&state.client_pref_service, state.provider_service.as_ref(), &user.id)
         .await
         .map_err(|e| {
             let e = ApiError::from(e);
@@ -256,30 +256,87 @@ fn stt_error_response(err: &SttError) -> (StatusCode, Json<serde_json::Value>) {
 /// `STT_DISABLED` error.
 pub(crate) async fn load_stt_config(
     client_pref_service: &ClientPrefService,
+    provider_service: Option<&ProviderService>,
     user_id: &str,
 ) -> Result<SpeechToTextConfig, dream_core_system::SystemError> {
     let prefs = client_pref_service
         .get_preferences(user_id, Some(&["speechToText", "tools.speechToText"]))
         .await?;
-    Ok(prefs
+    let Some(mut raw) = prefs
         .get("tools.speechToText")
         .or_else(|| prefs.get("speechToText"))
-        .and_then(|v| match serde_json::from_value(v.clone()) {
-            Ok(config) => Some(config),
-            Err(e) => {
-                // Fall back to disabled, but leave a trace — a silent fallback
-                // makes a malformed config indistinguishable from a missing one.
-                tracing::warn!("ignoring malformed speechToText config: {e}");
-                None
-            }
-        })
-        .unwrap_or(SpeechToTextConfig {
+        .cloned()
+    else {
+        return Ok(SpeechToTextConfig {
             enabled: false,
             provider: dream_core_api_types::SpeechToTextProvider::Openai,
             auto_send: None,
             openai: None,
             deepgram: None,
-        }))
+        });
+    };
+
+    // `modelProviderId` means the UI selected an existing channel from Model
+    // Settings. Resolve its secret only here on the backend; never duplicate
+    // the API key into the user-visible speech preference JSON.
+    if let Some(provider_id) = raw.get("modelProviderId").and_then(serde_json::Value::as_str) {
+        let model = raw
+            .pointer("/openai/model")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| dream_core_system::SystemError::BadRequest("selected speech model is missing".into()))?
+            .to_owned();
+        let service = provider_service.ok_or_else(|| {
+            dream_core_system::SystemError::Internal("speech model provider resolution is unavailable".into())
+        })?;
+        let provider = service
+            .list(user_id)
+            .await?
+            .into_iter()
+            .find(|candidate| candidate.id == provider_id)
+            .ok_or_else(|| {
+                dream_core_system::SystemError::BadRequest("selected model provider no longer exists".into())
+            })?;
+        let is_audio_model = provider
+            .model_settings
+            .get(&model)
+            .and_then(|settings| settings.model_kind)
+            == Some(ModelKind::Audio);
+        if !provider.enabled
+            || provider
+                .model_enabled
+                .as_ref()
+                .is_some_and(|enabled| enabled.get(&model) == Some(&false))
+            || !provider.models.iter().any(|candidate| candidate == &model)
+            || !is_audio_model
+        {
+            return Err(dream_core_system::SystemError::BadRequest(
+                "selected model provider no longer has this enabled audio model".into(),
+            ));
+        }
+        let openai = raw
+            .get_mut("openai")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| {
+                dream_core_system::SystemError::BadRequest("selected speech model has invalid settings".into())
+            })?;
+        openai.insert("api_key".into(), serde_json::Value::String(provider.api_key));
+        openai.insert("base_url".into(), serde_json::Value::String(provider.base_url));
+    }
+
+    match serde_json::from_value(raw) {
+        Ok(config) => Ok(config),
+        Err(e) => {
+            tracing::warn!("ignoring malformed speechToText config: {e}");
+            Ok(SpeechToTextConfig {
+                enabled: false,
+                provider: dream_core_api_types::SpeechToTextProvider::Openai,
+                auto_send: None,
+                openai: None,
+                deepgram: None,
+            })
+        }
+    }
 }
 
 /// Per-direction frame buffer for the streaming session channels. Audio
@@ -308,7 +365,7 @@ async fn speech_to_text_stream(
 async fn speech_to_text_stream_socket(socket: WebSocket, state: ShellRouterState, user_id: String) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    let config = match load_stt_config(&state.client_pref_service, &user_id).await {
+    let config = match load_stt_config(&state.client_pref_service, state.provider_service.as_ref(), &user_id).await {
         Ok(config) => config,
         Err(e) => {
             tracing::error!(error = %e, "stt stream: failed to load config");
@@ -389,6 +446,7 @@ mod tests {
             shell_service: Arc::new(ShellService::new(Arc::new(NoopSystemOpener))),
             stt_service: Arc::new(SttService::new(reqwest::Client::new())),
             client_pref_service,
+            provider_service: None,
         }
     }
 

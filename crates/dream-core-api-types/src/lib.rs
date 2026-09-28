@@ -146,7 +146,7 @@ pub use provider::{
     BedrockAuthMethod, BedrockConfig, CreateProviderRequest, DetectProtocolRequest, DetectionSuggestion,
     FetchModelsAnonymousRequest, FetchModelsRequest, FetchModelsResponse, HealthStatus, KeyTestResult,
     MeteredAccessResponse, MeteredClaimRequest, MeteredCreateOrderRequest, MeteredOrderResponse, MeteredQuotaQuery,
-    MeteredQuotaStatusResponse, ModelCapability, ModelHealthStatus, ModelImageInputCapability, ModelInfo,
+    MeteredQuotaStatusResponse, ModelCapability, ModelHealthStatus, ModelImageInputCapability, ModelInfo, ModelKind,
     ModelMaxTokensField, ModelOpenAiApiMode, ModelPlatformPreset, ModelPlatformsResponse, ModelSettings, ModelType,
     MultiKeyResult, ProtocolDetectionResponse, ProviderHealthCheckErrorKind, ProviderHealthCheckRequest,
     ProviderHealthCheckResponse, ProviderKeyStatus, ProviderResponse, SuggestionType, TopupOrderCreateRequest,

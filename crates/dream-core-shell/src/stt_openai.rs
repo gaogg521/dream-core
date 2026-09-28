@@ -1,5 +1,6 @@
 use dream_core_api_types::{OpenAISpeechToTextConfig, SpeechToTextProvider, SpeechToTextResult};
 use reqwest::Client;
+use std::borrow::Cow;
 
 use crate::error::SttError;
 
@@ -8,13 +9,22 @@ const DEFAULT_BASE_URL: &str = "https://api.openai.com";
 /// Resolve the effective base URL. Unset or blank values fall back to the
 /// default — the settings UI saves unfilled fields as empty strings, which
 /// would otherwise produce a relative URL that fails the request builder.
-pub(crate) fn resolve_base_url(configured: Option<&str>) -> &str {
-    configured
+pub(crate) fn resolve_base_url(configured: Option<&str>) -> Cow<'_, str> {
+    let base_url = configured
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(DEFAULT_BASE_URL)
         .trim_end_matches('/')
-        .trim_end_matches("/v1")
+        .trim_end_matches("/v1");
+
+    // OpenRouter's public homepage is not its OpenAI-compatible API base. It
+    // is a natural value to paste from the browser, so make that form work
+    // instead of issuing a transcription request against a HTML 404 page.
+    if base_url.eq_ignore_ascii_case("https://openrouter.ai") {
+        Cow::Owned("https://openrouter.ai/api".to_owned())
+    } else {
+        Cow::Borrowed(base_url)
+    }
 }
 
 pub async fn transcribe(
@@ -122,6 +132,18 @@ mod tests {
         );
         assert_eq!(resolve_base_url(Some("https://example.com/")), "https://example.com");
         assert_eq!(resolve_base_url(Some("https://example.com/v1/")), "https://example.com");
+    }
+
+    #[test]
+    fn resolve_base_url_normalizes_openrouter_homepage() {
+        assert_eq!(
+            resolve_base_url(Some("https://openrouter.ai/")),
+            "https://openrouter.ai/api"
+        );
+        assert_eq!(
+            resolve_base_url(Some("https://openrouter.ai/api/v1")),
+            "https://openrouter.ai/api"
+        );
     }
 
     #[tokio::test]

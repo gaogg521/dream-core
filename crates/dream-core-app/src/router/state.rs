@@ -1055,6 +1055,8 @@ pub fn build_shell_state(services: &AppServices) -> ShellRouterState {
     let pool = services.database.pool().clone();
     let client_pref_repo = Arc::new(SqliteClientPreferenceRepository::new(pool));
     let client_pref_service = ClientPrefService::new(client_pref_repo);
+    let provider_repo = Arc::new(SqliteProviderRepository::new(services.database.pool().clone()));
+    let provider_service = ProviderService::new(provider_repo, derive_encryption_key(&services.data_secret_raw));
 
     ShellRouterState {
         shell_service: Arc::new(dream_core_shell::ShellService::new(Arc::new(
@@ -1062,6 +1064,7 @@ pub fn build_shell_state(services: &AppServices) -> ShellRouterState {
         ))),
         stt_service: Arc::new(dream_core_shell::SttService::new(reqwest::Client::new())),
         client_pref_service,
+        provider_service: Some(provider_service),
     }
 }
 
