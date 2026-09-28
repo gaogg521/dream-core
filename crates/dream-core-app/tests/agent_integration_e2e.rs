@@ -350,7 +350,7 @@ async fn agent_logos_endpoint_returns_backend_to_logo_catalog() {
     // agent_type ("dream") so dream conversations resolve the 1ONE CLI product mark.
     assert_eq!(
         logo_for("dream").as_deref(),
-        Some("/api/assets/logos/brand/1one-cli.svg")
+        Some("/api/assets/logos/brand/1one-cli.png")
     );
 
     // Every entry carries a non-empty backend + logo, and backends are unique.

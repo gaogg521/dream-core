@@ -4,7 +4,7 @@ use sqlx::Row;
 
 const MIGRATION_SQL: &str = include_str!("../migrations/059_replace_1one_cli_mascot_with_brand_logo.sql");
 const MASCOT: &str = "/api/assets/logos/brand/1one.png";
-const BRAND_LOGO: &str = "/api/assets/logos/brand/1one-cli.svg";
+const BRAND_LOGO: &str = "/api/assets/logos/brand/1one-cli.png";
 
 async fn run_migration(pool: &sqlx::SqlitePool) {
     pool.execute(sqlx::raw_sql(MIGRATION_SQL)).await.unwrap();

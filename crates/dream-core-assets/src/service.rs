@@ -120,11 +120,11 @@ mod tests {
     fn get_logo_returns_the_1one_cli_product_mark() {
         let service = AssetService;
         let asset = service
-            .get_logo("brand/1one-cli.svg")
+            .get_logo("brand/1one-cli.png")
             .expect("1ONE CLI product mark present");
 
-        assert_eq!(asset.content_type, HeaderValue::from_static("image/svg+xml"));
-        assert!(asset.bytes.starts_with(b"<svg"));
+        assert_eq!(asset.content_type, HeaderValue::from_static("image/png"));
+        assert!(asset.bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
     }
 
     #[test]
