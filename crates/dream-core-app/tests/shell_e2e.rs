@@ -327,11 +327,39 @@ async fn st4_stt_config_not_set() {
     assert_eq!(json["code"], "STT_DISABLED");
 }
 
-// ST-5: OpenAI not configured (missing API key)
+// ST-5: OpenAI not configured (no credentials on the selected channel).
+//
+// A bare `provider: "openai"` with nothing filled in no longer reaches this
+// error — that shape is the retired official-OpenAI source and now resolves to
+// the hosted default (see ST-5b). What still reaches it is a Model Settings
+// channel that supplies neither a key nor a base URL, which `load_stt_config`
+// injects verbatim: a Bedrock channel is addressed through the AWS SDK and has
+// no OpenAI-compatible endpoint at all, so selecting one as the speech model
+// leaves the official endpoint with no credentials.
 #[tokio::test]
 async fn st5_openai_not_configured() {
     let (mut app, services) = build_app_with_noop_opener().await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+
+    let req = json_with_token(
+        "POST",
+        "/api/providers",
+        json!({
+            "platform": "bedrock",
+            "name": "Bedrock",
+            "base_url": "",
+            "api_key": "",
+            "models": ["local-asr"],
+            "enabled": true,
+            "model_settings": { "local-asr": { "model_kind": "audio" } },
+            "bedrock_config": { "auth_method": "accessKey", "region": "us-east-1" }
+        }),
+        &token,
+        &csrf,
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let provider_id = body_json(resp).await["data"]["id"].as_str().unwrap().to_owned();
 
     set_stt_config(
         &mut app,
@@ -340,7 +368,8 @@ async fn st5_openai_not_configured() {
         json!({
             "enabled": true,
             "provider": "openai",
-            "openai": { "api_key": "", "model": "whisper-1" }
+            "modelProviderId": provider_id,
+            "openai": { "api_key": "", "base_url": "", "model": "local-asr" }
         }),
     )
     .await;
@@ -356,6 +385,48 @@ async fn st5_openai_not_configured() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let json = body_json(resp).await;
     assert_eq!(json["code"], "STT_OPENAI_NOT_CONFIGURED");
+}
+
+// ST-5b: regression — a config persisted by a shipped 3.0.x release that
+// names the since-removed "OpenAI (official)" source with nothing filled in.
+// Every install that so much as flipped the speech master switch has exactly
+// this shape, and resolving it literally sent them to api.openai.com with no
+// key: the settings panel read it as "内置（默认）, enabled" while every
+// transcription came back STT_OPENAI_NOT_CONFIGURED.
+//
+// The dead source must be replaced by the hosted default. This harness never
+// sets DREAM_TRIAL_BROKER_URL, so the hosted default resolves to disabled here
+// and the observable outcome is STT_DISABLED — the point of the assertion is
+// that it is NOT STT_OPENAI_NOT_CONFIGURED, i.e. the official-OpenAI path is
+// no longer taken for a config that never configured it.
+#[tokio::test]
+async fn st5b_legacy_official_openai_config_no_longer_resolves_to_the_official_endpoint() {
+    let (mut app, services) = build_app_with_noop_opener().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+
+    set_stt_config(
+        &mut app,
+        &token,
+        &csrf,
+        json!({
+            "enabled": true,
+            "provider": "openai",
+            "openai": { "api_key": "", "base_url": "", "language": "", "model": "gpt-4o-transcribe" }
+        }),
+    )
+    .await;
+
+    let (content_type, body) = MultipartBuilder::new()
+        .add_file("file", "test.wav", "audio/wav", b"fake audio data")
+        .add_text("fileName", "test.wav")
+        .add_text("mimeType", "audio/wav")
+        .build();
+
+    let req = multipart_request("/api/stt", &content_type, body, &token, &csrf);
+    let resp = app.oneshot(req).await.unwrap();
+    let json = body_json(resp).await;
+    assert_ne!(json["code"], "STT_OPENAI_NOT_CONFIGURED");
+    assert_eq!(json["code"], "STT_DISABLED");
 }
 
 // ST-6: hosted provider (mode D) with no broker configured on this

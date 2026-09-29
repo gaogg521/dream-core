@@ -19,7 +19,14 @@
 > 整条代码路径。`load_stt_config` 在"两个 preference key 都查不到"（用户从没碰过语音设置）时，
 > 如果这套部署配了 `DREAM_TRIAL_BROKER_URL`（打包版天生有）就直接返回 `{enabled:true,
 > provider:Hosted}`——前端必须同步这个默认值，否则会出现"设置里显示已启用、点麦克风却提示未
-> 配置"。阿里云 `qwen3-asr-flash` **不是**走 OpenAI 兼容的 `/v1/audio/transcriptions`（实测
+> 配置"。⚠️**只处理"键不存在"是不够的，这条当天就翻车了**：语音面板从 v3.0.0 起就随正式版发布，
+> 旧版默认写的就是 `{provider:'openai', base_url:'', api_key:''}`，用户拨一下总开关就落盘。这条
+> 记录**存在**，所以跳过零配置分支，被按字面当官方 OpenAI 端点 → `STT_OPENAI_NOT_CONFIGURED`；
+> `provider:'deepgram'` 则直接反序列化失败落进 malformed 分支 → `STT_DISABLED`。已补
+> `is_legacy_unusable_config`：键存在但命名的来源本构建已无法提供（`deepgram`，或 `openai` 且
+> base_url/api_key 双空）等同未配置 → 走 hosted；**刻意排除"空 base_url + 真实 api_key"**（那用户
+> 的官方 OpenAI 现在还能用，挪到共享托管额度上才是回归）和带 `modelProviderId` 的。判据：任何
+> "没配置就给默认值"的逻辑都要分别回答「记录不存在」和「记录存在但已不合法」。阿里云 `qwen3-asr-flash` **不是**走 OpenAI 兼容的 `/v1/audio/transcriptions`（实测
 > 404），真正能用的是 DashScope 自己的 `multimodal-generation` 聊天式接口，音频塞 `data:` URI；
 > 静音返回空 `content` 数组（没有 `text` 字段，是合法结果不是错误）。顺带修了 `stt_openai.rs` /
 > `stt_stream_openai.rs` / `stt_stream.rs` 的一个真实 bug：三处都不分来源强制要求 `api_key`

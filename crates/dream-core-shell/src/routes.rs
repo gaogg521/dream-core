@@ -265,6 +265,17 @@ fn stt_error_response(err: &SttError) -> (StatusCode, Json<serde_json::Value>) {
 /// genuinely malformed persisted config is different — that is a user who
 /// *did* configure something and it broke, so it falls back to disabled
 /// rather than silently switching them onto the hosted default.
+///
+/// "No key at all" is NOT the only way to be unconfigured, and treating it as
+/// such shipped a regression: every 3.0.x install that so much as opened the
+/// speech panel persisted the old default (`provider: "openai"` with an empty
+/// `base_url` and an empty `api_key`), and the removed Deepgram source left
+/// `provider: "deepgram"` behind. Both name a source this build can no longer
+/// serve, so they are resolved to the hosted default here — otherwise the
+/// settings UI reads them as "内置（默认）, enabled" while every transcription
+/// fails with `STT_OPENAI_NOT_CONFIGURED`. A config that still names something
+/// usable (a custom `base_url`, an official key, a Model Settings channel) is
+/// left exactly as the user configured it.
 pub(crate) async fn load_stt_config(
     client_pref_service: &ClientPrefService,
     provider_service: Option<&ProviderService>,
@@ -279,13 +290,18 @@ pub(crate) async fn load_stt_config(
         .or_else(|| prefs.get("speechToText"))
         .cloned()
     else {
-        return Ok(SpeechToTextConfig {
-            enabled: hosted_stt_service.is_configured(),
-            provider: dream_core_api_types::SpeechToTextProvider::Hosted,
-            auto_send: None,
-            openai: None,
-        });
+        return Ok(hosted_default_config(hosted_stt_service));
     };
+
+    if is_legacy_unusable_config(&raw) {
+        return Ok(SpeechToTextConfig {
+            // An explicit `enabled: false` is still the user's choice; only the
+            // unusable *source* is replaced.
+            enabled: raw.get("enabled").and_then(serde_json::Value::as_bool).unwrap_or(true)
+                && hosted_stt_service.is_configured(),
+            ..hosted_default_config(hosted_stt_service)
+        });
+    }
 
     // `modelProviderId` means the UI selected an existing channel from Model
     // Settings. Resolve its secret only here on the backend; never duplicate
@@ -347,6 +363,56 @@ pub(crate) async fn load_stt_config(
             })
         }
     }
+}
+
+fn hosted_default_config(hosted_stt_service: &dream_core_system::HostedSttService) -> SpeechToTextConfig {
+    SpeechToTextConfig {
+        enabled: hosted_stt_service.is_configured(),
+        provider: dream_core_api_types::SpeechToTextProvider::Hosted,
+        auto_send: None,
+        openai: None,
+    }
+}
+
+/// Does this persisted config name a source that no longer exists in this
+/// build, leaving nothing usable behind?
+///
+/// Two shapes qualify, both produced by shipped 3.0.x releases:
+/// - the removed "Deepgram (official)" source (`provider: "deepgram"`), which
+///   no longer even deserializes since the enum variant is gone;
+/// - the removed "OpenAI (official)" source with nothing filled in
+///   (`provider: "openai"`, blank `base_url`, blank `api_key`) — which is also
+///   exactly what the pre-3.0.4 default config wrote the moment a user flipped
+///   the master switch.
+///
+/// A blank `base_url` with a real `api_key` is deliberately NOT included: that
+/// user's official-OpenAI transcription still works, and silently moving them
+/// onto the shared hosted quota would be the regression, not the fix. Nor is
+/// anything carrying `modelProviderId`, which resolves against Model Settings
+/// further down.
+fn is_legacy_unusable_config(raw: &serde_json::Value) -> bool {
+    if raw
+        .get("modelProviderId")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|id| !id.trim().is_empty())
+    {
+        return false;
+    }
+
+    let provider = raw.get("provider").and_then(serde_json::Value::as_str).unwrap_or("");
+    if provider == "deepgram" {
+        return true;
+    }
+    if provider != "openai" {
+        return false;
+    }
+
+    let field_is_blank = |name: &str| {
+        raw.pointer(&format!("/openai/{name}"))
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|value| value.trim().is_empty())
+    };
+    field_is_blank("base_url") && field_is_blank("api_key")
 }
 
 /// Per-direction frame buffer for the streaming session channels. Audio
@@ -467,6 +533,69 @@ mod tests {
             provider_service: None,
             hosted_stt_service,
         }
+    }
+
+    /// The exact config a shipped 3.0.x install persists the moment the user
+    /// flips the speech master switch without configuring anything — the shape
+    /// that regressed into "settings say enabled, microphone says not
+    /// configured" once the OpenAI (official) source was removed.
+    #[test]
+    fn the_removed_official_openai_source_with_nothing_filled_in_is_unusable() {
+        let raw = serde_json::json!({
+            "enabled": true,
+            "provider": "openai",
+            "openai": { "api_key": "", "base_url": "", "language": "", "model": "gpt-4o-transcribe" }
+        });
+        assert!(is_legacy_unusable_config(&raw));
+    }
+
+    #[test]
+    fn the_removed_deepgram_source_is_unusable() {
+        let raw = serde_json::json!({
+            "enabled": true,
+            "provider": "deepgram",
+            "deepgram": { "api_key": "dg-key", "model": "nova-3" }
+        });
+        assert!(is_legacy_unusable_config(&raw));
+    }
+
+    /// Moving a working official-OpenAI user onto the shared hosted quota
+    /// would be the regression, not the fix.
+    #[test]
+    fn an_official_openai_key_still_counts_as_configured() {
+        let raw = serde_json::json!({
+            "enabled": true,
+            "provider": "openai",
+            "openai": { "api_key": "sk-real", "base_url": "", "model": "gpt-4o-transcribe" }
+        });
+        assert!(!is_legacy_unusable_config(&raw));
+    }
+
+    #[test]
+    fn a_custom_endpoint_is_left_alone_even_without_a_key() {
+        let raw = serde_json::json!({
+            "enabled": true,
+            "provider": "openai",
+            "openai": { "api_key": "", "base_url": "https://my-host/v1", "model": "whisper-1" }
+        });
+        assert!(!is_legacy_unusable_config(&raw));
+    }
+
+    #[test]
+    fn a_model_settings_channel_is_left_alone() {
+        let raw = serde_json::json!({
+            "enabled": true,
+            "provider": "openai",
+            "modelProviderId": "openrouter",
+            "openai": { "api_key": "", "base_url": "", "model": "qwen/qwen3-asr-0.6b" }
+        });
+        assert!(!is_legacy_unusable_config(&raw));
+    }
+
+    #[test]
+    fn an_already_hosted_config_is_left_alone() {
+        let raw = serde_json::json!({ "enabled": true, "provider": "hosted" });
+        assert!(!is_legacy_unusable_config(&raw));
     }
 
     fn make_router() -> Router {
