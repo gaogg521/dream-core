@@ -67,6 +67,29 @@ impl HostedSttService {
         self.broker_base_url.is_some()
     }
 
+    /// Resolve the broker WebSocket endpoint and this installation's opaque
+    /// quota id. The caller uses the id only in the first broker frame; no
+    /// vendor credential ever leaves the broker.
+    pub async fn stream_endpoint(&self) -> Result<(String, String), SystemError> {
+        let Some(base_url) = self.broker_base_url.as_deref() else {
+            return Err(SystemError::BadRequest(
+                "hosted speech-to-text is not configured on this deployment".into(),
+            ));
+        };
+        let base = base_url.trim_end_matches('/');
+        let ws_base = if let Some(rest) = base.strip_prefix("https://") {
+            format!("wss://{rest}")
+        } else if let Some(rest) = base.strip_prefix("http://") {
+            format!("ws://{rest}")
+        } else {
+            return Err(SystemError::BadRequest(
+                "hosted speech-to-text broker URL must use http or https".into(),
+            ));
+        };
+        let install_id = crate::install_id::get_or_create_install_id(&self.client_pref_repo).await?;
+        Ok((format!("{ws_base}/v1/stt/stream"), install_id))
+    }
+
     /// `audio` is the clip's raw bytes; `mime_type` may still carry codec
     /// parameters (`audio/webm;codecs=opus`) — the broker strips them.
     pub async fn transcribe(

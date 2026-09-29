@@ -131,7 +131,6 @@ fn parse_start_frame(frame: ClientFrame) -> Result<Option<StartParams>, SttError
 /// rejected against the official endpoint — a custom `base_url` may point at
 /// a self-hosted server with no auth, matching `stt_openai::transcribe`.
 /// Additionally rejects OpenAI models that only support the file endpoint.
-/// The hosted broker path (mode D) has no realtime protocol at all.
 fn validate_config(config: &SpeechToTextConfig) -> Result<(), SttError> {
     if !config.enabled {
         return Err(SttError::Disabled);
@@ -148,7 +147,7 @@ fn validate_config(config: &SpeechToTextConfig) -> Result<(), SttError> {
                 return Err(SttError::StreamUnsupported);
             }
         }
-        SpeechToTextProvider::Hosted => return Err(SttError::StreamUnsupported),
+        SpeechToTextProvider::Hosted => {}
     }
 
     Ok(())
@@ -542,13 +541,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hosted_provider_is_rejected_without_connect() {
+    async fn hosted_provider_reaches_its_factory() {
         let factory = MockFactory::with_error(SttError::Unknown("must not connect".into()));
         let messages = run_with_frames(vec![start_frame(None)], make_hosted_config(), &factory).await;
 
         assert_eq!(messages.len(), 1);
-        assert_error_code(&messages[0], "STT_STREAM_UNSUPPORTED");
-        assert!(!factory.connect_called());
+        assert_error_code(&messages[0], "STT_UNKNOWN");
+        assert!(factory.connect_called());
     }
 
     /// The bug this guards against: the backend used to reject an empty API

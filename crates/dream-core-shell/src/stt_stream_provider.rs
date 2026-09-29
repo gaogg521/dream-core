@@ -8,13 +8,20 @@ use dream_core_api_types::{SpeechToTextConfig, SpeechToTextProvider};
 
 use crate::error::SttError;
 use crate::stt_stream::{UpstreamFactory, UpstreamStream};
+use crate::stt_stream_hosted::HostedRealtimeUpstreamFactory;
 use crate::stt_stream_openai::OpenAIRealtimeUpstreamFactory;
 
-/// Dispatches to [`OpenAIRealtimeUpstreamFactory`] for `Openai`. The hosted
-/// broker path (mode D) has no realtime protocol — the client already
-/// degrades a streaming attempt to the whole-blob `/api/stt` fallback on
-/// `STT_STREAM_UNSUPPORTED` and remembers not to retry streaming for it.
-pub struct ProviderUpstreamFactory;
+/// Dispatches to a vendor-specific realtime connector while keeping hosted
+/// STT credential-free in Core: its connector talks only to our broker.
+pub struct ProviderUpstreamFactory {
+    hosted_stt: dream_core_system::HostedSttService,
+}
+
+impl ProviderUpstreamFactory {
+    pub fn new(hosted_stt: dream_core_system::HostedSttService) -> Self {
+        Self { hosted_stt }
+    }
+}
 
 #[async_trait::async_trait]
 impl UpstreamFactory for ProviderUpstreamFactory {
@@ -30,7 +37,11 @@ impl UpstreamFactory for ProviderUpstreamFactory {
                     .connect(config, sample_rate, language_hint)
                     .await
             }
-            SpeechToTextProvider::Hosted => Err(SttError::StreamUnsupported),
+            SpeechToTextProvider::Hosted => {
+                HostedRealtimeUpstreamFactory::new(self.hosted_stt.clone())
+                    .connect(config, sample_rate, language_hint)
+                    .await
+            }
         }
     }
 }
@@ -49,27 +60,11 @@ mod tests {
             auto_send: None,
             openai: None,
         };
-        let err = ProviderUpstreamFactory
+        let err = OpenAIRealtimeUpstreamFactory
             .connect(&config, 16000, None)
             .await
             .map(|_| ())
             .expect_err("expected OpenAI factory error");
         assert!(matches!(err, SttError::OpenaiNotConfigured));
-    }
-
-    #[tokio::test]
-    async fn hosted_provider_has_no_streaming_protocol() {
-        let config = SpeechToTextConfig {
-            enabled: true,
-            provider: SpeechToTextProvider::Hosted,
-            auto_send: None,
-            openai: None,
-        };
-        let err = ProviderUpstreamFactory
-            .connect(&config, 16000, None)
-            .await
-            .map(|_| ())
-            .expect_err("hosted has no realtime protocol");
-        assert!(matches!(err, SttError::StreamUnsupported));
     }
 }

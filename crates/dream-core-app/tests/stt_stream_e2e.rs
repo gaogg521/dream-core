@@ -174,12 +174,11 @@ async fn disabled_stt_yields_error_frame_then_close() {
     read_until_close(&mut ws).await;
 }
 
-// 3. The hosted provider (mode D) has no realtime protocol: a streaming
-//    attempt must be rejected immediately with STT_STREAM_UNSUPPORTED,
-//    before any upstream work happens — the client already degrades this to
-//    the whole-blob /api/stt fallback on exactly this code.
+// 3. Hosted streaming reaches the broker connector. This test app deliberately
+// has no broker URL, so the connector reports a request failure rather than
+// falsely claiming that the hosted provider lacks a realtime protocol.
 #[tokio::test]
-async fn hosted_provider_rejects_streaming_as_unsupported() {
+async fn hosted_provider_without_broker_reports_request_failure() {
     let app = start_app().await;
     seed_stt_prefs(&app, json!({ "enabled": true, "provider": "hosted" })).await;
     let token = sign_token(&app);
@@ -189,7 +188,7 @@ async fn hosted_provider_rejects_streaming_as_unsupported() {
 
     let frame = read_frame(&mut ws).await;
     assert_eq!(frame["type"], "error");
-    assert_eq!(frame["code"], "STT_STREAM_UNSUPPORTED");
+    assert_eq!(frame["code"], "STT_REQUEST_FAILED");
 
     read_until_close(&mut ws).await;
 }

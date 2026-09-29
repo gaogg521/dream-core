@@ -498,7 +498,8 @@ async fn speech_to_text_stream_socket(socket: WebSocket, state: ShellRouterState
         let _ = ws_tx.send(Message::Close(None)).await;
     });
 
-    run_stream_session(client_rx, server_tx, config, &ProviderUpstreamFactory).await;
+    let factory = ProviderUpstreamFactory::new(state.hosted_stt_service.clone());
+    run_stream_session(client_rx, server_tx, config, &factory).await;
     // `server_tx` was moved into the session and dropped on return: the write
     // pump drains any remaining frames and closes the socket cleanly.
     let _ = write_task.await;

@@ -10,6 +10,7 @@ pub mod stt;
 pub(crate) mod stt_hosted;
 pub(crate) mod stt_openai;
 pub mod stt_stream;
+pub(crate) mod stt_stream_hosted;
 pub mod stt_stream_openai;
 pub mod stt_stream_provider;
 pub(crate) mod stt_stream_tls;
