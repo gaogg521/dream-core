@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.1.78](https://github.com/gaogg521/dream-core/compare/v0.1.77...v0.1.78) (2026-09-30)
+
+
+### Features
+
+* **auth:** add revocable webui device sessions ([6bf1c3e](https://github.com/gaogg521/dream-core/commit/6bf1c3e3dc86216f7fb97b7d348bfa0109444338))
+* **stt:** add hosted default provider (mode D), remove Deepgram ([764e082](https://github.com/gaogg521/dream-core/commit/764e08249ebe710254f95f9acc6e1dae5e0906a8))
+* **stt:** connect hosted speech to realtime broker ([56a1bec](https://github.com/gaogg521/dream-core/commit/56a1bec857122ebb6cfd7ab5f3cd1c83088c2efc))
+* **stt:** resolve configured audio providers ([32762e1](https://github.com/gaogg521/dream-core/commit/32762e14de8dcf7616698a8767503e2641bb4fa5))
+
+
+### Bug Fixes
+
+* **agents:** brand 1one cli avatar ([63a1327](https://github.com/gaogg521/dream-core/commit/63a132715735e14b0e4fb0bb10fde76f7b7d77c9))
+* **agents:** use supplied cli avatar ([bbe73cc](https://github.com/gaogg521/dream-core/commit/bbe73cc88a7d79371020255c4c5eec5d166ce8fe))
+* **stt:** allow empty API key for custom OpenAI-compatible endpoints ([40d3aaa](https://github.com/gaogg521/dream-core/commit/40d3aaa8f8ba4632ba4c09ceedda6457e22076ec))
+* **stt:** resolve configs naming a removed speech source to the hosted default ([fe91954](https://github.com/gaogg521/dream-core/commit/fe91954cfc55a2323e6c63b4246148697e272db7))
+* **trial:** recover entitlement after local data reset ([9d98ca6](https://github.com/gaogg521/dream-core/commit/9d98ca6350dbaf5aafbd2c9379a4813275796475))
+
 ## [0.1.77](https://github.com/gaogg521/dream-core/compare/v0.1.76...v0.1.77) (2026-09-27)
 
 
