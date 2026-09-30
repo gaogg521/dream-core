@@ -423,6 +423,11 @@ pub struct TrialKeyResponse {
     /// issued USD-denominated OpenRouter keys).
     #[serde(default = "default_trial_currency")]
     pub currency: String,
+    /// Canonical broker installation id. New brokers return it when a stable
+    /// device fingerprint recovered a prior entitlement after local app data
+    /// was cleared; old brokers omit it.
+    #[serde(default)]
+    pub install_id: String,
 }
 
 fn default_trial_platform() -> String {

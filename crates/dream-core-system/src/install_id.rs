@@ -15,8 +15,10 @@
 //! this install's identity).
 
 use std::sync::Arc;
+use std::{fs, process::Command};
 
 use dream_core_db::IClientPreferenceRepository;
+use sha2::{Digest, Sha256};
 
 use crate::error::SystemError;
 
@@ -27,6 +29,79 @@ use crate::error::SystemError;
 const LOCAL_INSTALL_OWNER: &str = "system_default_user";
 
 const INSTALL_ID_PREF_KEY: &str = "trial_broker_install_id";
+
+/// A stable OS-machine identifier, hashed locally before leaving the device.
+/// This is an anti-abuse signal for recovered trials, not authentication.
+pub(crate) fn device_fingerprint() -> Option<String> {
+    let raw = platform_machine_id()?;
+    let mut hash = Sha256::new();
+    hash.update(b"onework-trial-device-v1\0");
+    hash.update(raw.trim().as_bytes());
+    Some(format!("{:x}", hash.finalize()))
+}
+
+fn platform_machine_id() -> Option<String> {
+    if cfg!(target_os = "windows") {
+        let output = Command::new("reg")
+            .args([
+                "query",
+                "HKLM\\SOFTWARE\\Microsoft\\Cryptography",
+                "/v",
+                "MachineGuid",
+                "/reg:64",
+            ])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        return String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .find(|line| line.contains("MachineGuid"))?
+            .split_whitespace()
+            .last()
+            .map(str::to_owned);
+    }
+    if cfg!(target_os = "macos") {
+        let output = Command::new("ioreg")
+            .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        return text
+            .lines()
+            .find(|line| line.contains("IOPlatformUUID"))?
+            .split('"')
+            .nth(3)
+            .map(str::to_owned);
+    }
+    if cfg!(target_os = "linux") {
+        for path in ["/etc/machine-id", "/var/lib/dbus/machine-id"] {
+            if let Ok(value) = fs::read_to_string(path) {
+                let value = value.trim();
+                if !value.is_empty() {
+                    return Some(value.to_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
+pub(crate) async fn persist_install_id(
+    client_pref_repo: &Arc<dyn IClientPreferenceRepository>,
+    id: &str,
+) -> Result<(), SystemError> {
+    let serialized =
+        serde_json::to_string(id).map_err(|e| SystemError::Internal(format!("failed to serialize install id: {e}")))?;
+    client_pref_repo
+        .upsert_batch(LOCAL_INSTALL_OWNER, &[(INSTALL_ID_PREF_KEY, serialized.as_str())])
+        .await
+        .map_err(|e| SystemError::Internal(format!("failed to persist install id: {e}")))
+}
 
 /// Returns this deployment's install id, generating and persisting one on
 /// first call. Never regenerated — a device that already claimed an allowance
@@ -48,12 +123,7 @@ pub(crate) async fn get_or_create_install_id(
     }
 
     let id = dream_core_common::generate_prefixed_id("install");
-    let serialized = serde_json::to_string(&id)
-        .map_err(|e| SystemError::Internal(format!("failed to serialize install id: {e}")))?;
-    client_pref_repo
-        .upsert_batch(LOCAL_INSTALL_OWNER, &[(INSTALL_ID_PREF_KEY, serialized.as_str())])
-        .await
-        .map_err(|e| SystemError::Internal(format!("failed to persist install id: {e}")))?;
+    persist_install_id(client_pref_repo, &id).await?;
     Ok(id)
 }
 

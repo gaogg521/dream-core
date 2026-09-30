@@ -61,21 +61,26 @@ impl TrialKeyService {
         };
 
         let install_id = self.get_or_create_install_id().await?;
+        let device_fingerprint = crate::install_id::device_fingerprint();
 
         let url = format!("{}/v1/trial-keys", base_url.trim_end_matches('/'));
         let response = self
             .http_client
             .post(&url)
-            .json(&serde_json::json!({ "install_id": install_id, "vendor": vendor }))
+            .json(&serde_json::json!({ "install_id": install_id, "vendor": vendor, "device_fingerprint": device_fingerprint }))
             .send()
             .await
             .map_err(|e| SystemError::BadGateway(format!("could not reach trial key broker: {e}")))?;
 
         let status = response.status();
         if status.is_success() {
-            return response.json::<TrialKeyResponse>().await.map_err(|e| {
+            let trial = response.json::<TrialKeyResponse>().await.map_err(|e| {
                 SystemError::BadGateway(format!("trial key broker returned an unexpected response: {e}"))
-            });
+            })?;
+            if !trial.install_id.trim().is_empty() && trial.install_id != install_id {
+                crate::install_id::persist_install_id(&self.client_pref_repo, &trial.install_id).await?;
+            }
+            return Ok(trial);
         }
 
         let reason = response
