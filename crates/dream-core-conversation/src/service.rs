@@ -57,6 +57,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
+use crate::auto_workspace::has_auto_workspace_structure;
 use crate::convert::{
     TOOL_CONTENT_COMPACT_THRESHOLD_BYTES, row_to_artifact_response, row_to_message_response,
     row_to_message_response_compact, row_to_response, row_to_response_with_extra, search_row_to_item, string_to_enum,
@@ -2376,6 +2377,9 @@ impl ConversationService {
         let mut extra: serde_json::Value = serde_json::from_str(&row.extra)
             .map_err(|e| ConversationError::internal(format!("Invalid extra JSON: {e}")))?;
         self.backfill_extra_inplace(user_id, &row.id, &mut extra).await;
+        // Re-provision a vanished auto workspace BEFORE the project bind below,
+        // which needs a path that exists.
+        self.ensure_auto_workspace_on_read(user_id, &row, &mut extra).await;
         // Project-bind side branch: lazily backfill owner binding on read. The
         // `row` snapshot predates the backfill, so this response still carries
         // the old (null) project_id; on a real None→Some backfill we broadcast
@@ -5075,6 +5079,70 @@ impl ConversationService {
                 .await?;
         self.persist_reprovisioned_workspace(row, &options).await;
         Ok(options)
+    }
+
+    /// Re-provision an auto workspace whose directory is gone, on the detail
+    /// read that opens a conversation.
+    ///
+    /// `bind_project_best_effort` below canonicalizes the stored path, and the
+    /// file panel renders a *project* — so a legacy chat whose workspace sat
+    /// under the app-data root 3.0.1 renamed away opened with no file panel at
+    /// all, until some later turn happened to re-provision it. Doing it here is
+    /// the same operation the runtime performs (`SessionContextBuilder`), just
+    /// early enough for the bind to succeed.
+    ///
+    /// Narrow by construction: only a structurally auto-provisioned path that
+    /// is missing qualifies. A user-picked project that is gone is left alone —
+    /// it must keep surfacing as an error rather than be replaced by an empty
+    /// folder. This is the conversation DETAIL route, whose single caller is
+    /// opening one chat, so the list path never creates directories.
+    async fn ensure_auto_workspace_on_read(&self, user_id: &str, row: &ConversationRow, extra: &mut serde_json::Value) {
+        let Some(stored) = extra
+            .get("workspace")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        if Path::new(&stored).exists() || !has_auto_workspace_structure(&stored) {
+            return;
+        }
+        let Some(agent_type) = parse_agent_type_from_row(row) else {
+            return;
+        };
+        let expected = expected_auto_workspace_path(
+            &self.workspace_root,
+            user_id,
+            &row.id,
+            &agent_type,
+            extra.get("backend"),
+        );
+        if let Err(err) = std::fs::create_dir_all(&expected) {
+            warn!(
+                conversation_id = %row.id,
+                error = %err,
+                "failed to re-provision a missing auto workspace on read"
+            );
+            return;
+        }
+        let expected = expected.to_string_lossy().into_owned();
+        if let Err(err) = self.maybe_persist_workspace(user_id, &row.id, &stored, &expected).await {
+            warn!(
+                conversation_id = %row.id,
+                error = %ErrorChain(&err),
+                "failed to persist a workspace re-provisioned on read"
+            );
+            return;
+        }
+        info!(
+            conversation_id = %row.id,
+            previous = %stored,
+            workspace = %expected,
+            "Re-provisioned an auto workspace on read"
+        );
+        extra["workspace"] = serde_json::Value::String(expected);
     }
 
     /// Persist a workspace the context builder had to re-provision, as soon as

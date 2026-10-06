@@ -9650,3 +9650,66 @@ async fn build_task_options_leaves_a_user_picked_workspace_alone() {
     let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
     assert_eq!(extra["workspace"].as_str().unwrap(), workspace.to_str().unwrap());
 }
+
+#[tokio::test]
+async fn get_reprovisions_a_vanished_auto_workspace_so_the_project_can_bind() {
+    // Opening a legacy chat: its workspace sat under the app-data root 3.0.1
+    // renamed away, so the directory is gone. The detail read re-provisions it
+    // before the project bind — otherwise the bind canonicalizes a dead path,
+    // leaves `project_id` null, and the chat opens with no file panel.
+    let (svc, _b, repo, _task_mgr) = make_service();
+    let req: CreateConversationRequest = serde_json::from_value(json!({
+        "type": "acp",
+        "extra": { "backend": "claude" },
+    }))
+    .unwrap();
+    let created = svc.create("user-1", req).await.unwrap();
+
+    let stale = r"C:\Users\alice\AppData\Roaming\1ONE ClaudeCode\1one\workspaces\claude-1782784707246";
+    let row = repo.get("user-1", &created.id).await.unwrap().unwrap();
+    let mut extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
+    extra["workspace"] = json!(stale);
+    repo.update(
+        "user-1",
+        &created.id,
+        &ConversationRowUpdate {
+            extra: Some(serde_json::to_string(&extra).unwrap()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let response = svc.get("user-1", &created.id).await.unwrap();
+    let served = response.extra["workspace"].as_str().unwrap();
+    assert_ne!(served, stale, "the response must not serve the dead path");
+    assert!(Path::new(served).is_dir(), "{served} should exist on disk");
+
+    let row = repo.get("user-1", &created.id).await.unwrap().unwrap();
+    let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
+    assert_eq!(extra["workspace"].as_str().unwrap(), served, "and it must be persisted");
+}
+
+#[tokio::test]
+async fn get_leaves_a_missing_user_picked_workspace_untouched() {
+    // A project the user chose, now gone: never silently replaced by an empty
+    // folder — the runtime still has to report it as unavailable.
+    let (svc, _b, repo, _task_mgr) = make_service();
+    let workspace = unique_test_workspace_path("user-picked-gone");
+    let req: CreateConversationRequest = serde_json::from_value(json!({
+        "type": "acp",
+        "extra": { "workspace": workspace, "backend": "claude" },
+    }))
+    .unwrap();
+    let created = svc.create("user-1", req).await.unwrap();
+    std::fs::remove_dir_all(&workspace).unwrap();
+
+    let response = svc.get("user-1", &created.id).await.unwrap();
+    assert_eq!(
+        response.extra["workspace"].as_str().unwrap(),
+        workspace.to_str().unwrap()
+    );
+    let row = repo.get("user-1", &created.id).await.unwrap().unwrap();
+    let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
+    assert_eq!(extra["workspace"].as_str().unwrap(), workspace.to_str().unwrap());
+}
