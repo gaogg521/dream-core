@@ -8,55 +8,10 @@ use dream_core_db::MessageSearchRow;
 use dream_core_db::models::{ConversationArtifactRow, ConversationRow, MessageRow};
 
 use crate::ConversationError;
+use crate::auto_workspace::is_reported_temporary_workspace;
 
 pub(crate) const TOOL_CONTENT_COMPACT_THRESHOLD_BYTES: usize = 64 * 1024;
 const TOOL_CONTENT_PREVIEW_CHARS: usize = 4096;
-
-/// Whether `workspace` is a backend auto-provisioned temp workspace.
-///
-/// A prefix check against the *current* `data_dir` alone is not enough: the
-/// work dir is user-configurable and has been renamed across releases, so
-/// every temp workspace created under a previous root would be classified as
-/// a user-picked project — the history sidebar then files plain chats under
-/// "Projects" as `dream-temp-<id>` folders. Auto-provisioned workspaces are
-/// therefore also recognised by STRUCTURE: a `{label}-temp-{id}` leaf with a
-/// `conversations` ancestor (legacy `conversations/{leaf}`, dated
-/// `conversations/{Y}/{M}/{D}/{leaf}`, and per-user
-/// `conversations/users/{dir}/{Y}/{M}/{D}/{leaf}`), or sitting directly in the
-/// app-data subdir (`{userData}/1one/{leaf}`), which is where releases before
-/// the `conversations/` layout put them. Both separators are split on so a
-/// Windows path stored in the DB is read correctly on any host.
-fn is_temporary_workspace_path(workspace: &str, data_dir: &Path) -> bool {
-    /// App-data subdir holding backend-managed state; the frontend's
-    /// `USERDATA_DATA_SUBDIR`. Pre-`conversations/` releases provisioned temp
-    /// workspaces as its direct children.
-    const DATA_SUBDIR: &str = "1one";
-
-    let workspace = workspace.trim();
-    if workspace.is_empty() {
-        return false;
-    }
-    if Path::new(workspace).starts_with(data_dir) {
-        return true;
-    }
-    let mut segments = workspace.split(['/', '\\']).filter(|s| !s.is_empty()).rev();
-    let Some(leaf) = segments.next() else {
-        return false;
-    };
-    let is_auto_leaf = leaf
-        .split_once("-temp-")
-        .is_some_and(|(label, id)| !label.is_empty() && !id.is_empty());
-    if !is_auto_leaf {
-        return false;
-    }
-    // The parent is checked before the ancestor walk so a user folder that
-    // merely happens to contain a `-temp-` leaf is not swept in: only an
-    // auto-provisioned root qualifies.
-    let Some(parent) = segments.next() else {
-        return false;
-    };
-    parent == DATA_SUBDIR || parent == "conversations" || segments.any(|segment| segment == "conversations")
-}
 
 /// Convert a database row into an API response DTO.
 ///
@@ -75,7 +30,7 @@ pub fn row_to_response(row: ConversationRow, data_dir: &Path) -> Result<Conversa
 /// before building the response DTO.
 ///
 /// Injects a derived `is_temporary_workspace: bool` into the returned
-/// `extra` blob (see [`is_temporary_workspace_path`]). The flag is not
+/// `extra` blob (see [`is_reported_temporary_workspace`]). The flag is not
 /// persisted — it is computed on every read so the frontend never has to
 /// pattern-match the directory name. Old rows that have no such flag on
 /// disk automatically gain it on read, which means no migration is needed.
@@ -86,7 +41,7 @@ pub fn row_to_response_with_extra(
 ) -> Result<ConversationResponse, ConversationError> {
     let is_temporary_workspace = {
         let ws = extra.get("workspace").and_then(|v| v.as_str()).unwrap_or("");
-        is_temporary_workspace_path(ws, data_dir)
+        is_reported_temporary_workspace(ws, data_dir)
     };
     if let Some(obj) = extra.as_object_mut() {
         obj.remove("preset_context");

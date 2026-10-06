@@ -15,6 +15,7 @@ use dream_core_db::models::ConversationRow;
 use dream_core_db::{IAcpSessionRepository, IAgentMetadataRepository};
 use tracing::{debug, info, warn};
 
+use crate::auto_workspace::has_auto_workspace_structure;
 use crate::convert::string_to_enum;
 use crate::error::ConversationError;
 use crate::task_options::provider_model_from_conversation_row;
@@ -156,16 +157,40 @@ impl<'a> SessionContextBuilder<'a> {
 
         let normalized = match validate_workspace_path_availability(stored_path) {
             Ok(normalized) => normalized,
-            Err(WorkspacePathValidationError::DoesNotExist(path))
+            // The stored directory is gone. When we provisioned it ourselves it
+            // held throwaway state, not user data — the conversation itself
+            // lives in the DB — so re-provision at the currently expected
+            // location and let the caller persist the new path via
+            // `maybe_persist_workspace`. Returning the missing path instead
+            // only defers the failure to the agent's own cwd check, and
+            // reporting an error makes every chat whose temp workspace was
+            // created under a previous app-data root impossible to reopen:
+            // 3.0.1 renamed that root, so the old one no longer exists at all.
+            // A directory the USER picked is never re-provisioned — a vanished
+            // project must still surface as an error rather than be silently
+            // replaced by an empty folder.
+            Err(WorkspacePathValidationError::DoesNotExist(_))
                 if is_auto_workspace(
                     self.workspace_root,
                     &row.id,
                     agent_type,
                     extra.get("backend"),
                     Path::new(stored_path),
-                ) =>
+                ) || has_auto_workspace_structure(stored_path) =>
             {
-                path
+                std::fs::create_dir_all(&expected_auto_workspace)
+                    .map_err(|e| ConversationError::internal(format!("Failed to create workspace: {e}")))?;
+                info!(
+                    conversation_id = %row.id,
+                    previous = %stored_path,
+                    workspace = %expected_auto_workspace.display(),
+                    "Re-provisioned an auto workspace whose stored directory is gone"
+                );
+                return Ok(WorkspaceContext {
+                    path: expected_auto_workspace.to_string_lossy().into_owned(),
+                    stored_path: stored_path.to_owned(),
+                    is_custom: false,
+                });
             }
             Err(error) => {
                 log_workspace_path_check(&row.id, &error);
@@ -174,13 +199,16 @@ impl<'a> SessionContextBuilder<'a> {
         };
 
         Ok(WorkspaceContext {
+            // Both recognisers are consulted so this agrees with the
+            // `is_temporary_workspace` flag the history sidebar groups by:
+            // a chat shown as a plain chat must not run as a project.
             is_custom: !is_auto_workspace(
                 self.workspace_root,
                 &row.id,
                 agent_type,
                 extra.get("backend"),
                 Path::new(&normalized),
-            ),
+            ) && !has_auto_workspace_structure(&normalized),
             stored_path: stored_path.to_owned(),
             path: normalized,
         })
@@ -1255,6 +1283,51 @@ mod tests {
         let context = repos.builder().build(&row).await.unwrap();
         assert!(context.workspace.is_custom);
         assert_eq!(context.workspace.path, custom.to_string_lossy());
+    }
+
+    #[tokio::test]
+    async fn workspace_from_a_previous_app_data_root_is_reprovisioned_not_an_error() {
+        // Reopening a chat whose temp workspace was provisioned under the
+        // app-data root 3.0.1 renamed away: that directory is gone for good, so
+        // failing here made the conversation permanently unopenable
+        // (WORKSPACE_PATH_RUNTIME_UNAVAILABLE). The chat lives in the DB; the
+        // workspace is throwaway and is re-provisioned under the current root.
+        let repos = setup().await;
+        let gone = r"C:\Users\alice\AppData\Roaming\1ONE ClaudeCode\1one\aionrs-temp-1776132219793";
+        let row = row("aionrs", serde_json::json!({ "workspace": gone }), None);
+
+        let context = repos.builder().build(&row).await.unwrap();
+        assert!(!context.workspace.is_custom);
+        // The old path is reported back as `stored_path` so the caller persists
+        // the new one (`maybe_persist_workspace`) instead of leaving it broken.
+        assert_eq!(context.workspace.stored_path, gone);
+        assert!(
+            context.workspace.path.ends_with("dream-temp-conv-1"),
+            "{}",
+            context.workspace.path
+        );
+        assert!(std::path::Path::new(&context.workspace.path).is_dir());
+    }
+
+    #[tokio::test]
+    async fn missing_user_picked_workspace_is_still_an_error() {
+        let repos = setup().await;
+        let gone = repos.workspace_root.join("a-project-the-user-deleted");
+        let row = row(
+            "aionrs",
+            serde_json::json!({ "workspace": gone.to_string_lossy().to_string() }),
+            None,
+        );
+
+        let error = repos
+            .builder()
+            .build(&row)
+            .await
+            .expect_err("missing project must fail");
+        assert!(
+            matches!(error, ConversationError::WorkspacePathRuntimeUnavailable { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
