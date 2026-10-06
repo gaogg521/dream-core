@@ -24,6 +24,12 @@ const DATA_SUBDIR: &str = "1one";
 /// unix-millis timestamp on older ones, so it is not interpreted here.
 const AUTO_LEAF_MARKER: &str = "-temp-";
 
+/// Subdir of an older generation that held named workspaces directly:
+/// `{userData}/1one/workspaces/{label}-{unix_millis}`, with no `-temp-` in the
+/// leaf. Nothing but the app writes there, so the leaf is not constrained —
+/// a future naming scheme stays recognised.
+const WORKSPACES_SUBDIR: &str = "workspaces";
+
 /// Whether `workspace` is shaped like a workspace the backend provisioned.
 ///
 /// Recognises a `{label}-temp-{id}` leaf whose parent is an auto root:
@@ -31,6 +37,9 @@ const AUTO_LEAF_MARKER: &str = "-temp-";
 ///   - `conversations/{Y}/{M}/{D}/{leaf}` (dated)
 ///   - `conversations/users/{dir}/{Y}/{M}/{D}/{leaf}` (per-user, current)
 ///   - `{userData}/1one/{leaf}` (pre-`conversations/` releases)
+///
+/// plus any leaf directly inside `{userData}/1one/workspaces/`, the generation
+/// between those two, whose leaf carries no `-temp-` marker at all.
 ///
 /// This is deliberately independent of any root: the work dir is
 /// user-configurable and the app-data root was renamed in 3.0.1, so a
@@ -49,20 +58,25 @@ pub(crate) fn has_auto_workspace_structure(workspace: &str) -> bool {
     if workspace.is_empty() {
         return false;
     }
-    let mut segments = workspace.split(['/', '\\']).filter(|s| !s.is_empty()).rev();
-    let Some(leaf) = segments.next() else {
+    let segments: Vec<&str> = workspace.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
+    let Some((leaf, ancestors)) = segments.split_last() else {
         return false;
     };
+    // A leaf with no parent segment proves nothing either way.
+    let Some((parent, above)) = ancestors.split_last() else {
+        return false;
+    };
+
+    // `{userData}/1one/workspaces/{leaf}` — the app owns that directory, so the
+    // leaf's own shape is not required to match anything.
+    if *parent == WORKSPACES_SUBDIR && above.last() == Some(&DATA_SUBDIR) {
+        return true;
+    }
+
     let is_auto_leaf = leaf
         .split_once(AUTO_LEAF_MARKER)
         .is_some_and(|(label, id)| !label.is_empty() && !id.is_empty());
-    if !is_auto_leaf {
-        return false;
-    }
-    let Some(parent) = segments.next() else {
-        return false;
-    };
-    parent == DATA_SUBDIR || parent == "conversations" || segments.any(|segment| segment == "conversations")
+    is_auto_leaf && (*parent == DATA_SUBDIR || *parent == "conversations" || above.contains(&"conversations"))
 }
 
 /// Whether `workspace` should be *reported* to the frontend as temporary.
@@ -127,6 +141,21 @@ mod tests {
             r"C:\Users\alice\AppData\Roaming\1ONE ClaudeCode\1one\aionrs-temp-1776132219793"
         ));
         assert!(auto("/home/alice/.config/one-work/1one/dream-temp-9f2c"));
+        // The `workspaces/` generation: `{label}-{unix_millis}`, no `-temp-`.
+        assert!(auto(
+            r"C:\Users\alice\AppData\Roaming\1ONE ClaudeCode\1one\workspaces\aionrs-1782784235220"
+        ));
+        assert!(auto(r"C:\x\1one\workspaces\claude-1783146802117"));
+    }
+
+    #[test]
+    fn a_workspaces_dir_outside_the_app_data_subdir_is_not_auto() {
+        // Only `{userData}/1one/workspaces/` is ours. A user directory that
+        // happens to be called `workspaces` is not.
+        assert!(!auto("/Users/alice/workspaces/my-project"));
+        assert!(!auto("/Users/alice/code/workspaces/client-site"));
+        // `1one` must be the workspaces dir's own parent, not just an ancestor.
+        assert!(!auto("/Users/alice/1one/projects/workspaces/thing"));
     }
 
     #[test]
