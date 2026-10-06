@@ -12,6 +12,36 @@ use crate::ConversationError;
 pub(crate) const TOOL_CONTENT_COMPACT_THRESHOLD_BYTES: usize = 64 * 1024;
 const TOOL_CONTENT_PREVIEW_CHARS: usize = 4096;
 
+/// Whether `workspace` is a backend auto-provisioned temp workspace.
+///
+/// A prefix check against the *current* `data_dir` alone is not enough: the
+/// work dir is user-configurable and has been renamed across releases, so
+/// every temp workspace created under a previous root would be classified as
+/// a user-picked project — the history sidebar then files plain chats under
+/// "Projects" as `dream-temp-<id>` folders. Auto-provisioned workspaces are
+/// therefore also recognised by STRUCTURE: a `{label}-temp-{id}` leaf with a
+/// `conversations` ancestor (legacy `conversations/{leaf}`, dated
+/// `conversations/{Y}/{M}/{D}/{leaf}`, and per-user
+/// `conversations/users/{dir}/{Y}/{M}/{D}/{leaf}`). Both separators are split
+/// on so a Windows path stored in the DB is read correctly on any host.
+fn is_temporary_workspace_path(workspace: &str, data_dir: &Path) -> bool {
+    let workspace = workspace.trim();
+    if workspace.is_empty() {
+        return false;
+    }
+    if Path::new(workspace).starts_with(data_dir) {
+        return true;
+    }
+    let mut segments = workspace.split(['/', '\\']).filter(|s| !s.is_empty()).rev();
+    let Some(leaf) = segments.next() else {
+        return false;
+    };
+    let is_auto_leaf = leaf
+        .split_once("-temp-")
+        .is_some_and(|(label, id)| !label.is_empty() && !id.is_empty());
+    is_auto_leaf && segments.any(|segment| segment == "conversations")
+}
+
 /// Convert a database row into an API response DTO.
 ///
 /// Parses string enum fields and JSON text fields back into typed values.
@@ -29,11 +59,10 @@ pub fn row_to_response(row: ConversationRow, data_dir: &Path) -> Result<Conversa
 /// before building the response DTO.
 ///
 /// Injects a derived `is_temporary_workspace: bool` into the returned
-/// `extra` blob by checking whether `extra.workspace` sits under the
-/// backend-managed `data_dir`. The flag is not persisted — it is
-/// computed on every read so the frontend never has to pattern-match
-/// the directory name. Old rows that have no such flag on disk
-/// automatically gain it on read, which means no migration is needed.
+/// `extra` blob (see [`is_temporary_workspace_path`]). The flag is not
+/// persisted — it is computed on every read so the frontend never has to
+/// pattern-match the directory name. Old rows that have no such flag on
+/// disk automatically gain it on read, which means no migration is needed.
 pub fn row_to_response_with_extra(
     row: ConversationRow,
     mut extra: serde_json::Value,
@@ -41,7 +70,7 @@ pub fn row_to_response_with_extra(
 ) -> Result<ConversationResponse, ConversationError> {
     let is_temporary_workspace = {
         let ws = extra.get("workspace").and_then(|v| v.as_str()).unwrap_or("");
-        !ws.is_empty() && Path::new(ws).starts_with(data_dir)
+        is_temporary_workspace_path(ws, data_dir)
     };
     if let Some(obj) = extra.as_object_mut() {
         obj.remove("preset_context");
@@ -490,6 +519,46 @@ mod tests {
         );
         let resp = row_to_response(row, Path::new("/srv/one-data")).unwrap();
         assert_eq!(resp.extra["is_temporary_workspace"], false);
+    }
+
+    #[test]
+    fn row_to_response_marks_temp_workspace_under_previous_root_as_temporary() {
+        // Created before the work dir moved: no longer under `data_dir`, but
+        // still an auto-provisioned workspace and must not surface as a project.
+        for ws in [
+            r"C:\\Users\\alice\\AppData\\Roaming\\One Work\\1one\\conversations\\users\\u1\\2026\\09\\30\\dream-temp-fd4d9bd2",
+            "/old-root/conversations/2026/09/30/claude-temp-abc",
+            "/old-root/conversations/team-temp-t1",
+        ] {
+            let row = make_row(
+                "acp",
+                "pending",
+                Some("dream"),
+                None,
+                &format!(r#"{{"workspace":"{ws}"}}"#),
+            );
+            let resp = row_to_response(row, Path::new("/srv/one-data")).unwrap();
+            assert_eq!(resp.extra["is_temporary_workspace"], true, "{ws}");
+        }
+    }
+
+    #[test]
+    fn row_to_response_keeps_user_folders_outside_data_dir_non_temporary() {
+        for ws in [
+            "/Users/alice/projects/conversations",
+            "/Users/alice/my-temp-notes",
+            "/Users/alice/conversations/-temp-",
+        ] {
+            let row = make_row(
+                "acp",
+                "pending",
+                Some("dream"),
+                None,
+                &format!(r#"{{"workspace":"{ws}"}}"#),
+            );
+            let resp = row_to_response(row, Path::new("/srv/one-data")).unwrap();
+            assert_eq!(resp.extra["is_temporary_workspace"], false, "{ws}");
+        }
     }
 
     #[test]
