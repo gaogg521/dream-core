@@ -4,7 +4,10 @@
 //!   cargo run -p dream-shell --example stt_stream_smoke -- /path/to/pcm16-24k-mono.wav
 
 use dream_core_api_types::{OpenAISpeechToTextConfig, SpeechToTextConfig, SpeechToTextProvider};
+use dream_core_db::{IClientPreferenceRepository, SqliteClientPreferenceRepository, init_database_memory};
 use dream_core_shell::{ProviderUpstreamFactory, UpstreamEvent, UpstreamFactory};
+use dream_core_system::HostedSttService;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Locate the `data` chunk payload inside a RIFF/WAVE file.
@@ -53,7 +56,14 @@ async fn main() {
 
     println!("[smoke] connecting upstream (model={model})...");
     let t0 = std::time::Instant::now();
-    let mut upstream = ProviderUpstreamFactory
+    // The factory owns a hosted-STT service since mode D was added. This path
+    // talks to OpenAI directly, so a broker-less one backed by an in-memory DB
+    // is enough — it is constructed, never used.
+    let db = init_database_memory().await.expect("in-memory db");
+    let pref_repo: Arc<dyn IClientPreferenceRepository> =
+        Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone()));
+    let factory = ProviderUpstreamFactory::new(HostedSttService::new(None, reqwest::Client::new(), pref_repo));
+    let mut upstream = factory
         .connect(
             &config,
             24000,
