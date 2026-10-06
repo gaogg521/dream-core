@@ -5325,6 +5325,16 @@ impl ConversationService {
 
         let mut extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap_or_else(|_| serde_json::json!({}));
         extra["workspace"] = serde_json::Value::String(resolved_workspace.to_owned());
+        // Align the frontend's persisted `custom_workspace` with where the
+        // conversation now actually runs. The flag is written at creation time
+        // and never recomputed, and the sidebar files a chat under "Projects"
+        // on the stored value alone — so a row left saying `true` while running
+        // in a workspace we provisioned shows up as a `*-temp-*` project folder
+        // forever. Only ever cleared, never set: deciding that something IS the
+        // user's project is the frontend's call, not ours.
+        if has_auto_workspace_structure(resolved_workspace) {
+            extra["custom_workspace"] = serde_json::Value::Bool(false);
+        }
 
         let extra_json = serde_json::to_string(&extra)
             .map_err(|e| ConversationError::internal(format!("Failed to serialize extra: {e}")))?;

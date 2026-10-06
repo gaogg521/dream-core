@@ -9713,3 +9713,68 @@ async fn get_leaves_a_missing_user_picked_workspace_untouched() {
     let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
     assert_eq!(extra["workspace"].as_str().unwrap(), workspace.to_str().unwrap());
 }
+
+#[tokio::test]
+async fn persisting_an_auto_workspace_clears_a_stale_custom_workspace_flag() {
+    // A real upgraded store has rows whose `custom_workspace` says `true` while
+    // the workspace is one we provisioned. The sidebar groups on that stored
+    // value alone, so such a chat shows up under "Projects" as a `*-temp-*`
+    // folder forever. Writing the workspace back realigns the flag.
+    let (svc, _b, repo, _task_mgr) = make_service();
+    let req: CreateConversationRequest = serde_json::from_value(json!({
+        "type": "acp",
+        "extra": { "backend": "claude" },
+    }))
+    .unwrap();
+    let created = svc.create("user-1", req).await.unwrap();
+
+    let stale = r"C:\Users\alice\AppData\Roaming\1ONE ClaudeCode\1one\claude-temp-1782557274760";
+    let row = repo.get("user-1", &created.id).await.unwrap().unwrap();
+    let mut extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
+    extra["workspace"] = json!(stale);
+    extra["custom_workspace"] = json!(true);
+    repo.update(
+        "user-1",
+        &created.id,
+        &ConversationRowUpdate {
+            extra: Some(serde_json::to_string(&extra).unwrap()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    svc.get("user-1", &created.id).await.unwrap();
+
+    let row = repo.get("user-1", &created.id).await.unwrap().unwrap();
+    let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
+    assert_eq!(extra["custom_workspace"], json!(false), "{extra}");
+}
+
+#[tokio::test]
+async fn persisting_a_user_picked_workspace_keeps_its_custom_flag() {
+    // The factory resolving a different path for a REAL project must not
+    // downgrade it: only the frontend decides something is the user's project.
+    let (svc, _b, repo, _task_mgr) = make_service();
+    let workspace = unique_test_workspace_path("keeps-custom-flag");
+    let req: CreateConversationRequest = serde_json::from_value(json!({
+        "type": "acp",
+        "extra": { "workspace": workspace, "backend": "claude" },
+    }))
+    .unwrap();
+    let created = svc.create("user-1", req).await.unwrap();
+
+    let other = unique_test_workspace_path("keeps-custom-flag-moved");
+    svc.maybe_persist_workspace(
+        "user-1",
+        &created.id,
+        workspace.to_str().unwrap(),
+        other.to_str().unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let row = repo.get("user-1", &created.id).await.unwrap().unwrap();
+    let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
+    assert_ne!(extra["custom_workspace"], json!(false), "{extra}");
+}
