@@ -22,9 +22,16 @@ const TOOL_CONTENT_PREVIEW_CHARS: usize = 4096;
 /// therefore also recognised by STRUCTURE: a `{label}-temp-{id}` leaf with a
 /// `conversations` ancestor (legacy `conversations/{leaf}`, dated
 /// `conversations/{Y}/{M}/{D}/{leaf}`, and per-user
-/// `conversations/users/{dir}/{Y}/{M}/{D}/{leaf}`). Both separators are split
-/// on so a Windows path stored in the DB is read correctly on any host.
+/// `conversations/users/{dir}/{Y}/{M}/{D}/{leaf}`), or sitting directly in the
+/// app-data subdir (`{userData}/1one/{leaf}`), which is where releases before
+/// the `conversations/` layout put them. Both separators are split on so a
+/// Windows path stored in the DB is read correctly on any host.
 fn is_temporary_workspace_path(workspace: &str, data_dir: &Path) -> bool {
+    /// App-data subdir holding backend-managed state; the frontend's
+    /// `USERDATA_DATA_SUBDIR`. Pre-`conversations/` releases provisioned temp
+    /// workspaces as its direct children.
+    const DATA_SUBDIR: &str = "1one";
+
     let workspace = workspace.trim();
     if workspace.is_empty() {
         return false;
@@ -39,7 +46,16 @@ fn is_temporary_workspace_path(workspace: &str, data_dir: &Path) -> bool {
     let is_auto_leaf = leaf
         .split_once("-temp-")
         .is_some_and(|(label, id)| !label.is_empty() && !id.is_empty());
-    is_auto_leaf && segments.any(|segment| segment == "conversations")
+    if !is_auto_leaf {
+        return false;
+    }
+    // The parent is checked before the ancestor walk so a user folder that
+    // merely happens to contain a `-temp-` leaf is not swept in: only an
+    // auto-provisioned root qualifies.
+    let Some(parent) = segments.next() else {
+        return false;
+    };
+    parent == DATA_SUBDIR || parent == "conversations" || segments.any(|segment| segment == "conversations")
 }
 
 /// Convert a database row into an API response DTO.
@@ -529,6 +545,11 @@ mod tests {
             r"C:\\Users\\alice\\AppData\\Roaming\\One Work\\1one\\conversations\\users\\u1\\2026\\09\\30\\dream-temp-fd4d9bd2",
             "/old-root/conversations/2026/09/30/claude-temp-abc",
             "/old-root/conversations/team-temp-t1",
+            // Pre-`conversations/` layout: a direct child of the app-data
+            // subdir, under an app name two renames ago. Real rows in this
+            // shape exist on upgraded installs.
+            r"C:\\Users\\alice\\AppData\\Roaming\\1ONE ClaudeCode\\1one\\aionrs-temp-1776132219793",
+            "/home/alice/.config/one-work/1one/dream-temp-9f2c",
         ] {
             let row = make_row(
                 "acp",
@@ -548,6 +569,12 @@ mod tests {
             "/Users/alice/projects/conversations",
             "/Users/alice/my-temp-notes",
             "/Users/alice/conversations/-temp-",
+            // A `-temp-` leaf alone proves nothing: the parent must be an
+            // auto-provisioned root, not any folder with a similar name.
+            "/Users/alice/work/dream-temp-1",
+            "/Users/alice/1one-backup/dream-temp-1",
+            // Leaf with no parent segment at all.
+            "dream-temp-1",
         ] {
             let row = make_row(
                 "acp",
