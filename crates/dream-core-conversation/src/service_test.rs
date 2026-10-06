@@ -9584,3 +9584,69 @@ async fn other_build_failures_keep_the_persisted_session_id() {
         "an unrelated build failure must not drop a resumable session"
     );
 }
+
+#[tokio::test]
+async fn build_task_options_persists_a_reprovisioned_workspace() {
+    // An upgraded store's legacy row: the workspace was provisioned under the
+    // app-data root 3.0.1 renamed away, so the directory is gone for good. The
+    // context builder re-provisions it; this must reach the DB right here,
+    // without waiting for an agent to start — a conversation whose agent cannot
+    // start would otherwise re-provision on every open, and `project_id`
+    // backfill (which the file panel needs) canonicalizes the stored path.
+    let (svc, _b, repo, _task_mgr) = make_service();
+    let req: CreateConversationRequest = serde_json::from_value(json!({
+        "type": "acp",
+        "extra": { "backend": "claude" },
+    }))
+    .unwrap();
+    let created = svc.create("user-1", req).await.unwrap();
+
+    let stale = r"C:\Users\alice\AppData\Roaming\1ONE ClaudeCode\1one\claude-temp-1776132219793";
+    let row = repo.get("user-1", &created.id).await.unwrap().unwrap();
+    let mut extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
+    extra["workspace"] = json!(stale);
+    repo.update(
+        "user-1",
+        &created.id,
+        &ConversationRowUpdate {
+            extra: Some(serde_json::to_string(&extra).unwrap()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let row = repo.get("user-1", &created.id).await.unwrap().unwrap();
+    svc.build_task_options(&row).await.unwrap();
+
+    let row = repo.get("user-1", &created.id).await.unwrap().unwrap();
+    let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
+    let workspace = extra["workspace"].as_str().unwrap();
+    assert_ne!(workspace, stale, "the dead path must not survive the build");
+    assert!(
+        workspace.ends_with(&format!("claude-temp-{}", created.id)),
+        "expected a re-provisioned auto workspace, got {workspace}"
+    );
+    assert!(Path::new(workspace).is_dir(), "{workspace} should exist on disk");
+}
+
+#[tokio::test]
+async fn build_task_options_leaves_a_user_picked_workspace_alone() {
+    // The same path shape, but chosen by the user and still present: nothing to
+    // re-provision, so the stored value must be untouched.
+    let (svc, _b, repo, _task_mgr) = make_service();
+    let workspace = unique_test_workspace_path("custom-untouched");
+    let req: CreateConversationRequest = serde_json::from_value(json!({
+        "type": "acp",
+        "extra": { "workspace": workspace, "backend": "claude" },
+    }))
+    .unwrap();
+    let created = svc.create("user-1", req).await.unwrap();
+
+    let row = repo.get("user-1", &created.id).await.unwrap().unwrap();
+    svc.build_task_options(&row).await.unwrap();
+
+    let row = repo.get("user-1", &created.id).await.unwrap().unwrap();
+    let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
+    assert_eq!(extra["workspace"].as_str().unwrap(), workspace.to_str().unwrap());
+}

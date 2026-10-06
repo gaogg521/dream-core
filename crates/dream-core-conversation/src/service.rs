@@ -5054,9 +5054,12 @@ impl ConversationService {
     ) -> Result<BuildTaskOptions, ConversationError> {
         reject_deprecated_runtime_row(row)?;
         let seed = self.load_dream_engine_permission_seed(row).await?;
-        SessionContextBuilder::new(&self.workspace_root, &self.agent_metadata_repo, &self.acp_session_repo)
-            .build_options(row, seed)
-            .await
+        let options =
+            SessionContextBuilder::new(&self.workspace_root, &self.agent_metadata_repo, &self.acp_session_repo)
+                .build_options(row, seed)
+                .await?;
+        self.persist_reprovisioned_workspace(row, &options).await;
+        Ok(options)
     }
 
     pub async fn build_task_options_for_runtime(
@@ -5066,9 +5069,48 @@ impl ConversationService {
     ) -> Result<BuildTaskOptions, ConversationError> {
         reject_deprecated_runtime_row(row)?;
         let seed = self.load_dream_engine_permission_seed(row).await?;
-        SessionContextBuilder::new(&self.workspace_root, &self.agent_metadata_repo, &self.acp_session_repo)
-            .build_options_with_workspace_override(row, workspace_override, seed)
+        let options =
+            SessionContextBuilder::new(&self.workspace_root, &self.agent_metadata_repo, &self.acp_session_repo)
+                .build_options_with_workspace_override(row, workspace_override, seed)
+                .await?;
+        self.persist_reprovisioned_workspace(row, &options).await;
+        Ok(options)
+    }
+
+    /// Persist a workspace the context builder had to re-provision, as soon as
+    /// it is known rather than only once an agent has started.
+    ///
+    /// [`Self::maybe_persist_workspace`] runs after the agent is built, which
+    /// is too late for two cases seen on real upgraded stores:
+    ///   - a conversation whose agent cannot start at all (its provider is
+    ///     gone, say) keeps the stale path and re-provisions on every open,
+    ///     leaving an empty directory behind on each new day;
+    ///   - `project_id` backfill canonicalizes the *stored* path, so until the
+    ///     new one lands an old chat opens with no file panel at all — the
+    ///     panel renders a project, and binding one needs a path that exists.
+    ///
+    /// Only an auto-provisioned workspace is written back. A workspace the user
+    /// picked is never rewritten here: `is_custom` covers both a stored project
+    /// and an explicit per-run override.
+    async fn persist_reprovisioned_workspace(
+        &self,
+        row: &dream_core_db::models::ConversationRow,
+        options: &BuildTaskOptions,
+    ) {
+        let workspace = &options.context.workspace;
+        if workspace.is_custom || workspace.stored_path.is_empty() || workspace.path == workspace.stored_path {
+            return;
+        }
+        if let Err(err) = self
+            .maybe_persist_workspace(&row.user_id, &row.id, &workspace.stored_path, &workspace.path)
             .await
+        {
+            warn!(
+                conversation_id = %row.id,
+                error = %ErrorChain(&err),
+                "failed to persist a re-provisioned workspace"
+            );
+        }
     }
 
     /// Re-read the persisted resume anchor into a turn's `BuildTaskOptions`
