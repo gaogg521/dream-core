@@ -14,7 +14,6 @@ use crate::message_cursor::{decode_message_cursor, encode_message_cursor};
 use crate::runtime_completion::RuntimeCompletionPublisher;
 use crate::runtime_persistence::{RuntimePersistenceCoordinator, RuntimeWriteKind};
 use crate::runtime_state::ConversationRuntimeStateService;
-use chrono::Datelike;
 use dream_core_api_types::AgentErrorCode;
 use dream_core_api_types::ChatFileRef;
 use dream_core_api_types::{
@@ -57,7 +56,9 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
-use crate::auto_workspace::has_auto_workspace_structure;
+use crate::auto_workspace::{
+    auto_workspace_parent, conversation_label, expected_auto_workspace_path, has_auto_workspace_structure,
+};
 use crate::convert::{
     TOOL_CONTENT_COMPACT_THRESHOLD_BYTES, row_to_artifact_response, row_to_message_response,
     row_to_message_response_compact, row_to_response, row_to_response_with_extra, search_row_to_item, string_to_enum,
@@ -5505,47 +5506,6 @@ fn map_create_workspace_validation_error(error: WorkspacePathValidationError) ->
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
-
-/// Compute the label used in auto-provisioned workspace directory names.
-///
-/// For ACP conversations the label is the vendor string from
-/// `extra.backend` (e.g. `"claude"`); otherwise the `AgentType` serde
-/// name (e.g. `"dream"`). Falls back to the agent type's serde name
-/// when the backend field is missing or not a string.
-fn conversation_label(agent_type: &AgentType, backend: Option<&serde_json::Value>) -> String {
-    if *agent_type == AgentType::Acp
-        && let Some(serde_json::Value::String(s)) = backend
-        && !s.is_empty()
-    {
-        return s.clone();
-    }
-    agent_type.serde_name().to_owned()
-}
-
-fn expected_auto_workspace_path(
-    workspace_root: &std::path::Path,
-    user_id: &str,
-    conversation_id: &str,
-    agent_type: &AgentType,
-    backend: Option<&serde_json::Value>,
-) -> PathBuf {
-    auto_workspace_parent(workspace_root, user_id).join(format!(
-        "{}-temp-{conversation_id}",
-        conversation_label(agent_type, backend)
-    ))
-}
-
-fn auto_workspace_parent(workspace_root: &Path, user_id: &str) -> PathBuf {
-    let dir = dream_core_common::user_dir_name(user_id).unwrap_or_else(|_| user_id.to_owned());
-    let now = chrono::Local::now();
-    workspace_root
-        .join("conversations")
-        .join("users")
-        .join(dir)
-        .join(format!("{:04}", now.year()))
-        .join(format!("{:02}", now.month()))
-        .join(format!("{:02}", now.day()))
-}
 
 fn auto_provisioned_workspace_to_delete(
     workspace_root: &Path,

@@ -11,8 +11,15 @@
 //! Keeping one recogniser for both is the point of this module: when they
 //! disagreed, a chat filed under "Projects" in the sidebar also refused to
 //! open, because the runtime treated the missing directory as a lost project.
+//!
+//! The naming rule lives here too ([`expected_auto_workspace_path`]), so what
+//! we generate and what we recognise cannot drift apart: `service` and
+//! `session_context` each used to carry their own verbatim copy of it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use chrono::Datelike;
+use dream_core_common::AgentType;
 
 /// App-data subdir holding backend-managed state — the frontend's
 /// `USERDATA_DATA_SUBDIR`. Releases before the `conversations/` layout
@@ -96,6 +103,50 @@ pub(crate) fn is_reported_temporary_workspace(workspace: &str, root: &Path) -> b
         return false;
     }
     Path::new(trimmed).starts_with(root) || has_auto_workspace_structure(trimmed)
+}
+
+/// Where this conversation's auto workspace belongs today:
+/// `{workspace_root}/conversations/users/{user_dir}/{Y}/{M}/{D}/{label}-temp-{id}`.
+///
+/// The dated parent is built from the CURRENT date, so re-provisioning an old
+/// conversation lands under today — [`has_auto_workspace_structure`] wildcards
+/// the date segments precisely so that stays recognisable.
+pub(crate) fn expected_auto_workspace_path(
+    workspace_root: &Path,
+    user_id: &str,
+    conversation_id: &str,
+    agent_type: &AgentType,
+    backend: Option<&serde_json::Value>,
+) -> PathBuf {
+    auto_workspace_parent(workspace_root, user_id).join(format!(
+        "{}-temp-{conversation_id}",
+        conversation_label(agent_type, backend)
+    ))
+}
+
+/// The dated per-user directory auto workspaces are created under.
+pub(crate) fn auto_workspace_parent(workspace_root: &Path, user_id: &str) -> PathBuf {
+    let dir = dream_core_common::user_dir_name(user_id).unwrap_or_else(|_| user_id.to_owned());
+    let now = chrono::Local::now();
+    workspace_root
+        .join("conversations")
+        .join("users")
+        .join(dir)
+        .join(format!("{:04}", now.year()))
+        .join(format!("{:02}", now.month()))
+        .join(format!("{:02}", now.day()))
+}
+
+/// The leaf's label: an ACP conversation is named after its backend (`claude`,
+/// `codex`, …), everything else after its agent type.
+pub(crate) fn conversation_label(agent_type: &AgentType, backend: Option<&serde_json::Value>) -> String {
+    if *agent_type == AgentType::Acp
+        && let Some(serde_json::Value::String(s)) = backend
+        && !s.is_empty()
+    {
+        return s.clone();
+    }
+    agent_type.serde_name().to_owned()
 }
 
 #[cfg(test)]

@@ -1,8 +1,7 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
-use chrono::Datelike;
 use dream_core_ai_agent::session_context::{
     AcpSessionBuildContext, AgentSessionContext, AgentSessionKind, AntigravitySessionBuildContext, ConversationContext,
     DreamEngineSessionBuildContext, WorkspaceContext,
@@ -15,7 +14,7 @@ use dream_core_db::models::ConversationRow;
 use dream_core_db::{IAcpSessionRepository, IAgentMetadataRepository};
 use tracing::{debug, info, warn};
 
-use crate::auto_workspace::has_auto_workspace_structure;
+use crate::auto_workspace::{conversation_label, expected_auto_workspace_path, has_auto_workspace_structure};
 use crate::convert::string_to_enum;
 use crate::error::ConversationError;
 use crate::task_options::provider_model_from_conversation_row;
@@ -624,31 +623,6 @@ fn decode_persisted_session_state(state: dream_core_db::PersistedSessionState) -
     decoded
 }
 
-fn expected_auto_workspace_path(
-    workspace_root: &Path,
-    user_id: &str,
-    conversation_id: &str,
-    agent_type: &AgentType,
-    backend: Option<&serde_json::Value>,
-) -> PathBuf {
-    auto_workspace_parent(workspace_root, user_id).join(format!(
-        "{}-temp-{conversation_id}",
-        conversation_label(agent_type, backend)
-    ))
-}
-
-fn auto_workspace_parent(workspace_root: &Path, user_id: &str) -> PathBuf {
-    let dir = dream_core_common::user_dir_name(user_id).unwrap_or_else(|_| user_id.to_owned());
-    let now = chrono::Local::now();
-    workspace_root
-        .join("conversations")
-        .join("users")
-        .join(dir)
-        .join(format!("{:04}", now.year()))
-        .join(format!("{:02}", now.month()))
-        .join(format!("{:02}", now.day()))
-}
-
 /// Whether `candidate` is an auto-provisioned workspace for this conversation.
 ///
 /// Matches by path STRUCTURE, not by an exact per-user/dated path. The leaf
@@ -693,16 +667,6 @@ fn is_auto_workspace(
     }
 }
 
-fn conversation_label(agent_type: &AgentType, backend: Option<&serde_json::Value>) -> String {
-    if *agent_type == AgentType::Acp
-        && let Some(serde_json::Value::String(s)) = backend
-        && !s.is_empty()
-    {
-        return s.clone();
-    }
-    agent_type.serde_name().to_owned()
-}
-
 fn map_runtime_workspace_validation_error(error: WorkspacePathValidationError) -> ConversationError {
     match error {
         WorkspacePathValidationError::Empty => ConversationError::BadRequest {
@@ -743,11 +707,13 @@ fn workspace_error_class(error: &WorkspacePathValidationError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Datelike;
     use dream_core_db::{
         CreateAcpSessionParams, SaveRuntimeStateParams, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
         UpsertAgentMetadataParams, init_database_memory,
     };
     use std::io::Write;
+    use std::path::PathBuf;
     use std::sync::Mutex;
     use tracing::Level;
     use tracing_subscriber::fmt;
