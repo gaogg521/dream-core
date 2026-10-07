@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.1.79](https://github.com/gaogg521/dream-core/compare/v0.1.78...v0.1.79) (2026-10-07)
+
+
+### Bug Fixes
+
+* **conversation:** clear a stale custom_workspace when rewriting the path ([33d0e66](https://github.com/gaogg521/dream-core/commit/33d0e66b44ad7669ca38cadce12647ff9d89be87))
+* **conversation:** persist a re-provisioned workspace at build time ([03dca35](https://github.com/gaogg521/dream-core/commit/03dca354ad99691ecb971b4cbf8a25308b1efc45))
+* **conversation:** re-provision a dead auto workspace when the chat is opened ([85f34de](https://github.com/gaogg521/dream-core/commit/85f34de119f4ab176d68fb242077528a2aca3763))
+* **conversation:** recognise pre-conversations/ temp workspace layout ([209648f](https://github.com/gaogg521/dream-core/commit/209648ff76f0430ee7efde8082b5df2ed158ebec))
+* **conversation:** recognise temp workspaces created under a previous work dir ([96b7940](https://github.com/gaogg521/dream-core/commit/96b7940a8f8a4e7af0e65506eee334d02d2297b6))
+* **conversation:** recognise the `1one/workspaces/` workspace generation ([387ae04](https://github.com/gaogg521/dream-core/commit/387ae04c28e6ab9570dc36b8b872c3a8786478ad))
+* **conversation:** reopen chats whose temp workspace root is gone ([5ca67dc](https://github.com/gaogg521/dream-core/commit/5ca67dc798d26cd372d6c31ebe293d8bb4f2b214))
+* **stt:** build the smoke example against the current factory ([0038464](https://github.com/gaogg521/dream-core/commit/00384642f3da5df4a2b4b5c32fd32150626eb6d3))
+
+
+### Code Refactoring
+
+* **conversation:** keep one copy of the auto-workspace naming rule ([0e579c7](https://github.com/gaogg521/dream-core/commit/0e579c758ea5921709c2b6a3a51d1c607388cf5d))
+
 ## [0.1.78](https://github.com/gaogg521/dream-core/compare/v0.1.77...v0.1.78) (2026-09-30)
 
 
