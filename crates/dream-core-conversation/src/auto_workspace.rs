@@ -186,13 +186,16 @@ mod tests {
         assert!(auto("/old-root/conversations/2026/09/30/claude-temp-abc"));
         assert!(auto("/old-root/conversations/team-temp-t1"));
         assert!(auto("/old-root/conversations/users/u1/2026/09/30/dream-temp-fd4d9bd2"));
-        // Pre-`conversations/` layout, under an app name two renames ago, with
-        // a unix-millis id. Real rows in this shape exist on upgraded installs.
+        // Pre-`conversations/` layout, with a unix-millis id. The pre-rebrand
+        // app-data root and the `aionrs` label are quoted deliberately: these
+        // are legacy values read back from rows that upgraded installs still
+        // carry, so renaming them here would stop testing the real data.
         assert!(auto(
             r"C:\Users\alice\AppData\Roaming\1ONE ClaudeCode\1one\aionrs-temp-1776132219793"
         ));
         assert!(auto("/home/alice/.config/one-work/1one/dream-temp-9f2c"));
-        // The `workspaces/` generation: `{label}-{unix_millis}`, no `-temp-`.
+        // The `workspaces/` generation: `{label}-{unix_millis}`, no `-temp-`;
+        // same legacy root, same reason.
         assert!(auto(
             r"C:\Users\alice\AppData\Roaming\1ONE ClaudeCode\1one\workspaces\aionrs-1782784235220"
         ));

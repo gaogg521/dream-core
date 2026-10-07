@@ -501,8 +501,10 @@ mod tests {
             "/old-root/conversations/2026/09/30/claude-temp-abc",
             "/old-root/conversations/team-temp-t1",
             // Pre-`conversations/` layout: a direct child of the app-data
-            // subdir, under an app name two renames ago. Real rows in this
-            // shape exist on upgraded installs.
+            // subdir. The pre-rebrand root and `aionrs` label are legacy
+            // values read back from rows upgraded installs still carry —
+            // deliberate, and not to be renamed, or this stops testing the
+            // data the fix exists for.
             r"C:\\Users\\alice\\AppData\\Roaming\\1ONE ClaudeCode\\1one\\aionrs-temp-1776132219793",
             "/home/alice/.config/one-work/1one/dream-temp-9f2c",
         ] {

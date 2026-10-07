@@ -1258,6 +1258,9 @@ mod tests {
         // failing here made the conversation permanently unopenable
         // (WORKSPACE_PATH_RUNTIME_UNAVAILABLE). The chat lives in the DB; the
         // workspace is throwaway and is re-provisioned under the current root.
+        // The pre-rebrand root below is a legacy value read back from real
+        // rows, not a name to migrate — spelling it any other way would stop
+        // exercising the data this fix exists for.
         let repos = setup().await;
         let gone = r"C:\Users\alice\AppData\Roaming\1ONE ClaudeCode\1one\aionrs-temp-1776132219793";
         let row = row("aionrs", serde_json::json!({ "workspace": gone }), None);
