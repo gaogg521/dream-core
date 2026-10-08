@@ -68,8 +68,11 @@ impl BackendProtocolSink {
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
         };
+        // id == call_id == request_id, the contract claude's AskUserQuestion
+        // already follows: the frontend marks the conversation as waiting by
+        // request_id and clears it by the id `confirmation.remove` carries.
         Confirmation {
-            id: generate_id(),
+            id: request_id.to_string(),
             call_id: request_id.to_string(),
             title: text("header"),
             action: Some("AskUserQuestion".to_string()),
@@ -316,6 +319,7 @@ mod tests {
         // Recovery after a reload keys the rebuilt card on call_id = request_id.
         let confs = confs.read().unwrap();
         assert_eq!(confs.len(), 1);
+        assert_eq!(confs[0].id, "r1", "removal event must carry the request id");
         assert_eq!(confs[0].call_id, "r1");
         assert_eq!(confs[0].title.as_deref(), Some("Audience"));
         assert_eq!(
