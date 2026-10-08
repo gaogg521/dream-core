@@ -121,6 +121,10 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
             "/api/one/devops/model-channels/{id}/token",
             axum::routing::post(issue_model_channel_token),
         )
+        .route(
+            "/api/one/devops/model-channels/{id}/probe",
+            axum::routing::post(probe_model_channel),
+        )
         // Content inspection (T4). Rules are admin-authored; the member-facing
         // list is deliberately readable by any member, because enforcement runs
         // on their machine and a rule they cannot fetch is a rule that silently
@@ -1619,6 +1623,16 @@ async fn delete_model_channel(
     audit(&state, &user.id, "devops.modelChannel.delete", Some(&id)).await;
     state.service.delete_provider_channel(&user.id, &id).await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+/// Admin health check: probe the upstream with the stored credential.
+async fn probe_model_channel(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::provider_channel::ChannelProbeDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    Ok(Json(ApiResponse::ok(state.service.probe_provider_channel(&id).await?)))
 }
 
 #[derive(serde::Serialize)]

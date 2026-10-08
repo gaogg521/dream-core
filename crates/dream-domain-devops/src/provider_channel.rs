@@ -97,6 +97,42 @@ pub struct ResolvedChannel {
 /// One-shot LLM call settings for the memory turn extractor (P2-2 followups
 /// §A.6): the channel's OpenAI-compatible upstream + credential (decrypted
 /// server-side, never leaves the process) + the model to call.
+/// Result of [`DevopsService::probe_provider_channel`]. Upstream failures are
+/// a normal outcome (`ok: false`), not an API error — the console renders them.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelProbeDto {
+    pub ok: bool,
+    pub status: Option<u16>,
+    pub model_count: Option<usize>,
+    pub error: Option<String>,
+}
+
+impl ChannelProbeDto {
+    fn failed(status: Option<u16>, error: &str) -> Self {
+        Self {
+            ok: false,
+            status,
+            model_count: None,
+            error: Some(error.to_owned()),
+        }
+    }
+}
+
+/// `{base}/models` for a base that already ends in an API version or an
+/// OpenAI-compat segment (`…/v1`, `…/v1beta/openai`), else `{base}/v1/models`.
+fn models_url(base: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let last = base.rsplit('/').next().unwrap_or_default();
+    let versioned = last == "openai"
+        || (last.len() >= 2 && last.starts_with('v') && last[1..].chars().next().is_some_and(|c| c.is_ascii_digit()));
+    if versioned {
+        format!("{base}/models")
+    } else {
+        format!("{base}/v1/models")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ExtractionLlmConfig {
     pub base_url: String,
@@ -149,6 +185,76 @@ impl DevopsService {
             api_key,
             model,
         }))
+    }
+
+    /// Admin health check for a saved channel: list the upstream's models with
+    /// the STORED credential. The console cannot do this itself — the key is
+    /// write-only and never returned — so a client-side probe could only ever
+    /// call the upstream unauthenticated and report failure.
+    pub async fn probe_provider_channel(&self, channel_id: &str) -> Result<ChannelProbeDto, DevopsError> {
+        let row: Option<(String, String, String)> = self
+            .db
+            .fetch_optional_as::<(String, String, String)>(
+                "SELECT platform, upstream_base_url, api_key_encrypted FROM one_provider_registry WHERE id = ?",
+                &db_params![channel_id],
+            )
+            .await?;
+        let Some((platform, upstream_base_url, api_key_encrypted)) = row else {
+            return Err(DevopsError::NotFound(format!("model channel {channel_id}")));
+        };
+        if platform == "bedrock" {
+            return Ok(ChannelProbeDto::failed(
+                None,
+                "bedrock channels cannot be probed by listing models",
+            ));
+        }
+        let api_key = if api_key_encrypted.is_empty() {
+            String::new()
+        } else {
+            decrypt_string(&api_key_encrypted, self.encryption_key()?)
+                .map_err(|e| DevopsError::Internal(format!("failed to decrypt channel credential: {e}")))?
+        };
+        let url = models_url(&upstream_base_url);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| DevopsError::Internal(format!("http client: {e}")))?;
+        let mut request = client.get(&url);
+        if !api_key.is_empty() {
+            request = if platform == "anthropic" {
+                request
+                    .header("x-api-key", &api_key)
+                    .header("anthropic-version", "2023-06-01")
+            } else {
+                request.bearer_auth(&api_key)
+            };
+        }
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                tracing::info!(channel_id, %error, "model channel probe: upstream unreachable");
+                return Ok(ChannelProbeDto::failed(None, &format!("upstream unreachable: {error}")));
+            }
+        };
+        let status = response.status().as_u16();
+        if !response.status().is_success() {
+            return Ok(ChannelProbeDto::failed(
+                Some(status),
+                &format!("upstream returned HTTP {status}"),
+            ));
+        }
+        let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
+        let model_count = body
+            .get("data")
+            .or_else(|| body.get("models"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.len());
+        Ok(ChannelProbeDto {
+            ok: true,
+            status: Some(status),
+            model_count,
+            error: None,
+        })
     }
 
     fn encryption_key(&self) -> Result<&[u8; 32], DevopsError> {
@@ -531,6 +637,119 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[test]
+    fn models_url_keeps_a_versioned_base_and_adds_v1_otherwise() {
+        assert_eq!(
+            models_url("https://api.openai.com/v1"),
+            "https://api.openai.com/v1/models"
+        );
+        assert_eq!(
+            models_url("https://api.deepseek.com/v1/"),
+            "https://api.deepseek.com/v1/models"
+        );
+        assert_eq!(
+            models_url("https://generativelanguage.googleapis.com/v1beta/openai"),
+            "https://generativelanguage.googleapis.com/v1beta/openai/models"
+        );
+        assert_eq!(
+            models_url("https://api.anthropic.com"),
+            "https://api.anthropic.com/v1/models"
+        );
+        assert_eq!(
+            models_url("https://gateway.corp.example/vendor"),
+            "https://gateway.corp.example/vendor/v1/models"
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_unknown_channel_is_not_found() {
+        let svc = service().await;
+        let err = svc.probe_provider_channel("ochan_missing").await.unwrap_err();
+        assert!(matches!(err, DevopsError::NotFound(_)), "{err:?}");
+    }
+
+    /// The console's health check used to call the upstream with an empty key
+    /// (the real one is write-only), so it could never pass. The probe must
+    /// send the STORED credential.
+    #[tokio::test]
+    async fn probe_sends_the_stored_credential_and_counts_models() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = socket.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]).to_string();
+            let body = r#"{"object":"list","data":[{"id":"a"},{"id":"b"}]}"#;
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(reply.as_bytes()).await.unwrap();
+            request
+        });
+        let svc = service().await;
+        let channel = svc
+            .upsert_provider_channel(
+                None,
+                "probe-me",
+                "openai",
+                &format!("http://{addr}/v1"),
+                Some(SECRET),
+                r#"["a"]"#,
+                None,
+                None,
+                true,
+                "org",
+                None,
+                "all",
+                "admin1",
+            )
+            .await
+            .unwrap();
+
+        let probe = svc.probe_provider_channel(&channel.id).await.unwrap();
+        let request = server.await.unwrap();
+        assert!(request.starts_with("GET /v1/models "), "{request}");
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains(&format!("authorization: bearer {}", SECRET.to_ascii_lowercase())),
+            "stored key not sent: {request}"
+        );
+        assert!(probe.ok);
+        assert_eq!(probe.status, Some(200));
+        assert_eq!(probe.model_count, Some(2));
+    }
+
+    #[tokio::test]
+    async fn probe_reports_an_unreachable_upstream_as_not_ok() {
+        let svc = service().await;
+        let channel = svc
+            .upsert_provider_channel(
+                None,
+                "dead",
+                "openai",
+                "http://127.0.0.1:1/v1",
+                Some(SECRET),
+                r#"["a"]"#,
+                None,
+                None,
+                true,
+                "org",
+                None,
+                "all",
+                "admin1",
+            )
+            .await
+            .unwrap();
+        let probe = svc.probe_provider_channel(&channel.id).await.unwrap();
+        assert!(!probe.ok);
+        assert_eq!(probe.status, None);
+        assert!(probe.error.unwrap().starts_with("upstream unreachable"));
     }
 
     /// The rule the whole feature exists for. If this ever fails, the product
