@@ -746,6 +746,16 @@ impl dream_domain_devops::ProxyUsageRecorder for BillingProxyUsageRecorder {
         let service = self.0.clone();
         tokio::spawn(async move {
             let channel_id = format!("prov_chan_{}", event.channel_id);
+            // Only a company member can hold a channel token, so a caller that
+            // resolves to no company means an enrollment gap: their usage lands
+            // unattributed and the per-call trace below is skipped silently.
+            if matches!(service.resolve_enterprise_id(&event.user_id).await, Ok(None)) {
+                tracing::warn!(
+                    user_id = %event.user_id,
+                    channel_id = %event.channel_id,
+                    "model proxy caller has no company membership; usage will be unattributed"
+                );
+            }
             if let Err(e) = service
                 .record_turn(
                     &event.user_id,
@@ -761,7 +771,7 @@ impl dream_domain_devops::ProxyUsageRecorder for BillingProxyUsageRecorder {
                 )
                 .await
             {
-                tracing::debug!(error = %e, "model proxy usage record failed (non-fatal)");
+                tracing::warn!(error = %e, "model proxy usage record failed (non-fatal)");
             }
             // The same call also belongs in the per-call trace. Only
             // `BillingLlmCallTrace` wrote that table, and it sits on the
@@ -788,7 +798,7 @@ impl dream_domain_devops::ProxyUsageRecorder for BillingProxyUsageRecorder {
                 error: None,
             };
             if let Err(e) = service.record_llm_call(call).await {
-                tracing::debug!(error = %e, "model proxy llm-call trace failed (non-fatal)");
+                tracing::warn!(error = %e, "model proxy llm-call trace failed (non-fatal)");
             }
         });
     }
@@ -2983,6 +2993,25 @@ async fn bootstrap_default_enterprise(services: &AppServices) -> Result<(), Rout
         )
         .with_source(e)
     })?;
+    // Backfill: accounts created through 「添加成员」 before that route started
+    // driving `CompanySeatSync` were never enrolled in the company. Idempotent
+    // and best-effort — a failure here must not keep the server from starting.
+    match org.admin_created_members_missing_company().await {
+        Ok(missing) => {
+            for (user_id, enterprise_id) in &missing {
+                if let Err(error) = enterprise.ensure_member(user_id, enterprise_id, None).await {
+                    tracing::warn!(%error, user_id, enterprise_id, "bootstrap: company enrollment backfill failed");
+                }
+            }
+            if !missing.is_empty() {
+                tracing::info!(
+                    count = missing.len(),
+                    "bootstrap: enrolled admin-created members into their company"
+                );
+            }
+        }
+        Err(error) => tracing::warn!(%error, "bootstrap: could not scan for unenrolled admin-created members"),
+    }
     if is_enterprise_tenant_id(&active) && company_exists {
         tracing::info!(tenant_id = %active, "bootstrap: default enterprise already provisioned");
         return Ok(());

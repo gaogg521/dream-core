@@ -2588,6 +2588,47 @@ impl OrgService {
         })
     }
 
+    /// The company a project group belongs to, if any. Callers that place a
+    /// user into a group (`admin_create_member`, invite join, SSO auto-join)
+    /// use it to drive `CompanySeatSync` — without that, billing resolves the
+    /// user to "no enterprise" and none of their usage, seat, budget or model
+    /// allow-list governance applies.
+    pub async fn tenant_enterprise_id(&self, tenant_id: &str) -> Result<Option<String>, OrgError> {
+        let id: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT enterprise_id FROM one_tenants WHERE id = ?",
+                &db_params![tenant_id],
+            )
+            .await?;
+        // The column defaults to '' for groups that belong to no company.
+        Ok(id.filter(|id| !id.is_empty()))
+    }
+
+    /// Users created by an admin (`org.admin_create_member`) inside a
+    /// company-owned group who never got a company membership row. Before the
+    /// route started calling `CompanySeatSync`, every such account was left
+    /// out of the company. Removal paths cannot have produced this state for
+    /// them (removing a member with no row is `MemberNotFound`), so the
+    /// result is exactly the population that needs backfilling.
+    pub async fn admin_created_members_missing_company(&self) -> Result<Vec<(String, String)>, OrgError> {
+        Ok(self
+            .db
+            .fetch_all_as::<(String, String)>(
+                "SELECT DISTINCT uo.user_id, t.enterprise_id \
+                 FROM one_audit_logs a \
+                 JOIN users u ON u.username = a.resource \
+                 JOIN one_user_org uo ON uo.user_id = u.id AND uo.tenant_id = a.tenant_id \
+                 JOIN one_tenants t ON t.id = uo.tenant_id \
+                 WHERE a.action = 'org.admin_create_member' \
+                   AND t.enterprise_id IS NOT NULL AND t.enterprise_id <> '' \
+                   AND NOT EXISTS (SELECT 1 FROM one_enterprise_members m \
+                                   WHERE m.user_id = uo.user_id AND m.enterprise_id = t.enterprise_id)",
+                &db_params![],
+            )
+            .await?)
+    }
+
     /// Reset another local member's password, invalidate every active session,
     /// and require the member to replace the temporary credential after login.
     /// The generated password is returned exactly once to the requesting
@@ -3470,6 +3511,61 @@ mod tests {
     /// guarantees this).
     async fn create_user(user_repo: &Arc<dyn IUserRepository>, username: &str) -> String {
         user_repo.create_user(username, "x").await.unwrap().id
+    }
+
+    /// 「添加成员」 placed accounts into a company-owned group without making
+    /// them company members. The route now enrolls them via `CompanySeatSync`
+    /// (keyed on `tenant_enterprise_id`); the startup backfill must find
+    /// exactly the accounts that were left out — not members of groups without
+    /// a company, and not members who already have a company row.
+    #[tokio::test]
+    async fn admin_created_members_missing_company_finds_only_unenrolled_accounts() {
+        let (db, service, _user_repo) = setup().await;
+        // The company table belongs to dream-domain-enterprise; a minimal
+        // stand-in is enough for the NOT EXISTS check.
+        sqlx::query("CREATE TABLE one_enterprise_members (user_id TEXT NOT NULL, enterprise_id TEXT NOT NULL)")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let (company_group, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let plain_group = "plain_group".to_string();
+        sqlx::query("INSERT INTO one_tenants (id, name, created_at, updated_at) VALUES (?, 'Side', 0, 0)")
+            .bind(&plain_group)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE one_tenants SET enterprise_id = 'ent1' WHERE id = ?")
+            .bind(&company_group)
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            service.tenant_enterprise_id(&company_group).await.unwrap().as_deref(),
+            Some("ent1")
+        );
+        assert_eq!(service.tenant_enterprise_id(&plain_group).await.unwrap(), None);
+
+        let alice = service
+            .admin_create_member(&company_group, "alice", "Password!234", None)
+            .await
+            .unwrap();
+        let bob = service
+            .admin_create_member(&company_group, "bob", "Password!234", None)
+            .await
+            .unwrap();
+        service
+            .admin_create_member(&plain_group, "carol", "Password!234", None)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO one_enterprise_members (user_id, enterprise_id) VALUES (?, 'ent1')")
+            .bind(&bob.user_id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        let missing = service.admin_created_members_missing_company().await.unwrap();
+        assert_eq!(missing, vec![(alice.user_id, "ent1".to_string())]);
     }
 
     #[tokio::test]

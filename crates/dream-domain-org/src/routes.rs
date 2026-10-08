@@ -965,6 +965,15 @@ async fn admin_create_member(
             body.display_name.as_deref(),
         )
         .await?;
+    // Same rule as `org_join`: a member placed into a company-owned group must
+    // also become a company member, or billing treats them as having no
+    // enterprise — no seat, no usage attribution, no budget/model governance.
+    if let Some(sync) = state.company_seat_sync.as_ref()
+        && let Some(eid) = state.service.tenant_enterprise_id(&actor.tenant_id).await?
+    {
+        sync.ensure_company_member(&user.user_id, &eid, body.display_name.as_deref())
+            .await;
+    }
     Ok(Json(ApiResponse::ok(user)))
 }
 
