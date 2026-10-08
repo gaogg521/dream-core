@@ -131,6 +131,14 @@ Every domain crate must follow:
 - Error responses must not leak internal details
 - Secrets must never be hardcoded
 
+## Releasing dreamcore
+
+Backend work on `main` reaches the desktop installer only through a release: merge the release-please PR,
+then dispatch the Release workflow (`gh workflow run release.yml -f tag_name=v0.1.x` — the tag does NOT
+trigger it), wait until every platform's asset is uploaded, then bump `dreamcoreVersion` in dream-ui.
+dream-ui's packaging pre-flight refuses a pin that is behind `main`. Full sequence and pitfalls:
+dream-ui `docs/guides/desktop-release-runbook.zh-CN.md`.
+
 ## Code Style
 
 - Rust 2024 edition, stable toolchain (pinned in `rust-toolchain.toml`)

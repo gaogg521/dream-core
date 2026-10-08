@@ -1,3 +1,17 @@
+# Builds the dreamcore binaries and uploads them to the GitHub release.
+#
+# The `push: tags` trigger does NOT fire for release-please releases: the tag is
+# created with the default GITHUB_TOKEN, and events caused by that token never
+# start other workflows. Every release so far was built by dispatching this
+# workflow by hand after merging the release-please PR:
+#
+#   gh workflow run release.yml -f tag_name=v0.1.x
+#
+# The desktop installer downloads these assets for the version pinned in
+# dream-ui package.json "dreamcoreVersion" — until this has run for all
+# platforms, that version cannot be packaged. macOS hosted runners sometimes
+# have no capacity ("not acquired by Runner"): re-run with `gh run rerun <id> --failed`.
+# Full sequence: dream-ui docs/guides/desktop-release-runbook.zh-CN.md
 name: Release
 
 on:
