@@ -1980,7 +1980,9 @@ impl DevopsService {
     pub async fn rebuild_rag_documents(&self, actor_user_id: &str) -> Result<RagRebuildDto, DevopsError> {
         let ids: Vec<String> = self
             .db
-            .fetch_all_scalar("SELECT id FROM one_rag_documents ORDER BY updated_at ASC", &[])
+            // `one_rag_documents` has no `updated_at` column (see 001_init.sql);
+            // ordering by it made every rebuild fail with "no such column".
+            .fetch_all_scalar("SELECT id FROM one_rag_documents ORDER BY created_at ASC", &[])
             .await?;
         let total = ids.len() as i64;
         let mut processed = 0;
@@ -4725,6 +4727,24 @@ mod tests {
 
         svc.delete_rag_document("admin1", &doc.id).await.unwrap();
         assert_eq!(indexed().await, 0, "deleted document text must not remain on disk");
+    }
+
+    /// 「重建全部索引」 used to fail outright with "no such column: updated_at"
+    /// before touching a single document. With no embedding endpoint
+    /// configured every document fails individually — the rebuild itself must
+    /// still return a per-document report rather than an error.
+    #[tokio::test]
+    async fn rebuild_rag_documents_reports_every_document() {
+        let svc = service().await;
+        for title in ["first", "second"] {
+            svc.register_rag_document(title, None, None, None, "org", None, "all", "admin1", None)
+                .await
+                .unwrap();
+        }
+        let report = svc.rebuild_rag_documents("admin1").await.unwrap();
+        assert_eq!(report.total, 2);
+        assert_eq!(report.processed + report.failed, 2);
+        assert_eq!(report.failures.len() as i64, report.failed);
     }
 
     #[tokio::test]
