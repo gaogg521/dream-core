@@ -3001,6 +3001,14 @@ async fn bootstrap_default_enterprise(services: &AppServices) -> Result<(), Rout
             for (user_id, enterprise_id) in &missing {
                 if let Err(error) = enterprise.ensure_member(user_id, enterprise_id, None).await {
                     tracing::warn!(%error, user_id, enterprise_id, "bootstrap: company enrollment backfill failed");
+                    continue;
+                }
+                // Their earlier model-proxy usage was stored unattributed;
+                // without this it stays missing from every company report.
+                match billing.attribute_unowned_usage(user_id, enterprise_id).await {
+                    Ok(0) => {}
+                    Ok(rows) => tracing::info!(user_id, rows, "bootstrap: re-attributed unowned usage rows"),
+                    Err(error) => tracing::warn!(%error, user_id, "bootstrap: usage re-attribution failed"),
                 }
             }
             if !missing.is_empty() {

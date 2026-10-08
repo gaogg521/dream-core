@@ -556,6 +556,22 @@ impl BillingService {
     /// deliberate [`Self::set_tier`] downgrade is never overwritten on
     /// restart. (`set_tier` cannot be used here: it rejects the
     /// free→enterprise raise as [`BillingError::UpgradeRequiresLicense`].)
+    /// Stamp `enterprise_id` on a user's usage rows that were recorded while
+    /// they had no company membership row. Used by the startup backfill for
+    /// accounts created through 「添加成员」 before that route enrolled them:
+    /// their model-proxy turns were stored unattributed and so never reached
+    /// any company report. Only NULL rows are touched — usage already
+    /// attributed elsewhere is never moved. Returns the number of rows fixed.
+    pub async fn attribute_unowned_usage(&self, user_id: &str, enterprise_id: &str) -> Result<u64, BillingError> {
+        Ok(self
+            .db
+            .execute(
+                "UPDATE one_usage_events SET enterprise_id = ? WHERE user_id = ? AND enterprise_id IS NULL",
+                &db_params![enterprise_id, user_id],
+            )
+            .await?)
+    }
+
     pub async fn ensure_default_license(&self, enterprise_id: &str) -> Result<(), BillingError> {
         self.upsert(
             "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at) \
@@ -4963,6 +4979,32 @@ mod tests {
         assert_eq!(license.tier, Tier::Free);
         assert_eq!(license.seat_limit, None);
         assert_eq!(license.expires_at, None);
+    }
+
+    #[tokio::test]
+    async fn attribute_unowned_usage_only_fills_null_rows_of_that_user() {
+        let (svc, pool) = service().await;
+        sqlx::query(
+            "INSERT INTO one_usage_events (id, user_id, enterprise_id, model, input_tokens, output_tokens, total_tokens, estimated_cost_micros, created_at) VALUES              ('u1', 'alice', NULL, 'm', 1, 1, 2, 0, 0),              ('u2', 'alice', 'entOther', 'm', 1, 1, 2, 0, 0),              ('u3', 'bob', NULL, 'm', 1, 1, 2, 0, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(svc.attribute_unowned_usage("alice", "ent1").await.unwrap(), 1);
+        let rows: Vec<(String, Option<String>)> =
+            sqlx::query_as("SELECT id, enterprise_id FROM one_usage_events ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("u1".to_string(), Some("ent1".to_string())),
+                ("u2".to_string(), Some("entOther".to_string())),
+                ("u3".to_string(), None),
+            ]
+        );
     }
 
     #[tokio::test]
