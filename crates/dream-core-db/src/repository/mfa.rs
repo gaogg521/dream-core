@@ -135,6 +135,9 @@ pub trait MfaStore: Send + Sync {
 
 /// Audit row as returned by [`MfaStore::audit_list`].
 #[derive(Debug, Clone, serde::Serialize)]
+// camelCase: the admin console (the only consumer) reads `mfaExempt` /
+// `userId`; snake_case left every per-user MFA action sending `undefined`.
+#[serde(rename_all = "camelCase")]
 pub struct MfaAuditRow {
     pub ts: i64,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -41,6 +41,9 @@ pub struct MfaService {
 
 /// 管理端读到的单用户 MFA 状态。
 #[derive(Debug, serde::Serialize)]
+// camelCase: the admin console (the only consumer) reads `mfaExempt` /
+// `userId`; snake_case left every per-user MFA action sending `undefined`.
+#[serde(rename_all = "camelCase")]
 pub struct MfaUserStatus {
     pub id: String,
     pub username: Option<String>,
