@@ -7,6 +7,7 @@ use axum::http::HeaderMap;
 use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use dream_core_api_types::{ApiResponse, CronScheduleDto};
 use dream_core_auth::CurrentUser;
@@ -517,14 +518,23 @@ impl From<crate::employee_pack::EmployeePack> for EmployeePackPreviewDto {
     }
 }
 
-async fn read_multipart_file(mut multipart: axum::extract::Multipart) -> Result<Vec<u8>, EmployeeError> {
+async fn read_multipart_file(multipart: axum::extract::Multipart) -> Result<Vec<u8>, EmployeeError> {
+    Ok(read_multipart(multipart).await?.0)
+}
+
+/// The `file` part plus any small text parts (e.g. `providerId` / `model`).
+async fn read_multipart(
+    mut multipart: axum::extract::Multipart,
+) -> Result<(Vec<u8>, HashMap<String, String>), EmployeeError> {
     let mut file_data = None;
+    let mut fields = HashMap::new();
     while let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| EmployeeError::BadRequest(format!("multipart error: {e}")))?
     {
-        if field.name().unwrap_or("") == "file" {
+        let name = field.name().unwrap_or("").to_owned();
+        if name == "file" {
             file_data = Some(
                 field
                     .bytes()
@@ -532,9 +542,16 @@ async fn read_multipart_file(mut multipart: axum::extract::Multipart) -> Result<
                     .map_err(|e| EmployeeError::BadRequest(format!("failed to read file: {e}")))?
                     .to_vec(),
             );
+        } else if !name.is_empty() {
+            let value = field
+                .text()
+                .await
+                .map_err(|e| EmployeeError::BadRequest(format!("failed to read field '{name}': {e}")))?;
+            fields.insert(name, value);
         }
     }
-    file_data.ok_or_else(|| EmployeeError::BadRequest("missing 'file' field".into()))
+    let file = file_data.ok_or_else(|| EmployeeError::BadRequest("missing 'file' field".into()))?;
+    Ok((file, fields))
 }
 
 async fn preview_employee_pack(
@@ -555,8 +572,22 @@ async fn upload_employee_pack(
 ) -> Result<Json<ApiResponse<PersonalAgentDto>>, EmployeeError> {
     require_registry_admin(&state, &user.id).await?;
     let tenant = state.tenant_of(&user.id).await;
-    let bytes = read_multipart_file(multipart).await?;
+    let (bytes, fields) = read_multipart(multipart).await?;
     let pack = crate::employee_pack::parse_employee_zip(&bytes)?;
+    // Optional model binding chosen in the upload wizard. A DreamEngine
+    // employee cannot be created without one (it would fail every run with
+    // `Provider '' not found`), and a pack's config.json cannot name one.
+    let model = match (
+        fields.get("providerId").map(|v| v.trim()).filter(|v| !v.is_empty()),
+        fields.get("model").map(|v| v.trim()).filter(|v| !v.is_empty()),
+    ) {
+        (Some(provider_id), Some(model)) => Some(dream_core_common::ProviderWithModel {
+            provider_id: provider_id.to_owned(),
+            model: model.to_owned(),
+            use_model: Some(model.to_owned()),
+        }),
+        _ => None,
+    };
     let mut automation = serde_json::Map::new();
     if let Some(icon) = &pack.icon_data_url {
         automation.insert("avatarUrl".into(), serde_json::Value::String(icon.clone()));
@@ -591,7 +622,7 @@ async fn upload_employee_pack(
                 assistant_id: None,
                 agent_id_override: None,
                 model_id: None,
-                model: None,
+                model,
                 automation_config: Some(serde_json::Value::Object(automation)),
             },
         )

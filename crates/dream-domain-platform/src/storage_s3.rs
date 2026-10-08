@@ -24,6 +24,18 @@ where
     E: std::error::Error + 'static,
     R: std::fmt::Debug,
 {
+    // Transport failures carry no vendor code. Without this, the code
+    // extraction below picked a token out of the hyper error chain and the
+    // operator saw a bare "Connect".
+    match err {
+        aws_sdk_s3::error::SdkError::DispatchFailure(_) => {
+            return "cannot reach the storage endpoint (connection failed)".to_owned();
+        }
+        aws_sdk_s3::error::SdkError::TimeoutError(_) => {
+            return "the storage endpoint did not respond in time".to_owned();
+        }
+        _ => {}
+    }
     let full = format!("{}", aws_sdk_s3::error::DisplayErrorContext(err));
     if let Some(start) = full.find('(')
         && let Some(end) = full[start..].find(')')
@@ -124,5 +136,30 @@ impl StorageDriver for S3Driver {
             entries,
             next_token: out.next_continuation_token().map(str::to_owned),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An unreachable endpoint must read as a connection failure, not as a
+    /// token lifted out of the transport error chain ("Connect").
+    #[tokio::test]
+    async fn unreachable_endpoint_is_reported_as_a_connection_failure() {
+        let cfg = DriverConfig {
+            endpoint: "http://127.0.0.1:1".into(),
+            bucket: "b".into(),
+            region: "us-east-1".into(),
+            access_key_id: "ak".into(),
+            secret_access_key: "sk".into(),
+            force_path_style: true,
+        };
+        match S3Driver.probe(&cfg).await {
+            Err(PlatformError::BadRequest(msg)) => {
+                assert_eq!(msg, "cannot reach the storage endpoint (connection failed)")
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
     }
 }

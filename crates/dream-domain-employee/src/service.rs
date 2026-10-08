@@ -852,6 +852,43 @@ fn truncate_summary(reply: &str) -> String {
 /// Whether a stored `agent_type` label denotes the dream backend — the only
 /// one that takes a top-level conversation model. Compares against the enum's
 /// own serde name rather than a literal so a rename can't silently drift.
+/// Provider id under which a company model channel is materialized on member
+/// machines (`dream-core-system::managed_provider::provider_id_for`).
+pub const COMPANY_CHANNEL_PROVIDER_PREFIX: &str = "prov_chan_";
+
+/// The channel must exist, be enabled, and (when it lists models) offer
+/// the chosen one — the same allow-list the model proxy enforces, so a
+/// binding that saves here is one a member's run can actually use.
+async fn validate_company_channel_model(db: &DbPool, channel_id: &str, model: &str) -> Result<(), EmployeeError> {
+    let row: Option<(bool, Option<String>)> = db
+        .fetch_optional_as(
+            "SELECT enabled, models FROM one_provider_registry WHERE id = ?",
+            &db_params![channel_id],
+        )
+        .await
+        .map_err(|e| EmployeeError::Internal(format!("load model channel: {e}")))?;
+    let Some((enabled, models)) = row else {
+        return Err(EmployeeError::BadRequest(format!(
+            "company model channel '{channel_id}' no longer exists"
+        )));
+    };
+    if !enabled {
+        return Err(EmployeeError::BadRequest(format!(
+            "company model channel '{channel_id}' is disabled; pick an enabled channel"
+        )));
+    }
+    let offered: Vec<String> = models
+        .as_deref()
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .unwrap_or_default();
+    if !offered.is_empty() && !offered.iter().any(|m| m == model) {
+        return Err(EmployeeError::BadRequest(format!(
+            "model '{model}' is not offered by company model channel '{channel_id}'"
+        )));
+    }
+    Ok(())
+}
+
 fn is_dream_engine(agent_type: &str) -> bool {
     agent_type.trim() == AgentType::DreamEngine.serde_name()
 }
@@ -1035,6 +1072,14 @@ impl EmployeeService {
             return Err(EmployeeError::BadRequest(
                 "model requires both providerId and model".into(),
             ));
+        }
+
+        // A company model channel (`prov_chan_<channel id>`) is not a row in
+        // anyone's provider table on the governance server — members get it
+        // materialized locally under that id by team sync. Validate it against
+        // the channel registry instead.
+        if let Some(channel_id) = model.provider_id.strip_prefix(COMPANY_CHANNEL_PROVIDER_PREFIX) {
+            return validate_company_channel_model(&self.db, channel_id, &model.model).await;
         }
 
         let Some(provider_repo) = self.provider_repo.as_ref() else {
@@ -2307,6 +2352,46 @@ impl EmployeeService {
 
 #[cfg(test)]
 mod tests {
+
+    /// A company channel binding is checked against the channel registry,
+    /// not the provider table: unknown, disabled and off-list models are
+    /// refused, an offered model (or a channel listing none) passes.
+    #[tokio::test]
+    async fn company_channel_binding_is_validated_against_the_registry() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        let pool = DbPool::Sqlite(db.pool().clone());
+        sqlx::query("CREATE TABLE one_provider_registry (id TEXT PRIMARY KEY, enabled INTEGER NOT NULL, models TEXT)")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO one_provider_registry (id, enabled, models) VALUES              ('ochan_on', 1, '[\"gpt-4o\"]'), ('ochan_off', 0, '[\"gpt-4o\"]'), ('ochan_any', 1, '[]')",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        assert!(
+            validate_company_channel_model(&pool, "ochan_on", "gpt-4o")
+                .await
+                .is_ok()
+        );
+        assert!(
+            validate_company_channel_model(&pool, "ochan_any", "whatever")
+                .await
+                .is_ok()
+        );
+        for (channel, model, expect) in [
+            ("ochan_missing", "gpt-4o", "no longer exists"),
+            ("ochan_off", "gpt-4o", "is disabled"),
+            ("ochan_on", "gpt-3", "is not offered"),
+        ] {
+            match validate_company_channel_model(&pool, channel, model).await {
+                Err(EmployeeError::BadRequest(msg)) => assert!(msg.contains(expect), "{channel}: {msg}"),
+                other => panic!("{channel}: expected BadRequest, got {other:?}"),
+            }
+        }
+    }
     use super::*;
     use crate::migrate::run_one_employee_migrations;
 
