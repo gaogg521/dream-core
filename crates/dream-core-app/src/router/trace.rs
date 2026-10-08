@@ -31,9 +31,20 @@ async fn access_log(request: Request, next: Next) -> Response {
     let response = next.run(request).await;
     let status = response.status().as_u16();
     let latency_ms = started.elapsed().as_millis() as u64;
+    // Domain crates (org, devops, billing, …) render their own JSON error
+    // bodies and never attach `ApiErrorLogContext`, so their 4xx/5xx lines
+    // used to log `error_code=""`. Fall back to the body they already sent.
+    let (response, body_context) = if status >= 400 && response.extensions().get::<ApiErrorLogContext>().is_none() {
+        error_from_json_body(response).await
+    } else {
+        (response, None)
+    };
     let error_context = response.extensions().get::<ApiErrorLogContext>();
-    let error_code = error_context.map(|context| context.code).unwrap_or("");
-    let error_message = error_context.map(|context| context.message.as_str()).unwrap_or("");
+    let (error_code, error_message) = match (error_context, body_context.as_ref()) {
+        (Some(context), _) => (context.code, context.message.as_str()),
+        (None, Some((code, message))) => (code.as_str(), message.as_str()),
+        (None, None) => ("", ""),
+    };
 
     if status >= 500 {
         tracing::error!(
@@ -74,6 +85,48 @@ async fn access_log(request: Request, next: Next) -> Response {
     response
 }
 
+/// Error bodies larger than this are not inspected (and are passed through
+/// untouched); every `ErrorResponse` is far smaller.
+const MAX_ERROR_BODY: usize = 16 * 1024;
+const MAX_LOGGED_MESSAGE: usize = 300;
+
+/// Read `{"code": …, "error": …}` from a JSON error response, returning the
+/// response with an identical body. Non-JSON, streamed or oversized bodies are
+/// returned as they were, with no context.
+async fn error_from_json_body(response: Response) -> (Response, Option<(String, String)>) {
+    let is_json = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("application/json"));
+    // `Json(...)` bodies are fully buffered and report an exact size; a
+    // streamed body has no upper bound and must never be drained here.
+    let small = axum::body::HttpBody::size_hint(response.body())
+        .upper()
+        .is_some_and(|len| len as usize <= MAX_ERROR_BODY);
+    if !is_json || !small {
+        return (response, None);
+    }
+    let (parts, body) = response.into_parts();
+    let bytes = match axum::body::to_bytes(body, MAX_ERROR_BODY).await {
+        Ok(bytes) => bytes,
+        Err(_) => return (Response::from_parts(parts, axum::body::Body::empty()), None),
+    };
+    let context = serde_json::from_slice::<serde_json::Value>(&bytes).ok().map(|value| {
+        let field = |name: &str| value.get(name).and_then(|v| v.as_str()).unwrap_or("").to_owned();
+        let mut message = field("error");
+        if message.len() > MAX_LOGGED_MESSAGE {
+            let mut cut = MAX_LOGGED_MESSAGE;
+            while !message.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            message.truncate(cut);
+        }
+        (field("code"), message)
+    });
+    (Response::from_parts(parts, axum::body::Body::from(bytes)), context)
+}
+
 fn query_keys(query: Option<&str>) -> String {
     query
         .into_iter()
@@ -90,6 +143,41 @@ fn query_keys(query: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn domain_json_errors_are_read_for_the_log_and_passed_through_intact() {
+        let body = r#"{"success":false,"error":"Bad request: department has sub-departments","code":"BAD_REQUEST"}"#;
+        let response = Response::builder()
+            .status(400)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body))
+            .unwrap();
+        let (response, context) = error_from_json_body(response).await;
+        assert_eq!(
+            context,
+            Some((
+                "BAD_REQUEST".to_owned(),
+                "Bad request: department has sub-departments".to_owned()
+            ))
+        );
+        let sent = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(sent, body.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn non_json_error_bodies_are_left_alone() {
+        let response = Response::builder()
+            .status(502)
+            .header("content-type", "text/event-stream")
+            .body(axum::body::Body::from("data: x"))
+            .unwrap();
+        let (response, context) = error_from_json_body(response).await;
+        assert_eq!(context, None);
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+            "data: x"
+        );
+    }
 
     #[test]
     fn query_keys_omit_values() {

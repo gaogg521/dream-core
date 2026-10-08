@@ -1485,6 +1485,20 @@ impl OrgService {
         if name.is_empty() {
             return Err(OrgError::NameRequired);
         }
+        // Two groups with the same name under one company are indistinguishable
+        // in every picker (invites, grants, reports) that lists them by name.
+        let taken: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT id FROM one_tenants WHERE enterprise_id = ? AND name = ?",
+                &db_params![enterprise_id, name],
+            )
+            .await?;
+        if taken.is_some() {
+            return Err(OrgError::BadRequest(format!(
+                "a project group named '{name}' already exists"
+            )));
+        }
 
         let tenant_id = short_id("tenant");
         let now = now_ms() as i64;
@@ -3511,6 +3525,27 @@ mod tests {
     /// guarantees this).
     async fn create_user(user_repo: &Arc<dyn IUserRepository>, username: &str) -> String {
         user_repo.create_user(username, "x").await.unwrap().id
+    }
+
+    #[tokio::test]
+    async fn create_tenant_for_enterprise_rejects_a_duplicate_name_in_the_same_company() {
+        let (_db, service, _user_repo) = setup().await;
+        service
+            .create_tenant_for_enterprise("ent1", "研发", SYSTEM_DEFAULT_USER_ID, None)
+            .await
+            .unwrap();
+        match service
+            .create_tenant_for_enterprise("ent1", " 研发 ", SYSTEM_DEFAULT_USER_ID, None)
+            .await
+        {
+            Err(OrgError::BadRequest(msg)) => assert!(msg.contains("already exists"), "{msg}"),
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+        // Same name under another company is a different group.
+        service
+            .create_tenant_for_enterprise("ent2", "研发", SYSTEM_DEFAULT_USER_ID, None)
+            .await
+            .unwrap();
     }
 
     /// 「添加成员」 placed accounts into a company-owned group without making
