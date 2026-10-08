@@ -59,6 +59,26 @@ impl BackendProtocolSink {
             ],
         }
     }
+
+    fn build_question_confirmation(request_id: &str, questions: &serde_json::Value) -> Confirmation {
+        let first = questions.get(0);
+        let text = |key: &str| {
+            first
+                .and_then(|q| q.get(key))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        };
+        Confirmation {
+            id: generate_id(),
+            call_id: request_id.to_string(),
+            title: text("header"),
+            action: Some("AskUserQuestion".to_string()),
+            description: text("question").unwrap_or_default(),
+            command_type: None,
+            options: Vec::new(),
+            questions: Some(questions.clone()),
+        }
+    }
 }
 
 impl ProtocolEmitter for BackendProtocolSink {
@@ -82,6 +102,24 @@ impl ProtocolEmitter for BackendProtocolSink {
                     tool_name = %tool.name,
                     "BackendProtocolSink: emitted AcpPermission(Confirmation) event"
                 );
+            }
+
+            ProtocolEvent::AskUser { request_id, questions } => {
+                let questions = serde_json::to_value(questions).unwrap_or(serde_json::Value::Null);
+                // Also listed as a pending confirmation carrying `questions`, so
+                // the REST recovery path rebuilds the question card after a
+                // reload (same contract as claude's AskUserQuestion).
+                let confirmation = Self::build_question_confirmation(request_id, &questions);
+                if let Ok(mut confs) = self.confirmations.write() {
+                    confs.push(confirmation);
+                }
+
+                let _ = self.event_tx.send(AgentStreamEvent::Ask(json!({
+                    "request_id": request_id,
+                    "questions": questions,
+                })));
+
+                debug!(request_id, "BackendProtocolSink: emitted Ask event");
             }
 
             ProtocolEvent::ToolCancelled { call_id, reason, .. } => {
@@ -240,5 +278,49 @@ mod tests {
         assert_eq!(conf.options[0].value, json!("proceed_once"));
         assert_eq!(conf.options[1].value, json!("proceed_always"));
         assert_eq!(conf.options[2].value, json!("cancel"));
+    }
+
+    #[test]
+    fn ask_user_emits_ask_frame_and_recoverable_confirmation() {
+        let (sink, mut rx, confs) = make_sink();
+        let questions = vec![dream_engine_protocol::AskQuestion {
+            question: "Who is the audience?".into(),
+            header: Some("Audience".into()),
+            options: vec![
+                dream_engine_protocol::AskOption {
+                    label: "Singles".into(),
+                    description: None,
+                },
+                dream_engine_protocol::AskOption {
+                    label: "Couples".into(),
+                    description: None,
+                },
+            ],
+            multi_select: false,
+        }];
+
+        sink.emit(&ProtocolEvent::AskUser {
+            request_id: "r1".into(),
+            questions,
+        })
+        .unwrap();
+
+        match rx.try_recv().unwrap() {
+            AgentStreamEvent::Ask(payload) => {
+                assert_eq!(payload["request_id"], "r1");
+                assert_eq!(payload["questions"][0]["options"][1]["label"], "Couples");
+            }
+            other => panic!("expected Ask frame, got {other:?}"),
+        }
+
+        // Recovery after a reload keys the rebuilt card on call_id = request_id.
+        let confs = confs.read().unwrap();
+        assert_eq!(confs.len(), 1);
+        assert_eq!(confs[0].call_id, "r1");
+        assert_eq!(confs[0].title.as_deref(), Some("Audience"));
+        assert_eq!(
+            confs[0].questions.as_ref().unwrap()[0]["question"],
+            "Who is the audience?"
+        );
     }
 }

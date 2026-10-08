@@ -804,3 +804,63 @@ fn autocompact_gets_a_chance_before_the_emergency_block_at_every_window_size() {
         );
     }
 }
+
+#[tokio::test]
+async fn dream_engine_agent_offers_the_ask_user_tool() {
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
+        .await
+        .unwrap();
+    let names = agent.engine.lock().await.tool_names();
+    assert!(names.iter().any(|n| n == "AskUserQuestion"), "tools: {names:?}");
+}
+
+#[tokio::test]
+async fn dream_engine_answer_ask_delivers_answers_and_clears_recovery_card() {
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
+        .await
+        .unwrap();
+    let rx = agent.ask_manager.request("req-1");
+    agent.confirmations.write().unwrap().push(Confirmation {
+        id: "conf-1".into(),
+        call_id: "req-1".into(),
+        title: None,
+        action: Some("AskUserQuestion".into()),
+        description: "Who?".into(),
+        command_type: None,
+        options: Vec::new(),
+        questions: Some(serde_json::json!([])),
+    });
+
+    agent
+        .answer_ask(
+            "req-1",
+            Some(vec![dream_core_api_types::AskQuestionAnswer {
+                question: "Who?".into(),
+                labels: vec!["Singles".into()],
+            }]),
+        )
+        .expect("pending question accepts the answer");
+
+    match rx.await.unwrap() {
+        dream_engine_protocol::AskUserOutcome::Answered(answers) => {
+            assert_eq!(answers[0].labels, vec!["Singles".to_string()]);
+        }
+        other => panic!("expected answers, got {other:?}"),
+    }
+    assert!(agent.get_confirmations().is_empty());
+}
+
+#[tokio::test]
+async fn dream_engine_answer_ask_for_withdrawn_question_is_rejected() {
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
+        .await
+        .unwrap();
+    // The asking turn was stopped: nobody is waiting on this id any more.
+    drop(agent.ask_manager.request("req-gone"));
+
+    let err = agent.answer_ask("req-gone", None).unwrap_err();
+    assert!(
+        matches!(&err, AgentError::BadRequest(msg) if msg.contains("no longer waiting")),
+        "{err:?}"
+    );
+}

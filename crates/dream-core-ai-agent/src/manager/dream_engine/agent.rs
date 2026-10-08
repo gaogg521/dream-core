@@ -13,6 +13,7 @@ use dream_core_api_types::{
 use dream_core_common::{
     AgentKillReason, AgentType, Confirmation, ConversationStatus, ErrorChain, TimestampMs, generate_short_id, now_ms,
 };
+use dream_engine_agent::ask_user_tool::AskUserTool;
 use dream_engine_agent::bootstrap::AgentBootstrap;
 use dream_engine_agent::engine::{AgentEngine, AgentResult};
 use dream_engine_agent::output::OutputSink;
@@ -21,7 +22,9 @@ use dream_engine_config::compat::ProviderCompat;
 use dream_engine_config::config::{CliArgs, Config, McpServerConfig, ProviderType};
 use dream_engine_mcp::manager::McpManager;
 use dream_engine_protocol::commands::{ApprovalScope, SessionMode};
-use dream_engine_protocol::{ToolApprovalManager, ToolApprovalResult, ToolCallGuard};
+use dream_engine_protocol::{
+    AskAnswer, AskUserManager, AskUserOutcome, ToolApprovalManager, ToolApprovalResult, ToolCallGuard,
+};
 
 use crate::capability::memory_recall::{MemoryPrefix, TurnMemoryRecall, recall_prefix};
 use dream_engine_types::message::{StopReason, TokenUsage};
@@ -257,6 +260,9 @@ pub struct DreamEngineAgentManager {
     #[allow(dead_code)] // intentional: lifetime-extension only; see Drop impl
     mcp_managers: Vec<Arc<McpManager>>,
     approval_manager: Arc<ToolApprovalManager>,
+    /// Questions raised by the engine's `AskUserQuestion` tool, waiting for
+    /// the user's answer from the question dialog.
+    ask_manager: Arc<AskUserManager>,
     /// Company memory to prepend to each outgoing prompt, and whose it is.
     /// `None` outside an enterprise deployment.
     memory: Option<TurnMemory>,
@@ -481,7 +487,12 @@ impl DreamEngineAgentManager {
             engine.set_tool_call_guard(guard);
         }
         engine.set_approval_manager(approval_manager.clone());
-        engine.set_protocol_writer(Arc::new(protocol_sink));
+        let protocol_sink = Arc::new(protocol_sink);
+        engine.set_protocol_writer(protocol_sink.clone());
+        let ask_manager = Arc::new(AskUserManager::new());
+        engine
+            .registry_mut()
+            .register(Box::new(AskUserTool::new(ask_manager.clone(), protocol_sink)));
         let slash_commands = engine
             .slash_command_list()
             .into_iter()
@@ -502,6 +513,7 @@ impl DreamEngineAgentManager {
             slash_commands,
             mcp_managers: result.mcp_managers,
             approval_manager,
+            ask_manager,
             memory,
             confirmations,
             final_input_dump,
@@ -964,6 +976,47 @@ impl DreamEngineAgentManager {
             };
             self.approval_manager.approve(call_id, scope);
         }
+        Ok(())
+    }
+
+    /// Answer a question raised by the `AskUserQuestion` tool. `answers: None`
+    /// means the user dismissed the dialog.
+    pub fn answer_ask(
+        &self,
+        request_id: &str,
+        answers: Option<Vec<dream_core_api_types::AskQuestionAnswer>>,
+    ) -> Result<(), AgentError> {
+        if let Ok(mut confs) = self.confirmations.write() {
+            confs.retain(|c| c.call_id != request_id);
+        }
+        let declined = answers.is_none();
+        let outcome = match answers {
+            Some(list) => AskUserOutcome::Answered(
+                list.into_iter()
+                    .map(|a| AskAnswer {
+                        question: a.question,
+                        labels: a.labels,
+                    })
+                    .collect(),
+            ),
+            None => AskUserOutcome::Declined,
+        };
+        if !self.ask_manager.resolve(request_id, outcome) {
+            warn!(
+                conversation_id = %self.runtime.conversation_id(),
+                request_id,
+                "DreamEngine ask answer for a question that is no longer pending"
+            );
+            return Err(AgentError::BadRequest(
+                "This question is no longer waiting for an answer".into(),
+            ));
+        }
+        info!(
+            conversation_id = %self.runtime.conversation_id(),
+            request_id,
+            declined,
+            "DreamEngine ask answered"
+        );
         Ok(())
     }
 

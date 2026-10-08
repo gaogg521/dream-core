@@ -373,11 +373,12 @@ impl AgentInstance {
         answers: Option<Vec<dream_core_api_types::AskQuestionAnswer>>,
     ) -> Result<(), AgentError> {
         match self {
-            // Only the direct-CLI session path has a question channel today
-            // (claude AskUserQuestion); ACP/dream have none to answer on.
-            Self::Acp(_) | Self::DreamEngine(_) => Err(AgentError::BadRequest(
+            // claude AskUserQuestion (session path) and dream-engine's own
+            // AskUserQuestion tool have a question channel; ACP has none.
+            Self::Acp(_) => Err(AgentError::BadRequest(
                 "answer_ask is not supported by this agent".into(),
             )),
+            Self::DreamEngine(m) => m.answer_ask(request_id, answers),
             Self::Session(m) => m.answer_ask(request_id, answers),
             #[cfg(any(test, feature = "test-support"))]
             Self::Mock(m) => m.answer_ask(request_id, answers),
