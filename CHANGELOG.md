@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.1.80](https://github.com/gaogg521/dream-core/compare/v0.1.79...v0.1.80) (2026-10-08)
+
+
+### Features
+
+* **agent:** relay dream-engine AskUserQuestion to the question card ([5a72e93](https://github.com/gaogg521/dream-core/commit/5a72e936feb66e97ae224d6ae4388378d2e7bbe5))
+* **devops:** probe a model channel with its stored credential ([0ba885a](https://github.com/gaogg521/dream-core/commit/0ba885a12c2ab8abeae5652b7b3fc81754025b01))
+
+
+### Bug Fixes
+
+* **agent:** key dream-engine question confirmations by request id ([d06b251](https://github.com/gaogg521/dream-core/commit/d06b2511458cd01d4a4b40cc15e14315f0dbc899))
+* **billing:** re-attribute usage of members enrolled by the backfill ([b91235c](https://github.com/gaogg521/dream-core/commit/b91235cc98d32d15409247dd6ca1962bcb70b63f))
+* **devops:** order RAG rebuild by an existing column ([43dab03](https://github.com/gaogg521/dream-core/commit/43dab03c64f7ccf668a48d225b865a8760da17a9))
+* **employee,storage:** bind uploaded DreamEngine packs to a company channel; name S3 connection failures ([d06a43e](https://github.com/gaogg521/dream-core/commit/d06a43ee174df07647a695be167b6f59e3b0e170))
+* **mfa:** serialize admin MFA rows as camelCase ([5243720](https://github.com/gaogg521/dream-core/commit/5243720fbf0be357ab5ebbf75bb206cb4d44a692))
+* **org,app:** reject duplicate project-group names; log domain error codes ([b359b69](https://github.com/gaogg521/dream-core/commit/b359b69a3a0d2734393978ac47ab2e650ae93f2f))
+* **org:** enroll admin-created members in their company ([d9963d4](https://github.com/gaogg521/dream-core/commit/d9963d41cb852e19c67b3e681f266cdfbc316c67))
+
+
+### Documentation
+
+* **ci:** say why enterprise-image.yml never ran for release-please tags ([0de5a02](https://github.com/gaogg521/dream-core/commit/0de5a028a31d7290adf96e57e9e2aeeec6f2ab77))
+
 ## [0.1.79](https://github.com/gaogg521/dream-core/compare/v0.1.78...v0.1.79) (2026-10-07)
 
 
