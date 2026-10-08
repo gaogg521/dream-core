@@ -10,6 +10,14 @@ name: Enterprise Image
 # The `enterprise` feature is baked into the Dockerfile itself (see its
 # `cargo build --features enterprise` line), not passed as a build-arg here —
 # this workflow does not need to (and must not) duplicate that choice.
+#
+# Release tags made by release-please DO NOT run this. That workflow uses the
+# default GITHUB_TOKEN, and GitHub does not let events created by it start other
+# workflows: v0.1.72 through v0.1.79 produced no image. Only a tag pushed by a
+# person, or a manual dispatch, does. Before cutting an offline bundle, dispatch
+# it and wait for success:
+#   gh workflow run enterprise-image.yml --ref main
+# The full procedure and the checks that guard it: dream-en/deploy/OFFLINE-BUNDLE.md
 
 on:
   push:
