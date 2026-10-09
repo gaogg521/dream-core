@@ -13,6 +13,16 @@
 > 跨仓完整叙述（含前端 bug 与 CodeMirror 排查）见 dream-ui 同名文档。本 CLAUDE.md 只保留
 > 长期有效的规则，过程性细节请去读那份文档。
 
+> **2026-10-09（外部安全测试 21 项）**：`52c6502` `60bd2a7` `af52674`。逐项状态（含报告判断错的根因）在
+> dream-en `docs/security-fix-status-2026-10-09.zh-CN.md`。长期有效的结论：①两个平面的 CORS **不再允许
+> credentials**（桌面端远程调用走 Bearer、不带 Cookie，凭证 CORS + 回显 Origin 等于任何网页都能读管理员响应）；
+> ②`one_sso_providers.config` 的密钥字段用 `encv1:` 信封加密，`SsoService::with_secret_key` 必须接上，
+> 存量明文启动时幂等迁移；③OAuth `state` 绑定 `dream-sso-state-<渠道>` Cookie，回调主机与请求主机不同会先跳到
+> 回调主机；④MFA：开强制前校验操作者已绑定（409 `MFA_SELF_NOT_ENROLLED`）、绑定挑战 30 分钟且重签沿用待确认密钥、
+> 系统管理员在有企业时也能过 `RequireSsoAdmin`、应急 `dreamcore --data-dir <d> resetmfa`（`--data-dir` 是全局参数，
+> 写在子命令前）；⑤MFA 审计 INSERT 曾经重复粘贴、错误被 `let _ =` 吞掉，审计表永远 0 行——**审计/日志类写入失败
+> 至少要 warn**；⑥初始管理员密码只进 `INITIAL_ADMIN_PASSWORD.txt`，不进日志。
+
 > **2026-09-29（语音转字：阿里云托管默认 + 删除 Deepgram）**：新增 `SpeechToTextProvider::Hosted`
 > 走 broker（`dream-trial-broker` mode D，仿照 mode C 联网搜索——真实 vendor key 不进客户端），
 > **彻底删除** `Deepgram`/`DeepgramSpeechToTextConfig`/`stt_deepgram.rs`/`stt_stream_deepgram.rs`
