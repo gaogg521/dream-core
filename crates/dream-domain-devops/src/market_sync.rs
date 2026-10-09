@@ -45,8 +45,10 @@
 
 use async_trait::async_trait;
 use dream_core_db::{DbPool, db_params};
+use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 
 use crate::error::DevopsError;
 use crate::service::{DevopsService, new_id};
@@ -57,6 +59,82 @@ use dream_core_common::now_ms;
 /// streaming gigabytes into memory. The request body limit for uploads
 /// (`BODY_LIMIT`, 10 MiB) is the analogous ceiling on the manual path.
 const FETCH_CAP_BYTES: usize = 2 * 1024 * 1024;
+const FETCH_CONCURRENCY: usize = 8;
+
+/// Prefetch only a bounded batch. Registry/category writes still run in
+/// manifest order, so faster network I/O cannot introduce name races.
+struct BatchFetcher<'a> {
+    upstream: &'a dyn MarketFetcher,
+    payloads: HashMap<String, Result<Vec<u8>, String>>,
+}
+
+#[async_trait]
+impl MarketFetcher for BatchFetcher<'_> {
+    async fn fetch(&self, url: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
+        match self.payloads.get(url) {
+            Some(Ok(bytes)) if bytes.len() > max_bytes => {
+                Err(format!("payload too large ({} bytes, cap {max_bytes})", bytes.len()))
+            }
+            Some(result) => result.clone(),
+            None => self.upstream.fetch(url, max_bytes).await,
+        }
+    }
+}
+
+async fn fetch_batch(fetcher: &dyn MarketFetcher, urls: Vec<String>) -> HashMap<String, Result<Vec<u8>, String>> {
+    stream::iter(urls.into_iter().map(|url| async move {
+        let result = fetcher.fetch(&url, FETCH_CAP_BYTES).await;
+        (url, result)
+    }))
+    .buffer_unordered(FETCH_CONCURRENCY)
+    .collect()
+    .await
+}
+
+#[cfg(test)]
+mod parallel_fetch_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct DelayedFetcher {
+        active: AtomicUsize,
+        peak: AtomicUsize,
+    }
+    #[async_trait]
+    impl MarketFetcher for DelayedFetcher {
+        async fn fetch(&self, url: &str, _: usize) -> Result<Vec<u8>, String> {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(active, Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            if url == "bad" {
+                Err("HTTP 500".into())
+            } else {
+                Ok(url.as_bytes().to_vec())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn fetches_overlap_with_a_bounded_peak_and_isolate_failures() {
+        let fetcher = DelayedFetcher {
+            active: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+        };
+        let mut urls: Vec<_> = (0..16).map(|n| n.to_string()).collect();
+        urls.push("bad".into());
+        let results = fetch_batch(&fetcher, urls).await;
+        assert_eq!(results.len(), 17);
+        assert_eq!(fetcher.peak.load(Ordering::SeqCst), FETCH_CONCURRENCY);
+        assert_eq!(results["3"].as_ref().unwrap(), b"3");
+        assert_eq!(results["bad"].as_ref().unwrap_err(), "HTTP 500");
+        let cache = BatchFetcher {
+            upstream: &fetcher,
+            payloads: results,
+        };
+        assert!(cache.fetch("10", 1).await.is_err());
+    }
+}
 
 /// The kinds a manifest may carry. Digital-employee templates are a
 /// deliberate v1 exclusion: employees are owner-centric assets, and what a
@@ -423,27 +501,56 @@ impl DevopsService {
         };
         report.total_indexed = manifest.items.len();
 
-        for item in &manifest.items {
-            let label = format!("{}:{}", item.kind, item.name);
-            if !MARKET_KINDS.contains(&item.kind.as_str()) {
-                report.errors.push(MarketSyncItemError {
-                    item: label,
-                    error: format!("unknown kind '{}'", item.kind),
-                });
-                continue;
+        let started = std::time::Instant::now();
+        for batch in manifest.items.chunks(FETCH_CONCURRENCY) {
+            let mut urls = Vec::new();
+            for item in batch {
+                if item.kind != "skill" || item.name.trim().is_empty() {
+                    continue;
+                }
+                // Preserve the no-network fast path for matching integrity pins.
+                if let Some(pin) = &item.sha256 {
+                    let existing: Option<(String,)> = self.db.fetch_optional_as(
+                        "SELECT content_hash FROM one_market_imports WHERE source_id = ? AND kind = ? AND item_name = ?",
+                        &db_params![&source_id, &item.kind, &item.name],
+                    ).await?;
+                    if existing.is_some_and(|(hash,)| pin.eq_ignore_ascii_case(&hash)) {
+                        continue;
+                    }
+                }
+                if let Some(path) = &item.path
+                    && let Ok(url) = resolve_item_url(&source_url, path)
+                    && !urls.contains(&url)
+                {
+                    urls.push(url);
+                }
             }
-            if item.name.trim().is_empty() {
-                report.errors.push(MarketSyncItemError {
-                    item: label,
-                    error: "item name is empty".into(),
-                });
-                continue;
-            }
-            if let Err(e) = self
-                .sync_market_item(tenant_id, &source_id, &source_url, item, fetcher, &mut report)
-                .await
-            {
-                report.errors.push(MarketSyncItemError { item: label, error: e });
+            let batch_fetcher = BatchFetcher {
+                upstream: fetcher,
+                payloads: fetch_batch(fetcher, urls).await,
+            };
+            for item in batch {
+                let label = format!("{}:{}", item.kind, item.name);
+                if !MARKET_KINDS.contains(&item.kind.as_str()) {
+                    report.errors.push(MarketSyncItemError {
+                        item: label,
+                        error: format!("unknown kind '{}'", item.kind),
+                    });
+                    continue;
+                }
+                if item.name.trim().is_empty() {
+                    report.errors.push(MarketSyncItemError {
+                        item: label,
+                        error: "item name is empty".into(),
+                    });
+                    continue;
+                }
+                if let Err(e) = self
+                    .sync_market_item(tenant_id, &source_id, &source_url, item, &batch_fetcher, &mut report)
+                    .await
+                {
+                    report.errors.push(MarketSyncItemError { item: label, error: e });
+                }
             }
         }
 
@@ -464,6 +571,7 @@ impl DevopsService {
         }
 
         self.record_market_sync_result(&source_id, "ok", None).await;
+        tracing::info!(source_id = %source_id, total = report.total_indexed, imported = report.imported, updated = report.updated, skipped = report.skipped, errors = report.errors.len(), elapsed_ms = started.elapsed().as_millis(), "content market synchronization finished");
         Ok(report)
     }
 

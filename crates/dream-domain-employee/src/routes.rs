@@ -44,7 +44,10 @@ pub fn one_employee_routes(state: OneEmployeeRouterState) -> Router {
         // delivery-gaps T4 step 2). Same admin gate devops uses for its own
         // registry writes (`require_registry_admin`) — direct SQL against
         // one-org's table, not a shared trait (see `EmployeeService::user_org_role`).
-        .route("/api/one/employee/admin/agents", get(list_agents_for_admin))
+        .route(
+            "/api/one/employee/admin/agents",
+            get(list_agents_for_admin).post(create_agent_for_admin),
+        )
         .route(
             "/api/one/employee/admin/agents/pack-preview",
             post(preview_employee_pack),
@@ -190,6 +193,44 @@ async fn create_agent(
         )
         .await?;
     Ok(Json(ApiResponse::ok(agent)))
+}
+
+/// Online enterprise authoring uses the same validated model binding as pack
+/// imports. Always create a shared draft; publishing and grants remain explicit.
+async fn create_agent_for_admin(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<CreateAgentBody>,
+) -> Result<Json<ApiResponse<PersonalAgentDto>>, EmployeeError> {
+    require_registry_admin(&state, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    let created = state
+        .service
+        .create(
+            &user.id,
+            &tenant,
+            CreateEmployeeInput {
+                name: body.name,
+                description: body.description,
+                agent_type: body.agent_type,
+                custom_agent_id: body.custom_agent_id,
+                cli_path: body.cli_path,
+                assistant_id: body.assistant_id,
+                agent_id_override: body.agent_id_override,
+                model_id: body.model_id,
+                model: body.model,
+                automation_config: body.automation_config,
+            },
+        )
+        .await?;
+    state
+        .service
+        .set_published_batch(&tenant, &[created.id.clone()], false)
+        .await?;
+    let mut shared = state.service.set_visibility(&user.id, &created.id, "shared").await?;
+    shared.published = false;
+    tracing::info!(employee_id = %shared.id, tenant_id = %tenant, "enterprise employee authored as shared draft");
+    Ok(Json(ApiResponse::ok(shared)))
 }
 
 #[derive(Deserialize)]
