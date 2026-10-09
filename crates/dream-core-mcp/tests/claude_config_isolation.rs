@@ -55,8 +55,8 @@ async fn install_and_remove_never_touch_the_operators_real_claude_config() {
     // install that still wrote to the real config is the worst outcome and
     // must not be masked by an early `unwrap`.
     let after = snapshot(&real);
-    assert_eq!(
-        before, after,
+    assert!(
+        before == after,
         "install_server modified the operator's real ~/.claude.json — config isolation is broken"
     );
 
@@ -78,8 +78,8 @@ async fn install_and_remove_never_touch_the_operators_real_claude_config() {
     // Removal must be equally contained.
     adapter.remove_server(PROBE_SERVER).await.expect("remove");
     let after_remove = snapshot(&real);
-    assert_eq!(
-        before, after_remove,
+    assert!(
+        before == after_remove,
         "remove_server modified the operator's real ~/.claude.json — config isolation is broken"
     );
 }
@@ -104,7 +104,7 @@ async fn detect_existing_reads_the_operators_real_config_without_writing_to_it()
         .expect("detect_existing");
 
     let after = snapshot(&real);
-    assert_eq!(before, after, "detect_existing must be strictly read-only");
+    assert!(before == after, "detect_existing must be strictly read-only");
 
     // Not asserting specific server names — the operator's config is theirs
     // to change. Only that the call reached their real config rather than the

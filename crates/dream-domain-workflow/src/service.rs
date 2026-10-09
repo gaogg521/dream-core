@@ -329,6 +329,51 @@ impl WorkflowService {
         Ok(task)
     }
 
+    /// Settle every pending review for this node, without rewriting terminal history.
+    pub async fn decide_node_access_reviews(
+        &self,
+        tenant_id: &str,
+        node_id: &str,
+        decision: &str,
+        actor_id: &str,
+    ) -> Result<(), WorkflowError> {
+        if !matches!(decision, "approved" | "rejected") {
+            return Err(WorkflowError::BadRequest("invalid node review decision".into()));
+        }
+        let rows: Vec<(String, String)> = self.db.fetch_all_as(
+            "SELECT id, payload FROM one_workflow_tasks WHERE tenant_id = ? AND kind = 'node_access' AND status = 'pending'",
+            &db_params![tenant_id],
+        ).await?;
+        for (id, payload) in rows {
+            let payload: serde_json::Value = serde_json::from_str(&payload)
+                .map_err(|e| WorkflowError::Internal(format!("invalid node review payload: {e}")))?;
+            if payload.get("nodeId").and_then(|v| v.as_str()) != Some(node_id) {
+                continue;
+            }
+            if let Err(error) = self
+                .decide(
+                    tenant_id,
+                    &id,
+                    decision,
+                    actor_id,
+                    Some("Decided from runtime node registry"),
+                )
+                .await
+            {
+                // Another administrator may have settled it after the initial query.
+                if self
+                    .get_task(tenant_id, &id)
+                    .await?
+                    .is_some_and(|t| t.status != "pending")
+                {
+                    continue;
+                }
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     /// Block until the task is decided or `timeout_ms` passes. Polls the
     /// ledger (see the module docs for why polling, not listening: the
     /// decision may come from a different binary over the shared DB).
@@ -455,6 +500,52 @@ mod tests {
                 "kind {kind} should be accepted"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn node_registry_decisions_close_only_matching_pending_reviews() {
+        let (_db, service) = setup().await;
+        let mut ids = Vec::new();
+        for (tenant, node) in [("t1", "n1"), ("t1", "n2"), ("t2", "n1")] {
+            ids.push(
+                service
+                    .create_task(
+                        tenant,
+                        "node_access",
+                        "u1",
+                        "node review",
+                        "",
+                        &serde_json::json!({"nodeId": node}),
+                        None,
+                    )
+                    .await
+                    .unwrap()
+                    .id,
+            );
+        }
+        service
+            .decide_node_access_reviews("t1", "n1", "approved", "admin1")
+            .await
+            .unwrap();
+        let decided = service.get_task("t1", &ids[0]).await.unwrap().unwrap();
+        assert_eq!(decided.status, "approved");
+        assert_eq!(decided.decided_by.as_deref(), Some("admin1"));
+        assert_eq!(
+            service.get_task("t1", &ids[1]).await.unwrap().unwrap().status,
+            "pending"
+        );
+        assert_eq!(
+            service.get_task("t2", &ids[2]).await.unwrap().unwrap().status,
+            "pending"
+        );
+        service
+            .decide_node_access_reviews("t1", "n1", "rejected", "admin2")
+            .await
+            .unwrap();
+        assert_eq!(
+            service.get_task("t1", &ids[0]).await.unwrap().unwrap().status,
+            "approved"
+        );
     }
 
     #[tokio::test]

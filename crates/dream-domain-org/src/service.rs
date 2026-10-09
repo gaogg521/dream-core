@@ -3421,6 +3421,28 @@ impl OrgService {
         Ok(())
     }
 
+    /// Administrator decisions must also close the corresponding workflow inbox item.
+    pub async fn decide_runtime_node_status(
+        &self,
+        tenant_id: &str,
+        node_id: &str,
+        status: &str,
+        actor_id: &str,
+    ) -> Result<(), OrgError> {
+        self.set_runtime_node_status(tenant_id, node_id, status).await?;
+        let sink = self.node_review_sink.read().ok().and_then(|g| g.clone());
+        if let Some(sink) = sink {
+            sink.on_node_status_decided(tenant_id, node_id, status, actor_id)
+                .await
+                .map_err(|error| {
+                    OrgError::Internal(format!(
+                        "node updated but access review synchronization failed; retry: {error}"
+                    ))
+                })?;
+        }
+        Ok(())
+    }
+
     /// 转私有/转公有 (P1-7). The machine's owner decides for their own node;
     /// an admin decides for any node in the tenant.
     pub async fn set_runtime_node_visibility(

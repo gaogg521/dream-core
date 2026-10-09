@@ -787,7 +787,7 @@ impl DevopsService {
         let url = join_probe_url(base, path)?;
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(8))
-            .redirect(reqwest::redirect::Policy::limited(3))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| DevopsError::Internal(format!("http client: {e}")))?;
         let request = match method.to_ascii_uppercase().as_str() {
@@ -801,6 +801,7 @@ impl DevopsService {
                 return Err(DevopsError::BadRequest(format!("unsupported probe method {other}")));
             }
         };
+        let request = apply_asset_auth(request, &row.auth_type, row.auth_config.as_deref())?;
         let started = std::time::Instant::now();
         let response = request
             .send()
@@ -872,6 +873,36 @@ impl DevopsService {
                 .await?;
         }
         Ok(dto)
+    }
+}
+
+fn apply_asset_auth(
+    request: reqwest::RequestBuilder,
+    auth_type: &str,
+    raw: Option<&str>,
+) -> Result<reqwest::RequestBuilder, DevopsError> {
+    if auth_type == "none" {
+        return Ok(request);
+    }
+    let config: Value = serde_json::from_str(raw.unwrap_or("{}"))
+        .map_err(|_| DevopsError::BadRequest("Invalid asset authentication configuration".into()))?;
+    let required = |key: &str| -> Result<&str, DevopsError> {
+        config
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| DevopsError::BadRequest(format!("Asset authentication requires {key}")))
+    };
+    match auth_type {
+        "bearer" => Ok(request.bearer_auth(required("token")?)),
+        "basic" => Ok(request.basic_auth(required("username")?, Some(required("password")?))),
+        "api_key" => {
+            let header = config.get("header").and_then(Value::as_str).unwrap_or("X-API-Key");
+            let name = reqwest::header::HeaderName::from_bytes(header.as_bytes())
+                .map_err(|_| DevopsError::BadRequest("Invalid API key header name".into()))?;
+            Ok(request.header(name, required("token")?))
+        }
+        _ => Err(DevopsError::BadRequest("Unsupported asset authentication".into())),
     }
 }
 
@@ -998,6 +1029,40 @@ fn build_api_asset_skill_md(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn probe_applies_stored_authentication_and_refuses_missing_credentials() {
+        let client = reqwest::Client::new();
+        for (kind, config, name, expected) in [
+            ("bearer", r#"{"token":"test-key"}"#, "authorization", "Bearer test-key"),
+            (
+                "basic",
+                r#"{"username":"qa","password":"secret"}"#,
+                "authorization",
+                "Basic cWE6c2VjcmV0",
+            ),
+            (
+                "api_key",
+                r#"{"token":"test-key","header":"X-Corp-Key"}"#,
+                "x-corp-key",
+                "test-key",
+            ),
+        ] {
+            let request = apply_asset_auth(client.get("https://api.example.test/models"), kind, Some(config))
+                .unwrap()
+                .build()
+                .unwrap();
+            assert_eq!(request.headers().get(name).unwrap(), expected);
+        }
+        assert!(apply_asset_auth(client.get("https://api.example.test"), "bearer", None).is_err());
+        assert!(
+            apply_asset_auth(
+                client.get("https://api.example.test"),
+                "api_key",
+                Some(r#"{"token":"x","header":"bad\nheader"}"#)
+            )
+            .is_err()
+        );
+    }
     use crate::migrate::run_one_devops_migrations;
     use serde_json::json;
 

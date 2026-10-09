@@ -2026,6 +2026,24 @@ impl DevopsService {
         Ok(())
     }
 
+    /// Original text for the admin editor, with the same project boundary as writes.
+    pub async fn get_document_content(&self, actor_user_id: &str, id: &str) -> Result<String, DevopsError> {
+        let (team_id, content): (Option<String>, Option<String>) = self
+            .db
+            .fetch_optional_as(
+                "SELECT team_id, content FROM one_rag_documents WHERE id = ?",
+                &db_params![id],
+            )
+            .await?
+            .ok_or_else(|| DevopsError::NotFound(format!("rag document {id}")))?;
+        if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
+            return Err(DevopsError::Forbidden(
+                "this document belongs to a different project group".into(),
+            ));
+        }
+        Ok(content.unwrap_or_default())
+    }
+
     /// Process a document: chunk its content, embed each chunk, replace its
     /// chunk rows, and update status/chunk_count. Records the dimension on
     /// first success. Returns the chunk count.
@@ -4094,6 +4112,17 @@ mod tests {
             .await
             .unwrap();
 
+        svc.set_document_content("admin1", &doc.id, "Original document\n第二行")
+            .await
+            .unwrap();
+        assert_eq!(
+            svc.get_document_content("admin1", &doc.id).await.unwrap(),
+            "Original document\n第二行"
+        );
+        assert!(matches!(
+            svc.get_document_content("admin2", &doc.id).await.unwrap_err(),
+            DevopsError::Forbidden(_)
+        ));
         // admin2 (Group B admin) cannot delete Group A's resources.
         assert!(matches!(
             svc.delete_skill("admin2", &skill.id).await.unwrap_err(),
@@ -4561,6 +4590,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(doc.status, "pending");
+        assert_eq!(svc.get_document_content("u1", &doc.id).await.unwrap(), "");
+        svc.set_document_content("u1", &doc.id, "Original text\nwith Markdown")
+            .await
+            .unwrap();
+        assert_eq!(
+            svc.get_document_content("u1", &doc.id).await.unwrap(),
+            "Original text\nwith Markdown"
+        );
         assert_eq!(svc.list_rag_documents("u1").await.unwrap().len(), 1);
         svc.delete_rag_document("u1", &doc.id).await.unwrap();
         assert!(svc.list_rag_documents("u1").await.unwrap().is_empty());

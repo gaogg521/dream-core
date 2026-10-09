@@ -17,6 +17,7 @@ mod connection_test;
 mod conversation;
 mod cron;
 mod custom_agent;
+mod enterprise_update;
 mod extension;
 mod file;
 mod lifecycle;
@@ -109,6 +110,7 @@ pub use custom_agent::{
     AgentOverridesResponse, CustomAgentAdvancedOverrides, CustomAgentUpsertRequest, DeleteCustomAgentResponse,
     SetAgentOverridesRequest, SetEnabledRequest,
 };
+pub use enterprise_update::EnterpriseUpdateStatus;
 pub use extension::{
     DisableExtensionRequest, EnableExtensionRequest, ExtensionSummaryResponse, GetI18nRequest, GetPermissionsRequest,
     GetRiskLevelRequest, HubExtensionListItem, HubExtensionListResponse, HubOperationResponse, HubUpdateInfo,

@@ -16,7 +16,8 @@
 //!   places nobody audits. Shipping IdP client secrets, LDAP bind passwords, MCP
 //!   credentials or the exit-password hash inside it would turn every copy into
 //!   a credential leak. They are stripped on export and must be re-entered
-//!   after a restore — see [`REDACTED`] and [`is_secret_column`].
+//!   on a new deployment. Existing credentials are retained on an in-place
+//!   restore — see [`REDACTED`] and [`is_secret_column`].
 //!
 //! # Why the schema is read at runtime
 //!
@@ -73,7 +74,34 @@ const BACKUP_TABLES: &[&str] = &[
     // one-devops shared registries
     "one_skill_registry",
     "one_mcp_registry",
+    "one_provider_registry",
+    "one_rag_libraries",
     "one_rag_documents",
+    "one_rag_config",
+    "one_content_categories",
+    "one_content_tags",
+    "one_personal_agents",
+    "one_employee_grants",
+    "one_content_tag_links",
+    "one_market_sources",
+    "one_market_imports",
+    "one_scenes",
+    "one_scene_members",
+    "one_resource_grants",
+    "one_resource_grant_modes",
+    "one_console_settings",
+    "one_security_policy",
+    "one_runtime_policy",
+    "one_scan_policy",
+    "one_dlp_rules",
+    "one_api_assets",
+    "one_config_sets",
+    "one_config_entries",
+    "one_im_pipelines",
+    "one_smtp_config",
+    "one_memory_config",
+    "one_memory_collections",
+    "one_memory_grants",
 ];
 
 /// One table's rows, as JSON objects keyed by column name.
@@ -129,36 +157,46 @@ fn is_secret_column(table: &str, column: &str) -> bool {
 
 /// Columns whose value is JSON that may itself contain secrets.
 fn is_json_config_column(table: &str, column: &str) -> bool {
-    matches!((table, column), ("one_sso_providers", "config"))
+    matches!(
+        (table, column),
+        ("one_sso_providers", "config")
+            | ("one_api_assets", "auth_config")
+            | ("one_personal_agents", "model")
+            | ("one_personal_agents", "automation_config")
+    ) || column.ends_with("_json")
 }
 
 /// Strip credential-shaped keys from a JSON config, keeping everything else so
 /// a restore still recovers endpoints, app ids and redirect URIs.
 fn redact_json_secrets(raw: &str) -> serde_json::Value {
-    let Ok(serde_json::Value::Object(mut obj)) = serde_json::from_str::<serde_json::Value>(raw) else {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw) else {
         // Unparseable config: drop it rather than risk exporting a secret we
         // could not inspect.
         return serde_json::Value::String(REDACTED.to_string());
     };
-    let keys: Vec<String> = obj.keys().cloned().collect();
-    for key in keys {
-        let lower = key.to_ascii_lowercase();
-        if [
-            "secret",
-            "password",
-            "token",
-            "credential",
-            "apikey",
-            "api_key",
-            "privatekey",
-        ]
-        .iter()
-        .any(|needle| lower.contains(needle))
-        {
-            obj.insert(key, serde_json::Value::String(REDACTED.to_string()));
+    fn redact(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(obj) => {
+                for (key, child) in obj {
+                    if is_secret_column("", key) || key.to_ascii_lowercase().contains("privatekey") {
+                        if !child.is_null() {
+                            *child = serde_json::Value::String(REDACTED.into());
+                        }
+                    } else {
+                        redact(child);
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for child in items {
+                    redact(child);
+                }
+            }
+            _ => {}
         }
     }
-    serde_json::Value::Object(obj)
+    redact(&mut value);
+    value
 }
 
 /// Column names of `table`, or `None` when the table does not exist.
@@ -269,6 +307,13 @@ async fn export_table(pool: &DbPool, table: &str) -> Result<Option<TableRows>, O
                 obj.insert(column.clone(), serde_json::Value::String(redacted.to_string()));
             }
         }
+        if table == "one_config_entries"
+            && obj
+                .get("sensitive")
+                .is_some_and(|v| v.as_i64() == Some(1) || v.as_bool() == Some(true))
+        {
+            obj.insert("value".into(), serde_json::Value::String(REDACTED.into()));
+        }
         out.push(obj);
     }
     Ok(Some(out))
@@ -304,16 +349,15 @@ pub struct ImportReport {
 
 /// Restore a bundle.
 ///
-/// Idempotent by construction: every row is written with `INSERT OR REPLACE`
-/// keyed on the table's own primary key, so importing the same bundle twice
+/// Idempotent by construction: every row is inserted or updated in place,
+/// so importing the same bundle twice
 /// converges instead of duplicating or failing. Runs in one transaction — a
 /// partially-restored org (members without their project group, say) would be
 /// worse than no restore at all.
 ///
-/// Redacted values are written through as-is rather than being skipped: leaving
-/// the literal `__REDACTED__` marker in place makes it visible that a credential
-/// needs re-entering, whereas silently keeping a stale secret would look like it
-/// had been restored.
+/// Redacted credentials never overwrite working credentials. JSON settings
+/// containing redactions are retained as a whole for existing rows. New rows
+/// need their credentials configured after import.
 pub async fn import_bundle(pool: &DbPool, bundle: &BackupBundle) -> Result<ImportReport, OrgError> {
     if bundle.version != BACKUP_VERSION {
         return Err(OrgError::BadRequest(format!(
@@ -328,6 +372,22 @@ pub async fn import_bundle(pool: &DbPool, bundle: &BackupBundle) -> Result<Impor
         tables_skipped: Vec::new(),
     };
 
+    // Resolve schemas before taking a transaction connection. A single-connection
+    // pool otherwise deadlocks while PRAGMA/information_schema waits for that connection.
+    let mut schemas = std::collections::BTreeMap::new();
+    for table in BACKUP_TABLES {
+        if bundle.tables.contains_key(*table) {
+            schemas.insert(*table, table_columns(pool, table).await?);
+        }
+    }
+    report.tables_skipped.extend(
+        bundle
+            .tables
+            .keys()
+            .filter(|name| !BACKUP_TABLES.contains(&name.as_str()))
+            .cloned(),
+    );
+    let has_chunks = table_columns(pool, "one_rag_chunks").await?.is_some();
     let mut tx = pool.begin().await?;
     for table in BACKUP_TABLES {
         let Some(rows) = bundle.tables.get(*table) else {
@@ -335,7 +395,7 @@ pub async fn import_bundle(pool: &DbPool, bundle: &BackupBundle) -> Result<Impor
         };
         // Validate against the live schema, not the bundle's own key set: a
         // bundle from a newer build may carry columns this one has no place for.
-        let Some(live_columns) = table_columns(pool, table).await? else {
+        let Some(live_columns) = schemas.get(table).and_then(Option::as_ref) else {
             report.tables_skipped.push((*table).to_string());
             continue;
         };
@@ -349,6 +409,15 @@ pub async fn import_bundle(pool: &DbPool, bundle: &BackupBundle) -> Result<Impor
                 continue;
             }
             let placeholders = vec!["?"; columns.len()].join(", ");
+            // Redacted values cannot replace a working credential on the same
+            // deployment. New rows get an empty credential instead of a fake key.
+            let updates: Vec<_> = columns
+                .iter()
+                .filter(|c| {
+                    !row.get(c.as_str())
+                        .is_some_and(|v| v.as_str().is_some_and(|s| s.contains(REDACTED)))
+                })
+                .collect();
             // SQLite: INSERT OR REPLACE; MySQL: REPLACE INTO (same delete+insert
             // semantics on the PK/unique key). Values ride as DbValues.
             //
@@ -359,7 +428,19 @@ pub async fn import_bundle(pool: &DbPool, bundle: &BackupBundle) -> Result<Impor
             let statement = match tx.backend() {
                 DbBackend::MySql => {
                     let column_list = columns.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ");
-                    format!("REPLACE INTO {table} ({column_list}) VALUES ({placeholders})")
+                    let updates = updates
+                        .iter()
+                        .map(|c| format!("`{c}` = VALUES(`{c}`)"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let updates = if updates.is_empty() {
+                        format!("`{}` = `{}`", columns[0], columns[0])
+                    } else {
+                        updates
+                    };
+                    format!(
+                        "INSERT INTO {table} ({column_list}) VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {updates}"
+                    )
                 }
                 _ => {
                     let column_list = columns
@@ -367,7 +448,17 @@ pub async fn import_bundle(pool: &DbPool, bundle: &BackupBundle) -> Result<Impor
                         .map(|c| format!("\"{c}\""))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    format!("INSERT OR REPLACE INTO {table} ({column_list}) VALUES ({placeholders})")
+                    let updates = updates
+                        .iter()
+                        .map(|c| format!("\"{c}\" = excluded.\"{c}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let conflict = if updates.is_empty() {
+                        "DO NOTHING".into()
+                    } else {
+                        format!("DO UPDATE SET {updates}")
+                    };
+                    format!("INSERT INTO {table} ({column_list}) VALUES ({placeholders}) ON CONFLICT {conflict}")
                 }
             };
             let mut params: Vec<DbValue> = Vec::with_capacity(columns.len());
@@ -382,12 +473,34 @@ pub async fn import_bundle(pool: &DbPool, bundle: &BackupBundle) -> Result<Impor
                             DbValue::Real(n.as_f64().unwrap_or_default())
                         }
                     }
+                    Some(serde_json::Value::String(val)) if val == REDACTED => {
+                        DbValue::Text(if column.ends_with("_json") {
+                            "{}".into()
+                        } else {
+                            String::new()
+                        })
+                    }
                     Some(serde_json::Value::String(val)) => DbValue::Text(val.clone()),
                     // Nested JSON is stored as text in these tables.
                     Some(other) => DbValue::Text(other.to_string()),
                 });
             }
             tx.execute(&statement, &params).await?;
+            if *table == "one_rag_documents"
+                && has_chunks
+                && let Some(id) = row.get("id").and_then(serde_json::Value::as_str)
+            {
+                tx.execute(
+                    "DELETE FROM one_rag_chunks WHERE document_id = ?",
+                    &[DbValue::Text(id.into())],
+                )
+                .await?;
+                tx.execute(
+                    "UPDATE one_rag_documents SET status = 'pending', chunk_count = 0 WHERE id = ?",
+                    &[DbValue::Text(id.into())],
+                )
+                .await?;
+            }
             report.rows_applied += 1;
         }
         report.tables_applied += 1;
@@ -529,6 +642,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_asset_credentials_are_redacted_and_retained_on_in_place_restore() {
+        let pool = pool().await;
+        seed(&pool).await;
+        sqlx::query("CREATE TABLE one_api_assets (id TEXT PRIMARY KEY, auth_config TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO one_api_assets VALUES ('asset', ?)")
+            .bind(r#"{"token":"API_ASSET_SECRET"}"#)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let db = DbPool::Sqlite(pool.clone());
+        let bundle = export_bundle(&db, "t1", 0).await.unwrap();
+        assert!(!serde_json::to_string(&bundle).unwrap().contains("API_ASSET_SECRET"));
+        assert!(
+            bundle.tables["one_api_assets"][0]["auth_config"]
+                .as_str()
+                .unwrap()
+                .contains(REDACTED)
+        );
+        import_bundle(&db, &bundle).await.unwrap();
+        let config: String = sqlx::query_scalar("SELECT auth_config FROM one_api_assets WHERE id = 'asset'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(config.contains("API_ASSET_SECRET"));
+    }
+
+    #[tokio::test]
     async fn import_restores_into_an_empty_deployment() {
         let source = pool().await;
         seed(&source).await;
@@ -567,6 +710,78 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(members, 2, "re-import must not duplicate rows");
+    }
+
+    #[tokio::test]
+    async fn restore_preserves_unbacked_children_and_existing_credentials() {
+        let pool = pool().await;
+        seed(&pool).await;
+        sqlx::raw_sql("CREATE TABLE child (id TEXT PRIMARY KEY, tenant_id TEXT REFERENCES one_tenants(id) ON DELETE CASCADE); INSERT INTO child VALUES ('child1', 't1');")
+            .execute(&pool).await.unwrap();
+        let mut bundle = export_bundle(&DbPool::Sqlite(pool.clone()), "t1", 0).await.unwrap();
+        bundle.tables.get_mut("one_tenants").unwrap()[0].insert("name".into(), serde_json::json!("Restored company"));
+        import_bundle(&DbPool::Sqlite(pool.clone()), &bundle).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM child")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT name FROM one_tenants WHERE id='t1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            "Restored company"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT exit_password_hash FROM one_tenants WHERE id='t1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            "$2b$12$realhash"
+        );
+        assert!(
+            sqlx::query_scalar::<_, String>("SELECT config FROM one_sso_providers WHERE provider='oidc'")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .contains("TOPSECRET")
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_works_with_one_connection_and_reports_unknown_tables() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(":memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE one_tenants(id TEXT PRIMARY KEY, name TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let bundle: BackupBundle = serde_json::from_value(serde_json::json!({"version":1,"exportedAt":0,"exportedByTenant":"t1","containsRedactions":false,"tables":{"one_tenants":[{"id":"t1","name":"Company"}],"unsupported_table":[]}})).unwrap();
+        let report = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            import_bundle(&DbPool::Sqlite(pool.clone()), &bundle),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(report.rows_applied, 1);
+        assert_eq!(report.tables_skipped, vec!["unsupported_table"]);
+    }
+
+    #[test]
+    fn nested_json_credentials_are_redacted() {
+        let redacted =
+            redact_json_secrets(r#"{"servers":[{"auth":{"apiKey":"NESTED_SECRET"},"url":"https://example.org"}]}"#)
+                .to_string();
+        assert!(!redacted.contains("NESTED_SECRET"));
+        assert!(redacted.contains("https://example.org"));
+        assert!(redacted.contains(REDACTED));
     }
 
     #[tokio::test]

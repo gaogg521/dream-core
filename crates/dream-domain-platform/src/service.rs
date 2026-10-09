@@ -143,6 +143,16 @@ type NotificationRow = (String, String, String, String, String, String, i64, Opt
 type VaultFileRow = (String, Option<String>, Option<i64>, i64, i64);
 
 impl PlatformService {
+    pub async fn enterprise_update(
+        &self,
+        actor: &PlatformActor,
+        operation: &str,
+        post: bool,
+    ) -> Result<dream_core_api_types::EnterpriseUpdateStatus, PlatformError> {
+        crate::updates::authorize(actor)?;
+        crate::updates::request(operation, post).await
+    }
+
     /// Test-only: the concrete SQLite pool behind the enum (platform's own
     /// tests seed with raw sqlx against SQLite).
     #[cfg(test)]
@@ -2671,6 +2681,9 @@ impl PlatformService {
             return Err(PlatformError::BadRequest("API key name must not be empty".into()));
         }
 
+        if rate_limit_per_minute.is_some_and(|limit| limit <= 0) {
+            return Err(PlatformError::BadRequest("API key rate limit must be positive".into()));
+        }
         let id = generate_prefixed_id("apikey");
         let secret = format!("{API_KEY_TOKEN_PREFIX}{}", generate_id_with_length(Some(48)));
         let key_prefix: String = secret.chars().take(Self::API_KEY_PREFIX_LEN).collect();
@@ -2724,21 +2737,36 @@ impl PlatformService {
         request_path: &str,
     ) -> Result<ApiKeyAuthOutcome, PlatformError> {
         let key_hash = Self::hash_api_key_secret(secret);
-        let row: Option<(String, String, String)> = self
+        let row: Option<(String, String, String, Option<i64>)> = self
             .db
-            .fetch_optional_as::<(String, String, String)>(
-                "SELECT id, created_by, allowed_paths FROM one_api_keys WHERE key_hash = ? AND status = 'active'",
+            .fetch_optional_as::<(String, String, String, Option<i64>)>(
+                "SELECT id, created_by, allowed_paths, rate_limit_per_minute FROM one_api_keys WHERE key_hash = ? AND status = 'active'",
                 &db_params![&key_hash],
             )
             .await?;
 
-        let Some((id, created_by, allowed_paths_json)) = row else {
+        let Some((id, created_by, allowed_paths_json, rate_limit)) = row else {
             return Ok(ApiKeyAuthOutcome::Invalid);
         };
 
         let allowed_paths: Vec<String> = serde_json::from_str(&allowed_paths_json).unwrap_or_default();
         if !api_key_path_allowed(request_path, &allowed_paths) {
             return Ok(ApiKeyAuthOutcome::PathNotAllowed);
+        }
+
+        if let Some(limit) = rate_limit.filter(|limit| *limit > 0) {
+            let now = now_ms();
+            let cutoff = now - 60_000;
+            // Count first: MySQL evaluates SET assignments left to right.
+            // A single conditional UPDATE admits at most `limit` requests
+            // even across independent app/admin processes sharing this DB.
+            let admitted = self.db.execute(
+                "UPDATE one_api_keys SET rate_window_count = CASE WHEN rate_window_start <= ? THEN 1 ELSE rate_window_count + 1 END, rate_window_start = CASE WHEN rate_window_start <= ? THEN ? ELSE rate_window_start END WHERE id = ? AND status = 'active' AND (rate_window_start <= ? OR rate_window_count < ?)",
+                &db_params![cutoff, cutoff, now, &id, cutoff, limit],
+            ).await?;
+            if admitted == 0 {
+                return Ok(ApiKeyAuthOutcome::RateLimited);
+            }
         }
 
         self.db
@@ -3609,13 +3637,8 @@ impl PlatformService {
             } else {
                 row.7.as_str()
             };
-            let ref_count = self.config_reference_count(alias).await?;
-            let extra = if alias != row.1 {
-                self.config_reference_count(&row.1).await?
-            } else {
-                0
-            };
-            out.push(config_set_dto(row, ref_count + extra));
+            let ref_count = self.config_reference_count(&row.1, alias).await?;
+            out.push(config_set_dto(row, ref_count));
         }
         Ok(out)
     }
@@ -3726,13 +3749,8 @@ impl PlatformService {
                 } else {
                     row.7.as_str()
                 };
-                let ref_count = self.config_reference_count(alias).await?;
-                let extra = if alias != row.1 {
-                    self.config_reference_count(&row.1).await?
-                } else {
-                    0
-                };
-                Ok(Some(config_set_dto(row, ref_count + extra)))
+                let ref_count = self.config_reference_count(&row.1, alias).await?;
+                Ok(Some(config_set_dto(row, ref_count)))
             }
             None => Ok(None),
         }
@@ -4033,11 +4051,12 @@ impl PlatformService {
         // which LIKE would treat as wildcards; a plain substring search has
         // no escaping problem to get wrong.
         let needle = format!("{{{{config.{}.", set.name);
+        let alias_needle = format!("{{{{config.{}.", set.alias);
         let result = self
             .db
             .fetch_all_as::<(String, String)>(
-                "SELECT id, name FROM one_skill_registry WHERE INSTR(content, ?) > 0 ORDER BY name ASC",
-                &db_params![&needle],
+                "SELECT id, name FROM one_skill_registry WHERE INSTR(content, ?) > 0 OR INSTR(content, ?) > 0 ORDER BY name ASC",
+                &db_params![&needle, &alias_needle],
             )
             .await;
         let references = match result {
@@ -4062,13 +4081,14 @@ impl PlatformService {
     /// Row count of skills embedding a reference to the named set — the
     /// `ref_count` shown in the set list. Same boundaries as
     /// [`Self::config_set_references`].
-    async fn config_reference_count(&self, set_name: &str) -> Result<i64, PlatformError> {
+    async fn config_reference_count(&self, set_name: &str, alias: &str) -> Result<i64, PlatformError> {
         let needle = format!("{{{{config.{}.", set_name);
+        let alias_needle = format!("{{{{config.{alias}.");
         let result = self
             .db
             .fetch_one_scalar::<i64>(
-                "SELECT COUNT(*) FROM one_skill_registry WHERE INSTR(content, ?) > 0",
-                &db_params![&needle],
+                "SELECT COUNT(*) FROM one_skill_registry WHERE INSTR(content, ?) > 0 OR INSTR(content, ?) > 0",
+                &db_params![&needle, &alias_needle],
             )
             .await;
         match result {
@@ -4209,6 +4229,8 @@ pub enum ApiKeyAuthOutcome {
     Invalid,
     /// The key is valid but its `allowed_paths` does not cover the request.
     PathNotAllowed,
+    /// The configured per-key minute budget is exhausted.
+    RateLimited,
     /// The key is valid and authorizes this path; resolves to `created_by`.
     Authenticated { user_id: String },
 }
@@ -7232,6 +7254,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_key_rate_limit_on_mysql() {
+        let Some(db) = dream_core_db::testing::mysql_test_pool().await else {
+            return;
+        };
+        crate::migrate::run_one_platform_migrations(&db.pool).await.unwrap();
+        let service = PlatformService::new(db.pool.clone(), [7u8; 32]);
+        let key = service
+            .create_api_key("t1", "limited", &["/api/*".into()], Some(1), "admin1")
+            .await
+            .unwrap();
+        assert!(matches!(
+            service.authenticate_api_key(&key.secret, "/api/a").await.unwrap(),
+            ApiKeyAuthOutcome::Authenticated { .. }
+        ));
+        assert_eq!(
+            service.authenticate_api_key(&key.secret, "/api/a").await.unwrap(),
+            ApiKeyAuthOutcome::RateLimited
+        );
+        db.pool
+            .execute(
+                "UPDATE one_api_keys SET rate_window_start = ? WHERE id = ?",
+                &db_params![now_ms() - 60_001, &key.key.id],
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            service.authenticate_api_key(&key.secret, "/api/a").await.unwrap(),
+            ApiKeyAuthOutcome::Authenticated { .. }
+        ));
+        assert_eq!(
+            service.authenticate_api_key(&key.secret, "/api/a").await.unwrap(),
+            ApiKeyAuthOutcome::RateLimited
+        );
+        db.cleanup().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn api_key_rate_limit_is_shared_and_resets_without_sleeping() {
+        let (_db, service) = setup().await;
+        let key = service
+            .create_api_key("t1", "limited", &["/api/*".into()], Some(2), "admin1")
+            .await
+            .unwrap();
+        let other = PlatformService::new(service.db.clone(), service.encryption_key);
+        let (a, b, c) = tokio::join!(
+            service.authenticate_api_key(&key.secret, "/api/a"),
+            other.authenticate_api_key(&key.secret, "/api/b"),
+            service.authenticate_api_key(&key.secret, "/api/c"),
+        );
+        let outcomes = [a.unwrap(), b.unwrap(), c.unwrap()];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|v| matches!(v, ApiKeyAuthOutcome::Authenticated { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|v| **v == ApiKeyAuthOutcome::RateLimited)
+                .count(),
+            1
+        );
+        assert_eq!(
+            other.authenticate_api_key(&key.secret, "/outside").await.unwrap(),
+            ApiKeyAuthOutcome::PathNotAllowed
+        );
+        service
+            .db
+            .execute(
+                "UPDATE one_api_keys SET rate_window_start = ? WHERE id = ?",
+                &db_params![now_ms() - 60_001, &key.key.id],
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            other.authenticate_api_key(&key.secret, "/api/a").await.unwrap(),
+            ApiKeyAuthOutcome::Authenticated { .. }
+        ));
+        service.revoke_api_key("t1", &key.key.id).await.unwrap();
+        assert_eq!(
+            service.authenticate_api_key(&key.secret, "/api/a").await.unwrap(),
+            ApiKeyAuthOutcome::Invalid
+        );
+    }
+
+    #[tokio::test]
     async fn authenticate_api_key_accepts_a_matching_secret_on_an_allowed_path() {
         let (_db, service) = setup().await;
         let created = service
@@ -8401,6 +8511,34 @@ mod tests {
         // is exactly what the admin must see before deleting the old name.
         service.update_config_set("t1", &set.id, "api-v2", "").await.unwrap();
         assert_eq!(service.config_set_references("t1", &set.id).await.unwrap().count, 0);
+    }
+
+    #[tokio::test]
+    async fn config_references_include_a_distinct_alias_without_double_counting() {
+        let (db, service) = setup().await;
+        let set = service
+            .create_config_set("t1", "Connection", "", "admin1")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE one_config_sets SET alias = ? WHERE id = ?")
+            .bind("conn")
+            .bind(&set.id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        seed_skill_registry(
+            db.pool(),
+            &[
+                ("alias", "Alias only", "{{config.conn.token}}"),
+                ("both", "Both", "{{config.Connection.url}} {{config.conn.token}}"),
+                ("other", "Other", "{{config.other.token}}"),
+            ],
+        )
+        .await;
+        let references = service.config_set_references("t1", &set.id).await.unwrap();
+        assert_eq!(references.count, 2);
+        assert_eq!(references.references.len(), 2);
+        assert_eq!(service.list_config_sets("t1").await.unwrap()[0].ref_count, 2);
     }
 
     #[test]

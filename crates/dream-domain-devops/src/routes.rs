@@ -151,7 +151,7 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
         .route("/api/one/devops/rag/documents/{id}", axum::routing::delete(delete_rag))
         .route(
             "/api/one/devops/rag/documents/{id}/content",
-            axum::routing::put(set_rag_content),
+            get(get_rag_content).put(set_rag_content),
         )
         .route(
             "/api/one/devops/rag/documents/{id}/process",
@@ -1935,6 +1935,16 @@ async fn delete_rag(
 #[derive(Deserialize)]
 struct SetRagContentBody {
     content: String,
+}
+
+async fn get_rag_content(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<String>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    let content = state.service.get_document_content(&user.id, &id).await?;
+    Ok(Json(ApiResponse::ok(content)))
 }
 
 async fn set_rag_content(

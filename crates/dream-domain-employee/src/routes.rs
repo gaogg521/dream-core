@@ -225,7 +225,7 @@ async fn create_agent_for_admin(
         .await?;
     state
         .service
-        .set_published_batch(&tenant, &[created.id.clone()], false)
+        .set_published_batch(&tenant, std::slice::from_ref(&created.id), false)
         .await?;
     let mut shared = state.service.set_visibility(&user.id, &created.id, "shared").await?;
     shared.published = false;
@@ -458,8 +458,9 @@ async fn list_runs(
     Extension(user): Extension<CurrentUser>,
     Path(agent_id): Path<String>,
 ) -> Result<Json<ApiResponse<Vec<EmployeeRunRow>>>, EmployeeError> {
+    let tenant = state.tenant_of(&user.id).await;
     Ok(Json(ApiResponse::ok(
-        state.service.list_runs(&user.id, &agent_id).await?,
+        state.service.list_runs(&user.id, &tenant, &agent_id).await?,
     )))
 }
 

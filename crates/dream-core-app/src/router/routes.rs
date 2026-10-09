@@ -697,6 +697,7 @@ impl dream_core_auth::ApiKeyGate for PlatformApiKeyGate {
             .map(|outcome| match outcome {
                 ApiKeyAuthOutcome::Invalid => dream_core_auth::ApiKeyVerdict::Invalid,
                 ApiKeyAuthOutcome::PathNotAllowed => dream_core_auth::ApiKeyVerdict::PathNotAllowed,
+                ApiKeyAuthOutcome::RateLimited => dream_core_auth::ApiKeyVerdict::RateLimited,
                 ApiKeyAuthOutcome::Authenticated { user_id } => {
                     dream_core_auth::ApiKeyVerdict::Authenticated { user_id }
                 }
@@ -727,6 +728,13 @@ impl dream_core_conversation::UsageRecorder for BillingUsageRecorder {
         input_tokens: Option<i64>,
         output_tokens: Option<i64>,
     ) {
+        // Enterprise channels are metered by the proxy response tap. Recording
+        // the conversation's terminal event too doubles tokens/cost when the
+        // backend reports usage, or adds a spurious unknown-model row when it
+        // does not. Delegate calls have no channel id and still use this path.
+        if channel_id.as_deref().is_some_and(|id| id.starts_with("prov_chan_")) {
+            return;
+        }
         let service = self.0.clone();
         tokio::spawn(async move {
             if let Err(e) = service
@@ -2492,6 +2500,20 @@ struct NodeReviewSinkAdapter {
 #[async_trait::async_trait]
 #[cfg(feature = "enterprise")]
 impl dream_domain_org::NodeReviewSink for NodeReviewSinkAdapter {
+    async fn on_node_status_decided(
+        &self,
+        tenant_id: &str,
+        node_id: &str,
+        status: &str,
+        actor_id: &str,
+    ) -> Result<(), String> {
+        let decision = if status == "approved" { "approved" } else { "rejected" };
+        self.workflow
+            .decide_node_access_reviews(tenant_id, node_id, decision, actor_id)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     async fn on_node_awaiting_approval(
         &self,
         tenant_id: &str,
@@ -3247,6 +3269,7 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
     // than the members they granted them to actually get.
     one_devops_service.set_grants(governance.grant_source.clone());
     one_devops_service.set_config_resolver(governance.config_resolver.clone());
+    services.enterprise_provider_repo.bind(one_devops_service.clone());
 
     let one_devops_state = dream_domain_devops::OneDevopsRouterState::new(one_devops_service)
         .with_tenant_resolver(governance.tenant_resolver.clone());
@@ -3745,9 +3768,19 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     #[cfg(feature = "enterprise")]
     one_devops_service.set_config_resolver(governance.config_resolver.clone());
 
+    #[cfg(feature = "enterprise")]
+    services.enterprise_provider_repo.bind(one_devops_service.clone());
+
     // one-employee digital employee routes (/api/one/employee/*).
     // Wire the team session service so /run-team can drive existing team
     // slots; spawn the 30s schedule scanner for cron-driven runs.
+    #[cfg(feature = "enterprise")]
+    let employee_providers: std::sync::Arc<dyn dream_core_db::IProviderRepository> =
+        services.enterprise_provider_repo.clone();
+    #[cfg(not(feature = "enterprise"))]
+    let employee_providers: std::sync::Arc<dyn dream_core_db::IProviderRepository> = std::sync::Arc::new(
+        dream_core_db::SqliteProviderRepository::new(services.database.pool().clone()),
+    );
     let one_employee_service = std::sync::Arc::new(
         dream_domain_employee::EmployeeService::new(
             services.db.clone(),
@@ -3761,9 +3794,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .with_team_session(team_session_service)
         // Lets an employee's dream model be validated against enabled
         // providers at save time instead of failing the run.
-        .with_provider_repo(std::sync::Arc::new(dream_core_db::SqliteProviderRepository::new(
-            services.database.pool().clone(),
-        ))),
+        .with_provider_repo(employee_providers),
     );
     one_employee_service.spawn_scheduler();
     let one_employee_state = dream_domain_employee::OneEmployeeRouterState::new(one_employee_service.clone());

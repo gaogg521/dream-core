@@ -75,7 +75,10 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
         )
         // P1-1 backup / restore of enterprise configuration.
         .route("/api/one/admin/backup/export", get(admin_export_backup))
-        .route("/api/one/admin/backup/import", post(admin_import_backup))
+        .route(
+            "/api/one/admin/backup/import",
+            post(admin_import_backup).layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
         .route(
             "/api/one/admin/departments",
             get(admin_list_departments).post(admin_create_department),
@@ -1493,7 +1496,7 @@ async fn admin_set_runtime_node_status(
 ) -> Result<Json<ApiResponse<()>>, OrgError> {
     state
         .service
-        .set_runtime_node_status(&actor.tenant_id, &id, &body.status)
+        .decide_runtime_node_status(&actor.tenant_id, &id, &body.status, &actor.user_id)
         .await?;
     Ok(Json(ApiResponse::ok(())))
 }

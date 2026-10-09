@@ -152,6 +152,8 @@ pub enum ApiKeyVerdict {
     Invalid,
     /// The key is valid but does not cover the requested path.
     PathNotAllowed,
+    /// The valid key exhausted its configured minute budget.
+    RateLimited,
     /// The key is valid and authorizes this path; resolves to the user who
     /// created it — an API key acts AS a real user, same as a JWT session.
     Authenticated { user_id: String },
@@ -459,6 +461,7 @@ async fn api_key_channel(
         ApiKeyVerdict::PathNotAllowed => {
             return Err(ApiError::Forbidden("API key is not authorized for this path".into()));
         }
+        ApiKeyVerdict::RateLimited => return Err(ApiError::RateLimited),
         ApiKeyVerdict::Authenticated { user_id } => user_id,
     };
 
@@ -1141,6 +1144,30 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn api_key_channel_returns_429_when_the_key_budget_is_exhausted() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(dream_core_db::SqliteUserRepository::new(db.pool().clone()));
+        let jwt = Arc::new(JwtService::new("test-secret".to_string()));
+
+        let gate: Arc<dyn ApiKeyGate> = Arc::new(MockApiKeyGate {
+            verdict: ApiKeyVerdict::RateLimited,
+        });
+        let app = api_key_app(user_repo, jwt, Some(gate));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("Authorization", format!("Bearer {API_KEY_BEARER}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     /// A key that authenticates to a user who no longer exists (or was

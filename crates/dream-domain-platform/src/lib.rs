@@ -21,6 +21,7 @@ pub mod state;
 pub mod storage_driver;
 pub mod storage_s3;
 pub mod storage_webdav;
+pub mod updates;
 
 pub use collaboration::{CollaborationProvider, CollaborationSettings, CollaborationStatus, NoopCollaborationProvider};
 pub use container::{ContainerRuntime, ContainerSettings, ContainerStatus, NoopContainerRuntime};

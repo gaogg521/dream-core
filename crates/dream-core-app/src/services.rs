@@ -25,6 +25,8 @@ use dream_core_project::ProjectService;
 use dream_core_realtime::{BroadcastEventBus, WebSocketManager};
 
 pub struct AppServices {
+    #[cfg(feature = "enterprise")]
+    pub(crate) enterprise_provider_repo: Arc<crate::enterprise_provider::EnterpriseProviderRepository>,
     pub database: Database,
     /// P3-3: backend-agnostic handle for the enterprise `one_*` tables.
     /// `DbPool::Sqlite` in personal / enterprise-SQLite deployments; `MySql`
@@ -431,6 +433,14 @@ impl AppServices {
         let backend_binary_path = Arc::new(backend_binary_path);
         let runtime_helper_bin = backend_binary_path.to_string_lossy().into_owned();
         let runtime_base_url = config.local_base_url();
+        #[cfg(feature = "enterprise")]
+        let enterprise_provider_repo = Arc::new(crate::enterprise_provider::EnterpriseProviderRepository::new(
+            provider_repo.clone(),
+            encryption_key,
+            runtime_base_url.clone(),
+        ));
+        #[cfg(feature = "enterprise")]
+        let provider_repo = enterprise_provider_repo.clone();
         let antigravity_hook_tokens = Arc::new(dream_core_ai_agent::antigravity_hook::HookTokenRegistry::new());
 
         // Subprocess spawner for the direct-CLI `SessionAgentTask`. Registry-backed
@@ -669,6 +679,8 @@ impl AppServices {
             backend_binary_path,
             runtime_helper_bin,
             runtime_base_url,
+            #[cfg(feature = "enterprise")]
+            enterprise_provider_repo,
         })
     }
 }

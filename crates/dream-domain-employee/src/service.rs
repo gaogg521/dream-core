@@ -975,6 +975,21 @@ fn append_task_context(mut prompt: String, task_context: Option<&str>) -> String
     prompt
 }
 
+async fn list_runs_for_user(
+    db: &DbPool,
+    user_id: &str,
+    tenant_id: &str,
+    agent_id: &str,
+) -> Result<Vec<EmployeeRunRow>, EmployeeError> {
+    select_agent_for_use(db, user_id, tenant_id, agent_id)
+        .await?
+        .ok_or(EmployeeError::NotFound)?;
+    Ok(db.fetch_all_as::<EmployeeRunRow>(
+        "SELECT * FROM one_employee_runs WHERE agent_id = ? AND owner_user_id = ? ORDER BY started_at DESC LIMIT 50",
+        &db_params![agent_id, user_id],
+    ).await?)
+}
+
 impl EmployeeService {
     pub fn new(
         db: DbPool,
@@ -1734,17 +1749,15 @@ impl EmployeeService {
 
     // --- runs ---
 
-    pub async fn list_runs(&self, owner_user_id: &str, agent_id: &str) -> Result<Vec<EmployeeRunRow>, EmployeeError> {
-        // Ownership check first so foreign agents 404 instead of listing empty.
-        self.get(owner_user_id, agent_id).await?;
-        let rows = self
-            .db
-            .fetch_all_as::<EmployeeRunRow>(
-                "SELECT * FROM one_employee_runs WHERE agent_id = ? ORDER BY started_at DESC LIMIT 50",
-                &db_params![agent_id],
-            )
-            .await?;
-        Ok(rows)
+    pub async fn list_runs(
+        &self,
+        owner_user_id: &str,
+        tenant_id: &str,
+        agent_id: &str,
+    ) -> Result<Vec<EmployeeRunRow>, EmployeeError> {
+        // Shared employees execute in the caller's own conversation. Their
+        // history must remain visible without exposing another member's runs.
+        list_runs_for_user(&self.db, owner_user_id, tenant_id, agent_id).await
     }
 
     pub async fn get_run(&self, owner_user_id: &str, run_id: &str) -> Result<EmployeeRunRow, EmployeeError> {
@@ -1809,6 +1822,20 @@ impl EmployeeService {
         agent: &PersonalAgentRow,
         trigger_source: &str,
     ) -> Result<(String, String), EmployeeError> {
+        if let Some(model) = resolve_model(agent)
+            && model.provider_id.starts_with(COMPANY_CHANNEL_PROVIDER_PREFIX)
+            && let Some(providers) = &self.provider_repo
+        {
+            let provider = providers
+                .find_by_id(owner_user_id, &model.provider_id)
+                .await
+                .map_err(|e| EmployeeError::Internal(e.to_string()))?;
+            if !provider.is_some_and(|p| p.enabled) {
+                return Err(EmployeeError::BadRequest(
+                    "The enterprise model is disabled or not authorized for this member".into(),
+                ));
+            }
+        }
         let mut extra = serde_json::Map::new();
         extra.insert("one_employee_id".into(), serde_json::Value::String(agent.id.clone()));
         extra.insert(
@@ -2391,6 +2418,28 @@ mod tests {
                 other => panic!("{channel}: expected BadRequest, got {other:?}"),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn shared_employee_history_contains_only_the_callers_runs() {
+        let database = dream_core_db::init_database_memory().await.unwrap();
+        let db = DbPool::Sqlite(database.pool().clone());
+        run_one_employee_migrations(&db).await.unwrap();
+        seed_unified_resource_grants(database.pool()).await;
+        insert_agent(&db, "a1", "A", "t1", "shared").await;
+        insert_employee_grant(&db, "t1", "member", "B", "a1", "use").await;
+        for (run, owner) in [("rA", "A"), ("rB", "B"), ("rC", "C")] {
+            db.execute("INSERT INTO one_employee_runs (id, agent_id, owner_user_id, tenant_id, conversation_id, status, trigger_source, started_at) VALUES (?, 'a1', ?, 't1', 'conversation', 'success', 'manual', 1)", &db_params![run, owner]).await.unwrap();
+        }
+        let history = list_runs_for_user(&db, "B", "t1", "a1").await.unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id, "rB");
+        assert!(list_runs_for_user(&db, "C", "t1", "a1").await.is_err());
+        assert!(list_runs_for_user(&db, "B", "t2", "a1").await.is_err());
+        db.execute("DELETE FROM one_resource_grants WHERE subject_id = 'B'", &[])
+            .await
+            .unwrap();
+        assert!(list_runs_for_user(&db, "B", "t1", "a1").await.is_err());
     }
     use super::*;
     use crate::migrate::run_one_employee_migrations;

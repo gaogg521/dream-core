@@ -106,6 +106,12 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
             get(get_console_settings).put(set_console_settings),
         )
         .route("/api/one/admin/platform/version", get(get_platform_version))
+        .route("/api/one/admin/platform/updates", get(get_enterprise_update))
+        .route("/api/one/admin/platform/updates/check", post(check_enterprise_update))
+        .route(
+            "/api/one/admin/platform/updates/install",
+            post(install_enterprise_update),
+        )
         .route("/api/one/admin/platform/scenes", get(list_scenes).post(create_scene))
         .route(
             "/api/one/admin/platform/scenes/{id}",
@@ -800,6 +806,33 @@ async fn get_platform_version(
 ) -> Result<Json<ApiResponse<PlatformVersionDto>>, PlatformError> {
     Ok(Json(ApiResponse::ok(
         crate::service::PlatformService::platform_version(),
+    )))
+}
+
+async fn get_enterprise_update(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<dream_core_api_types::EnterpriseUpdateStatus>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.enterprise_update(&actor, "status", false).await?,
+    )))
+}
+
+async fn check_enterprise_update(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<dream_core_api_types::EnterpriseUpdateStatus>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.enterprise_update(&actor, "check", true).await?,
+    )))
+}
+
+async fn install_enterprise_update(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<dream_core_api_types::EnterpriseUpdateStatus>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.enterprise_update(&actor, "install", true).await?,
     )))
 }
 

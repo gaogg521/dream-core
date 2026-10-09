@@ -53,6 +53,14 @@ const COLS: &str = "id, name, platform, upstream_base_url, \
 /// Prefix on issued tokens. Purely so a leaked string is recognisable in a log
 /// or a bug report as "a One Work channel token" and can be revoked.
 const TOKEN_PREFIX: &str = "onech-";
+const RUNTIME_TOKEN_PREFIX: &str = "onech-runtime-";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RuntimeChannelClaims {
+    user_id: String,
+    channel_id: String,
+    expires_at: i64,
+}
 
 /// What a member is given, once. Only the hash is persisted, so the plaintext
 /// exists exactly here and in the response that carries it away.
@@ -141,6 +149,34 @@ pub struct ExtractionLlmConfig {
 }
 
 impl DevopsService {
+    /// Internal server runs use a short-lived, authenticated token, separate
+    /// from the member's persistent desktop token. No upstream key is exposed.
+    pub async fn issue_runtime_channel_token(&self, user_id: &str, channel_id: &str) -> Result<String, DevopsError> {
+        if self.user_org_role(user_id).await?.is_none() {
+            return Err(DevopsError::Forbidden(
+                "Server runs require active enterprise membership".into(),
+            ));
+        }
+        if !self
+            .list_provider_channels(user_id)
+            .await?
+            .iter()
+            .any(|c| c.id == channel_id && c.enabled)
+        {
+            return Err(DevopsError::Forbidden(
+                "Model channel is not available to this member".into(),
+            ));
+        }
+        let claims = RuntimeChannelClaims {
+            user_id: user_id.into(),
+            channel_id: channel_id.into(),
+            expires_at: now_ms() + 20 * 60 * 1000,
+        };
+        let plaintext = serde_json::to_string(&claims).map_err(|e| DevopsError::Internal(e.to_string()))?;
+        let encrypted =
+            encrypt_string(&plaintext, self.encryption_key()?).map_err(|e| DevopsError::Internal(e.to_string()))?;
+        Ok(format!("{RUNTIME_TOKEN_PREFIX}{encrypted}"))
+    }
     /// Resolves a company model channel into one-shot LLM call settings for
     /// the memory turn extractor (P2-2 followups §A.6). OpenAI-compatible
     /// channels only — extraction is a plain chat completion against
@@ -532,20 +568,50 @@ impl DevopsService {
         channel_id: &str,
         token: &str,
     ) -> Result<Option<ResolvedChannel>, DevopsError> {
-        let row: Option<(String, String, String, String, Option<String>)> = self
-            .db
-            .fetch_optional_as::<(String, String, String, String, Option<String>)>(
-                "SELECT t.user_id, r.platform, r.upstream_base_url, r.api_key_encrypted, r.models \
+        let runtime_user = if let Some(encrypted) = token.strip_prefix(RUNTIME_TOKEN_PREFIX) {
+            let claims = decrypt_string(encrypted, self.encryption_key()?)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<RuntimeChannelClaims>(&raw).ok());
+            match claims {
+                Some(claims) if claims.channel_id == channel_id && claims.expires_at > now_ms() => Some(claims.user_id),
+                _ => return Ok(None),
+            }
+        } else {
+            None
+        };
+        let row: Option<(String, String, String, String, Option<String>)> = if let Some(user_id) = &runtime_user {
+            self.db.fetch_optional_as(
+                "SELECT ?, platform, upstream_base_url, api_key_encrypted, models FROM one_provider_registry WHERE id = ? AND enabled = 1",
+                &db_params![user_id, channel_id],
+            ).await?
+        } else {
+            self.db
+                .fetch_optional_as::<(String, String, String, String, Option<String>)>(
+                    "SELECT t.user_id, r.platform, r.upstream_base_url, r.api_key_encrypted, r.models \
              FROM one_provider_channel_tokens t \
              JOIN one_provider_registry r ON r.id = t.channel_id \
              WHERE t.token_hash = ? AND t.channel_id = ? AND t.revoked_at IS NULL AND r.enabled = 1",
-                &db_params![hash_token(token), channel_id],
-            )
-            .await?;
+                    &db_params![hash_token(token), channel_id],
+                )
+                .await?
+        };
 
         let Some((user_id, platform, upstream_base_url, api_key_encrypted, models_json)) = row else {
             return Ok(None);
         };
+        if runtime_user.is_some() && self.user_org_role(&user_id).await?.is_none() {
+            return Ok(None);
+        }
+        // Recheck current grants on every call, including old desktop tokens.
+        // Possessing a token must not retain access after resource revocation.
+        if !self
+            .list_provider_channels(&user_id)
+            .await?
+            .iter()
+            .any(|c| c.id == channel_id && c.enabled)
+        {
+            return Ok(None);
+        }
         // Stored as a JSON array by `upsert_provider_channel`. Anything else —
         // legacy rows, hand-edited data — reads as "unscoped" rather than
         // "nothing allowed": failing open matches the column's history, and
@@ -1106,5 +1172,104 @@ mod tests {
             .unwrap();
         assert_ne!(stored, issued.token);
         assert!(!stored.contains(&issued.token[TOKEN_PREFIX.len()..]));
+    }
+
+    #[tokio::test]
+    async fn server_tokens_do_not_rotate_desktop_tokens_and_keep_actor_identity() {
+        let svc = service().await;
+        let channel = make_channel(&svc, "runtime").await;
+        let desktop = svc.issue_channel_token("memberA", &channel.id).await.unwrap();
+        let runtime = svc.issue_runtime_channel_token("memberA", &channel.id).await.unwrap();
+        let resolved = svc
+            .resolve_channel_for_token(&channel.id, &runtime)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.user_id, "memberA");
+        assert_eq!(resolved.api_key, SECRET);
+        assert!(
+            svc.resolve_channel_for_token(&channel.id, &desktop.token)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            svc.resolve_channel_for_token("other-channel", &runtime)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            svc.resolve_channel_for_token(&channel.id, &format!("{runtime}tampered"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        svc.db
+            .execute("DELETE FROM one_user_org WHERE user_id = ?", &db_params!["memberA"])
+            .await
+            .unwrap();
+        assert!(
+            svc.resolve_channel_for_token(
+                &channel.id,
+                &svc.issue_runtime_channel_token("admin1", &channel.id).await.unwrap()
+            )
+            .await
+            .unwrap()
+            .is_some()
+        );
+        assert!(svc.issue_runtime_channel_token("memberA", &channel.id).await.is_err());
+        assert!(
+            svc.resolve_channel_for_token(&channel.id, &runtime)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn issued_tokens_stop_working_when_channel_visibility_is_revoked() {
+        let svc = service().await;
+        let channel = make_channel(&svc, "revocation").await;
+        let desktop = svc.issue_channel_token("memberA", &channel.id).await.unwrap();
+        let runtime = svc.issue_runtime_channel_token("memberA", &channel.id).await.unwrap();
+        svc.db
+            .execute(
+                "UPDATE one_provider_registry SET visibility = 'admin' WHERE id = ?",
+                &db_params![&channel.id],
+            )
+            .await
+            .unwrap();
+        assert!(
+            svc.resolve_channel_for_token(&channel.id, &desktop.token)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            svc.resolve_channel_for_token(&channel.id, &runtime)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(svc.issue_runtime_channel_token("memberA", &channel.id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn expired_runtime_tokens_are_refused() {
+        let svc = service().await;
+        let channel = make_channel(&svc, "expiry").await;
+        let claims = RuntimeChannelClaims {
+            user_id: "memberA".into(),
+            channel_id: channel.id.clone(),
+            expires_at: now_ms() - 1,
+        };
+        let ciphertext = encrypt_string(&serde_json::to_string(&claims).unwrap(), &KEY).unwrap();
+        assert!(
+            svc.resolve_channel_for_token(&channel.id, &format!("{RUNTIME_TOKEN_PREFIX}{ciphertext}"))
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

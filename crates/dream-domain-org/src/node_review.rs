@@ -19,6 +19,18 @@ use async_trait::async_trait;
 
 #[async_trait]
 pub trait NodeReviewSink: Send + Sync {
+    /// Close outstanding access reviews after an administrator decides in the node roster.
+    async fn on_node_status_decided(
+        &self,
+        tenant_id: &str,
+        node_id: &str,
+        status: &str,
+        actor_id: &str,
+    ) -> Result<(), String> {
+        let _ = (tenant_id, node_id, status, actor_id);
+        Ok(())
+    }
+
     /// A first-seen machine registered as `pending` under an
     /// approval-required policy. Implementations raise the review task.
     async fn on_node_awaiting_approval(

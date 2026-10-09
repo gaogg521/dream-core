@@ -206,11 +206,22 @@ impl OfficecliWatchManager {
     }
 
     async fn poll_port_ready(&self, port: u16, file_path: &str) -> Result<(), OfficeError> {
-        for _ in 0..POLL_MAX_ATTEMPTS {
-            if is_port_listening(port).await {
-                return Ok(());
+        // TCP connection failures can take seconds on Windows. Bound the whole
+        // readiness check, including I/O, rather than only counting sleeps.
+        let budget = Duration::from_millis(POLL_INTERVAL_MS * u64::from(POLL_MAX_ATTEMPTS));
+        let ready = tokio::time::timeout(budget, async {
+            for _ in 0..POLL_MAX_ATTEMPTS {
+                if is_port_listening(port).await {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
             }
-            tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
+            false
+        })
+        .await
+        .unwrap_or(false);
+        if ready {
+            return Ok(());
         }
         Err(OfficeError::PortTimeout(file_path.to_owned()))
     }
@@ -1065,8 +1076,10 @@ mod tests {
 
         let resolved = resolve_path(file.to_str().unwrap()).unwrap();
         let port = allocate_port().unwrap();
+        let started = tokio::time::Instant::now();
         let result = mgr.poll_port_ready(port, &resolved).await;
         assert!(matches!(result, Err(OfficeError::PortTimeout(_))));
+        assert!(started.elapsed() <= Duration::from_secs(15));
     }
 
     #[tokio::test]

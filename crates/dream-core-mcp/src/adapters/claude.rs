@@ -8,8 +8,7 @@ use crate::error::McpError;
 use crate::types::McpServerTransport;
 
 use super::cli_helpers::{
-    DETECT_TIMEOUT, INHERIT_ENV, MUTATE_TIMEOUT, is_cli_installed, normalize_detection_status, run_cli_with_env,
-    strip_ansi,
+    DETECT_TIMEOUT, MUTATE_TIMEOUT, is_cli_installed, normalize_detection_status, run_cli_with_env, strip_ansi,
 };
 
 const CLI_NAME: &str = "claude";
@@ -40,7 +39,8 @@ const REMOVE_SCOPES: &[&str] = &["user", "local", "project"];
 ///
 /// # CLI Commands
 ///
-/// - **detect**: `claude mcp list`
+/// - **import preview**: read user/project MCP JSON without starting the CLI
+/// - **managed detect**: `claude mcp list` in the isolated bridge home
 /// - **install (stdio)**: `claude mcp add-json -s user <name> <json>`
 /// - **install (http/sse)**: `claude mcp add -s user --transport <type> <name> <url> [--header ...]`
 /// - **remove**: `claude mcp remove -s <scope> <name>` (tries user → local → project)
@@ -104,12 +104,19 @@ impl McpAgentAdapter for ClaudeAdapter {
             return Err(McpError::AgentNotInstalled(CLI_NAME.into()));
         }
 
-        let (stdout, _stderr) = run_cli_with_env(CLI_NAME, &["mcp", "list"], INHERIT_ENV, DETECT_TIMEOUT).await?;
-        let mut servers = parse_claude_list_output(&stdout);
-
-        let structured = read_claude_json_mcp_servers().await;
-        overlay_structured_transports(&mut servers, &structured);
-
+        // `claude mcp list` may update CLI metadata even though this operation
+        // is an import preview. Read structured configuration without launching it.
+        let mut servers: Vec<_> = read_claude_json_mcp_servers()
+            .await
+            .into_iter()
+            .map(|(name, transport)| DetectedServer {
+                name,
+                transport,
+                importable: true,
+                import_skip_reason: None,
+            })
+            .collect();
+        servers.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(servers)
     }
 
@@ -233,20 +240,38 @@ async fn read_claude_json_mcp_servers() -> HashMap<String, McpServerTransport> {
     let Some(home) = dirs::home_dir() else {
         return HashMap::new();
     };
-    let Ok(content) = tokio::fs::read_to_string(home.join(".claude.json")).await else {
-        return HashMap::new();
-    };
-    let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return HashMap::new();
-    };
-    let Some(servers) = config.get("mcpServers").and_then(serde_json::Value::as_object) else {
-        return HashMap::new();
-    };
-
+    let config = tokio::fs::read_to_string(home.join(".claude.json"))
+        .await
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let mut servers = HashMap::new();
+    collect_config_servers(&config, &mut servers);
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Ok(project) = tokio::fs::read_to_string(cwd.join(".mcp.json")).await
+            && let Ok(project) = serde_json::from_str::<serde_json::Value>(&project)
+        {
+            collect_config_servers(&project, &mut servers);
+        }
+        if let Some(projects) = config.get("projects").and_then(|v| v.as_object()) {
+            for (path, project) in projects {
+                if Path::new(path) == cwd || path.replace('\\', "/") == cwd.to_string_lossy().replace('\\', "/") {
+                    collect_config_servers(project, &mut servers);
+                }
+            }
+        }
+    }
     servers
-        .iter()
-        .filter_map(|(name, entry)| parse_claude_json_entry(entry).map(|transport| (name.clone(), transport)))
-        .collect()
+}
+
+fn collect_config_servers(config: &serde_json::Value, servers: &mut HashMap<String, McpServerTransport>) {
+    if let Some(entries) = config.get("mcpServers").and_then(|v| v.as_object()) {
+        servers.extend(
+            entries
+                .iter()
+                .filter_map(|(name, entry)| parse_claude_json_entry(entry).map(|transport| (name.clone(), transport))),
+        );
+    }
 }
 
 /// Parse one `~/.claude.json` `mcpServers` entry into a transport.
@@ -305,6 +330,7 @@ fn parse_string_map(value: Option<&serde_json::Value>) -> HashMap<String, String
 /// transport unchanged — extracted from [`ClaudeAdapter::detect_existing`]
 /// as a pure function so the merge behavior itself is unit-testable without
 /// touching the filesystem.
+#[cfg(test)]
 fn overlay_structured_transports(servers: &mut [DetectedServer], structured: &HashMap<String, McpServerTransport>) {
     for server in servers {
         if let Some(transport) = structured.get(&server.name) {
@@ -459,7 +485,7 @@ mod tests {
         // env constant the call site passes, and INHERIT_ENV is the only
         // value that leaves CLAUDE_CONFIG_DIR untouched.
         assert!(
-            INHERIT_ENV.is_empty(),
+            super::super::cli_helpers::INHERIT_ENV.is_empty(),
             "INHERIT_ENV must not set any variable, or detect_existing would stop reading the real config"
         );
     }

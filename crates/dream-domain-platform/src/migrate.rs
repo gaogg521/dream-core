@@ -64,6 +64,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "019_conversation_share_user_target",
         include_str!("../migrations/019_conversation_share_user_target.sql"),
     ),
+    (
+        "020_api_key_rate_limit",
+        include_str!("../migrations/020_api_key_rate_limit.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -102,7 +106,8 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     ),
     (
         "013_conversation_shares",
-        include_str!("../migrations_mysql/013_conversation_shares.sql"),
+        // Historical SQL remains unchanged. Only un-applied MySQL installs need this valid dialect.
+        include_str!("../bootstrap_mysql/013_conversation_shares.sql"),
     ),
     (
         "014_scene_avatars",
@@ -127,6 +132,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "019_conversation_share_user_target",
         include_str!("../migrations_mysql/019_conversation_share_user_target.sql"),
+    ),
+    (
+        "020_api_key_rate_limit",
+        include_str!("../migrations_mysql/020_api_key_rate_limit.sql"),
     ),
 ];
 

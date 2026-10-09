@@ -264,6 +264,13 @@ pub(crate) fn deserialize_opt<T: DeserializeOwned>(
 fn validate_create_request(req: &CreateProviderRequest) -> Result<(), SystemError> {
     if let Some(ref id) = req.id {
         validate_id(id)?;
+        // Enterprise channels resolve through a user-scoped proxy and have
+        // their own usage recorder. Public providers must not impersonate them.
+        if id.trim().starts_with("prov_chan_") {
+            return Err(SystemError::BadRequest(
+                "provider id prefix prov_chan_ is reserved for enterprise channels".into(),
+            ));
+        }
     }
     if req.platform.trim().is_empty() {
         return Err(SystemError::BadRequest("platform is required".into()));
@@ -794,6 +801,22 @@ mod tests {
         };
         let err = svc.create(TEST_USER_ID, req).await.unwrap_err();
         assert!(matches!(err, SystemError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn create_rejects_enterprise_channel_id_without_persisting() {
+        let svc = setup().await;
+        for id in ["prov_chan_custom", "  prov_chan_custom  "] {
+            let req = CreateProviderRequest {
+                id: Some(id.into()),
+                ..sample_create_request()
+            };
+            assert!(matches!(
+                svc.create(TEST_USER_ID, req).await,
+                Err(SystemError::BadRequest(_))
+            ));
+        }
+        assert!(svc.list(TEST_USER_ID).await.unwrap().is_empty());
     }
 
     #[tokio::test]
