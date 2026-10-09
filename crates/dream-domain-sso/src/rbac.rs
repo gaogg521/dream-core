@@ -66,6 +66,17 @@ async fn check_sso_admin(state: &OneSsoRouterState, user_id: &str) -> Result<(),
         // WHOLE company's SSO identity config (OIDC/LDAP/Feishu secrets)
         // just by being an admin of some unrelated project group.
         if check.company_exists().await {
+            // The deployment's system_admin is the one exception: it is the
+            // role that establishes the company in the first place
+            // (`EnterpriseService::setup_company`) and the role the console
+            // labels 系统管理员, so it outranks the company admin rather than
+            // being one of the project-group roles this guard keeps out.
+            // Refusing it here made MFA reset unreachable for every system
+            // admin who was not also a company member — one admin locked out
+            // by a mandatory MFA policy could not be rescued by another.
+            if state.service.effective_role(user_id).await? == ROLE_SYSTEM_ADMIN {
+                return Ok(());
+            }
             return Err(SsoError::Forbidden("Company administrator role required".into()));
         }
     }
@@ -145,6 +156,10 @@ mod tests {
             .execute(db.pool())
             .await
             .unwrap();
+        sqlx::query("INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) VALUES ('sys_admin', 'tA', 'system_admin', 0, 0)")
+            .execute(db.pool())
+            .await
+            .unwrap();
         let user_repo: Arc<dyn IUserRepository> = Arc::new(dream_core_db::SqliteUserRepository::new(db.pool().clone()));
         let service = Arc::new(SsoService::new(
             dream_core_db::DbPool::Sqlite(db.pool().clone()),
@@ -189,6 +204,20 @@ mod tests {
         })))
         .await;
         assert!(check_sso_admin(&state, "company_admin").await.is_ok());
+    }
+
+    /// The MFA lockout this closes: a mandatory policy shut admin out, and a
+    /// colleague the console lists as 系统管理员 got 403 on the reset endpoint
+    /// because they were not also a company member. system_admin establishes
+    /// the company, so it must pass even when it is not the company's admin.
+    #[tokio::test]
+    async fn a_system_admin_is_accepted_even_when_not_the_company_admin() {
+        let state = state_with(Some(Arc::new(FakeCompanyAdminCheck {
+            admin_of: "someone_else",
+            exists: true,
+        })))
+        .await;
+        assert!(check_sso_admin(&state, "sys_admin").await.is_ok());
     }
 
     /// Standalone behaviour must survive: no company at all (bridge wired

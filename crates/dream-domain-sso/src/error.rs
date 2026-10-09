@@ -38,6 +38,12 @@ pub enum SsoError {
     #[error("Forbidden: {0}")]
     Forbidden(String),
 
+    /// Switching the MFA policy to mandatory while the operator has not
+    /// enrolled themselves — the console needs a distinct code to offer the
+    /// self-enrollment flow instead of a generic error.
+    #[error("{0}")]
+    MfaSelfNotEnrolled(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -55,6 +61,7 @@ impl SsoError {
             Self::Unauthorized => "UNAUTHORIZED",
             Self::NotFound(_) => "NOT_FOUND",
             Self::Forbidden(_) => "FORBIDDEN",
+            Self::MfaSelfNotEnrolled(_) => "MFA_SELF_NOT_ENROLLED",
             Self::Internal(_) => "INTERNAL_ERROR",
         }
     }
@@ -68,6 +75,7 @@ impl SsoError {
             Self::InvalidCredentials | Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
+            Self::MfaSelfNotEnrolled(_) => StatusCode::CONFLICT,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -99,6 +107,7 @@ impl From<dream_core_auth::mfa::MfaError> for SsoError {
     fn from(e: dream_core_auth::mfa::MfaError) -> Self {
         match e {
             dream_core_auth::mfa::MfaError::BadRequest(m) => Self::BadRequest(m),
+            e @ dream_core_auth::mfa::MfaError::SelfNotEnrolled => Self::MfaSelfNotEnrolled(e.message()),
             other => Self::Internal(other.message()),
         }
     }

@@ -148,6 +148,10 @@ pub(crate) enum Command {
     /// `/api/webui/reset-password` endpoint is unavailable; prints the
     /// generated password to stdout.
     Resetpass(ResetpassArgs),
+    /// Break-glass MFA recovery: clear a user's MFA binding (and optionally
+    /// switch the policy off) directly in the on-disk database, for when a
+    /// mandatory policy has locked every administrator out of the console.
+    Resetmfa(ResetmfaArgs),
 }
 
 impl Command {
@@ -164,6 +168,7 @@ impl Command {
             Self::Doctor => "doctor",
             Self::PrepareManagedResources(_) => "prepare-managed-resources",
             Self::Resetpass(_) => "resetpass",
+            Self::Resetmfa(_) => "resetmfa",
         }
     }
 
@@ -177,6 +182,16 @@ pub(crate) struct ResetpassArgs {
     /// Username to reset; defaults to the primary WebUI user.
     #[arg(long)]
     pub username: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub(crate) struct ResetmfaArgs {
+    /// Username whose MFA binding to clear; defaults to the primary WebUI user.
+    #[arg(long)]
+    pub username: Option<String>,
+    /// Also switch the deployment-wide MFA policy off.
+    #[arg(long)]
+    pub policy_off: bool,
 }
 
 #[derive(Args, Debug, Clone)]

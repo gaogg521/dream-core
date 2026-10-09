@@ -125,6 +125,17 @@ pub trait MfaStore: Send + Sync {
 
     async fn challenge_save_pending_secret(&self, token_hash: &str, secret_cipher: &str) -> Result<(), DbError>;
 
+    /// Most recent not-yet-bound enroll secret issued to this user at or after
+    /// `since_ms`, expired challenges included. Lets a fresh enroll challenge
+    /// keep the secret the user's authenticator already scanned instead of
+    /// minting a new one that silently invalidates it.
+    async fn latest_pending_enroll_secret(&self, user_id: &str, since_ms: i64) -> Result<Option<String>, DbError>;
+
+    /// Forget every pending enroll secret of this user. Called once a secret
+    /// is bound (it must not be handed out again as "pending") and on an admin
+    /// reset (the lost device's secret must not come back on re-enrollment).
+    async fn clear_pending_enroll_secrets(&self, user_id: &str) -> Result<(), DbError>;
+
     /// 用户管理的 MFA 状态清单：(id, username, enabled, bound_at, exempt, force)。
     async fn list_users_mfa_status(&self)
     -> Result<Vec<(String, Option<String>, i64, Option<i64>, i64, i64)>, DbError>;
@@ -321,6 +332,30 @@ impl MfaStore for SqliteMfaStore {
         Ok(())
     }
 
+    async fn latest_pending_enroll_secret(&self, user_id: &str, since_ms: i64) -> Result<Option<String>, DbError> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT pending_secret_cipher FROM mfa_challenges \
+             WHERE user_id = ? AND purpose = ? AND pending_secret_cipher IS NOT NULL \
+             AND pending_secret_cipher != '' AND created_at >= ? \
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(user_id)
+        .bind(MfaChallengePurpose::Enroll.as_str())
+        .bind(since_ms)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(c,)| c))
+    }
+
+    async fn clear_pending_enroll_secrets(&self, user_id: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE mfa_challenges SET pending_secret_cipher = NULL WHERE user_id = ? AND purpose = ?")
+            .bind(user_id)
+            .bind(MfaChallengePurpose::Enroll.as_str())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn list_users_mfa_status(
         &self,
     ) -> Result<Vec<(String, Option<String>, i64, Option<i64>, i64, i64)>, DbError> {
@@ -333,7 +368,7 @@ impl MfaStore for SqliteMfaStore {
     }
 
     async fn audit_insert(&self, entry: &MfaAuditEntry) -> Result<(), DbError> {
-        sqlx::query("INSERT INTO mfa_audit (ts, user_id, username, action, detail, ip) VALUES (?, ?, ?, ?, ?, ?) (ts, user_id, username, action, detail, ip) VALUES (?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO mfa_audit (ts, user_id, username, action, detail, ip) VALUES (?, ?, ?, ?, ?, ?)")
             .bind(now_ms())
             .bind(entry.user_id.as_deref())
             .bind(entry.username.as_deref())

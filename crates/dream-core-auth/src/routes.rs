@@ -461,6 +461,8 @@ pub fn auth_routes(state: AuthRouterState) -> Router {
         .route("/api/auth/devices", get(list_devices_handler))
         .route("/api/auth/devices/{device_id}/revoke", post(revoke_device_handler))
         .route("/api/auth/change-password", post(change_password_handler))
+        .route("/api/auth/mfa/self", get(mfa_self_status_handler))
+        .route("/api/auth/mfa/self-enroll", post(mfa_self_enroll_handler))
         .route("/api/ws-token", get(ws_token_handler))
         .route_layer(from_fn_with_state(
             action_limiter.clone(),
@@ -902,6 +904,57 @@ async fn mfa_enroll_info_handler(
         )
             .into_response()),
         Err(e) => Err(ApiError::BadRequest(e.message())),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/auth/mfa/self · POST /api/auth/mfa/self-enroll  （已登录用户自助绑定）
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MfaSelfStatus {
+    pub bound: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MfaSelfEnrollStarted {
+    pub mfa_token: String,
+    pub expires_at: i64,
+}
+
+async fn mfa_self_status_handler(
+    State(state): State<AuthRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<MfaSelfStatus>>, ApiError> {
+    let Some(mfa) = state.mfa.as_ref() else {
+        return Err(ApiError::NotFound("MFA is not enabled on this deployment".into()));
+    };
+    let bound = mfa
+        .self_status(&user.id)
+        .await
+        .map_err(|e| ApiError::Internal(e.message()))?;
+    Ok(Json(ApiResponse::ok(MfaSelfStatus { bound })))
+}
+
+/// Issues an enroll challenge for the signed-in user. The console then runs
+/// the same enroll-info → verify steps as a forced enrollment at login, so an
+/// admin can bind before switching the policy to mandatory instead of
+/// discovering the requirement at their next login.
+async fn mfa_self_enroll_handler(
+    State(state): State<AuthRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    headers: HeaderMap,
+) -> Result<Json<ApiResponse<MfaSelfEnrollStarted>>, ApiError> {
+    let Some(mfa) = state.mfa.as_ref() else {
+        return Err(ApiError::NotFound("MFA is not enabled on this deployment".into()));
+    };
+    let ip = client_ip(&headers);
+    match mfa.self_enroll_start(&user.id, Some(ip.as_str())).await {
+        Ok((mfa_token, expires_at)) => Ok(Json(ApiResponse::ok(MfaSelfEnrollStarted { mfa_token, expires_at }))),
+        Err(e @ crate::mfa::MfaError::AlreadyEnrolled) => Err(ApiError::Conflict(e.message())),
+        Err(e) => Err(ApiError::Internal(e.message())),
     }
 }
 

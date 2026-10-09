@@ -114,6 +114,7 @@ async fn async_main(merged_path: String, cli: Cli) -> Result<ExitCode, MainError
         Some(Command::Doctor) => Ok(commands::run_doctor(&cli, &merged_path).await?),
         Some(Command::PrepareManagedResources(args)) => Ok(commands::run_prepare_managed_resources(args).await?),
         Some(Command::Resetpass(ref args)) => Ok(commands::run_resetpass(&cli, args).await?),
+        Some(Command::Resetmfa(ref args)) => Ok(commands::run_resetmfa(&cli, args).await?),
         None => {
             let mut env = bootstrap::init_environment(&cli, &merged_path)?;
 

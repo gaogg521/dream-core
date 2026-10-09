@@ -4,9 +4,12 @@
 //!   全局档 off → 直接放行；豁免 → 放行；单用户强制 / 全局强制 / 已绑定 → 进第二步。
 //!
 //! 挑战 = 第一步通过后签发的一次性临时凭证：原文（32 字节随机）只在响应里
-//! 出现一次，库里存 SHA-256 哈希；≤5 分钟有效；失败计数上限
-//! [`MAX_ATTEMPTS`]，超限作废。绑定（enroll）挑战额外暂存待确认密钥的
-//! AES-GCM 密文——验证通过一次后才落到 users 表。
+//! 出现一次，库里存 SHA-256 哈希；输码挑战 5 分钟、绑定挑战 30 分钟有效；
+//! 失败计数上限 [`MAX_ATTEMPTS`]，超限作废。绑定（enroll）挑战额外暂存待确认
+//! 密钥的 AES-GCM 密文——验证通过一次后才落到 users 表。
+//!
+//! 绑定挑战重签时沿用 24 小时内最近一把待确认密钥：首次绑定要装验证器、扫码、
+//! 输码，超时重登后若换新密钥，验证器里那把就永远对不上——表现和账号被锁死一样。
 
 use crate::totp;
 use dream_core_common::{decrypt_string, encrypt_string};
@@ -17,8 +20,12 @@ use dream_core_db::{
 };
 use std::sync::Arc;
 
-/// 挑战有效期：5 分钟。
+/// 输码（login）挑战有效期：5 分钟。
 pub const CHALLENGE_TTL_MS: i64 = 5 * 60 * 1000;
+/// 绑定（enroll）挑战有效期：30 分钟——要装验证器、扫码、输码，5 分钟不够。
+pub const ENROLL_CHALLENGE_TTL_MS: i64 = 30 * 60 * 1000;
+/// 重签绑定挑战时可沿用的待确认密钥的最长年龄。
+pub const ENROLL_SECRET_REUSE_MS: i64 = 24 * 60 * 60 * 1000;
 /// 品牌名（otpauth URI 的 issuer）。
 pub const OTPAUTH_ISSUER: &str = "One Work";
 
@@ -57,6 +64,10 @@ pub struct MfaUserStatus {
 #[derive(Debug)]
 pub enum MfaError {
     BadRequest(String),
+    /// 操作者本人尚未绑定，却要把全局策略设为强制——设了就把自己锁在门外。
+    SelfNotEnrolled,
+    /// 自助绑定：本人已绑定，不能再签发绑定挑战（要换设备请让管理员重置）。
+    AlreadyEnrolled,
     NotFound,
     Unauthorized,
     Internal(String),
@@ -70,6 +81,8 @@ impl MfaError {
     pub fn message(&self) -> String {
         match self {
             Self::BadRequest(m) => m.clone(),
+            Self::SelfNotEnrolled => "请先为你自己的账号绑定 MFA，再开启强制模式——否则你下次登录也会被要求输码".into(),
+            Self::AlreadyEnrolled => "你的账号已绑定 MFA".into(),
             Self::NotFound => "挑战不存在或已使用".into(),
             Self::Unauthorized => "动态码错误".into(),
             Self::Internal(m) => m.clone(),
@@ -123,12 +136,21 @@ impl MfaService {
         let token = random_token();
         let token_hash = sha256_hex(token.as_bytes());
         let secret_cipher = if purpose == MfaChallengePurpose::Enroll {
-            let secret = totp::generate_secret();
-            let cipher =
-                encrypt_string(&secret, &self.encryption_key).map_err(|e| MfaError::Internal(e.to_string()))?;
-            Some((secret, cipher))
+            let since = dream_core_common::now_ms() - ENROLL_SECRET_REUSE_MS;
+            match self.store.latest_pending_enroll_secret(&user.id, since).await? {
+                Some(cipher) => Some(cipher),
+                None => {
+                    let secret = totp::generate_secret();
+                    Some(encrypt_string(&secret, &self.encryption_key).map_err(|e| MfaError::Internal(e.to_string()))?)
+                }
+            }
         } else {
             None
+        };
+        let ttl_ms = if purpose == MfaChallengePurpose::Enroll {
+            ENROLL_CHALLENGE_TTL_MS
+        } else {
+            CHALLENGE_TTL_MS
         };
         let expires_at = self
             .store
@@ -136,12 +158,12 @@ impl MfaService {
                 &token_hash,
                 &user.id,
                 purpose,
-                secret_cipher.as_ref().map(|(_, c)| c.as_str()),
+                secret_cipher.as_deref(),
                 redirect_target,
                 desktop,
                 scheme,
                 ip,
-                CHALLENGE_TTL_MS,
+                ttl_ms,
             )
             .await?;
         self.audit(
@@ -201,6 +223,7 @@ impl MfaService {
                     self.user_repo
                         .set_mfa_binding(&user.id, &cipher, dream_core_common::now_ms())
                         .await?;
+                    self.store.clear_pending_enroll_secrets(&user.id).await?;
                 }
                 self.user_repo.set_mfa_last_step(&user.id, step).await?;
                 self.audit(
@@ -312,6 +335,24 @@ impl MfaService {
             .await
     }
 
+    /// 本人是否已绑定（控制台据此决定开强制前要不要先走自助绑定）。
+    pub async fn self_status(&self, user_id: &str) -> Result<bool, MfaError> {
+        Ok(self.user_repo.find_by_id(user_id).await?.is_some_and(|u| u.mfa_enabled))
+    }
+
+    /// 已登录用户自助绑定：签发一张绑定挑战，之后与登录时的强制绑定走同一条
+    /// enroll-info → verify 路径。已绑定则拒绝——换设备要走管理员重置。
+    pub async fn self_enroll_start(&self, user_id: &str, ip: Option<&str>) -> Result<(String, i64), MfaError> {
+        let user = self.user_repo.find_by_id(user_id).await?.ok_or(MfaError::NotFound)?;
+        if user.mfa_enabled {
+            return Err(MfaError::AlreadyEnrolled);
+        }
+        let (token, expires_at, _) = self
+            .create_challenge(&user, MfaChallengePurpose::Enroll, ip, None, false, None)
+            .await?;
+        Ok((token, expires_at))
+    }
+
     pub async fn admin_audit_list(&self, limit: i64) -> Result<Vec<MfaAuditRow>, MfaError> {
         Ok(self.store.audit_list(limit).await?)
     }
@@ -322,7 +363,16 @@ impl MfaService {
         Ok(self.store.policy_mode().await?)
     }
 
+    /// 设全局档。切到强制前校验操作者本人已绑定（或被豁免）：策略全局生效，
+    /// 没有这道校验，开强制的那一刻就把自己变成了下一个登录被拦的人。
     pub async fn admin_policy_set(&self, mode: MfaMode, operator: &str) -> Result<(), MfaError> {
+        if mode == MfaMode::Mandatory && self.store.policy_mode().await? != MfaMode::Mandatory {
+            let operator_user = self.user_repo.find_by_id(operator).await?;
+            let protected = operator_user.as_ref().is_some_and(|u| u.mfa_enabled || u.mfa_exempt);
+            if !protected {
+                return Err(MfaError::SelfNotEnrolled);
+            }
+        }
         self.store.policy_set(mode, operator).await?;
         self.audit(
             Some(operator),
@@ -353,6 +403,7 @@ impl MfaService {
 
     pub async fn admin_reset(&self, user_id: &str, operator: &str, reason: &str) -> Result<(), MfaError> {
         self.user_repo.clear_mfa_binding(user_id).await?;
+        self.store.clear_pending_enroll_secrets(user_id).await?;
         self.audit(
             Some(user_id),
             None,
@@ -392,7 +443,10 @@ impl MfaService {
         detail: Option<String>,
         ip: Option<&str>,
     ) {
-        let _ = self
+        // Best-effort (an audit hiccup must not fail a login), but never
+        // silent: the insert SQL was malformed for months and every MFA audit
+        // row was dropped without a single log line.
+        if let Err(e) = self
             .store
             .audit_insert(&MfaAuditEntry {
                 user_id: user_id.map(str::to_owned),
@@ -401,7 +455,10 @@ impl MfaService {
                 detail,
                 ip: ip.map(str::to_owned),
             })
-            .await;
+            .await
+        {
+            tracing::warn!(action, error = %e, "failed to record MFA audit event");
+        }
     }
 }
 
@@ -422,3 +479,134 @@ fn sha256_hex(data: &[u8]) -> String {
 
 /// otpauth issuer 的占位（避免模块间命名抖动；实际值见 totp.rs 调用方常量）。
 const OPTRAUTH_ISSUER_PLACEHOLDER: &str = "One Work";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dream_core_db::{SqliteMfaStore, SqliteUserRepository};
+
+    const KEY: [u8; 32] = [9u8; 32];
+
+    async fn service() -> (MfaService, Arc<dyn IUserRepository>) {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        let users: Arc<dyn IUserRepository> = Arc::new(SqliteUserRepository::new(db.pool().clone()));
+        let store: Arc<dyn MfaStore> = Arc::new(SqliteMfaStore::new(db.pool().clone()));
+        (MfaService::new(users.clone(), store, KEY), users)
+    }
+
+    async fn user(users: &Arc<dyn IUserRepository>, name: &str) -> User {
+        users.create_user(name, "hash").await.unwrap()
+    }
+
+    async fn enroll_secret(svc: &MfaService, token: &str) -> String {
+        svc.enroll_info(token).await.unwrap().1
+    }
+
+    /// Finding 18 (D1): switching to mandatory while not enrolled is refused
+    /// — it is how the reporting deployment's admin locked themselves out.
+    #[tokio::test]
+    async fn mandatory_policy_requires_the_operator_to_be_enrolled_first() {
+        let (svc, users) = service().await;
+        let admin = user(&users, "ops_admin").await;
+
+        let err = svc.admin_policy_set(MfaMode::Mandatory, &admin.id).await.unwrap_err();
+        assert!(matches!(err, MfaError::SelfNotEnrolled));
+        assert_eq!(svc.admin_policy_get().await.unwrap(), MfaMode::Off);
+
+        // Optional is always allowed, and an enrolled operator may go mandatory.
+        svc.admin_policy_set(MfaMode::Optional, &admin.id).await.unwrap();
+        users.set_mfa_binding(&admin.id, "cipher", 1).await.unwrap();
+        svc.admin_policy_set(MfaMode::Mandatory, &admin.id).await.unwrap();
+        assert_eq!(svc.admin_policy_get().await.unwrap(), MfaMode::Mandatory);
+    }
+
+    #[tokio::test]
+    async fn mfa_events_land_in_the_audit_log() {
+        let (svc, users) = service().await;
+        let u = user(&users, "dave").await;
+        svc.create_challenge(&u, MfaChallengePurpose::Enroll, Some("10.0.0.1"), None, false, None)
+            .await
+            .unwrap();
+        svc.admin_reset(&u.id, "ops_admin", "lost phone").await.unwrap();
+        let actions: Vec<String> = svc
+            .admin_audit_list(10)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.action)
+            .collect();
+        assert!(actions.contains(&"mfa_enroll_started".to_string()), "{actions:?}");
+        assert!(actions.contains(&"mfa_reset".to_string()), "{actions:?}");
+    }
+
+    #[tokio::test]
+    async fn an_exempt_operator_may_enable_mandatory() {
+        let (svc, users) = service().await;
+        let admin = user(&users, "ops_admin").await;
+        users.set_mfa_flags(&admin.id, true, false).await.unwrap();
+        svc.admin_policy_set(MfaMode::Mandatory, &admin.id).await.unwrap();
+    }
+
+    /// Finding 19 (D2): a re-issued enroll challenge keeps the secret the
+    /// user's authenticator already holds, and lives long enough to finish.
+    #[tokio::test]
+    async fn reissued_enroll_challenge_keeps_the_pending_secret() {
+        let (svc, users) = service().await;
+        let u = user(&users, "alice").await;
+
+        let (t1, exp1, _) = svc
+            .create_challenge(&u, MfaChallengePurpose::Enroll, None, None, false, None)
+            .await
+            .unwrap();
+        assert!(exp1 - dream_core_common::now_ms() > CHALLENGE_TTL_MS);
+        let (t2, _, _) = svc
+            .create_challenge(&u, MfaChallengePurpose::Enroll, None, None, false, None)
+            .await
+            .unwrap();
+        assert_ne!(t1, t2);
+        let secret = enroll_secret(&svc, &t1).await;
+        assert_eq!(secret, enroll_secret(&svc, &t2).await);
+
+        // A code from that one secret completes enrollment via the newer challenge.
+        let code = totp::totp_code(&secret, dream_core_common::now_ms()).unwrap();
+        let (_, _, enrolled) = svc.verify(&t2, &code, None).await.unwrap().unwrap();
+        assert!(enrolled);
+    }
+
+    /// After an admin reset the lost device's secret must not come back.
+    #[tokio::test]
+    async fn admin_reset_forgets_pending_secrets() {
+        let (svc, users) = service().await;
+        let u = user(&users, "bob").await;
+        let (t1, _, _) = svc
+            .create_challenge(&u, MfaChallengePurpose::Enroll, None, None, false, None)
+            .await
+            .unwrap();
+        let old = enroll_secret(&svc, &t1).await;
+
+        svc.admin_reset(&u.id, "admin", "lost phone").await.unwrap();
+        let (t2, _, _) = svc
+            .create_challenge(&u, MfaChallengePurpose::Enroll, None, None, false, None)
+            .await
+            .unwrap();
+        assert_ne!(old, enroll_secret(&svc, &t2).await);
+    }
+
+    #[tokio::test]
+    async fn self_enroll_issues_a_challenge_only_while_unbound() {
+        let (svc, users) = service().await;
+        let u = user(&users, "carol").await;
+        assert!(!svc.self_status(&u.id).await.unwrap());
+
+        let (token, _) = svc.self_enroll_start(&u.id, None).await.unwrap();
+        let secret = enroll_secret(&svc, &token).await;
+        let code = totp::totp_code(&secret, dream_core_common::now_ms()).unwrap();
+        svc.verify(&token, &code, None).await.unwrap().unwrap();
+
+        assert!(svc.self_status(&u.id).await.unwrap());
+        assert!(matches!(
+            svc.self_enroll_start(&u.id, None).await.unwrap_err(),
+            MfaError::AlreadyEnrolled
+        ));
+    }
+}
