@@ -202,6 +202,8 @@ async fn authorize(
     State(state): State<OneSsoRouterState>,
     Path(provider): Path<String>,
     Query(query): Query<AuthorizeQuery>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
 ) -> Result<Response, SsoError> {
     let provider = SsoProviderKind::parse(&provider)
         .ok_or_else(|| SsoError::BadRequest(format!("unknown provider: {provider}")))?;
@@ -242,6 +244,21 @@ async fn authorize(
     let want_json = matches!(query.format.as_deref(), Some("json"));
     let deep_link_scheme = sanitize_deep_link_scheme(query.scheme.as_deref());
 
+    // The state cookie set below only comes back if the browser is on the
+    // same host as the callback. When the admin configured the callback on a
+    // different host than the one this request arrived on (console opened via
+    // `localhost`, callback registered on the LAN IP), start the flow over on
+    // the callback's host first, so the cookie and the callback line up.
+    if provider != SsoProviderKind::Saml
+        && !want_json
+        && let Some(callback_origin) = configured_callback_origin(&row)
+        && let Some(request_host) = headers.get(header::HOST).and_then(|v| v.to_str().ok())
+        && !callback_origin_matches_host(&callback_origin, request_host)
+    {
+        let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or(uri.path());
+        return Ok(Redirect::to(&format!("{callback_origin}{path_and_query}")).into_response());
+    }
+
     let (goto, state_token) = build_authorize_goto(
         provider,
         &row,
@@ -252,14 +269,100 @@ async fn authorize(
     )
     .await?;
 
-    if want_json {
-        return Ok(Json(ApiResponse::ok(AuthorizeRedirectDto {
+    let state_cookie = (provider != SsoProviderKind::Saml)
+        .then(|| state_cookie_header(provider, &state_token, state.service.cookie_secure()));
+    let mut response = if want_json {
+        Json(ApiResponse::ok(AuthorizeRedirectDto {
             goto,
             state: state_token,
         }))
-        .into_response());
+        .into_response()
+    } else {
+        Redirect::to(&goto).into_response()
+    };
+    if let Some(cookie) = state_cookie.and_then(|c| header::HeaderValue::from_str(&c).ok()) {
+        response.headers_mut().append(header::SET_COOKIE, cookie);
     }
-    Ok(Redirect::to(&goto).into_response())
+    Ok(response)
+}
+
+/// Name of the cookie binding an OAuth `state` to the browser that started the
+/// login. Per provider so two concurrent logins with different providers in
+/// one browser do not evict each other.
+fn state_cookie_name(provider: SsoProviderKind) -> String {
+    format!("dream-sso-state-{}", provider.as_str())
+}
+
+/// `SameSite=Lax` is what lets the cookie ride the IdP's top-level redirect
+/// back to the callback. Scoped to the SSO routes and to the state's own TTL.
+fn state_cookie_header(provider: SsoProviderKind, state_token: &str, secure: bool) -> String {
+    format!(
+        "{}={state_token}; Path=/api/one/sso/; HttpOnly; SameSite=Lax; Max-Age=600{}",
+        state_cookie_name(provider),
+        if secure { "; Secure" } else { "" }
+    )
+}
+
+fn clear_state_cookie_header(provider: SsoProviderKind, secure: bool) -> String {
+    format!(
+        "{}=; Path=/api/one/sso/; HttpOnly; SameSite=Lax; Max-Age=0{}",
+        state_cookie_name(provider),
+        if secure { "; Secure" } else { "" }
+    )
+}
+
+/// Login CSRF guard (2026-10-09 security test, finding 13). A server-issued
+/// `state` proves only that *someone* started a login: an attacker can start
+/// one, finish it at the IdP with their own account, and send the victim the
+/// resulting `callback?code=...&state=...` link; the victim would then be
+/// signed in to the attacker's account and store their work in it. The state
+/// must also belong to *this* browser, the one carrying the cookie `authorize`
+/// set.
+fn state_cookie_matches(headers: &HeaderMap, provider: SsoProviderKind, state_token: &str) -> bool {
+    let name = state_cookie_name(provider);
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter_map(|pair| pair.trim().split_once('='))
+        .any(|(k, v)| k == name && v == state_token)
+}
+
+/// `scheme://host[:port]` of the callback URL the admin configured for this
+/// provider, when one is set and parseable.
+fn configured_callback_origin(row: &crate::models::SsoProviderRow) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(&row.config).ok()?;
+    let raw = value.get("redirectUri").and_then(|v| v.as_str())?.trim();
+    let url = reqwest::Url::parse(raw).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = url.host_str()?;
+    Some(match url.port() {
+        Some(port) => format!("{}://{host}:{port}", url.scheme()),
+        None => format!("{}://{host}", url.scheme()),
+    })
+}
+
+/// Whether the request's `Host` header names the same authority as
+/// `callback_origin`. A default port compares equal to an omitted one.
+fn callback_origin_matches_host(callback_origin: &str, request_host: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(callback_origin) else {
+        return true;
+    };
+    let Some(host) = url.host_str() else {
+        return true;
+    };
+    let expected = match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_owned(),
+    }
+    .to_ascii_lowercase();
+    let default_port = if url.scheme() == "https" { ":443" } else { ":80" };
+    let request = request_host.trim().to_ascii_lowercase();
+    let request = request.strip_suffix(default_port).unwrap_or(&request);
+    request == expected
 }
 
 /// Build the provider-specific OAuth authorize URL + issue an OAuth state
@@ -330,9 +433,24 @@ async fn callback(
     State(state): State<OneSsoRouterState>,
     Path(provider): Path<String>,
     Query(query): Query<CallbackQuery>,
+    headers: HeaderMap,
 ) -> Result<Response, SsoError> {
     let provider = SsoProviderKind::parse(&provider)
         .ok_or_else(|| SsoError::BadRequest(format!("unknown provider: {provider}")))?;
+    let secure = state.service.cookie_secure();
+    let mut response = callback_inner(state, provider, query, &headers).await?;
+    if let Ok(clear) = header::HeaderValue::from_str(&clear_state_cookie_header(provider, secure)) {
+        response.headers_mut().append(header::SET_COOKIE, clear);
+    }
+    Ok(response)
+}
+
+async fn callback_inner(
+    state: OneSsoRouterState,
+    provider: SsoProviderKind,
+    query: CallbackQuery,
+    headers: &HeaderMap,
+) -> Result<Response, SsoError> {
     let code = query
         .code
         .as_deref()
@@ -353,6 +471,13 @@ async fn callback(
         .await
         .ok_or(SsoError::InvalidState)?;
     if entry.provider != provider {
+        return Err(SsoError::InvalidState);
+    }
+    if !state_cookie_matches(headers, provider, state_token) {
+        tracing::warn!(
+            provider = provider.as_str(),
+            "SSO callback rejected: state was not issued to this browser"
+        );
         return Err(SsoError::InvalidState);
     }
 
@@ -1018,7 +1143,10 @@ pub struct UpdateMfaFlagsBody {
 
 /// dream-core-db / auth 错误统一转 SsoError::BadRequest 语义的桥接。
 fn sso_err(e: dream_core_auth::mfa::MfaError) -> SsoError {
-    SsoError::BadRequest(e.message())
+    match e {
+        dream_core_auth::mfa::MfaError::SelfNotEnrolled => SsoError::MfaSelfNotEnrolled(e.message()),
+        other => SsoError::BadRequest(other.message()),
+    }
 }
 
 fn urlencode(s: &str) -> String {
@@ -1042,6 +1170,87 @@ const _: fn() = || {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cookie_headers(raw: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::COOKIE, raw.parse().unwrap());
+        headers
+    }
+
+    /// Login CSRF: a callback carrying a valid server-issued state but no
+    /// matching cookie (the victim never started this login) is refused.
+    #[test]
+    fn state_cookie_must_match_the_callback_state() {
+        let p = SsoProviderKind::Feishu;
+        assert!(state_cookie_matches(
+            &cookie_headers("a=1; dream-sso-state-feishu=abc; b=2"),
+            p,
+            "abc"
+        ));
+        assert!(!state_cookie_matches(&HeaderMap::new(), p, "abc"));
+        assert!(!state_cookie_matches(
+            &cookie_headers("dream-sso-state-feishu=other"),
+            p,
+            "abc"
+        ));
+        // Another provider's cookie does not count.
+        assert!(!state_cookie_matches(
+            &cookie_headers("dream-sso-state-oidc=abc"),
+            p,
+            "abc"
+        ));
+    }
+
+    #[test]
+    fn state_cookie_is_lax_httponly_and_scoped() {
+        let c = state_cookie_header(SsoProviderKind::Oidc, "abc", true);
+        assert!(c.starts_with("dream-sso-state-oidc=abc;"));
+        for attr in [
+            "HttpOnly",
+            "SameSite=Lax",
+            "Path=/api/one/sso/",
+            "Max-Age=600",
+            "Secure",
+        ] {
+            assert!(c.contains(attr), "{attr} missing from {c}");
+        }
+        assert!(!state_cookie_header(SsoProviderKind::Oidc, "abc", false).contains("Secure"));
+    }
+
+    #[test]
+    fn callback_host_comparison_treats_default_ports_as_equal() {
+        assert!(callback_origin_matches_host("http://192.168.1.5", "192.168.1.5"));
+        assert!(callback_origin_matches_host("http://192.168.1.5", "192.168.1.5:80"));
+        assert!(callback_origin_matches_host(
+            "https://sso.example.com",
+            "SSO.example.com:443"
+        ));
+        assert!(callback_origin_matches_host("http://h:8080", "h:8080"));
+        assert!(!callback_origin_matches_host("http://192.168.1.5", "localhost"));
+        assert!(!callback_origin_matches_host("http://h:8080", "h"));
+    }
+
+    #[test]
+    fn configured_callback_origin_reads_redirect_uri() {
+        let row = |config: &str| crate::models::SsoProviderRow {
+            provider: "feishu".into(),
+            enabled: true,
+            config: config.into(),
+            updated_at: 0,
+            updated_by: None,
+        };
+        assert_eq!(
+            configured_callback_origin(&row(
+                r#"{"redirectUri":"http://10.0.0.2:25810/api/one/sso/feishu/callback"}"#
+            )),
+            Some("http://10.0.0.2:25810".into())
+        );
+        assert_eq!(configured_callback_origin(&row(r#"{"appId":"x"}"#)), None);
+        assert_eq!(
+            configured_callback_origin(&row(r#"{"redirectUri":"javascript:alert(1)"}"#)),
+            None
+        );
+    }
 
     #[test]
     fn post_login_redirect_only_accepts_paths_on_this_origin() {

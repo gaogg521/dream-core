@@ -493,6 +493,26 @@ impl dream_domain_org::CompanySeatSync for CompanySeatSyncAdapter {
     }
 }
 
+/// Re-encrypts SSO provider secrets still stored as plaintext by builds that
+/// predate encryption-at-rest for `one_sso_providers.config`. Idempotent, so
+/// both the app and admin processes run it; a failure is logged, not fatal —
+/// reads still accept legacy plaintext.
+#[cfg(feature = "enterprise")]
+async fn encrypt_legacy_sso_secrets(services: &AppServices) {
+    let service = dream_domain_sso::SsoService::new(
+        services.db.clone(),
+        services.user_repo.clone(),
+        services.jwt_service.clone(),
+        services.cookie_config.clone(),
+    )
+    .with_secret_key(crate::config::derive_encryption_key(&services.data_secret_raw));
+    match service.encrypt_legacy_provider_secrets().await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(providers = n, "encrypted legacy plaintext SSO provider secrets"),
+        Err(e) => tracing::warn!(error = %e, "could not encrypt legacy SSO provider secrets; will retry next start"),
+    }
+}
+
 /// Adapts one-enterprise's `EnterpriseService::is_company_admin` to the
 /// `dream_domain_sso::CompanyAdminCheck` trait, so a company admin may manage the
 /// company-level SSO config (企业认证). Errors deny (fail closed).
@@ -2191,6 +2211,7 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
                 RouterBuildError::new("router.dream_domain_sso.migrate", "failed to run one-sso migrations")
                     .with_source(e)
             })?;
+        encrypt_legacy_sso_secrets(services).await;
     }
     dream_domain_devops::run_one_devops_migrations(&services.db.clone())
         .await
@@ -2339,12 +2360,15 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
     // the provider config table, never the in-memory OAuth state this instance
     // also carries.
     #[cfg(feature = "enterprise")]
-    let directory_sso_service = Arc::new(dream_domain_sso::SsoService::new(
-        services.db.clone(),
-        services.user_repo.clone(),
-        services.jwt_service.clone(),
-        services.cookie_config.clone(),
-    ));
+    let directory_sso_service = Arc::new(
+        dream_domain_sso::SsoService::new(
+            services.db.clone(),
+            services.user_repo.clone(),
+            services.jwt_service.clone(),
+            services.cookie_config.clone(),
+        )
+        .with_secret_key(crate::config::derive_encryption_key(&services.data_secret_raw)),
+    );
     #[cfg(feature = "enterprise")]
     let directory_sink: Arc<dyn dream_domain_sso::DirectorySink> = Arc::new(DirectorySinkAdapter(Arc::new(
         dream_domain_enterprise::EnterpriseService::new(services.db.clone()),
@@ -2845,47 +2869,49 @@ pub(crate) fn build_governance_plane(
     // one-sso routes. Public half (providers/authorize/callback) is
     // unauthenticated so OAuth can run before the user has a session;
     // admin half (upsert provider) sits behind the auth middleware.
-    let one_sso_state =
-        dream_domain_sso::OneSsoRouterState::new(std::sync::Arc::new(dream_domain_sso::SsoService::new(
+    let one_sso_state = dream_domain_sso::OneSsoRouterState::new(std::sync::Arc::new(
+        dream_domain_sso::SsoService::new(
             services.db.clone(),
             services.user_repo.clone(),
             services.jwt_service.clone(),
             services.cookie_config.clone(),
-        )))
-        .with_mfa(mfa_service.clone())
-        // Enterprise-org sync: a successful SSO login upserts the caller's company
-        // + membership into one-enterprise. No-op (aside from the upsert) for
-        // personal edition / WebUI-only builds since it never touches
-        // `one_tenants` / project-group membership.
-        .with_enterprise_sync(std::sync::Arc::new(EnterpriseSyncAdapter(
-            one_enterprise_service.clone(),
-        )))
-        // Direction B: SSO config (企业认证) is a company-level policy, so a company
-        // admin may manage it. Falls back to the project-group admin when unset.
-        .with_company_admin_check(std::sync::Arc::new(CompanyAdminCheckAdapter(
-            one_enterprise_service.clone(),
-        )))
-        // Onboarding after any SSO login. Two hooks: P2-4's email-domain
-        // auto-join (no-op unless the IdP profile is email-shaped AND a tenant
-        // sets `allowed_email_domains`), and the directory-driven placement
-        // that covers every provider — see `OrgAutoJoinAdapter`.
-        .with_org_auto_join(std::sync::Arc::new(OrgAutoJoinAdapter {
-            org: one_org_service.clone(),
-            directory: std::sync::Arc::new(DirectoryTreeSourceAdapter(one_enterprise_service.clone())),
-            seats: one_enterprise_service.clone(),
-        }))
-        // T6 directory sync: where a completed Feishu directory pull is stored.
-        // Wiring it does not start anything — a pull only happens when an admin
-        // asks or the scheduler fires, and both find nothing to do unless this
-        // machine actually holds the company's SSO config.
-        .with_directory_sink(std::sync::Arc::new(DirectorySinkAdapter(
-            one_enterprise_service.clone(),
-        )))
-        .with_scim_lifecycle(std::sync::Arc::new(ScimLifecycleAdapter {
-            org: one_org_service.clone(),
-            devops: one_devops_service.clone(),
-            enterprise: one_enterprise_service.clone(),
-        }));
+        )
+        .with_secret_key(crate::config::derive_encryption_key(&services.data_secret_raw)),
+    ))
+    .with_mfa(mfa_service.clone())
+    // Enterprise-org sync: a successful SSO login upserts the caller's company
+    // + membership into one-enterprise. No-op (aside from the upsert) for
+    // personal edition / WebUI-only builds since it never touches
+    // `one_tenants` / project-group membership.
+    .with_enterprise_sync(std::sync::Arc::new(EnterpriseSyncAdapter(
+        one_enterprise_service.clone(),
+    )))
+    // Direction B: SSO config (企业认证) is a company-level policy, so a company
+    // admin may manage it. Falls back to the project-group admin when unset.
+    .with_company_admin_check(std::sync::Arc::new(CompanyAdminCheckAdapter(
+        one_enterprise_service.clone(),
+    )))
+    // Onboarding after any SSO login. Two hooks: P2-4's email-domain
+    // auto-join (no-op unless the IdP profile is email-shaped AND a tenant
+    // sets `allowed_email_domains`), and the directory-driven placement
+    // that covers every provider — see `OrgAutoJoinAdapter`.
+    .with_org_auto_join(std::sync::Arc::new(OrgAutoJoinAdapter {
+        org: one_org_service.clone(),
+        directory: std::sync::Arc::new(DirectoryTreeSourceAdapter(one_enterprise_service.clone())),
+        seats: one_enterprise_service.clone(),
+    }))
+    // T6 directory sync: where a completed Feishu directory pull is stored.
+    // Wiring it does not start anything — a pull only happens when an admin
+    // asks or the scheduler fires, and both find nothing to do unless this
+    // machine actually holds the company's SSO config.
+    .with_directory_sink(std::sync::Arc::new(DirectorySinkAdapter(
+        one_enterprise_service.clone(),
+    )))
+    .with_scim_lifecycle(std::sync::Arc::new(ScimLifecycleAdapter {
+        org: one_org_service.clone(),
+        devops: one_devops_service.clone(),
+        enterprise: one_enterprise_service.clone(),
+    }));
     let one_sso_public = dream_domain_sso::one_sso_public_routes(one_sso_state.clone())
         .merge(dream_domain_sso::scim_routes(one_sso_state.clone()));
     let one_sso_admin = dream_domain_sso::one_sso_admin_routes(one_sso_state)
@@ -3107,6 +3133,7 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
         .map_err(|e| {
             RouterBuildError::new("router.dream_domain_sso.migrate", "failed to run one-sso migrations").with_source(e)
         })?;
+    encrypt_legacy_sso_secrets(services).await;
     dream_domain_devops::run_one_devops_migrations(&services.db.clone())
         .await
         .map_err(|e| {
@@ -3262,13 +3289,17 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
     let router = router.layer(middleware::from_fn(normalize_boundary_error_response));
     let router = with_access_log(router);
 
-    // Governance calls only ever arrive same-origin through the gateway
-    // (admin console, admin API), so credentialed CORS with the request
-    // origin reflected back is all that's needed — no bespoke local-mode
-    // wildcard carve-out like the personal workbench has.
+    // The admin console is served same-origin through the gateway and needs
+    // no CORS at all. The only cross-origin caller is the desktop client
+    // (file:// or a localhost dev server), and it authenticates with an
+    // explicit Bearer token, never the session cookie. So origins are
+    // reflected but credentials are NOT allowed: with
+    // `Access-Control-Allow-Credentials: true` any web page a logged-in admin
+    // visited could ride their `dream-session` cookie and read every
+    // governance response, CSRF double-submit notwithstanding (2026-10-09
+    // security test, finding 1).
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::mirror_request())
-        .allow_credentials(true)
         .allow_methods([
             Method::GET,
             Method::POST,
@@ -3280,7 +3311,9 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
         .allow_headers([
             header::CONTENT_TYPE,
             header::AUTHORIZATION,
-            HeaderName::from_static("x-csrf-token"),
+            // No x-csrf-token: it only means something alongside the cookie,
+            // which a cross-origin request no longer carries.
+            //
             // C1-2: the desktop client self-reports its machine id on every
             // remote governance request so a blocked runtime node can
             // actually be enforced. Custom headers are not CORS-safelisted,
@@ -3913,13 +3946,14 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     } else {
         // Non-local (external identity) mode: the desktop renderer is a
         // cross-origin browser context (localhost:5173 in dev, file:// when
-        // packaged) authenticating with the session cookie, so responses must
-        // opt in to credentialed CORS. Credentialed mode forbids wildcards:
-        // reflect the request origin and enumerate headers explicitly
-        // (x-csrf-token is required by the CSRF double-submit middleware).
+        // packaged). It authenticates remote calls with an explicit Bearer
+        // token (dream-ui `httpBridge` sends no credentials), and the WebUI is
+        // served same-origin, so credentialed CORS is not needed — and
+        // allowing it next to a reflected origin let any site read responses
+        // with a logged-in user's session cookie. Same rule as the admin
+        // plane above.
         let cors = CorsLayer::new()
             .allow_origin(AllowOrigin::mirror_request())
-            .allow_credentials(true)
             .allow_methods([
                 Method::GET,
                 Method::POST,
@@ -3931,7 +3965,6 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
             .allow_headers([
                 header::CONTENT_TYPE,
                 header::AUTHORIZATION,
-                HeaderName::from_static("x-csrf-token"),
                 // C1-2: see the identical addition on the admin-plane CORS
                 // layer above for why this must be enumerated here too.
                 HeaderName::from_static("x-dream-machine-id"),

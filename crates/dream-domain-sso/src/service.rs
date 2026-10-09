@@ -110,6 +110,10 @@ pub struct SsoService {
     jwt_service: Arc<JwtService>,
     cookie_config: Arc<CookieConfig>,
     state_store: OAuthStateStore,
+    /// Encrypts each provider's secret fields (`secret_keys`) inside the
+    /// stored config JSON. `None` (unit tests, standalone assemblies) keeps
+    /// plaintext. Same key as every other `*_encrypted` column.
+    secret_key: Option<[u8; 32]>,
 }
 
 /// Result of a successful SSO callback — the caller (route handler) wraps
@@ -136,7 +140,67 @@ impl SsoService {
             jwt_service,
             cookie_config,
             state_store: OAuthStateStore::new(),
+            secret_key: None,
         }
+    }
+
+    /// Store provider secrets (Feishu/DingTalk appSecret, OIDC clientSecret,
+    /// LDAP bindPassword, ...) encrypted at rest. Before this the whole config
+    /// sat in `one_sso_providers.config` as plaintext JSON — the one secret
+    /// column in the enterprise schema that skipped the `*_encrypted`
+    /// convention, and a leaked appSecret lets anyone impersonate the
+    /// company's IdP app.
+    pub fn with_secret_key(mut self, key: [u8; 32]) -> Self {
+        self.secret_key = Some(key);
+        self
+    }
+
+    /// One-time, idempotent pass encrypting secret fields still stored as
+    /// legacy plaintext. Safe to run on every start and from both processes.
+    pub async fn encrypt_legacy_provider_secrets(&self) -> Result<usize, SsoError> {
+        let Some(key) = self.secret_key else {
+            return Ok(0);
+        };
+        let rows = self
+            .db
+            .fetch_all_as::<SsoProviderRow>(
+                "SELECT provider, enabled, config, updated_at, updated_by FROM one_sso_providers",
+                &[],
+            )
+            .await?;
+        let mut migrated = 0;
+        for row in rows {
+            let encrypted = encrypt_secret_fields(&row.provider, &row.config, &key)?;
+            if encrypted != row.config {
+                self.db
+                    .execute(
+                        "UPDATE one_sso_providers SET config = ? WHERE provider = ? AND config = ?",
+                        &db_params![&encrypted, &row.provider, &row.config],
+                    )
+                    .await?;
+                migrated += 1;
+            }
+        }
+        Ok(migrated)
+    }
+
+    fn decrypt_row(&self, mut row: SsoProviderRow) -> Result<SsoProviderRow, SsoError> {
+        if let Some(key) = self.secret_key.as_ref() {
+            row.config = decrypt_secret_fields(&row.provider, &row.config, key)?;
+        }
+        Ok(row)
+    }
+
+    fn encrypt_config(&self, provider: &str, config: String) -> Result<String, SsoError> {
+        match self.secret_key.as_ref() {
+            Some(key) => encrypt_secret_fields(provider, &config, key),
+            None => Ok(config),
+        }
+    }
+
+    /// Whether cookies this service sets must carry `Secure` (HTTPS deployments).
+    pub fn cookie_secure(&self) -> bool {
+        self.cookie_config.secure
     }
 
     pub fn state_store(&self) -> &OAuthStateStore {
@@ -188,7 +252,7 @@ impl SsoService {
                 &db_params![provider.as_str()],
             )
             .await?;
-        Ok(row)
+        row.map(|r| self.decrypt_row(r)).transpose()
     }
 
     /// Public status list for the login page (secrets stripped).
@@ -199,7 +263,10 @@ impl SsoService {
                 "SELECT provider, enabled, config, updated_at, updated_by FROM one_sso_providers",
                 &[],
             )
-            .await?;
+            .await?
+            .into_iter()
+            .map(|r| self.decrypt_row(r))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(rows
             .into_iter()
             .map(|row| {
@@ -221,7 +288,10 @@ impl SsoService {
                 "SELECT provider, enabled, config, updated_at, updated_by FROM one_sso_providers",
                 &[],
             )
-            .await?;
+            .await?
+            .into_iter()
+            .map(|r| self.decrypt_row(r))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(rows
             .into_iter()
             .map(|row| {
@@ -303,6 +373,9 @@ impl SsoService {
         if enabled == Some(true) && !self.enterprise_feature_allowed(updated_by, Feature::Sso).await? {
             return Err(SsoError::Forbidden("SSO is not included in the current plan".into()));
         }
+        if let Some(incoming) = config.as_ref() {
+            validate_redirect_uri(provider, incoming)?;
+        }
         let existing = self.get_provider_row(provider).await?;
         let now = now_ms();
         match existing {
@@ -319,12 +392,14 @@ impl SsoService {
                     Some(incoming) => merge_config(&row.config, incoming),
                     None => row.config,
                 };
+                let new_config = self.encrypt_config(provider.as_str(), new_config)?;
                 self.db.execute(
                     "UPDATE one_sso_providers SET enabled = ?, config = ?, updated_at = ?, updated_by = ? WHERE provider = ?",  &db_params![new_enabled, &new_config, now, updated_by, provider.as_str()])
                 .await?;
             }
             None => {
                 let config_str = config.map(|v| v.to_string()).unwrap_or_else(|| "{}".into());
+                let config_str = self.encrypt_config(provider.as_str(), config_str)?;
                 let enabled_val = enabled.unwrap_or(false);
                 self.db
                     .execute(
@@ -566,6 +641,36 @@ fn merge_config(existing: &str, incoming: serde_json::Value) -> String {
     serde_json::Value::Object(merged).to_string()
 }
 
+/// Reject a callback URL that can never work, at save time instead of after
+/// the user has gone all the way through the IdP. The reported deployment had
+/// `http://<ip>:25810/api/one/sso/feishu/callback` stored — a port nothing
+/// listens on — and only found out from a browser connection error.
+/// Reachability itself can't be checked from here (the server may not reach
+/// its own public address), so this pins the shape: http(s), a host, and the
+/// one path the callback route actually serves.
+fn validate_redirect_uri(provider: SsoProviderKind, incoming: &serde_json::Value) -> Result<(), SsoError> {
+    let Some(raw) = incoming.get("redirectUri").and_then(|v| v.as_str()).map(str::trim) else {
+        return Ok(());
+    };
+    if raw.is_empty() {
+        return Ok(());
+    }
+    let expected_path = format!("/api/one/sso/{}/callback", provider.as_str());
+    let url =
+        reqwest::Url::parse(raw).map_err(|_| SsoError::BadRequest(format!("redirectUri is not a valid URL: {raw}")))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none_or(str::is_empty) {
+        return Err(SsoError::BadRequest(
+            "redirectUri must be an http(s) URL with a host".into(),
+        ));
+    }
+    if !url.path().ends_with(&expected_path) {
+        return Err(SsoError::BadRequest(format!(
+            "redirectUri must end with {expected_path} (the gateway address users open, plus this path)"
+        )));
+    }
+    Ok(())
+}
+
 /// Minimal-config check per provider — used by the login page to decide
 /// whether to render the SSO button at all (no secrets exposed).
 fn has_minimal_config(provider: &str, config_json: &str) -> bool {
@@ -617,6 +722,55 @@ fn secret_keys(provider: &str) -> &'static [&'static str] {
         "ldap" => &["bindPassword"],
         _ => &[],
     }
+}
+
+/// Rewrites `provider`'s secret fields in `config_json` through `f`, leaving
+/// empty strings, the `"******"` placeholder and non-string values alone.
+/// Unparseable / non-object configs are returned unchanged.
+fn map_secret_fields(
+    provider: &str,
+    config_json: &str,
+    f: impl Fn(&str) -> Result<String, SsoError>,
+) -> Result<String, SsoError> {
+    let Ok(serde_json::Value::Object(mut obj)) = serde_json::from_str::<serde_json::Value>(config_json) else {
+        return Ok(config_json.to_owned());
+    };
+    let mut changed = false;
+    for key in secret_keys(provider) {
+        let Some(value) = obj.get(*key).and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if value.trim().is_empty() || value == "******" {
+            continue;
+        }
+        let next = f(value)?;
+        if next != value {
+            obj.insert((*key).to_owned(), serde_json::Value::String(next));
+            changed = true;
+        }
+    }
+    Ok(if changed {
+        serde_json::Value::Object(obj).to_string()
+    } else {
+        config_json.to_owned()
+    })
+}
+
+/// Encrypt secret fields not already in the `encv1:` envelope (idempotent).
+fn encrypt_secret_fields(provider: &str, config_json: &str, key: &[u8; 32]) -> Result<String, SsoError> {
+    map_secret_fields(provider, config_json, |value| {
+        if dream_core_common::is_encrypted_field(value) {
+            return Ok(value.to_owned());
+        }
+        dream_core_common::encrypt_field(value, key).map_err(|e| SsoError::Internal(format!("encrypt sso secret: {e}")))
+    })
+}
+
+/// Decrypt `encv1:` secret fields; legacy plaintext passes through unchanged.
+fn decrypt_secret_fields(provider: &str, config_json: &str, key: &[u8; 32]) -> Result<String, SsoError> {
+    map_secret_fields(provider, config_json, |value| {
+        dream_core_common::decrypt_field(value, key).map_err(|e| SsoError::Internal(format!("decrypt sso secret: {e}")))
+    })
 }
 
 /// Which of this provider's secret fields currently hold a value — key names
@@ -949,6 +1103,107 @@ mod tests {
             }),
         );
         (svc, sqlite)
+    }
+
+    #[test]
+    fn redirect_uri_must_be_an_http_url_ending_in_the_callback_path() {
+        let ok = |v: &str| validate_redirect_uri(SsoProviderKind::Feishu, &serde_json::json!({ "redirectUri": v }));
+        assert!(ok("http://192.168.11.137/api/one/sso/feishu/callback").is_ok());
+        assert!(ok("https://sso.example.com/onework/api/one/sso/feishu/callback").is_ok());
+        assert!(ok("").is_ok());
+        assert!(validate_redirect_uri(SsoProviderKind::Feishu, &serde_json::json!({ "appId": "x" })).is_ok());
+        for bad in [
+            "192.168.11.137/api/one/sso/feishu/callback",
+            "ftp://h/api/one/sso/feishu/callback",
+            "http://h/api/auth/feishu/callback",
+            "http://h/api/one/sso/oidc/callback",
+        ] {
+            assert_eq!(ok(bad).unwrap_err().code(), "BAD_REQUEST", "{bad}");
+        }
+    }
+
+    async fn raw_config(sqlite: &sqlx::SqlitePool, provider: &str) -> String {
+        sqlx::query_scalar("SELECT config FROM one_sso_providers WHERE provider = ?")
+            .bind(provider)
+            .fetch_one(sqlite)
+            .await
+            .unwrap()
+    }
+
+    /// 2026-10-09 security test finding 11: the Feishu appSecret sat in
+    /// `one_sso_providers.config` as plaintext. With a key wired it must be
+    /// enveloped on disk and still come back usable through the service.
+    #[tokio::test]
+    async fn provider_secrets_are_encrypted_at_rest_and_decrypted_on_read() {
+        let (service, sqlite) = service_with_memory_db().await;
+        let service = service.with_secret_key([7u8; 32]);
+        service
+            .upsert_provider(
+                SsoProviderKind::Feishu,
+                None,
+                Some(serde_json::json!({"appId": "cli_x", "appSecret": "s3cret", "redirectUri": "https://sso.example.com/api/one/sso/feishu/callback"})),
+                "admin",
+            )
+            .await
+            .unwrap();
+
+        let raw = raw_config(&sqlite, "feishu").await;
+        assert!(!raw.contains("s3cret"), "plaintext secret on disk: {raw}");
+        let stored: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert!(stored["appSecret"].as_str().unwrap().starts_with("encv1:"));
+        assert_eq!(stored["appId"], "cli_x");
+
+        let row = service
+            .get_provider_row(SsoProviderKind::Feishu)
+            .await
+            .unwrap()
+            .unwrap();
+        let cfg = parse_feishu_config(&row).unwrap();
+        assert_eq!(cfg.app_secret, "s3cret");
+
+        // An edit that only touches appId keeps the stored secret working.
+        service
+            .upsert_provider(
+                SsoProviderKind::Feishu,
+                None,
+                Some(serde_json::json!({"appId": "cli_y"})),
+                "admin",
+            )
+            .await
+            .unwrap();
+        let row = service
+            .get_provider_row(SsoProviderKind::Feishu)
+            .await
+            .unwrap()
+            .unwrap();
+        let cfg = parse_feishu_config(&row).unwrap();
+        assert_eq!((cfg.app_id.as_str(), cfg.app_secret.as_str()), ("cli_y", "s3cret"));
+        assert!(!raw_config(&sqlite, "feishu").await.contains("s3cret"));
+    }
+
+    #[tokio::test]
+    async fn legacy_plaintext_secrets_are_migrated_once_and_still_readable() {
+        let (service, sqlite) = service_with_memory_db().await;
+        sqlx::query(
+            "INSERT INTO one_sso_providers (provider, enabled, config, updated_at) \
+             VALUES ('oidc', 1, '{\"issuer\":\"https://idp\",\"clientId\":\"c\",\"clientSecret\":\"legacy\"}', 0)",
+        )
+        .execute(&sqlite)
+        .await
+        .unwrap();
+        let service = service.with_secret_key([7u8; 32]);
+
+        // Readable before the migration runs (legacy plaintext passes through).
+        let row = service.get_provider_row(SsoProviderKind::Oidc).await.unwrap().unwrap();
+        assert_eq!(parse_oidc_config(&row).unwrap().client_secret, "legacy");
+
+        assert_eq!(service.encrypt_legacy_provider_secrets().await.unwrap(), 1);
+        assert!(!raw_config(&sqlite, "oidc").await.contains("legacy"));
+        // Idempotent: a second pass finds nothing to do.
+        assert_eq!(service.encrypt_legacy_provider_secrets().await.unwrap(), 0);
+
+        let row = service.get_provider_row(SsoProviderKind::Oidc).await.unwrap().unwrap();
+        assert_eq!(parse_oidc_config(&row).unwrap().client_secret, "legacy");
     }
 
     #[tokio::test]
