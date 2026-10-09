@@ -33,6 +33,14 @@ pub struct MigrationSet {
 /// crates in FK order, which also guarantees the first runner creates any
 /// shared ledger table before the others use it).
 pub async fn run_ledgered_migrations(pool: &DbPool, ledger: &str, set: MigrationSet) -> Result<(), sqlx::Error> {
+    // `ledger` is interpolated into SQL as a table name (bind parameters can't
+    // name tables). Every caller passes a constant today; refuse anything that
+    // is not a plain identifier so a future caller cannot route input here.
+    if ledger.is_empty() || !ledger.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return Err(sqlx::Error::Protocol(format!(
+            "invalid migration ledger name: {ledger:?}"
+        )));
+    }
     match pool {
         DbPool::Sqlite(pool) => run_sqlite(pool, ledger, set.sqlite).await,
         DbPool::MySql(pool) => run_mysql(pool, ledger, set.mysql).await,

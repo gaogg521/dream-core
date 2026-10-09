@@ -5,21 +5,122 @@ const MAX_PASSWORD_LENGTH: usize = 128;
 const MIN_USERNAME_LENGTH: usize = 3;
 const MAX_USERNAME_LENGTH: usize = 32;
 
-/// Common weak passwords rejected during validation.
-const WEAK_PASSWORDS: &[&str] = &["password", "12345678", "123456789", "qwertyui", "abcdefgh"];
+/// Common weak passwords rejected during validation (compared lowercased).
+///
+/// Every entry is at least `MIN_PASSWORD_LENGTH` characters — shorter ones are
+/// already refused by the length rule. Drawn from the most frequent entries of
+/// public breach corpora plus the admin defaults people reach for on a fresh
+/// enterprise install; the original five-entry list let `Password123`,
+/// `admin888`, `1qaz2wsx` through.
+const WEAK_PASSWORDS: &[&str] = &[
+    "password",
+    "password1",
+    "password12",
+    "password123",
+    "password1234",
+    "password!",
+    "password@123",
+    "passw0rd",
+    "p@ssw0rd",
+    "p@ssword",
+    "p@ssword1",
+    "p@ssw0rd123",
+    "pa$$w0rd",
+    "passwd123",
+    "12345678",
+    "123456789",
+    "1234567890",
+    "0123456789",
+    "87654321",
+    "987654321",
+    "11111111",
+    "00000000",
+    "88888888",
+    "66666666",
+    "12341234",
+    "123123123",
+    "12344321",
+    "11223344",
+    "1q2w3e4r",
+    "1q2w3e4r5t",
+    "1qaz2wsx",
+    "1qaz2wsx3edc",
+    "qazwsxedc",
+    "zaq12wsx",
+    "q1w2e3r4",
+    "qwertyui",
+    "qwertyuiop",
+    "qwerty123",
+    "qwerty12",
+    "qwer1234",
+    "asdfghjk",
+    "asdf1234",
+    "zxcvbnm1",
+    "abcdefgh",
+    "abcd1234",
+    "abc12345",
+    "abc123456",
+    "a1b2c3d4",
+    "aa123456",
+    "a12345678",
+    "admin123",
+    "admin888",
+    "admin1234",
+    "admin12345",
+    "admin@123",
+    "administrator",
+    "root1234",
+    "changeme",
+    "changeme1",
+    "welcome1",
+    "welcome123",
+    "iloveyou",
+    "iloveyou1",
+    "sunshine",
+    "princess",
+    "football",
+    "baseball",
+    "superman",
+    "trustno1",
+    "letmein1",
+    "monkey123",
+    "dragon123",
+    "master123",
+    "starwars",
+    "whatever",
+    "computer",
+    "internet",
+    "test1234",
+    "test12345",
+    "testtest",
+    "guest123",
+    "default1",
+    "secret123",
+    "woaini520",
+    "woaini1314",
+    "5201314520",
+    "13145200",
+    "onework123",
+    "dream1234",
+];
+
+const MIN_DISTINCT_CHARS: usize = 3;
 
 /// Validate password strength.
 ///
 /// Rules:
-/// - Length: 8-128 characters
+/// - Length: 8-128 characters (Unicode scalar values — `len()` counts bytes,
+///   which let a three-character CJK password pass the 8 minimum)
 /// - Not in the weak password blacklist (case-insensitive)
+/// - Not a single character repeated, or nearly so (`aaaaaaab`)
 pub fn validate_password(password: &str) -> Result<(), AuthError> {
-    if password.len() < MIN_PASSWORD_LENGTH {
+    let length = password.chars().count();
+    if length < MIN_PASSWORD_LENGTH {
         return Err(AuthError::WeakPassword(format!(
             "Password must be at least {MIN_PASSWORD_LENGTH} characters"
         )));
     }
-    if password.len() > MAX_PASSWORD_LENGTH {
+    if length > MAX_PASSWORD_LENGTH {
         return Err(AuthError::WeakPassword(format!(
             "Password must not exceed {MAX_PASSWORD_LENGTH} characters"
         )));
@@ -27,6 +128,12 @@ pub fn validate_password(password: &str) -> Result<(), AuthError> {
     let lower = password.to_lowercase();
     if WEAK_PASSWORDS.contains(&lower.as_str()) {
         return Err(AuthError::WeakPassword("Password is too common".into()));
+    }
+    let distinct = lower.chars().collect::<std::collections::HashSet<_>>().len();
+    if distinct < MIN_DISTINCT_CHARS {
+        return Err(AuthError::WeakPassword(
+            "Password must not be the same character repeated".into(),
+        ));
     }
     Ok(())
 }
@@ -85,7 +192,7 @@ mod tests {
 
     #[test]
     fn password_exactly_max_length() {
-        let max = "a".repeat(128);
+        let max = "ab1".repeat(43)[..128].to_string();
         assert!(validate_password(&max).is_ok());
     }
 
@@ -105,6 +212,48 @@ mod tests {
         for &weak in WEAK_PASSWORDS {
             assert!(validate_password(weak).is_err(), "expected rejection for: {weak}");
         }
+    }
+
+    /// `len()` is bytes: three CJK characters are 9 bytes and used to pass.
+    #[test]
+    fn length_is_counted_in_characters_not_bytes() {
+        assert!(matches!(validate_password("密码好"), Err(AuthError::WeakPassword(_))));
+        assert!(validate_password("这是一个够长的密码").is_ok());
+        // 128 CJK characters are 384 bytes and must still be accepted.
+        let max = "密码长".repeat(43).chars().take(128).collect::<String>();
+        assert!(validate_password(&max).is_ok());
+    }
+
+    #[test]
+    fn weak_list_catches_the_reported_examples() {
+        for weak in [
+            "Password123",
+            "admin888",
+            "iloveyou",
+            "1qaz2wsx",
+            "P@ssw0rd",
+            "Admin@123",
+        ] {
+            assert!(validate_password(weak).is_err(), "expected rejection for: {weak}");
+        }
+    }
+
+    #[test]
+    fn weak_list_entries_are_all_long_enough_to_matter() {
+        for &weak in WEAK_PASSWORDS {
+            assert!(
+                weak.chars().count() >= MIN_PASSWORD_LENGTH,
+                "{weak} is shorter than the minimum"
+            );
+            assert_eq!(weak, weak.to_lowercase(), "{weak} must be lowercase to ever match");
+        }
+    }
+
+    #[test]
+    fn repeated_character_passwords_are_rejected() {
+        assert!(validate_password("aaaaaaaa").is_err());
+        assert!(validate_password("abababab").is_err());
+        assert!(validate_password("abcabcab").is_ok());
     }
 
     #[test]

@@ -486,7 +486,7 @@ async fn prune_catalog_to_scope(catalog: &Path, scope: BackupScope) -> Result<()
         if keep.contains(&table) || !table_exists(&mut conn, table).await? {
             continue;
         }
-        sqlx::query(&format!("DELETE FROM \"{table}\""))
+        sqlx::query(&format!("DELETE FROM {}", quote_ident(table)))
             .execute(&mut *conn)
             .await
             .map_err(|error| SystemError::Internal(format!("Could not trim {table} from the backup: {error}")))?;
@@ -888,13 +888,14 @@ async fn sweep_orphans(
 
         for (table, rowids) in by_table {
             let list = rowids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-            let affected = sqlx::query(&format!("DELETE FROM main.\"{table}\" WHERE rowid IN ({list})"))
-                .execute(&mut *conn)
-                .await
-                .map_err(|error| {
-                    SystemError::Internal(format!("Could not clean up unusable rows in {table}: {error}"))
-                })?
-                .rows_affected();
+            let affected = sqlx::query(&format!(
+                "DELETE FROM main.{} WHERE rowid IN ({list})",
+                quote_ident(&table)
+            ))
+            .execute(&mut *conn)
+            .await
+            .map_err(|error| SystemError::Internal(format!("Could not clean up unusable rows in {table}: {error}")))?
+            .rows_affected();
             *removed.entry(table).or_default() += affected;
         }
     }
@@ -1026,12 +1027,16 @@ async fn rekey_restored_secrets(
             };
             let resealed = encrypt_by_format(*format, &plaintext, &to)
                 .map_err(|error| SystemError::Internal(format!("Could not re-key {table}: {error}")))?;
-            sqlx::query(&format!("UPDATE main.\"{table}\" SET \"{column}\" = ? WHERE rowid = ?"))
-                .bind(resealed)
-                .bind(rowid)
-                .execute(&mut *live)
-                .await
-                .map_err(|error| SystemError::Internal(format!("Could not re-key {table}: {error}")))?;
+            sqlx::query(&format!(
+                "UPDATE main.{} SET {} = ? WHERE rowid = ?",
+                quote_ident(table),
+                quote_ident(column)
+            ))
+            .bind(resealed)
+            .bind(rowid)
+            .execute(&mut *live)
+            .await
+            .map_err(|error| SystemError::Internal(format!("Could not re-key {table}: {error}")))?;
             rekeyed += 1;
         }
     }
@@ -1179,6 +1184,13 @@ async fn column_names(
         .iter()
         .filter_map(|row| row.try_get::<String, _>("name").ok())
         .collect())
+}
+
+/// Quote an SQLite identifier, doubling any embedded `"`. The names here come
+/// from the schema itself, not from requests, but wrapping in quotes without
+/// escaping would let an odd table name close the identifier early.
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
 }
 
 async fn table_exists(conn: &mut sqlx::SqliteConnection, table: &str) -> Result<bool, SystemError> {

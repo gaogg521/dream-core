@@ -2529,8 +2529,11 @@ impl OrgService {
                 "用户名只能包含字母、数字、点、短横线和下划线".into(),
             ));
         }
-        if password.len() < 8 {
-            return Err(OrgError::BadRequest("初始密码至少 8 位字符".into()));
+        // Same rules as change-password (character count, common-password
+        // list). This used to be a bare byte-length check, so an admin could
+        // hand out `12345678` as a member's first password.
+        if let Err(e) = dream_core_auth::validate_password(password) {
+            return Err(OrgError::BadRequest(format!("初始密码不符合要求：{e}")));
         }
         let taken: i64 = self
             .db

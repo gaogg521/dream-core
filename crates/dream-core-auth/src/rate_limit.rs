@@ -4,8 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Request, State};
+use axum::http::{HeaderValue, header};
 use axum::middleware::Next;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use dashmap::DashMap;
 
 use dream_core_common::ApiError;
@@ -132,6 +133,15 @@ impl RateLimiter {
         });
     }
 
+    /// Seconds until `key`'s current window resets, rounded up (at least 1).
+    pub fn retry_after_secs(&self, key: &str) -> u64 {
+        let now = now_ms();
+        self.entries
+            .get(key)
+            .map(|entry| entry.reset_time_ms.saturating_sub(now).div_ceil(1000).max(1))
+            .unwrap_or(1)
+    }
+
     /// Number of tracked keys (for monitoring/testing).
     pub fn entry_count(&self) -> usize {
         self.entries.len()
@@ -155,7 +165,9 @@ pub async fn auth_rate_limit_middleware(
     next: Next,
 ) -> Result<Response, ApiError> {
     let ip = extract_client_ip(&request);
-    limiter.check(&ip).map_err(ApiError::from)?;
+    if limiter.check(&ip).is_err() {
+        return Ok(rate_limited_response(&limiter, &ip));
+    }
 
     let response = next.run(request).await;
 
@@ -173,7 +185,9 @@ pub async fn api_rate_limit_middleware(
     next: Next,
 ) -> Result<Response, ApiError> {
     let ip = extract_client_ip(&request);
-    limiter.check_and_increment(&ip).map_err(ApiError::from)?;
+    if limiter.check_and_increment(&ip).is_err() {
+        return Ok(rate_limited_response(&limiter, &ip));
+    }
     Ok(next.run(request).await)
 }
 
@@ -191,8 +205,20 @@ pub async fn authenticated_action_rate_limit_middleware(
         .get::<CurrentUser>()
         .map(|u| format!("user:{}", u.id))
         .unwrap_or_else(|| format!("ip:{}", extract_client_ip(&request)));
-    limiter.check_and_increment(&key).map_err(ApiError::from)?;
+    if limiter.check_and_increment(&key).is_err() {
+        return Ok(rate_limited_response(&limiter, &key));
+    }
     Ok(next.run(request).await)
+}
+
+/// The usual 429 body plus `Retry-After`, so a locked-out user (or client)
+/// learns when to try again instead of guessing.
+fn rate_limited_response(limiter: &RateLimiter, key: &str) -> Response {
+    let mut response = ApiError::from(AuthError::RateLimited).into_response();
+    if let Ok(value) = HeaderValue::from_str(&limiter.retry_after_secs(key).to_string()) {
+        response.headers_mut().insert(header::RETRY_AFTER, value);
+    }
+    response
 }
 
 #[cfg(test)]
@@ -302,5 +328,20 @@ mod tests {
             assert!(limiter.check_and_increment("user:1").is_ok());
         }
         assert!(limiter.check_and_increment("user:1").is_err());
+    }
+
+    #[test]
+    fn rate_limited_response_carries_retry_after_within_the_window() {
+        let limiter = RateLimiter::new(1, Duration::from_secs(15 * 60));
+        limiter.record_attempt("ip");
+        let response = rate_limited_response(&limiter, "ip");
+        assert_eq!(response.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+        let secs: u64 = response
+            .headers()
+            .get(header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok())
+            .expect("Retry-After header");
+        assert!((1..=15 * 60).contains(&secs), "got {secs}");
     }
 }

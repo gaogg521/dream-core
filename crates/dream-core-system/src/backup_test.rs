@@ -1321,3 +1321,9 @@ fn write_manifest_only(archive: &Path, manifest: &BackupManifest) {
     std::io::Write::write_all(&mut writer, &serde_json::to_vec(manifest).unwrap()).unwrap();
     writer.finish().unwrap();
 }
+
+#[test]
+fn quote_ident_doubles_embedded_quotes() {
+    assert_eq!(quote_ident("conversations"), "\"conversations\"");
+    assert_eq!(quote_ident("a\"; DROP TABLE x; --"), "\"a\"\"; DROP TABLE x; --\"");
+}

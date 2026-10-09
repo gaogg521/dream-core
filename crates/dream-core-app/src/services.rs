@@ -285,17 +285,11 @@ impl AppServices {
 
             let username = user.username.clone().unwrap_or_default();
 
-            // The structured `tracing::warn!` below is one line among the
-            // dozen other startup log lines this function already emits —
-            // fine for an operator who knows to `grep` their logs, a real
-            // barrier for one who does not. Two more channels, aimed at that
-            // person specifically:
-            //
-            // 1. A plain-text file in the data directory. Whoever configured
-            //    that volume mount can browse to it with an ordinary file
-            //    manager — no log-reading or Docker CLI knowledge required.
-            //    Best-effort: a write failure here must not block startup,
-            //    the tracing line below is still emitted regardless.
+            // A plain-text file in the data directory. Whoever configured that
+            // volume mount can browse to it with an ordinary file manager — no
+            // log-reading or Docker CLI knowledge required (install.sh also
+            // tells the operator to `cat` it). Best-effort: a write failure
+            // must not block startup, see the fallback below.
             let password_file = data_dir.join("INITIAL_ADMIN_PASSWORD.txt");
             let file_contents = format!(
                 "This file was generated once, the first time this server started with no \
@@ -306,38 +300,57 @@ impl AppServices {
                  to before you can do anything else. This file is not updated again after that; \
                  it is safe to delete once you have changed your password.\n"
             );
-            if let Err(e) = std::fs::write(&password_file, file_contents) {
-                tracing::warn!(
-                    path = %password_file.display(),
-                    error = %e,
-                    "could not write the initial admin password file — it was still logged below"
-                );
+            // The password itself goes to exactly one place: this file. It
+            // used to also ride along as a structured field on a tracing line
+            // and in a stdout banner, which put it in the rotated log files and
+            // `docker logs` — both routinely shipped to SIEMs, support tickets
+            // and backups, where it outlived the message's own "will not be
+            // shown again". Logs now only say where to find it; the plaintext
+            // reaches stdout solely as a fallback when the file can't be
+            // written, so a fresh deployment is never left without a way in.
+            match write_initial_password_file(&password_file, &file_contents) {
+                Ok(()) => {
+                    println!(
+                        "\n\
+                         ================================================================\n\
+                           Generated an initial admin password for this deployment.\n\
+                         \n\
+                           Username: {username}\n\
+                           Password: saved to {path}\n\
+                         \n\
+                           Log in with it, then change it immediately — you will be\n\
+                           required to before doing anything else.\n\
+                         ================================================================\n",
+                        path = password_file.display()
+                    );
+                    tracing::warn!(
+                        username = %username,
+                        path = %password_file.display(),
+                        "generated an initial admin password for this deployment — it is in the file \
+                         named here; log in and change it immediately"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %password_file.display(),
+                        error = %e,
+                        "could not write the initial admin password file — printing it to stdout once instead"
+                    );
+                    println!(
+                        "\n\
+                         ================================================================\n\
+                           Generated an initial admin password for this deployment.\n\
+                           (The password file could not be written: {e})\n\
+                         \n\
+                           Username: {username}\n\
+                           Password: {plaintext}\n\
+                         \n\
+                           Log in with this password, then change it immediately — you\n\
+                           will be required to before doing anything else.\n\
+                         ================================================================\n"
+                    );
+                }
             }
-
-            // 2. A banner on stdout, deliberately NOT going through the
-            // structured `key=value` tracing format so it reads as plain
-            // text at a glance instead of one more line to parse.
-            println!(
-                "\n\
-                 ================================================================\n\
-                   Generated an initial admin password for this deployment.\n\
-                 \n\
-                   Username: {username}\n\
-                   Password: {plaintext}\n\
-                 \n\
-                   Log in with this password, then change it immediately — you\n\
-                   will be required to before doing anything else. It will not\n\
-                   be shown again (also saved to {path}).\n\
-                 ================================================================\n",
-                path = password_file.display()
-            );
-
-            tracing::warn!(
-                username = %username,
-                password = %plaintext,
-                "generated an initial admin password for this deployment — log in and change it \
-                 immediately; it will not be shown again"
-            );
         }
 
         let encryption_key = derive_encryption_key(&data_secret);
@@ -712,6 +725,27 @@ fn build_conversation_service(deps: ConversationServiceDeps<'_>) -> Conversation
     }
     service.with_project_service(Arc::new(deps.project_service));
     service
+}
+
+/// Writes the one-time initial admin password file, readable by its owner only
+/// on Unix (it holds a live credential until the first password change).
+fn write_initial_password_file(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(contents.as_bytes())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, contents)
+    }
 }
 
 #[cfg(test)]
