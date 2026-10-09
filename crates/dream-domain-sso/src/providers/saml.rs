@@ -468,8 +468,10 @@ mod tests {
     fn expired_pending_state_is_rejected() {
         let state = "rt-expired";
         let _config = begin(state);
-        backdate_pending(state, SAML_PENDING_TTL + Duration::from_secs(5));
         let response = issue_response(&local_idp(IDP_CERT, IDP_PRIVKEY), &pending_request_id(state), state);
+        // Once expired, another concurrent begin() may legitimately evict it.
+        // Build the IdP response while its request ID is still available.
+        backdate_pending(state, SAML_PENDING_TTL + Duration::from_secs(5));
         let result = SamlProvider::complete(state, &response, Some(state));
         assert!(matches!(result, Err(SsoError::InvalidState)), "got {result:?}");
     }

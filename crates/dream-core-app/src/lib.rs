@@ -6,6 +6,7 @@
 //! submodules. All logic lives in the modules below.
 
 mod config;
+mod employee_runtime;
 #[cfg(feature = "enterprise")]
 mod enterprise_provider;
 mod router;

@@ -1170,6 +1170,25 @@ impl EmployeeService {
             .ok_or(EmployeeError::NotFound)
     }
 
+    /// Resolve only a real execution relationship. Client-supplied conversation
+    /// extra is never authority to load employee resources.
+    pub async fn runtime_agent_for_conversation(
+        &self,
+        actor: &str,
+        conversation_id: &str,
+    ) -> Result<Option<PersonalAgentRow>, EmployeeError> {
+        let run = self.db.fetch_optional_as::<EmployeeRunRow>(
+            "SELECT * FROM one_employee_runs WHERE conversation_id = ? AND owner_user_id = ? ORDER BY started_at DESC LIMIT 1",
+            &db_params![conversation_id, actor],
+        ).await?;
+        let Some(run) = run else {
+            return Ok(None);
+        };
+        self.resolve_agent_for_use(actor, &run.tenant_id, &run.agent_id)
+            .await
+            .map(Some)
+    }
+
     /// Unscoped read by id — for re-fetching a row after `get_for_manage`
     /// already proved the caller may act on it. `get`'s own
     /// `WHERE ... AND owner_user_id = ?` would wrongly 404 here for a

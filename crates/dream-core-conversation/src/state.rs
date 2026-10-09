@@ -133,6 +133,11 @@ impl PolicyDenial {
 /// users always pass. Wired to one-billing in dream-app.
 #[async_trait::async_trait]
 pub trait SendGate: Send + Sync {
+    /// Revalidate resources of an existing execution, including cached sessions.
+    async fn check_conversation(&self, _user_id: &str, _conversation_id: &str) -> Result<(), PolicyDenial> {
+        Ok(())
+    }
+
     async fn check_send(&self, user_id: &str, model: Option<&str>) -> Result<(), PolicyDenial>;
     /// Allowlist-only check at model-switch time (budget is enforced at send).
     async fn check_model(&self, user_id: &str, model: &str) -> Result<(), PolicyDenial>;

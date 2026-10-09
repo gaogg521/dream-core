@@ -3678,6 +3678,21 @@ impl ConversationService {
             .find(|c| c.call_id == call_id)
             .map(|c| c.id.clone());
 
+        // A queued approval must not resurrect access revoked while it waited.
+        // Explicit cancellation remains possible even after revocation.
+        if req.data.get("value").and_then(serde_json::Value::as_str) != Some("cancel") {
+            let gate = self.send_gate.read().ok().and_then(|g| g.clone());
+            if let Some(gate) = gate
+                && let Err(denial) = gate.check_conversation(user_id, conversation_id).await
+            {
+                return Err(ConversationError::PolicyDenied {
+                    code: denial.code,
+                    message: denial.message,
+                    details: denial.details,
+                });
+            }
+        }
+
         agent.confirm(&req.msg_id, call_id, req.data, req.always_allow)?;
 
         if let Some(conf_id) = conf_id {
@@ -4109,6 +4124,17 @@ impl ConversationService {
             });
         }
 
+        let gate = self.send_gate.read().ok().and_then(|g| g.clone());
+        if let Some(gate) = gate
+            && let Err(denial) = gate.check_conversation(user_id, conversation_id).await
+        {
+            return Err(ConversationError::PolicyDenied {
+                code: denial.code,
+                message: denial.message,
+                details: denial.details,
+            });
+        }
+
         reject_deprecated_runtime_row(&row)?;
 
         // Model allowlist (F1): the entry gate can't know the turn's model —
@@ -4358,6 +4384,19 @@ impl ConversationService {
             .ok_or_else(|| ConversationError::NotFound {
                 id: request.conversation_id.clone(),
             })?;
+
+        let gate = self.send_gate.read().ok().and_then(|g| g.clone());
+        if let Some(gate) = gate
+            && let Err(denial) = gate
+                .check_conversation(&request.user_id, &request.conversation_id)
+                .await
+        {
+            return Err(ConversationError::PolicyDenied {
+                code: denial.code,
+                message: denial.message,
+                details: denial.details,
+            });
+        }
 
         reject_deprecated_runtime_row(&row)?;
 

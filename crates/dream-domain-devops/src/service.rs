@@ -1084,10 +1084,30 @@ impl DevopsService {
     // -- skill registry ---------------------------------------------------
 
     pub async fn list_skills(&self, viewer_user_id: &str) -> Result<Vec<SkillRegistryDto>, DevopsError> {
+        self.list_skills_inner(viewer_user_id, false).await
+    }
+
+    /// Consumption ACL, even when the employee was created by an administrator.
+    pub async fn runtime_skills(&self, viewer_user_id: &str) -> Result<Vec<SkillRegistryDto>, DevopsError> {
+        if self.grants.get().is_some() && self.user_org_role(viewer_user_id).await?.is_none() {
+            return Err(DevopsError::Forbidden(
+                "Execution requires active enterprise membership".into(),
+            ));
+        }
+        let mut rows = self.list_skills_inner(viewer_user_id, true).await?;
+        rows.retain(|row| row.enabled && row.published);
+        Ok(rows)
+    }
+
+    async fn list_skills_inner(
+        &self,
+        viewer_user_id: &str,
+        runtime: bool,
+    ) -> Result<Vec<SkillRegistryDto>, DevopsError> {
         const COLS: &str = "id, name, description, content, enabled, auto_active, scope, team_id, visibility, \
                             origin, category_id, published, created_by, created_at, updated_at";
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
-        if privileged {
+        if privileged && !runtime {
             let sql = format!("SELECT {COLS} FROM one_skill_registry ORDER BY updated_at DESC");
             return Ok(self.db.fetch_all_as::<SkillRegistryDto>(&sql, &[]).await?);
         }
@@ -1273,10 +1293,30 @@ impl DevopsService {
     // -- mcp registry -----------------------------------------------------
 
     pub async fn list_mcp_registry(&self, viewer_user_id: &str) -> Result<Vec<McpRegistryDto>, DevopsError> {
+        self.list_mcp_registry_inner(viewer_user_id, false).await
+    }
+
+    /// Consumption ACL, even when the employee was created by an administrator.
+    pub async fn runtime_mcp_registry(&self, viewer_user_id: &str) -> Result<Vec<McpRegistryDto>, DevopsError> {
+        if self.grants.get().is_some() && self.user_org_role(viewer_user_id).await?.is_none() {
+            return Err(DevopsError::Forbidden(
+                "Execution requires active enterprise membership".into(),
+            ));
+        }
+        let mut rows = self.list_mcp_registry_inner(viewer_user_id, true).await?;
+        rows.retain(|row| row.enabled && row.published);
+        Ok(rows)
+    }
+
+    async fn list_mcp_registry_inner(
+        &self,
+        viewer_user_id: &str,
+        runtime: bool,
+    ) -> Result<Vec<McpRegistryDto>, DevopsError> {
         const COLS: &str = "id, name, `type`, endpoint, enabled, has_keys, secrets_json, content, scope, team_id, visibility, \
                             origin, category_id, published, created_by, created_at, updated_at";
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
-        if privileged {
+        if privileged && !runtime {
             let sql = format!("SELECT {COLS} FROM one_mcp_registry ORDER BY updated_at DESC");
             return Ok(self.db.fetch_all_as::<McpRegistryDto>(&sql, &[]).await?);
         }
@@ -1388,9 +1428,9 @@ impl DevopsService {
                 let id = new_id("omcp");
                 self.db.execute(
                     "INSERT INTO one_mcp_registry \
-                        (id, name, `type`, endpoint, enabled, has_keys, scope, team_id, visibility, category_id, created_by, created_at, updated_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                &db_params![&id, name, r#type, endpoint, enabled, has_keys, scope, team_id, visibility, category_id, created_by, now, now])
+                        (id, name, `type`, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, category_id, created_by, created_at, updated_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                &db_params![&id, name, r#type, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, category_id, created_by, now, now])
                 .await?;
                 id
             }
@@ -3019,6 +3059,102 @@ mod tests {
             .await
             .unwrap();
         (open.id, restricted.id)
+    }
+
+    #[tokio::test]
+    async fn creating_mcp_preserves_runtime_credentials() {
+        let svc = service().await;
+        seed_org(&svc).await;
+        let secrets = r#"{"QA_TOKEN":"synthetic-token"}"#;
+        let mcp = svc
+            .upsert_mcp_registry(
+                None,
+                "credentialed",
+                "stdio",
+                "node server.js",
+                true,
+                true,
+                Some(secrets),
+                "org",
+                None,
+                "all",
+                None,
+                "admin1",
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp.secrets_json.as_deref(), Some(secrets));
+        let saved: String = svc
+            .db
+            .fetch_one_scalar(
+                "SELECT secrets_json FROM one_mcp_registry WHERE id = ?",
+                &db_params![&mcp.id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved, secrets);
+        svc.set_mcp_published(&[mcp.id], true).await.unwrap();
+        assert_eq!(
+            svc.runtime_mcp_registry("member1").await.unwrap()[0]
+                .secrets_json
+                .as_deref(),
+            Some(secrets)
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_bindings_enforce_consumption_acl_and_lifecycle_for_admin() {
+        let svc = service().await;
+        seed_org(&svc).await;
+        let (open, restricted) = seed_two_skills(&svc).await;
+        svc.set_skills_published(&[open.clone(), restricted.clone()], true)
+            .await
+            .unwrap();
+        assert_eq!(
+            svc.runtime_skills("admin1")
+                .await
+                .unwrap()
+                .iter()
+                .map(|s| &s.id)
+                .collect::<Vec<_>>(),
+            vec![&open]
+        );
+        svc.set_skills_published(&[open.clone()], false).await.unwrap();
+        assert!(svc.runtime_skills("admin1").await.unwrap().is_empty());
+        svc.set_skills_published(&[open.clone()], true).await.unwrap();
+        svc.db
+            .execute(
+                "UPDATE one_skill_registry SET enabled = 0 WHERE id = ?",
+                &db_params![&open],
+            )
+            .await
+            .unwrap();
+        assert!(svc.runtime_skills("admin1").await.unwrap().is_empty());
+        svc.set_grants(std::sync::Arc::new(FixedGrants(crate::grants::ExtraGrants {
+            restrictive: true,
+            ..Default::default()
+        })));
+        assert!(svc.runtime_skills("admin1").await.unwrap().is_empty());
+        let mcp = svc
+            .upsert_mcp_registry(
+                None,
+                "execution",
+                "sse",
+                "http://localhost/sse",
+                true,
+                false,
+                None,
+                "org",
+                None,
+                "all",
+                None,
+                "admin1",
+            )
+            .await
+            .unwrap();
+        svc.set_mcp_published(&[mcp.id], true).await.unwrap();
+        assert!(svc.runtime_mcp_registry("admin1").await.unwrap().is_empty());
+        assert!(!svc.list_mcp_registry("admin1").await.unwrap().is_empty());
     }
 
     /// The invariant that makes wiring the matrix safe to ship: with no grant

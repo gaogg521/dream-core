@@ -1156,6 +1156,7 @@ impl SecurityPolicySendRateGate {
 /// one `SendGate` slot, so they compose here rather than each claiming it.
 #[cfg(feature = "enterprise")]
 struct EnterpriseSendGate {
+    employee_runtime: std::sync::Arc<crate::employee_runtime::EmployeeRuntime>,
     billing: BillingSendGate,
     rate: SecurityPolicySendRateGate,
 }
@@ -1163,6 +1164,17 @@ struct EnterpriseSendGate {
 #[async_trait::async_trait]
 #[cfg(feature = "enterprise")]
 impl dream_core_conversation::SendGate for EnterpriseSendGate {
+    async fn check_conversation(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+    ) -> Result<(), dream_core_conversation::PolicyDenial> {
+        self.employee_runtime
+            .check_conversation(user_id, conversation_id)
+            .await
+            .map_err(|error| dream_core_conversation::PolicyDenial::new("EMPLOYEE_RESOURCE_DENIED", error.to_string()))
+    }
+
     async fn check_send(
         &self,
         user_id: &str,
@@ -3596,6 +3608,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .conversation
         .service
         .with_send_gate(std::sync::Arc::new(EnterpriseSendGate {
+            employee_runtime: services.employee_runtime.clone(),
             billing: BillingSendGate {
                 billing: one_billing_service.clone(),
                 grace: policy_grace.clone(),
@@ -3796,6 +3809,9 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         // providers at save time instead of failing the run.
         .with_provider_repo(employee_providers),
     );
+    services
+        .employee_runtime
+        .bind(one_employee_service.clone(), one_devops_service.clone());
     one_employee_service.spawn_scheduler();
     let one_employee_state = dream_domain_employee::OneEmployeeRouterState::new(one_employee_service.clone());
     #[cfg(feature = "enterprise")]

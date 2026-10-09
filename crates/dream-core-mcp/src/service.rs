@@ -340,7 +340,7 @@ fn split_stdio_command(command: &str) -> Result<Option<(String, Vec<String>)>, M
 /// a real bug that broke every Windows path with a launcher argument. On
 /// Windows `\` is copied through literally; on Unix it keeps standard
 /// escape semantics (`\` + next char → that char literally).
-fn shell_split(input: &str) -> Result<Vec<String>, String> {
+pub fn shell_split(input: &str) -> Result<Vec<String>, String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut chars = input.chars().peekable();

@@ -25,6 +25,7 @@ use dream_core_project::ProjectService;
 use dream_core_realtime::{BroadcastEventBus, WebSocketManager};
 
 pub struct AppServices {
+    pub(crate) employee_runtime: Arc<crate::employee_runtime::EmployeeRuntime>,
     #[cfg(feature = "enterprise")]
     pub(crate) enterprise_provider_repo: Arc<crate::enterprise_provider::EnterpriseProviderRepository>,
     pub database: Database,
@@ -605,6 +606,9 @@ impl AppServices {
             }) as Arc<dyn dream_core_ai_agent::TurnMemoryRecall>),
         });
 
+        let employee_runtime = Arc::new(crate::employee_runtime::EmployeeRuntime::default());
+        let factory = employee_runtime.wrap(factory);
+
         // Agent factory is now wired. Future extension/custom agents
         // that get written to `agent_metadata` will show up after the
         // relevant service calls `AgentRegistry::hydrate`.
@@ -635,6 +639,7 @@ impl AppServices {
         });
 
         Ok(Self {
+            employee_runtime,
             database,
             db,
             #[cfg(feature = "enterprise")]
