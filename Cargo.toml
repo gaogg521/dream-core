@@ -183,7 +183,11 @@ git2 = { version = "0.21.0", default-features = false }
 # unlinking them (mac/win/linux, x64 + arm64).
 trash = "5"
 mime_guess = "2"
-rust-embed = "8"
+# `debug-embed`: embed in debug builds too. Without it a debug build reads the
+# files at run time from the source path recorded at compile time, so a binary
+# whose cached `dream-core-assets` was built in another (since deleted) worktree
+# served every agent logo as 404 — indistinguishable from a product bug.
+rust-embed = { version = "8", features = ["debug-embed"] }
 
 # Runtime embedding
 fs2 = "0.4"
