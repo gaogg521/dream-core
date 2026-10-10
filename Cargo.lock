@@ -2505,6 +2505,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
+ "ed25519-dalek",
  "getrandom 0.2.17",
  "regex",
  "semver",
@@ -2581,7 +2582,9 @@ name = "dream-core-db"
 version = "0.1.82"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "dream-core-common",
+ "ed25519-dalek",
  "fs2",
  "serde",
  "serde_json",

@@ -769,10 +769,10 @@ async fn billing_checkout(
     )))
 }
 
-/// Payment webhook seam. No provider configured → accept-and-ignore so a future
-/// real provider can post here without a 404.
-async fn billing_webhook(State(_state): State<OneBillingRouterState>) -> Json<ApiResponse<()>> {
-    Json(ApiResponse::ok(()))
+/// No payment provider is installed. A future implementation must authenticate
+/// the provider's signature before processing any event or changing entitlements.
+async fn billing_webhook(State(_state): State<OneBillingRouterState>) -> Result<Json<ApiResponse<()>>, BillingError> {
+    Err(BillingError::PaymentProviderUnavailable)
 }
 
 #[derive(Deserialize)]
@@ -959,6 +959,39 @@ async fn billing_set_department_budget(
 #[cfg(test)]
 mod tests {
     use super::is_company_channel_report;
+
+    #[tokio::test]
+    async fn unconfigured_webhook_is_explicitly_unavailable() {
+        use axum::{
+            Router,
+            body::Body,
+            http::{Request, StatusCode},
+        };
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let service = std::sync::Arc::new(crate::service::BillingService::new(
+            dream_core_db::DbPool::Sqlite(db),
+            std::sync::Arc::new(crate::service::ManualBillingProvider),
+        ));
+        let router = Router::new()
+            .route("/webhook", axum::routing::post(super::billing_webhook))
+            .with_state(crate::state::OneBillingRouterState::new(service));
+        let response = router
+            .oneshot(
+                Request::post("/webhook")
+                    .body(Body::from("untrusted payment payload"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&body).contains("PAYMENT_PROVIDER_UNAVAILABLE"));
+    }
 
     /// The dedup contract of P2-1, pinned: only the `prov_chan_` prefix (the
     /// managed-provider id form the model proxy meters authoritatively) may

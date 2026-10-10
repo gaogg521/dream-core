@@ -8,6 +8,7 @@ mod encryption_migration;
 mod error;
 mod instance_lock;
 mod legacy_handoff;
+pub mod licensed_state;
 mod migrate_repair;
 mod migrate_runner;
 pub mod models;

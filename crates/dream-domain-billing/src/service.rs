@@ -109,6 +109,8 @@ pub const MIN_LATENCY_SAMPLES: i64 = 10;
 pub struct BillingService {
     db: DbPool,
     provider: Arc<dyn BillingProvider>,
+    #[cfg(test)]
+    test_trust: Arc<std::sync::atomic::AtomicBool>,
     /// Conversation repository handle for the P2-3 audit read path.
     /// Conversations/messages live behind this repo — under a MySQL
     /// enterprise deployment on a DIFFERENT backend than `db` — so
@@ -259,6 +261,8 @@ impl BillingService {
             db,
             provider,
             conversation: None,
+            #[cfg(test)]
+            test_trust: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -404,7 +408,16 @@ impl BillingService {
     }
 
     async fn license_of(&self, enterprise_id: &str) -> Result<License, BillingError> {
-        // tier, seat_limit, expires_at, cost_cap_micros, allowed_models(json)
+        let verified = self.licensed_state(enterprise_id).await?;
+        self.license_from_state(enterprise_id, &verified).await
+    }
+
+    async fn license_from_state(
+        &self,
+        enterprise_id: &str,
+        verified: &dream_core_db::licensed_state::LicensedState,
+    ) -> Result<License, BillingError> {
+        // Organization policy may tighten, but never raise the signed grant.
         type LicenseRow = (String, Option<i64>, Option<i64>, Option<i64>, Option<String>);
         let row: Option<LicenseRow> = self
             .db
@@ -414,47 +427,40 @@ impl BillingService {
                 &db_params![enterprise_id],
             )
             .await?;
-        Ok(match row {
-            Some((tier, seat_limit, expires_at, cost_cap_micros, allowed_models_json)) => {
-                let stored_tier = Tier::parse(&tier);
-                let official: i64 = self
-                    .db
-                    .fetch_one_scalar(
-                        "SELECT COUNT(*) FROM one_license_activation WHERE enterprise_id = ?",
-                        &db_params![enterprise_id],
-                    )
-                    .await
-                    .unwrap_or(0);
-                // Expiry is enforced here, at the single read point every gate
-                // funnels through, so a lapsed license degrades everywhere at
-                // once without a background job. The row is left untouched: the
-                // admin UI still shows what was bought and when it ran out, and
-                // renewing re-activates it without losing history.
-                let expired = expires_at.is_some_and(|exp| exp <= dream_core_common::now_ms());
-                License {
-                    tier: if expired || (stored_tier != Tier::Free && official == 0) {
-                        Tier::Free
-                    } else {
-                        stored_tier
-                    },
-                    // A lapsed license also loses its seat override, otherwise
-                    // an expired enterprise plan would keep an unlimited cap.
-                    seat_limit: if expired { None } else { seat_limit },
-                    expires_at,
-                    cost_cap_micros,
-                    allowed_models: parse_allowed_models(allowed_models_json.as_deref()),
-                }
-            }
-            // No row → a company created before it was licensed, or an unknown
-            // id: default to the entry tier (least privilege).
-            None => License {
-                tier: Tier::Free,
-                seat_limit: None,
-                expires_at: None,
-                cost_cap_micros: None,
-                allowed_models: Vec::new(),
+        let claims = verified.payload.as_ref().filter(|_| verified.tier() != Tier::Free);
+        let (_, local_cap, _, cost_cap_micros, allowed_models_json) =
+            row.unwrap_or(("free".into(), None, None, None, None));
+        Ok(License {
+            tier: verified.tier(),
+            seat_limit: match (
+                claims
+                    .and_then(|p| p.seats)
+                    .or_else(|| tier_seat_limit(verified.tier()).map(|n| n as i64)),
+                local_cap,
+            ) {
+                (Some(authorized), Some(local)) => Some(authorized.min(local)),
+                (authorized, local) => authorized.or(local),
             },
+            expires_at: verified.payload.as_ref().and_then(|p| p.exp),
+            cost_cap_micros,
+            allowed_models: parse_allowed_models(allowed_models_json.as_deref()),
         })
+    }
+
+    async fn licensed_state(
+        &self,
+        enterprise_id: &str,
+    ) -> Result<dream_core_db::licensed_state::LicensedState, BillingError> {
+        #[cfg(test)]
+        if self.test_trust.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(dream_core_db::licensed_state::read_license_state_using(
+                &self.db,
+                enterprise_id,
+                tests::verify_fixture,
+            )
+            .await?);
+        }
+        Ok(dream_core_db::licensed_state::read_license_state(&self.db, enterprise_id).await?)
     }
 
     /// Effective seat cap: explicit override, else the tier default. `None` =
@@ -546,16 +552,6 @@ impl BillingService {
         Ok(())
     }
 
-    /// Idempotently seed the deployment's default company license as
-    /// `enterprise` tier with unlimited seats. Called once at startup from the
-    /// app-layer bootstrap, so an auto-provisioned install is not *more*
-    /// restricted than one grandfathered by `billing_001_init.sql` (which set
-    /// every pre-existing `one_enterprises` row to `enterprise`).
-    ///
-    /// `DO NOTHING` on conflict — a later [`Self::activate_license`] or a
-    /// deliberate [`Self::set_tier`] downgrade is never overwritten on
-    /// restart. (`set_tier` cannot be used here: it rejects the
-    /// free→enterprise raise as [`BillingError::UpgradeRequiresLicense`].)
     /// Stamp `enterprise_id` on a user's usage rows that were recorded while
     /// they had no company membership row. Used by the startup backfill for
     /// accounts created through 「添加成员」 before that route enrolled them:
@@ -659,20 +655,18 @@ impl BillingService {
         self.verify_deployment_binding(payload.deployment_fingerprint.as_deref())
             .await?;
 
-        // Re-serialized rather than storing the raw signed payload bytes: this
-        // table is a read model for the admin UI, not a re-verification
-        // source — `verify_license_key` already ran above, and a raw copy
-        // would need its own tamper story once it left the signed envelope.
+        // SQL columns are display projections. All authorization reads reverify
+        // the original signed envelope saved in this same transaction.
         let modules_json =
             serde_json::to_string(&payload.modules).map_err(|e| BillingError::Internal(e.to_string()))?;
 
         let mut tx = self.db.begin().await?;
         let activation_sql = match self.db.backend() {
             dream_core_db::DbBackend::Sqlite => {
-                "INSERT INTO one_license_activation                  (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by,                   tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name, deployment_fingerprint)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)              ON CONFLICT(license_id) DO UPDATE SET enterprise_id = excluded.enterprise_id,                  activated_at = excluded.activated_at, activated_by = excluded.activated_by,                  tenant_cap = excluded.tenant_cap, agent_node_cap = excluded.agent_node_cap,                  cpu_cores_cap = excluded.cpu_cores_cap, memory_mb_cap = excluded.memory_mb_cap,                  modules = excluded.modules, serial = excluded.serial, app_id = excluded.app_id,                  file_name = excluded.file_name, deployment_fingerprint = excluded.deployment_fingerprint"
+                "INSERT INTO one_license_activation                  (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by,                   tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name, deployment_fingerprint, license_key)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)              ON CONFLICT(license_id) DO UPDATE SET enterprise_id = excluded.enterprise_id,                  activated_at = excluded.activated_at, activated_by = excluded.activated_by,                  tenant_cap = excluded.tenant_cap, agent_node_cap = excluded.agent_node_cap,                  cpu_cores_cap = excluded.cpu_cores_cap, memory_mb_cap = excluded.memory_mb_cap,                  modules = excluded.modules, serial = excluded.serial, app_id = excluded.app_id,                  file_name = excluded.file_name, deployment_fingerprint = excluded.deployment_fingerprint, license_key = excluded.license_key"
             }
             dream_core_db::DbBackend::MySql => {
-                "INSERT INTO one_license_activation                  (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by,                   tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name, deployment_fingerprint)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new              ON DUPLICATE KEY UPDATE enterprise_id = new.enterprise_id,                  activated_at = new.activated_at, activated_by = new.activated_by,                  tenant_cap = new.tenant_cap, agent_node_cap = new.agent_node_cap,                  cpu_cores_cap = new.cpu_cores_cap, memory_mb_cap = new.memory_mb_cap,                  modules = new.modules, serial = new.serial, app_id = new.app_id,                  file_name = new.file_name, deployment_fingerprint = new.deployment_fingerprint"
+                "INSERT INTO one_license_activation                  (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by,                   tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name, deployment_fingerprint, license_key)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new              ON DUPLICATE KEY UPDATE enterprise_id = new.enterprise_id,                  activated_at = new.activated_at, activated_by = new.activated_by,                  tenant_cap = new.tenant_cap, agent_node_cap = new.agent_node_cap,                  cpu_cores_cap = new.cpu_cores_cap, memory_mb_cap = new.memory_mb_cap,                  modules = new.modules, serial = new.serial, app_id = new.app_id,                  file_name = new.file_name, deployment_fingerprint = new.deployment_fingerprint, license_key = new.license_key"
             }
         };
         tx.execute(
@@ -695,7 +689,8 @@ impl BillingService {
                 &payload.serial,
                 &payload.app_id,
                 &payload.file_name,
-                &payload.deployment_fingerprint
+                &payload.deployment_fingerprint,
+                license_key.trim()
             ],
         )
         .await?;
@@ -727,73 +722,28 @@ impl BillingService {
     /// ever activated. Shown in the admin UI so an operator can see what was
     /// bought, for whom, and when it lapses.
     pub async fn active_license(&self, enterprise_id: &str) -> Result<Option<LicenseInfoDto>, BillingError> {
-        #[allow(clippy::type_complexity)]
-        type Row = (
-            String,
-            String,
-            String,
-            Option<i64>,
-            Option<i64>,
-            i64,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        );
-        let row: Option<Row> = self
-            .db
-            .fetch_optional_as::<Row>(
-                "SELECT license_id, customer, tier, seats, expires_at, activated_at, \
-                    tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name, deployment_fingerprint \
-             FROM one_license_activation WHERE enterprise_id = ? ORDER BY activated_at DESC LIMIT 1",
-                &db_params![enterprise_id],
-            )
-            .await?;
-        Ok(row.map(
-            |(
-                license_id,
-                customer,
-                tier,
-                seats,
-                expires_at,
-                activated_at,
-                tenant_cap,
-                agent_node_cap,
-                cpu_cores_cap,
-                memory_mb_cap,
-                modules_json,
-                serial,
-                app_id,
-                file_name,
-                deployment_fingerprint,
-            )| LicenseInfoDto {
-                license_id,
-                customer,
-                tier,
-                seats,
-                expires_at,
-                activated_at,
-                expired: expires_at.is_some_and(|e| e <= now_ms()),
-                tenant_cap,
-                agent_node_cap,
-                cpu_cores_cap,
-                memory_mb_cap,
-                // A row written before billing_006 (or a corrupt value —
-                // neither should ever block reading the rest of the license)
-                // falls back to "no per-module restriction configured",
-                // same permissive default as an absent field.
-                modules: serde_json::from_str(&modules_json).unwrap_or_default(),
-                serial,
-                app_id,
-                file_name,
-                deployment_fingerprint,
-            },
-        ))
+        let verified = self.licensed_state(enterprise_id).await?;
+        let checked_at = verified.checked_at;
+        Ok(verified.payload.map(|p| LicenseInfoDto {
+            license_id: p.lid,
+            customer: p.customer,
+            tier: p.tier,
+            seats: p.seats,
+            expires_at: p.exp,
+            activated_at: verified.activated_at,
+            expired: p.exp.is_some_and(|e| e <= checked_at),
+            signature_verified: true,
+            verified_at: checked_at,
+            tenant_cap: p.tenant_cap,
+            agent_node_cap: p.agent_node_cap,
+            cpu_cores_cap: p.cpu_cores_cap,
+            memory_mb_cap: p.memory_mb_cap,
+            modules: p.modules,
+            serial: p.serial,
+            app_id: p.app_id,
+            file_name: p.file_name,
+            deployment_fingerprint: p.deployment_fingerprint,
+        }))
     }
 
     /// Set the model-control policy (P1-2): rolling-30-day spend cap
@@ -1214,31 +1164,9 @@ impl BillingService {
 
     /// The company plan for the dashboard: tier, seat usage, entitlements.
     pub async fn plan(&self, enterprise_id: &str) -> Result<PlanDto, BillingError> {
-        let license = self.license_of(enterprise_id).await?;
-        let stored_tier: Option<String> = self
-            .db
-            .fetch_optional_scalar(
-                "SELECT tier FROM one_enterprise_license WHERE enterprise_id = ?",
-                &db_params![enterprise_id],
-            )
-            .await
-            .unwrap_or(None);
-        let activation_count: i64 = self
-            .db
-            .fetch_one_scalar(
-                "SELECT COUNT(*) FROM one_license_activation WHERE enterprise_id = ?",
-                &db_params![enterprise_id],
-            )
-            .await
-            .unwrap_or(0);
-        let license_status =
-            if stored_tier.as_deref().is_some_and(|t| Tier::parse(t) != Tier::Free) && activation_count == 0 {
-                "unofficial"
-            } else if activation_count > 0 {
-                "official"
-            } else {
-                "free"
-            };
+        let verified = self.licensed_state(enterprise_id).await?;
+        let license = self.license_from_state(enterprise_id, &verified).await?;
+        let license_status = verified.status;
         let entitlements = dream_core_common::license::ALL_FEATURES
             .iter()
             .map(|f| EntitlementDto {
@@ -1250,6 +1178,8 @@ impl BillingService {
             enterprise_id: enterprise_id.to_owned(),
             tier: license.tier.as_str().to_owned(),
             license_status: license_status.to_owned(),
+            signature_verified: verified.payload.is_some(),
+            verified_at: verified.checked_at,
             seat_used: self.seat_used(enterprise_id).await?,
             seat_limit: Self::effective_seat_limit(&license),
             seat_pending: self.seat_pending(enterprise_id).await?,
@@ -2721,6 +2651,21 @@ impl BillingService {
 mod tests {
     use super::*;
 
+    pub(super) fn verify_fixture(
+        key: &str,
+    ) -> Result<crate::license_key::LicensePayload, crate::license_key::LicenseKeyError> {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
+        crate::license_key::verify_license_signature_with_public_key(key, &sk.verifying_key().to_bytes())
+    }
+    fn fixture_key(payload: &crate::license_key::LicensePayload) -> String {
+        use base64::Engine as _;
+        crate::license_key::sign_license_key(
+            payload,
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([42u8; 32]),
+        )
+        .unwrap()
+    }
+
     async fn service() -> (BillingService, sqlx::SqlitePool) {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
@@ -3018,13 +2963,10 @@ mod tests {
             .unwrap();
     }
 
-    /// Force a tier directly in the table, bypassing the license gate.
-    ///
-    /// Tests must not carry a real signing key (it would then live in the
-    /// repo), so entitlement fixtures write the row directly. The *gate* on
-    /// raising a tier is covered separately by
-    /// `set_tier_refuses_upgrade_without_license`.
+    /// Use a throwaway issuer accepted only by this test service; production
+    /// always verifies against the embedded vendor public key.
     async fn force_tier(svc: &BillingService, enterprise_id: &str, tier: Tier, expires_at: Option<i64>) {
+        svc.test_trust.store(true, std::sync::atomic::Ordering::Relaxed);
         svc.upsert(
             "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at) \
              VALUES (?, ?, NULL, ?, 0) \
@@ -3037,10 +2979,16 @@ mod tests {
         .await
         .unwrap();
         if tier != Tier::Free {
+            let payload: crate::license_key::LicensePayload = serde_json::from_value(serde_json::json!({
+                "lid": format!("lic_{enterprise_id}"), "customer": "isolated unit test", "tier": tier.as_str(),
+                "iat": 0, "exp": expires_at, "instance_id": enterprise_id,
+            }))
+            .unwrap();
+            let key = fixture_key(&payload);
             svc.upsert(
-                "INSERT INTO one_license_activation (license_id, enterprise_id, customer, tier, issued_at, activated_at, activated_by) VALUES (?, ?, 'test', ?, 0, 0, 'test') ON CONFLICT(license_id) DO NOTHING",
-                "INSERT IGNORE INTO one_license_activation (license_id, enterprise_id, customer, tier, issued_at, activated_at, activated_by) VALUES (?, ?, 'test', ?, 0, 0, 'test')",
-                &db_params![format!("lic_{enterprise_id}"), enterprise_id, tier.as_str()],
+                "INSERT INTO one_license_activation (license_id, enterprise_id, customer, tier, issued_at, activated_at, activated_by, license_key) VALUES (?, ?, 'test', ?, 0, 0, 'test', ?) ON CONFLICT(license_id) DO UPDATE SET license_key = excluded.license_key",
+                "INSERT INTO one_license_activation (license_id, enterprise_id, customer, tier, issued_at, activated_at, activated_by, license_key) VALUES (?, ?, 'test', ?, 0, 0, 'test', ?) AS new ON DUPLICATE KEY UPDATE license_key = new.license_key",
+                &db_params![&payload.lid, enterprise_id, tier.as_str(), key],
             ).await.unwrap();
         }
     }
@@ -3085,6 +3033,7 @@ mod tests {
         assert!(!svc.entitlement(Some("ent_x"), Feature::AuditLog).await.unwrap());
         svc.set_tier("ent_x", Tier::Free, None).await.unwrap();
         assert!(!svc.entitlement(Some("ent_x"), Feature::Sso).await.unwrap());
+        assert_eq!(svc.license_of("ent_x").await.unwrap().seat_limit, Some(3));
     }
 
     /// An expired license must degrade to free everywhere at once — including
@@ -4750,27 +4699,22 @@ mod tests {
         assert!(unretained.is_empty());
     }
 
-    /// `activate_license` needs a key signed by the vendor's (deliberately
-    /// offline, never-committed) private key, so it can't run end to end in a
-    /// unit test — this exercises `active_license`'s own read/deserialize
-    /// path directly against a row shaped the way `activate_license` writes
-    /// one (billing_006's E4 columns included).
+    /// Signed claims remain authoritative even when SQL display projections change.
     #[tokio::test]
     async fn active_license_reads_back_e4_quotas_and_modules() {
         let (svc, sqlite) = service().await;
-        sqlx::query(
-            "INSERT INTO one_license_activation \
-                 (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by, \
-                  tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name) \
-             VALUES ('lic1', 'ent1', 'Acme', 'enterprise', 50, NULL, 0, 0, 'admin1', \
-                     10, 20, 64, 131072, '[{\"module\":\"/admin/*\",\"startsAt\":null,\"expiresAt\":null}]', \
-                     'SN-0001', 'one-work', 'acme.lic')",
-        )
-        .execute(&sqlite)
-        .await
+        force_tier(&svc, "ent1", Tier::Enterprise, None).await;
+        let payload = serde_json::from_value(serde_json::json!({
+            "lid":"lic_ent1", "customer":"Acme", "tier":"enterprise", "seats":50, "iat":0,
+            "instance_id":"ent1", "tenant_cap":10, "agent_node_cap":20, "cpu_cores_cap":64,
+            "memory_mb_cap":131072, "modules":[{"module":"/admin/*"}],
+            "serial":"SN-0001", "app_id":"one-work", "file_name":"acme.lic"
+        }))
         .unwrap();
-
+        sqlx::query("UPDATE one_license_activation SET license_key = ?, seats = 9999, tenant_cap = 9999, modules = '[]', serial = 'tampered'")
+            .bind(fixture_key(&payload)).execute(&sqlite).await.unwrap();
         let info = svc.active_license("ent1").await.unwrap().unwrap();
+        assert_eq!(info.seats, Some(50));
         assert_eq!(info.tenant_cap, Some(10));
         assert_eq!(info.agent_node_cap, Some(20));
         assert_eq!(info.cpu_cores_cap, Some(64));
@@ -4780,27 +4724,17 @@ mod tests {
         assert_eq!(info.serial.as_deref(), Some("SN-0001"));
         assert_eq!(info.app_id.as_deref(), Some("one-work"));
         assert_eq!(info.file_name.as_deref(), Some("acme.lic"));
+        assert!(info.signature_verified);
     }
 
-    /// A row written before billing_006 has no `modules` value to read —
-    /// covered by the column's own `NOT NULL DEFAULT '[]'`, but confirmed
-    /// here in case a future edit weakens that default: this must still
-    /// resolve to "no restriction", not an error swallowing the whole license.
+    /// Legacy rows without the original signed key require reactivation.
     #[tokio::test]
-    async fn active_license_tolerates_a_pre_e4_row_with_no_quota_columns() {
+    async fn active_license_rejects_legacy_unsigned_rows() {
         let (svc, sqlite) = service().await;
-        sqlx::query(
-            "INSERT INTO one_license_activation \
-                 (license_id, enterprise_id, customer, tier, issued_at, activated_at, activated_by) \
-             VALUES ('lic1', 'ent1', 'Acme', 'enterprise', 0, 0, 'admin1')",
-        )
-        .execute(&sqlite)
-        .await
-        .unwrap();
-
-        let info = svc.active_license("ent1").await.unwrap().unwrap();
-        assert_eq!(info.tenant_cap, None);
-        assert!(info.modules.is_empty());
+        sqlx::query("INSERT INTO one_license_activation (license_id, enterprise_id, customer, tier, issued_at, activated_at, activated_by) VALUES ('lic1', 'ent1', 'Acme', 'enterprise', 0, 0, 'admin1')")
+            .execute(&sqlite).await.unwrap();
+        assert!(svc.active_license("ent1").await.unwrap().is_none());
+        assert_eq!(svc.license_of("ent1").await.unwrap().tier, Tier::Free);
     }
 
     // ---- P2-5: per-model-call LLM trace (`one_llm_calls`) ----
@@ -5021,12 +4955,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ensure_default_license_starts_free_with_unlimited_seats() {
+    async fn ensure_default_license_starts_free_with_three_seats() {
         let (svc, _sqlite) = service().await;
         svc.ensure_default_license("ent-boot").await.unwrap();
         let license = svc.license_of("ent-boot").await.unwrap();
         assert_eq!(license.tier, Tier::Free);
-        assert_eq!(license.seat_limit, None);
+        assert_eq!(license.seat_limit, Some(3));
         assert_eq!(license.expires_at, None);
     }
 
@@ -5117,20 +5051,20 @@ mod tests {
     #[tokio::test]
     async fn activation_read_back_carries_the_binding_fingerprint() {
         let (svc, sqlite) = service().await;
-        sqlx::query(
-            "INSERT INTO one_license_activation \
-                 (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by, \
-                  tenant_cap, agent_node_cap, cpu_cores_cap, memory_mb_cap, modules, serial, app_id, file_name, deployment_fingerprint) \
-             VALUES ('lic1', 'ent1', 'Acme', 'enterprise', 50, NULL, 0, 0, 'admin1', \
-                     NULL, NULL, NULL, NULL, '[]', NULL, 'one-work-enterprise', 'acme.lic', \
-                     'sha256:abc123')",
-        )
-        .execute(&sqlite)
-        .await
+        force_tier(&svc, "ent1", Tier::Enterprise, None).await;
+        let local = svc.deployment_fingerprint().await.unwrap();
+        let payload = serde_json::from_value(serde_json::json!({
+            "lid":"lic_ent1", "customer":"Acme", "tier":"enterprise", "iat":0,
+            "instance_id":"ent1", "deployment_fingerprint":local,
+        }))
         .unwrap();
-
+        sqlx::query("UPDATE one_license_activation SET license_key = ?, deployment_fingerprint = 'tampered'")
+            .bind(fixture_key(&payload))
+            .execute(&sqlite)
+            .await
+            .unwrap();
         let info = svc.active_license("ent1").await.unwrap().unwrap();
-        assert_eq!(info.deployment_fingerprint.as_deref(), Some("sha256:abc123"));
+        assert_eq!(info.deployment_fingerprint.as_deref(), Some(local.as_str()));
     }
 
     /// Real MySQL: exercises `ensure_default_license`'s `INSERT IGNORE` branch.

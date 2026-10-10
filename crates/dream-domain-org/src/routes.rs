@@ -1098,7 +1098,7 @@ async fn admin_set_user_role(
 /// # Why system_admin and not org_admin
 ///
 /// The bundle spans the **whole deployment**: every project group's members,
-/// invites and departments, plus the company licence and SSO wiring. An
+/// invites and departments, plus company metadata and SSO wiring. An
 /// `org_admin` only administers their own project group, so gating this on
 /// `RequireOrgAdmin` would let the admin of group A walk away with group B's
 /// roster — a privilege escalation dressed up as a backup. The guard has to

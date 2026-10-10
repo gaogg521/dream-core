@@ -54,6 +54,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "billing_011_deployment_binding",
         include_str!("../migrations/billing_011_deployment_binding.sql"),
     ),
+    (
+        "billing_012_signed_license",
+        include_str!("../migrations/billing_012_signed_license.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -100,6 +104,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "billing_011_deployment_binding",
         include_str!("../migrations_mysql/billing_011_deployment_binding.sql"),
+    ),
+    (
+        "billing_012_signed_license",
+        include_str!("../migrations_mysql/billing_012_signed_license.sql"),
     ),
 ];
 

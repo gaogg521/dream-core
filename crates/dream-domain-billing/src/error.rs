@@ -21,6 +21,8 @@ pub enum BillingError {
     BadRequest(String),
     #[error("No company has been set up on this server")]
     EnterpriseNotFound,
+    #[error("No payment provider is configured")]
+    PaymentProviderUnavailable,
     #[error("The requested billing resource was not found")]
     NotFound,
     #[error("Seat limit reached for the current plan")]
@@ -51,6 +53,7 @@ impl BillingError {
             Self::MachineBlocked(_) => "MACHINE_BLOCKED",
             Self::BadRequest(_) => "BAD_REQUEST",
             Self::EnterpriseNotFound => "ENTERPRISE_NOT_FOUND",
+            Self::PaymentProviderUnavailable => "PAYMENT_PROVIDER_UNAVAILABLE",
             Self::NotFound => "NOT_FOUND",
             Self::SeatLimitExceeded => "SEAT_LIMIT_EXCEEDED",
             Self::BudgetExceeded => "BUDGET_EXCEEDED",
@@ -67,6 +70,7 @@ impl BillingError {
             Self::Forbidden(_) | Self::MachineBlocked(_) => StatusCode::FORBIDDEN,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::EnterpriseNotFound => StatusCode::NOT_FOUND,
+            Self::PaymentProviderUnavailable => StatusCode::NOT_IMPLEMENTED,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::SeatLimitExceeded
             | Self::BudgetExceeded

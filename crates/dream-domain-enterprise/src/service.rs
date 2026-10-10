@@ -248,27 +248,37 @@ impl EnterpriseService {
     /// license table (billing not installed → unlimited) so standalone /
     /// pre-billing behavior is unchanged.
     async fn active_seat_available(&self, enterprise_id: &str) -> Result<bool, EnterpriseError> {
-        // Distinguish table-missing (skip) from row-absent (new company → free
-        // default).
-        let tier = match self
+        let state = dream_core_db::licensed_state::read_license_state(&self.db, enterprise_id).await;
+        let signed_cap = state.as_ref().ok().and_then(|s| {
+            s.payload
+                .as_ref()
+                .filter(|_| s.tier() != dream_core_common::license::Tier::Free)
+                .and_then(|p| p.seats)
+        });
+        let tier = state
+            .as_ref()
+            .map(|s| s.tier())
+            .unwrap_or(dream_core_common::license::Tier::Free);
+        let cap = signed_cap.or_else(|| dream_core_common::license::tier_seat_limit(tier).map(|n| n as i64));
+        let local_cap = self
             .db
-            .fetch_optional_as::<(String, Option<i64>)>(
-                "SELECT tier, seat_limit FROM one_enterprise_license WHERE enterprise_id = ?",
+            .fetch_optional_scalar::<Option<i64>>(
+                "SELECT seat_limit FROM one_enterprise_license WHERE enterprise_id = ?",
                 &db_params![enterprise_id],
             )
-            .await
-        {
-            Err(_) => return Ok(true), // billing not installed → no enforcement
-            Ok(Some((tier, Some(override_limit)))) => {
-                let _ = tier;
-                return self.active_seat_count_below(enterprise_id, override_limit).await;
-            }
-            Ok(Some((tier, None))) => dream_core_common::license::Tier::parse(&tier),
-            Ok(None) => dream_core_common::license::Tier::Free,
+            .await;
+        let local_cap = match local_cap {
+            Ok(cap) => cap.flatten(),
+            Err(e) if dream_core_db::message_indicates_missing_table(&e.to_string()) => return Ok(true),
+            Err(e) => return Err(e.into()),
         };
-        match dream_core_common::license::tier_seat_limit(tier) {
-            Some(limit) => self.active_seat_count_below(enterprise_id, limit as i64).await,
-            None => Ok(true), // unlimited tier
+        let cap = match (cap, local_cap) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        match cap {
+            Some(limit) => self.active_seat_count_below(enterprise_id, limit).await,
+            None => Ok(true),
         }
     }
 
@@ -1090,8 +1100,7 @@ mod tests {
             .unwrap();
         assert_eq!(seat_status_of(&sqlite, "u1").await, SEAT_STATUS_ACTIVE);
 
-        // Upgrading the plan does NOT retroactively promote a pending member —
-        // there is no background job, only "try again next login".
+        // A SQL-only tier change cannot authorize additional active seats.
         sqlx::query("UPDATE one_enterprise_license SET tier = 'team' WHERE enterprise_id = ?")
             .bind(&eid)
             .execute(&sqlite)
@@ -1099,11 +1108,11 @@ mod tests {
             .unwrap();
         assert_eq!(seat_status_of(&sqlite, "u4").await, SEAT_STATUS_PENDING);
 
-        // u4's NEXT login re-checks the cap and promotes them.
+        // The next login must still enforce the unsigned deployment's free cap.
         svc.sync_member("u4", "feishu", "co", "", None, None, None)
             .await
             .unwrap();
-        assert_eq!(seat_status_of(&sqlite, "u4").await, SEAT_STATUS_ACTIVE);
+        assert_eq!(seat_status_of(&sqlite, "u4").await, SEAT_STATUS_PENDING);
     }
 
     /// ⚠️ The point of the whole column. If a pending row were never written

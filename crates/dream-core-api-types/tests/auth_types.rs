@@ -112,14 +112,14 @@ fn auth_status_response_needs_setup() {
     let resp = AuthStatusResponse {
         success: true,
         needs_setup: true,
-        user_count: 0,
+        user_count: None,
         is_authenticated: false,
     };
     let json = serde_json::to_value(&resp).unwrap();
 
     assert_eq!(json["success"], true);
     assert_eq!(json["needs_setup"], true);
-    assert_eq!(json["user_count"], 0);
+    assert!(json.get("user_count").is_none());
     assert_eq!(json["is_authenticated"], false);
 }
 
@@ -128,7 +128,7 @@ fn auth_status_response_authenticated() {
     let resp = AuthStatusResponse {
         success: true,
         needs_setup: false,
-        user_count: 2,
+        user_count: Some(2),
         is_authenticated: true,
     };
     let json = serde_json::to_value(&resp).unwrap();
@@ -143,7 +143,7 @@ fn auth_status_response_uses_snake_case_keys() {
     let resp = AuthStatusResponse {
         success: true,
         needs_setup: false,
-        user_count: 1,
+        user_count: Some(1),
         is_authenticated: true,
     };
     let json = serde_json::to_value(&resp).unwrap();
@@ -162,7 +162,7 @@ fn auth_status_response_round_trip() {
     let original = AuthStatusResponse {
         success: true,
         needs_setup: true,
-        user_count: 5,
+        user_count: Some(5),
         is_authenticated: false,
     };
     let serialized = serde_json::to_string(&original).unwrap();
@@ -187,4 +187,11 @@ fn refresh_token_request_valid() {
 fn refresh_token_request_missing_token() {
     let json = r#"{}"#;
     assert!(serde_json::from_str::<RefreshTokenRequest>(json).is_err());
+}
+
+#[test]
+fn anonymous_auth_status_deserializes_without_roster_size() {
+    let raw = r#"{"success":true,"needs_setup":false,"is_authenticated":false}"#;
+    let status: AuthStatusResponse = serde_json::from_str(raw).unwrap();
+    assert!(status.user_count.is_none());
 }

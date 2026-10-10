@@ -3,10 +3,13 @@
 //! Procurement due diligence asks "how do I back this up and how do I get it
 //! back", and until now the answer was "you can't". This exports the
 //! enterprise-side configuration — project groups, memberships, departments,
-//! invites, companies, licence, SSO wiring and the shared registries — as a
+//! invites, companies, SSO wiring and the shared registries — as a
 //! single versioned JSON document, and restores it idempotently.
 //!
 //! # Deliberate exclusions
+//!
+//! * **Commercial grants and installation identity.** Configuration restores
+//!   cannot activate a subscription or transplant its deployment binding.
 //!
 //! * **User conversations and messages.** Orders of magnitude larger than the
 //!   config, and personal rather than organizational data. A "restore" that
@@ -59,9 +62,8 @@ const BACKUP_TABLES: &[&str] = &[
     // one-enterprise
     "one_enterprises",
     "one_enterprise_members",
-    // one-billing
-    "one_enterprise_license",
-    "one_license_activation",
+    // Vendor grants and the installation identity never travel through config
+    // backups. Reactivate the signed key on the destination deployment.
     // one-billing T8: the media ledger is unlike `one_usage_events` (excluded
     // above for being unbounded event telemetry) — it is the actual record of
     // what was generated, and losing it on a restore is losing the artifacts'
@@ -342,8 +344,7 @@ pub async fn export_bundle(pool: &DbPool, tenant_id: &str, now_ms: i64) -> Resul
 pub struct ImportReport {
     pub tables_applied: usize,
     pub rows_applied: usize,
-    /// Tables present in the bundle that this deployment has no schema for
-    /// (a crate whose migrations never ran here).
+    /// Tables excluded by policy or absent from the deployment schema.
     pub tables_skipped: Vec<String>,
 }
 
@@ -527,6 +528,57 @@ mod tests {
         .await
         .unwrap();
         pool
+    }
+
+    #[tokio::test]
+    async fn configuration_restore_never_imports_vendor_grants_or_installation_identity() {
+        let sqlite = pool().await;
+        sqlx::raw_sql("CREATE TABLE one_enterprise_license (enterprise_id TEXT PRIMARY KEY, tier TEXT); CREATE TABLE one_license_activation (license_id TEXT PRIMARY KEY, license_key TEXT); CREATE TABLE one_license_installation (singleton_id INTEGER PRIMARY KEY, fingerprint TEXT); INSERT INTO one_enterprise_license VALUES ('ent', 'free'); INSERT INTO one_license_installation VALUES (1, 'original');").execute(&sqlite).await.unwrap();
+        let db = DbPool::Sqlite(sqlite.clone());
+        let mut bundle = export_bundle(&db, "t1", 0).await.unwrap();
+        assert!(!bundle.tables.contains_key("one_enterprise_license"));
+        assert!(!bundle.tables.contains_key("one_license_activation"));
+        for (table, row) in [
+            (
+                "one_enterprise_license",
+                serde_json::json!({"enterprise_id":"ent", "tier":"enterprise"}),
+            ),
+            (
+                "one_license_activation",
+                serde_json::json!({"license_id":"forged", "license_key":"unsigned"}),
+            ),
+            (
+                "one_license_installation",
+                serde_json::json!({"singleton_id":1, "fingerprint":"foreign"}),
+            ),
+        ] {
+            bundle
+                .tables
+                .insert(table.into(), vec![row.as_object().unwrap().clone()]);
+        }
+        let report = import_bundle(&db, &bundle).await.unwrap();
+        for table in [
+            "one_enterprise_license",
+            "one_license_activation",
+            "one_license_installation",
+        ] {
+            assert!(report.tables_skipped.contains(&table.to_owned()));
+        }
+        let tier: String = sqlx::query_scalar("SELECT tier FROM one_enterprise_license")
+            .fetch_one(&sqlite)
+            .await
+            .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_license_activation")
+            .fetch_one(&sqlite)
+            .await
+            .unwrap();
+        let fingerprint: String = sqlx::query_scalar("SELECT fingerprint FROM one_license_installation")
+            .fetch_one(&sqlite)
+            .await
+            .unwrap();
+        assert_eq!(tier, "free");
+        assert_eq!(count, 0);
+        assert_eq!(fingerprint, "original");
     }
 
     async fn seed(pool: &sqlx::SqlitePool) {

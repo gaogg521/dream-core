@@ -2690,8 +2690,18 @@ async fn license_module_gate_middleware(
         Ok(None) | Err(_) => return Ok(next.run(request).await),
     };
 
-    match license.classify_path_access(request.uri().path(), dream_core_common::now_ms()) {
-        dream_domain_billing::ModuleAccess::Authorized => Ok(next.run(request).await),
+    enforce_license_path(&license, request.uri().path(), dream_core_common::now_ms())?;
+    Ok(next.run(request).await)
+}
+
+#[cfg(feature = "enterprise")]
+fn enforce_license_path(
+    license: &dream_domain_billing::LicenseInfoDto,
+    path: &str,
+    now_ms: i64,
+) -> Result<(), ApiError> {
+    match license.classify_path_access(path, now_ms) {
+        dream_domain_billing::ModuleAccess::Authorized => Ok(()),
         dream_domain_billing::ModuleAccess::NotAuthorized => Err(ApiError::coded(
             StatusCode::FORBIDDEN,
             "LICENSE_MODULE_NOT_AUTHORIZED",
@@ -4282,8 +4292,11 @@ mod tests {
         use axum::routing::get;
         use tower::ServiceExt;
 
-        use super::super::{ADMIN_MODULE, LicenseModuleGateState, license_module_gate_middleware};
+        use super::super::{
+            ADMIN_MODULE, LicenseModuleGateState, enforce_license_path, license_module_gate_middleware,
+        };
         use super::StatusCode;
+        use axum::response::IntoResponse;
 
         /// A migrated in-memory DB plus a `BillingService` over it — everything
         /// the gate itself touches (`resolve_enterprise_id`, `active_license`).
@@ -4417,120 +4430,99 @@ mod tests {
             );
         }
 
-        /// The one invariant that must never invert: an empty `modules` list is
-        /// "this license never configured per-module restriction", not "nothing
-        /// authorized". Getting this backwards locks every existing deployment
-        /// out of its own admin plane on upgrade.
         #[tokio::test]
-        async fn empty_modules_license_allows_everything() {
+        async fn unsigned_module_projection_is_not_a_verified_grant() {
             let (db, billing) = billing_service_for_test().await;
             seed_enterprise_member(db.pool(), "u1", "ent1").await;
-            seed_license(db.pool(), "ent1", "[]").await;
-            let response = request_as(gate_app(billing), Some(current_user("u1"))).await;
-            assert_eq!(
-                response.status(),
-                StatusCode::OK,
-                "empty modules must mean unrestricted, not locked out"
+            seed_license(db.pool(), "ent1", r#"[{"module":"/admin/*"}]"#).await;
+            assert!(billing.active_license("ent1").await.unwrap().is_none());
+            assert!(
+                !billing
+                    .entitlement(Some("ent1"), dream_core_common::license::Feature::AuditLog)
+                    .await
+                    .unwrap()
             );
+            // Recovery/base free pages retain their role-based access. This
+            // module gate alone is not the authentication or paid-feature gate.
+            let response = request_page(gate_app(billing), Some(current_user("u1")), "/api/one/admin/users").await;
+            assert_eq!(response.status(), StatusCode::OK);
         }
 
-        #[tokio::test]
-        async fn license_naming_the_admin_module_is_authorized() {
-            let (db, billing) = billing_service_for_test().await;
-            seed_enterprise_member(db.pool(), "u1", "ent1").await;
-            seed_license(
-                db.pool(),
-                "ent1",
-                r#"[{"module":"/admin/*","startsAt":null,"expiresAt":null}]"#,
-            )
-            .await;
-            let response = request_as(gate_app(billing), Some(current_user("u1"))).await;
-            assert_eq!(response.status(), StatusCode::OK);
+        /// Policy tests start after signature verification. The billing/DB
+        /// tests independently exercise real Ed25519 envelopes and binding;
+        /// no production vendor private key belongs in a router fixture.
+        fn verified_license(modules: &str) -> dream_domain_billing::LicenseInfoDto {
+            dream_domain_billing::LicenseInfoDto {
+                license_id: "policy-fixture".into(),
+                customer: "test".into(),
+                tier: "enterprise".into(),
+                seats: None,
+                expires_at: None,
+                activated_at: 0,
+                expired: false,
+                signature_verified: true,
+                verified_at: 2,
+                tenant_cap: None,
+                agent_node_cap: None,
+                cpu_cores_cap: None,
+                memory_mb_cap: None,
+                modules: serde_json::from_str(modules).unwrap(),
+                serial: None,
+                app_id: None,
+                file_name: None,
+                deployment_fingerprint: None,
+            }
+        }
+
+        #[test]
+        fn empty_modules_license_allows_everything() {
+            assert!(enforce_license_path(&verified_license("[]"), "/api/one/admin/users", 2).is_ok());
         }
 
         #[tokio::test]
         async fn license_naming_only_a_different_module_is_forbidden_as_not_authorized() {
-            let (db, billing) = billing_service_for_test().await;
-            seed_enterprise_member(db.pool(), "u1", "ent1").await;
-            seed_license(
-                db.pool(),
-                "ent1",
-                r#"[{"module":"/some-other-addon/*","startsAt":null,"expiresAt":null}]"#,
-            )
-            .await;
-            let response = request_as(gate_app(billing), Some(current_user("u1"))).await;
+            let license = verified_license(r#"[{"module":"/some-other-addon/*"}]"#);
+            let response = enforce_license_path(&license, "/probe", 2).unwrap_err().into_response();
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
             assert_eq!(error_code(response).await, "LICENSE_MODULE_NOT_AUTHORIZED");
         }
 
-        /// Denial reasons must be distinguishable: "never granted" and
-        /// "granted, but lapsed" are different problems an operator would fix
-        /// differently (buy the addon vs. renew it).
-        /// P1-10 per-page granularity: an entry naming one admin page
-        /// authorizes that page's subtree and nothing else on the plane.
         #[tokio::test]
         async fn per_page_entry_authorizes_its_subtree_and_blocks_the_rest() {
-            let (db, billing) = billing_service_for_test().await;
-            seed_enterprise_member(db.pool(), "u1", "ent1").await;
-            seed_license(
-                db.pool(),
-                "ent1",
-                r#"[{"module":"/admin/users","startsAt":null,"expiresAt":null}]"#,
-            )
-            .await;
-            let app = gate_app(billing);
-
-            let ok = request_page(app.clone(), Some(current_user("u1")), "/api/one/admin/users").await;
-            assert_eq!(ok.status(), StatusCode::OK, "the named page itself must pass");
-
-            let subtree = request_page(app.clone(), Some(current_user("u1")), "/api/one/admin/users/role").await;
-            assert_eq!(subtree.status(), StatusCode::OK, "the page's subtree passes too");
-
-            let other = request_page(app, Some(current_user("u1")), "/api/one/admin/sso").await;
-            assert_eq!(
-                other.status(),
-                StatusCode::FORBIDDEN,
-                "a page the license does not name is blocked"
-            );
-            assert_eq!(error_code(other).await, "LICENSE_MODULE_NOT_AUTHORIZED");
+            let license = verified_license(r#"[{"module":"/admin/users"}]"#);
+            for path in ["/api/one/admin/users", "/api/one/admin/users/role"] {
+                assert!(enforce_license_path(&license, path, 2).is_ok());
+            }
+            let response = enforce_license_path(&license, "/api/one/admin/sso", 2)
+                .unwrap_err()
+                .into_response();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            assert_eq!(error_code(response).await, "LICENSE_MODULE_NOT_AUTHORIZED");
         }
 
-        /// Back-compat: the T5 coarse `/admin/*` token still covers the whole
-        /// plane — narrowing it would strip access from keys already sold
-        /// under the coarse semantics.
-        #[tokio::test]
-        async fn the_coarse_admin_star_token_still_covers_the_whole_plane() {
-            let (db, billing) = billing_service_for_test().await;
-            seed_enterprise_member(db.pool(), "u1", "ent1").await;
-            seed_license(
-                db.pool(),
-                "ent1",
-                r#"[{"module":"/admin/*","startsAt":null,"expiresAt":null}]"#,
-            )
-            .await;
-            let app = gate_app(billing);
+        #[test]
+        fn the_coarse_admin_star_token_still_covers_the_whole_plane() {
+            let license = verified_license(r#"[{"module":"/admin/*"}]"#);
             for path in ["/probe", "/api/one/admin/users", "/api/one/admin/sso"] {
-                let response = request_page(app.clone(), Some(current_user("u1")), path).await;
-                assert_eq!(
-                    response.status(),
-                    StatusCode::OK,
-                    "path {path} must stay covered by /admin/*"
-                );
+                assert!(enforce_license_path(&license, path, 2).is_ok());
             }
         }
 
         #[tokio::test]
         async fn expired_admin_module_grant_is_forbidden_as_expired_not_not_authorized() {
-            let (db, billing) = billing_service_for_test().await;
-            seed_enterprise_member(db.pool(), "u1", "ent1").await;
-            seed_license(
-                db.pool(),
-                "ent1",
-                &format!(r#"[{{"module":{ADMIN_MODULE:?},"startsAt":null,"expiresAt":1}}]"#),
-            )
-            .await;
-            let response = request_as(gate_app(billing), Some(current_user("u1"))).await;
+            let license = verified_license(&format!(r#"[{{"module":{ADMIN_MODULE:?},"expiresAt":1}}]"#));
+            let response = enforce_license_path(&license, "/probe", 2).unwrap_err().into_response();
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            assert_eq!(error_code(response).await, "LICENSE_MODULE_EXPIRED");
+        }
+
+        #[tokio::test]
+        async fn expired_whole_license_cannot_keep_perpetual_module_grants() {
+            let mut license = verified_license(r#"[{"module":"/admin/*"}]"#);
+            license.expired = true;
+            let response = enforce_license_path(&license, "/api/one/admin/users", 2)
+                .unwrap_err()
+                .into_response();
             assert_eq!(error_code(response).await, "LICENSE_MODULE_EXPIRED");
         }
     }

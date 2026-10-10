@@ -431,6 +431,7 @@ async fn t6_2_status_has_users() {
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     assert_eq!(json["needs_setup"], false);
+    assert!(json.get("user_count").is_none(), "anonymous roster size must be absent");
 }
 
 #[tokio::test]
@@ -444,6 +445,7 @@ async fn t6_3_status_authenticated() {
 
     let json = body_json(resp).await;
     assert_eq!(json["is_authenticated"], true);
+    assert_eq!(json["user_count"], 1);
 }
 
 #[tokio::test]

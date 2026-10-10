@@ -19,8 +19,10 @@ pub struct PlanDto {
     pub enterprise_id: String,
     pub tier: String,
     /// `free`, `official`, or `unofficial`. Unofficial means a paid tier row
-    /// exists without a vendor activation record; effective tier is free.
+    /// exists without a valid, matching signed grant; effective tier is free.
     pub license_status: String,
+    pub signature_verified: bool,
+    pub verified_at: i64,
     /// ACTIVE (governed, billable) seats only — what `seat_limit` actually
     /// caps. Does not include `seat_pending`.
     pub seat_used: i64,
@@ -88,6 +90,8 @@ pub struct LicenseInfoDto {
     pub expires_at: Option<i64>,
     pub activated_at: i64,
     pub expired: bool,
+    pub signature_verified: bool,
+    pub verified_at: i64,
 
     // --- E4: quotas beyond seats, mirroring `LicensePayload`. `null` = unlimited. ---
     pub tenant_cap: Option<i64>,
@@ -108,10 +112,12 @@ pub struct LicenseInfoDto {
 
 impl LicenseInfoDto {
     /// Mirrors `LicensePayload::module_authorized` — same shared
-    /// `classify_module_access`, applied to the `modules` list as read back
-    /// from `one_license_activation` rather than off a freshly verified
-    /// `LicensePayload`.
+    /// `classify_module_access`, applied only to claims recovered from the
+    /// signature-verified envelope.
     pub fn classify_module_access(&self, module: &str, now_ms: i64) -> ModuleAccess {
+        if self.expired {
+            return ModuleAccess::Expired;
+        }
         classify_module_access(&self.modules, module, now_ms)
     }
 
@@ -119,6 +125,9 @@ impl LicenseInfoDto {
     /// `license_key::classify_path_access` for the entry shapes and the
     /// `"/admin/*"` whole-plane back-compat rule.
     pub fn classify_path_access(&self, request_path: &str, now_ms: i64) -> ModuleAccess {
+        if self.expired {
+            return ModuleAccess::Expired;
+        }
         classify_path_access(&self.modules, request_path, now_ms)
     }
 }

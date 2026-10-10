@@ -14,7 +14,7 @@ use std::sync::{Arc, RwLock};
 use serde::Serialize;
 
 use dream_core_auth::{generate_password, generate_random_secret_string, hash_password, verify_password};
-use dream_core_common::license::{Feature, Tier, tier_allows};
+use dream_core_common::license::Feature;
 use dream_core_common::{decrypt_string, encrypt_string, now_ms};
 use dream_core_db::{DbBackend, DbPool, DbValue, IConversationRepository, IUserRepository, db_params};
 
@@ -2330,27 +2330,7 @@ impl OrgService {
     /// `dream-common` matrix. No enterprise / billing not installed → allowed
     /// (personal-edition red line). Tolerant of absent tables.
     pub async fn enterprise_feature_allowed(&self, user_id: &str, feature: Feature) -> Result<bool, OrgError> {
-        let enterprise_id: Option<String> = self
-            .db
-            .fetch_optional_scalar(
-                "SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?",
-                &db_params![user_id],
-            )
-            .await
-            .unwrap_or(None);
-        let Some(enterprise_id) = enterprise_id else {
-            return Ok(true);
-        };
-        let tier: Option<String> = self
-            .db
-            .fetch_optional_scalar(
-                "SELECT tier FROM one_enterprise_license WHERE enterprise_id = ?",
-                &db_params![&enterprise_id],
-            )
-            .await
-            .unwrap_or(None);
-        let tier = tier.map(|t| Tier::parse(&t)).unwrap_or(Tier::Free);
-        Ok(tier_allows(tier, feature))
+        Ok(dream_core_db::licensed_state::user_feature_allowed(&self.db, user_id, feature).await?)
     }
 
     pub async fn list_audit_logs(&self, tenant_id: &str, limit: i64) -> Result<Vec<AuditLogRow>, OrgError> {

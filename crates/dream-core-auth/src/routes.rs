@@ -987,21 +987,27 @@ async fn status_handler(
         .await
         .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?;
 
-    let user_count = state
-        .user_repo
-        .count_users()
-        .await
-        .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?;
-
     // Check authentication without requiring it
     let is_authenticated = extract_token_from_headers(&headers)
         .and_then(|token| state.jwt_service.verify(&token).ok())
         .is_some();
 
+    // Setup state is needed to bootstrap the login screen; roster size is not.
+    let user_count = if is_authenticated {
+        Some(
+            state
+                .user_repo
+                .count_users()
+                .await
+                .map_err(|e| ApiError::Internal(format!("Database error: {e}")))? as u64,
+        )
+    } else {
+        None
+    };
     Ok(Json(AuthStatusResponse {
         success: true,
         needs_setup: !has_users,
-        user_count: user_count as u64,
+        user_count,
         is_authenticated,
     }))
 }

@@ -19,6 +19,7 @@ pub mod governance_caller;
 mod hooks;
 mod id;
 pub mod license;
+pub mod license_key;
 mod pagination;
 mod timestamp;
 mod tool_schema;

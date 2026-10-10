@@ -1056,29 +1056,9 @@ impl DevopsService {
         user_id: &str,
         feature: dream_core_common::license::Feature,
     ) -> Result<bool, DevopsError> {
-        let enterprise_id: Option<String> = self
-            .db
-            .fetch_optional_scalar(
-                "SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?",
-                &db_params![user_id],
-            )
+        dream_core_db::licensed_state::user_feature_allowed(&self.db, user_id, feature)
             .await
-            .unwrap_or(None);
-        let Some(enterprise_id) = enterprise_id else {
-            return Ok(true);
-        };
-        let tier: Option<String> = self
-            .db
-            .fetch_optional_scalar(
-                "SELECT tier FROM one_enterprise_license WHERE enterprise_id = ?",
-                &db_params![&enterprise_id],
-            )
-            .await
-            .unwrap_or(None);
-        let tier = tier
-            .map(|t| dream_core_common::license::Tier::parse(&t))
-            .unwrap_or(dream_core_common::license::Tier::Free);
-        Ok(dream_core_common::license::tier_allows(tier, feature))
+            .map_err(|e| DevopsError::Internal(e.to_string()))
     }
 
     // -- skill registry ---------------------------------------------------
@@ -4096,26 +4076,28 @@ mod tests {
             .await
             .unwrap();
 
-        // Upgrade to enterprise → both allowed.
+        // A SQL-only tier change is unsigned and must not unlock paid scope.
         sqlx::query("UPDATE one_enterprise_license SET tier = 'enterprise' WHERE enterprise_id = 'ent1'")
             .execute(svc.db.sqlite())
             .await
             .unwrap();
-        svc.upsert_skill(
-            None,
-            "s4",
-            "",
-            "",
-            true,
-            false,
-            "team",
-            Some("tA"),
-            "admin",
-            None,
-            "admin1",
-        )
-        .await
-        .unwrap();
+        let err = svc
+            .upsert_skill(
+                None,
+                "s4",
+                "",
+                "",
+                true,
+                false,
+                "team",
+                Some("tA"),
+                "admin",
+                None,
+                "admin1",
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "FORBIDDEN");
     }
 
     #[tokio::test]

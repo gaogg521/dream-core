@@ -66,7 +66,9 @@ pub struct QrLoginRequest {
 pub struct AuthStatusResponse {
     pub success: bool,
     pub needs_setup: bool,
-    pub user_count: u64,
+    /// Roster size is omitted for anonymous callers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_count: Option<u64>,
     pub is_authenticated: bool,
 }
 
@@ -361,7 +363,7 @@ mod tests {
         let resp = AuthStatusResponse {
             success: true,
             needs_setup: true,
-            user_count: 0,
+            user_count: Some(0),
             is_authenticated: false,
         };
         let json = serde_json::to_value(&resp).unwrap();
@@ -386,7 +388,7 @@ mod tests {
         let resp: AuthStatusResponse = serde_json::from_value(raw).unwrap();
         assert!(resp.success);
         assert!(!resp.needs_setup);
-        assert_eq!(resp.user_count, 3);
+        assert_eq!(resp.user_count, Some(3));
         assert!(resp.is_authenticated);
     }
 
