@@ -1,7 +1,8 @@
 //! `/api/one/billing/*` routes. Mount behind the upstream auth middleware
 //! (relies on `CurrentUser`). `plan` / `checkout` are readable by any
-//! authenticated member (they return `null` / a manual message for personal
-//! users); `usage` and `tier` require a billing admin.
+//! authenticated member; plan returns capabilities only to non-admins. They
+//! return `null` / a manual message for personal
+//! users; `usage` and `tier` require a billing admin.
 
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -21,7 +22,7 @@ use crate::error::BillingError;
 use crate::models::{
     AgentSessionDetailDto, AgentSessionPageDto, CheckoutResultDto, ConversationCostDto, DepartmentBudgetDto,
     EnterpriseReportDto, KeyUsageDto, LicenseInfoDto, LlmCallPageDto, LlmCallPurgeResultDto, MediaAssetDto,
-    MediaLedgerSettingsDto, PlanDto, UsageEventPageDto, UsageSummaryDto,
+    MediaLedgerSettingsDto, PlanDto, UsageEventPageDto, UsageSummaryDto, VisiblePlanDto,
 };
 use crate::service::{LLM_CALL_RETENTION_DAYS, MediaAssetFilters, MediaUsage};
 use crate::state::OneBillingRouterState;
@@ -370,7 +371,7 @@ async fn billing_plan(
     State(state): State<OneBillingRouterState>,
     Extension(user): Extension<CurrentUser>,
     headers: HeaderMap,
-) -> Result<Json<ApiResponse<Option<PlanDto>>>, BillingError> {
+) -> Result<Json<ApiResponse<Option<VisiblePlanDto>>>, BillingError> {
     // C1-2 fix: a blocked machine must stop reading the model allowlist it
     // would otherwise enforce against itself. No header (older client) skips
     // the check, same fail-open posture as every other machine-agnostic
@@ -391,7 +392,10 @@ async fn billing_plan(
     let Some(eid) = state.service.resolve_enterprise_id(&user.id).await? else {
         return Ok(Json(ApiResponse::ok(None)));
     };
-    Ok(Json(ApiResponse::ok(Some(state.service.plan(&eid).await?))))
+    let billing_admin = state.service.is_billing_admin(&user.id).await?;
+    Ok(Json(ApiResponse::ok(Some(
+        state.service.plan(&eid).await?.for_viewer(billing_admin),
+    ))))
 }
 
 #[derive(Deserialize)]

@@ -3545,6 +3545,83 @@ mod tests {
         (db, service, user_repo)
     }
 
+    #[tokio::test]
+    async fn auditor_http_reads_are_tenant_scoped_and_do_not_grant_admin_access() {
+        use axum::{
+            Extension,
+            body::Body,
+            http::{Request, StatusCode},
+        };
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+        let (db, service, repo) = setup().await;
+        let id = create_user(&repo, "audit-reader").await;
+        sqlx::query("INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) VALUES (?, 'audit-home', 'auditor', 0, 0)")
+            .bind(&id).execute(db.pool()).await.unwrap();
+        sqlx::raw_sql("INSERT INTO one_audit_logs (id, tenant_id, action, created_at) VALUES ('own-event', 'audit-home', 'test.own', 1), ('foreign-event', 'other-tenant', 'test.foreign', 2)")
+            .execute(db.pool()).await.unwrap();
+        let mut user = dream_core_auth::CurrentUser::local_default();
+        user.id = id.clone();
+        user.username = "audit-reader".into();
+        let app = crate::routes::one_org_routes(crate::state::OneOrgRouterState::new(service)).layer(Extension(user));
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/one/admin/audit?tenantId=other-tenant")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("own-event"));
+        assert!(!body.contains("foreign-event"));
+        for path in ["/api/one/admin/agent-audit", "/api/one/admin/users"] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                if path.ends_with("agent-audit") {
+                    StatusCode::OK
+                } else {
+                    StatusCode::FORBIDDEN
+                }
+            );
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/one/admin/users/{id}/role"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"role":"system_admin"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        sqlx::query("UPDATE one_user_org SET role = 'member' WHERE user_id = ?")
+            .bind(&id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        for path in ["/api/one/admin/audit", "/api/one/admin/agent-audit"] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+    }
+
     /// Token rotation goes through the upstream user repo, so test users must
     /// exist in the upstream `users` table (in production the auth middleware
     /// guarantees this).

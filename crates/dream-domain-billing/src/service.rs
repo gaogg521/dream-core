@@ -2738,6 +2738,56 @@ mod tests {
         (svc, pool)
     }
 
+    #[tokio::test]
+    async fn plan_visibility_hides_company_finances_from_members_and_auditors() {
+        let (svc, pool) = service().await;
+        sqlx::raw_sql(
+            "INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) VALUES ('admin', 'entA', 'admin', 0, 0), ('member', 'entA', 'member', 0, 0), ('auditor', 'entA', 'member', 0, 0);
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('auditor', 't1', 'auditor');",
+        ).execute(&pool).await.unwrap();
+        use axum::{
+            Extension,
+            body::Body,
+            http::{Request, StatusCode},
+        };
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+        let state = crate::state::OneBillingRouterState::new(Arc::new(svc));
+        for user in ["admin", "member", "auditor"] {
+            let mut identity = dream_core_auth::CurrentUser::local_default();
+            identity.id = user.into();
+            let app = crate::routes::one_billing_routes(state.clone()).layer(Extension(identity));
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/one/billing/plan")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let response: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let visible = &response["data"];
+            for field in ["enterpriseId", "entitlements", "allowedModels"] {
+                assert!(visible.get(field).is_some(), "{user}: missing {field}");
+            }
+            for field in [
+                "tier",
+                "licenseStatus",
+                "seatUsed",
+                "seatLimit",
+                "seatPending",
+                "expiresAt",
+                "costCapMicros",
+                "costUsedMicros",
+            ] {
+                assert_eq!(visible.get(field).is_some(), user == "admin", "{user}: {field}");
+            }
+        }
+    }
+
     /// C1-2: the roster row this machine-block check reads, plus the
     /// `one_active_tenant` row `machine_blocked` resolves through — distinct
     /// from `resolve_enterprise_id`'s `one_enterprise_members` (see the

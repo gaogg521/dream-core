@@ -80,6 +80,22 @@ impl FromRequestParts<OneOrgRouterState> for RequireIntegrationAdmin {
     }
 }
 
+/// Read-only audit access within the active enterprise. Does not grant admin writes.
+#[derive(Debug, Clone)]
+pub struct RequireAuditReader(pub OrgActor);
+
+impl FromRequestParts<OneOrgRouterState> for RequireAuditReader {
+    type Rejection = OrgError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &OneOrgRouterState) -> Result<Self, Self::Rejection> {
+        let actor = OrgActor::from_request_parts(parts, state).await?;
+        if !is_enterprise_tenant_id(&actor.tenant_id) || !role_allows(&actor.role, OrgCapability::AuditRead) {
+            return Err(OrgError::Forbidden("Audit reader role required".into()));
+        }
+        Ok(Self(actor))
+    }
+}
+
 /// Requires the instance-level system_admin role.
 #[derive(Debug, Clone)]
 pub struct RequireSystemAdmin(pub OrgActor);

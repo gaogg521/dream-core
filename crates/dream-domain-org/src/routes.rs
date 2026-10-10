@@ -20,7 +20,7 @@ use crate::models::{
     ROLE_ORG_ADMIN, ROLE_RESOURCE_ADMIN, ROLE_SYSTEM_ADMIN, ResetLocalResult, RuntimeNodeDto, SmtpConfigDto,
     TenantSummaryDto, is_admin_role, is_enterprise_tenant_id, is_system_admin_role,
 };
-use crate::rbac::{OrgActor, RequireIntegrationAdmin, RequireOrgAdmin, RequireSystemAdmin};
+use crate::rbac::{OrgActor, RequireAuditReader, RequireIntegrationAdmin, RequireOrgAdmin, RequireSystemAdmin};
 use crate::state::OneOrgRouterState;
 
 pub fn one_org_routes(state: OneOrgRouterState) -> Router {
@@ -1333,7 +1333,7 @@ fn default_audit_limit() -> i64 {
 
 async fn admin_list_audit(
     State(state): State<OneOrgRouterState>,
-    RequireOrgAdmin(actor): RequireOrgAdmin,
+    RequireAuditReader(actor): RequireAuditReader,
     Query(query): Query<ListAuditQuery>,
 ) -> Result<Json<ApiResponse<Vec<AuditLogRow>>>, OrgError> {
     // P0-3 license gate: the audit log is an enterprise-tier feature. Personal /
@@ -1372,12 +1372,12 @@ fn default_agent_audit_limit() -> i64 {
 }
 
 /// Agent-run audit (P1-1): which tools the agents invoked — files touched,
-/// commands run — scoped to the caller's own tenant. Admin-only +
+/// commands run — scoped to the caller's own tenant. Audit-reader-only +
 /// AuditLog-tier-gated, matching the governance audit log. Reconstructed from
 /// persisted tool-call messages.
 async fn admin_list_agent_audit(
     State(state): State<OneOrgRouterState>,
-    RequireOrgAdmin(actor): RequireOrgAdmin,
+    RequireAuditReader(actor): RequireAuditReader,
     Query(query): Query<AgentAuditQuery>,
 ) -> Result<Json<ApiResponse<Vec<AgentAuditEntry>>>, OrgError> {
     if !state

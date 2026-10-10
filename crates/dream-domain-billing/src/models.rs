@@ -41,6 +41,36 @@ pub struct PlanDto {
     pub allowed_models: Vec<String>,
 }
 
+/// Member-facing capabilities. Enterprise billing and license details are admin-only.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberPlanDto {
+    pub enterprise_id: String,
+    pub entitlements: Vec<EntitlementDto>,
+    pub allowed_models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum VisiblePlanDto {
+    Admin(PlanDto),
+    Member(MemberPlanDto),
+}
+
+impl PlanDto {
+    pub fn for_viewer(self, billing_admin: bool) -> VisiblePlanDto {
+        if billing_admin {
+            VisiblePlanDto::Admin(self)
+        } else {
+            VisiblePlanDto::Member(MemberPlanDto {
+                enterprise_id: self.enterprise_id,
+                entitlements: self.entitlements,
+                allowed_models: self.allowed_models,
+            })
+        }
+    }
+}
+
 /// The vendor-signed license currently backing this company's plan.
 ///
 /// Shown in the admin UI so an operator can confirm what was purchased, for
