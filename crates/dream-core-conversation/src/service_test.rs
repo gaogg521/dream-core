@@ -4553,6 +4553,23 @@ async fn runtime_summary_reports_backend_static_midturn_bit_without_live_agent()
     let runtime = svc.runtime_summary_for(&conv.id).await;
     assert!(!runtime.supports_midturn_delivery);
 
+    // A dream (1ONE CLI) conversation carries no `extra.backend` — the type
+    // itself is the identity, and the engine takes mid-turn input.
+    let dream_req: CreateConversationRequest = serde_json::from_value(json!({
+        "type": "dream",
+        "model": { "provider_id": "provider-1", "model": "model-a", "use_model": "model-a" },
+        "extra": { "workspace": ensure_test_workspace_path() }
+    }))
+    .unwrap();
+    let conv = svc.create("user_1", dream_req).await.unwrap();
+    assert_eq!(conv.r#type, AgentType::DreamEngine);
+    let runtime = svc.runtime_summary_for(&conv.id).await;
+    assert!(
+        !runtime.has_task,
+        "precondition: no live agent for the dream conversation"
+    );
+    assert!(runtime.supports_midturn_delivery);
+
     // Unknown conversation id → conservative false, no panic.
     let runtime = svc.runtime_summary_for("conv-does-not-exist").await;
     assert!(!runtime.supports_midturn_delivery);

@@ -966,6 +966,11 @@ impl ConversationService {
         let Ok(Some(row)) = self.conversation_repo.get(&user_id, conversation_id).await else {
             return false;
         };
+        // The in-process dream engine is a conversation *type*, not an
+        // `extra.backend`, and always accepts mid-turn input.
+        if row.r#type == AgentType::DreamEngine.serde_name() {
+            return true;
+        }
         serde_json::from_str::<serde_json::Value>(&row.extra)
             .ok()
             .as_ref()
