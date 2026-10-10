@@ -7,11 +7,13 @@ use dream_core_api_types::{SessionMcpServer, SessionMcpTransport};
 use dream_domain_devops::DevopsService;
 use dream_domain_employee::EmployeeService;
 use serde_json::Value;
+#[cfg(feature = "enterprise")]
 use sha2::{Digest, Sha256};
 
 #[derive(Default)]
 pub(crate) struct EmployeeRuntime {
     services: OnceLock<(Arc<EmployeeService>, Arc<DevopsService>)>,
+    #[cfg(feature = "enterprise")]
     revisions: tokio::sync::Mutex<HashMap<String, [u8; 32]>>,
 }
 
@@ -32,6 +34,7 @@ impl EmployeeRuntime {
         })
     }
 
+    #[cfg(feature = "enterprise")]
     pub(crate) async fn check_conversation(&self, actor: &str, conversation: &str) -> Result<(), AgentError> {
         let Some((employee, devops)) = self.services.get() else {
             return Ok(());
