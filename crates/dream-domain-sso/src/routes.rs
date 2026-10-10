@@ -249,8 +249,7 @@ async fn authorize(
     // different host than the one this request arrived on (console opened via
     // `localhost`, callback registered on the LAN IP), start the flow over on
     // the callback's host first, so the cookie and the callback line up.
-    if provider != SsoProviderKind::Saml
-        && !want_json
+    if !want_json
         && let Some(callback_origin) = configured_callback_origin(&row)
         && let Some(request_host) = headers.get(header::HOST).and_then(|v| v.to_str().ok())
         && !callback_origin_matches_host(&callback_origin, request_host)
@@ -269,8 +268,11 @@ async fn authorize(
     )
     .await?;
 
-    let state_cookie = (provider != SsoProviderKind::Saml)
-        .then(|| state_cookie_header(provider, &state_token, state.service.cookie_secure()));
+    let state_cookie = Some(state_cookie_header(
+        provider,
+        &state_token,
+        state.service.cookie_secure(),
+    ));
     let mut response = if want_json {
         Json(ApiResponse::ok(AuthorizeRedirectDto {
             goto,
@@ -333,7 +335,11 @@ fn state_cookie_matches(headers: &HeaderMap, provider: SsoProviderKind, state_to
 /// provider, when one is set and parseable.
 fn configured_callback_origin(row: &crate::models::SsoProviderRow) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(&row.config).ok()?;
-    let raw = value.get("redirectUri").and_then(|v| v.as_str())?.trim();
+    let raw = value
+        .get("redirectUri")
+        .or_else(|| value.get("acsUrl"))
+        .and_then(|v| v.as_str())?
+        .trim();
     let url = reqwest::Url::parse(raw).ok()?;
     if !matches!(url.scheme(), "http" | "https") {
         return None;
@@ -638,6 +644,8 @@ struct SamlCallbackForm {
     saml_response: String,
     #[serde(rename = "RelayState")]
     relay_state: Option<String>,
+    #[serde(default, rename = "browserBound")]
+    browser_bound: bool,
 }
 
 /// SAML HTTP-POST assertion consumer endpoint. It deliberately has a separate
@@ -645,6 +653,7 @@ struct SamlCallbackForm {
 /// an OAuth authorization `code`.
 async fn saml_callback(
     State(state): State<OneSsoRouterState>,
+    headers: HeaderMap,
     Form(form): Form<SamlCallbackForm>,
 ) -> Result<Response, SsoError> {
     let state_token = form
@@ -653,6 +662,17 @@ async fn saml_callback(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or(SsoError::InvalidState)?;
+    if !state_cookie_matches(&headers, SsoProviderKind::Saml, state_token) {
+        if form.browser_bound {
+            tracing::warn!("SAML callback rejected: state was not issued to this browser");
+            return Err(SsoError::InvalidState);
+        }
+        // The IdP's cross-site POST cannot carry our SameSite=Lax cookie.
+        // Render a document on our origin, then POST from that document so
+        // the browser can present the original login cookie. A forwarded
+        // assertion never becomes a session without that browser proof.
+        return Ok(saml_browser_binding_page(state_token, &form.saml_response));
+    }
     let entry = state
         .service
         .state_store()
@@ -664,7 +684,37 @@ async fn saml_callback(
     }
     let profile =
         crate::providers::saml::SamlProvider::complete(state_token, &form.saml_response, form.relay_state.as_deref())?;
-    finish_external_login(&state, entry, SsoProviderKind::Saml, profile).await
+    let mut response = finish_external_login(&state, entry, SsoProviderKind::Saml, profile).await?;
+    if let Ok(cookie) = clear_state_cookie_header(SsoProviderKind::Saml, state.service.cookie_secure()).parse() {
+        response.headers_mut().append(header::SET_COOKIE, cookie);
+    }
+    Ok(response)
+}
+
+fn saml_browser_binding_page(relay: &str, assertion: &str) -> Response {
+    fn escape(value: &str) -> String {
+        value
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&#39;")
+    }
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let html = format!(
+        r#"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>继续企业登录</title></head><body><p>正在验证登录浏览器…</p><form method="post" action="/api/one/sso/saml/callback"><input type="hidden" name="RelayState" value="{}"><input type="hidden" name="SAMLResponse" value="{}"><input type="hidden" name="browserBound" value="true"><button type="submit">继续登录</button></form><script nonce="{nonce}">document.forms[0].submit()</script></body></html>"#,
+        escape(relay),
+        escape(assertion)
+    );
+    let mut response = Html(html).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    response.headers_mut().insert(header::CONTENT_SECURITY_POLICY, format!("default-src 'none'; script-src 'nonce-{nonce}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'").parse().unwrap());
+    response
+        .headers_mut()
+        .insert(header::REFERRER_POLICY, "no-referrer".parse().unwrap());
+    response
 }
 
 /// Shared post-authentication path for OAuth and SAML. Keeping SAML on this
@@ -1170,6 +1220,82 @@ const _: fn() = || {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn forwarded_saml_response_cannot_consume_login_state_or_issue_session() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        let service = Arc::new(crate::service::SsoService::new(
+            dream_core_db::DbPool::Sqlite(db.pool().clone()),
+            Arc::new(dream_core_db::SqliteUserRepository::new(db.pool().clone())),
+            Arc::new(dream_core_auth::JwtService::new("saml-browser-test".into())),
+            Arc::new(dream_core_auth::CookieConfig {
+                secure: false,
+                same_site: "Lax",
+            }),
+        ));
+        let token = service
+            .state_store()
+            .issue(SsoProviderKind::Saml, None, false, "dream")
+            .await;
+        let state = OneSsoRouterState {
+            service: service.clone(),
+            enterprise_sync: None,
+            company_admin_check: None,
+            org_auto_join: None,
+            directory_sink: None,
+            scim_lifecycle: None,
+            mfa: None,
+        };
+        let response = saml_callback(
+            State(state.clone()),
+            HeaderMap::new(),
+            Form(SamlCallbackForm {
+                saml_response: "valid response forwarded from another browser".into(),
+                relay_state: Some(token.clone()),
+                browser_bound: false,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert!(!response.headers().contains_key(header::SET_COOKIE));
+        for headers in [HeaderMap::new(), cookie_headers("dream-sso-state-saml=other")] {
+            let error = saml_callback(
+                State(state.clone()),
+                headers,
+                Form(SamlCallbackForm {
+                    saml_response: "forwarded assertion".into(),
+                    relay_state: Some(token.clone()),
+                    browser_bound: true,
+                }),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(error, SsoError::InvalidState));
+        }
+        assert!(
+            service.state_store().consume(&token).await.is_some(),
+            "wrong browser must not burn the initiating browser's state"
+        );
+    }
+
+    #[tokio::test]
+    async fn saml_binding_page_escapes_payload_and_restricts_submission() {
+        use http_body_util::BodyExt;
+        let response = saml_browser_binding_page("\"<&", "\"/><script>bad()</script>");
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert!(
+            response.headers()[header::CONTENT_SECURITY_POLICY]
+                .to_str()
+                .unwrap()
+                .contains("form-action 'self'")
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(!body.contains("<script>bad()"));
+        assert!(body.contains("&quot;&lt;&amp;"));
+        assert!(body.contains("name=\"browserBound\" value=\"true\""));
+    }
 
     fn cookie_headers(raw: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();

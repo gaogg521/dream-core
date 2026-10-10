@@ -60,9 +60,10 @@ pub async fn csrf_middleware(
     //
     // SAML ACS is a POST initiated by the external IdP's browser form — no
     // CSRF cookie/header pair can exist there by construction. Anti-CSRF for
-    // this route is the one-time RelayState bound server-side to the pending
-    // login plus the IdP-signed assertion; an attacker able to forge either
-    // is not stopped by Double Submit Cookie either.
+    // this route is the IdP-signed assertion plus a one-time RelayState AND
+    // the initiating browser's state cookie. The ACS re-posts through a
+    // same-origin document when Lax excludes that cookie on the IdP POST.
+    // RelayState alone does not prevent forwarding a valid login response.
     let is_saml_acs = path == "/api/one/sso/saml/callback";
     let is_exempt = path == "/login"
         || path == "/api/auth/qr-login"
