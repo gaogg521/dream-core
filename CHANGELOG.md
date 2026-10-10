@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.82](https://github.com/gaogg521/dream-core/compare/v0.1.81...v0.1.82) (2026-10-10)
+
+
+### Features
+
+* **conversation:** flatten the auto workspace layout ([498ab34](https://github.com/gaogg521/dream-core/commit/498ab341cc868bdfc50071f81bfba1f139545ef6))
+
+
+### Bug Fixes
+
+* allow scoped auditor reads and restrict member plan details ([e9b16eb](https://github.com/gaogg521/dream-core/commit/e9b16eb03ef3f857fd7698b4bd7dbbf121821688))
+* **conversation:** tell the agent about folders attached to the project ([1e8ec59](https://github.com/gaogg521/dream-core/commit/1e8ec59527153ee4dbdeb96382252b618a90be4d))
+
 ## [0.1.81](https://github.com/gaogg521/dream-core/compare/v0.1.80...v0.1.81) (2026-10-10)
 
 
