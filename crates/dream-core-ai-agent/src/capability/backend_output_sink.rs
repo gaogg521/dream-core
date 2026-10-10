@@ -127,6 +127,13 @@ impl OutputSink for BackendOutputSink {
         }));
     }
 
+    /// The user's mid-turn message was just folded in, so whatever comes next
+    /// answers it. Close the reply bubble that was streaming before they spoke;
+    /// otherwise the answer is appended above the question it answers.
+    fn emit_user_input_injected(&self) {
+        let _ = self.event_tx.send(AgentStreamEvent::SegmentBreak);
+    }
+
     fn emit_stream_start(&self, _msg_id: &str) {
         let _ = self
             .event_tx
@@ -365,6 +372,15 @@ mod tests {
         assert_eq!(call_ids[3].0, "dream-engine-call_b");
         assert_eq!(call_ids[2].1, ToolCallStatus::Completed);
         assert_eq!(call_ids[3].1, ToolCallStatus::Completed);
+    }
+
+    /// A mid-turn message closes the bubble that was streaming, so the answer
+    /// to it starts below the user's message instead of inside the old reply.
+    #[test]
+    fn user_input_injected_breaks_the_text_segment() {
+        let (sink, mut rx) = make_sink();
+        sink.emit_user_input_injected();
+        assert!(matches!(rx.try_recv().unwrap(), AgentStreamEvent::SegmentBreak));
     }
 
     #[test]

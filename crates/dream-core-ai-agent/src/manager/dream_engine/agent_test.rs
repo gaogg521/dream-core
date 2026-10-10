@@ -864,3 +864,76 @@ async fn dream_engine_answer_ask_for_withdrawn_question_is_rejected() {
         "{err:?}"
     );
 }
+
+// --- mid-turn delivery ---
+
+#[tokio::test]
+async fn dream_engine_agent_declares_midturn_delivery() {
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
+        .await
+        .unwrap();
+    assert!(IAgentTask::supports_midturn_delivery(&agent));
+}
+
+/// The conversation layer opens a new turn only when the rejection reads as
+/// "turn ended" (`steer_rejection_is_turn_ended` matches this phrase in the
+/// message or the detail). Any other wording would turn a harmless race into
+/// a failed send.
+#[tokio::test]
+async fn midturn_message_with_no_running_turn_is_rejected_as_turn_ended() {
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
+        .await
+        .unwrap();
+
+    let err = agent
+        .deliver_midturn(SendMessageData {
+            content: "too late".into(),
+            msg_id: "msg-late".into(),
+            turn_id: Some("turn-1".into()),
+            files: Vec::new(),
+            inject_skills: Vec::new(),
+        })
+        .await
+        .unwrap_err();
+
+    let stream = err.stream_error();
+    assert!(
+        stream.message.contains("no active turn to steer")
+            || stream
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("no active turn to steer")),
+        "rejection must be recognisable as turn-ended: {stream:?}"
+    );
+}
+
+#[tokio::test]
+async fn midturn_message_reaches_the_running_turns_inbox() {
+    let agent = DreamEngineAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None)
+        .await
+        .unwrap();
+    // What `run_with_blocks` does when a turn starts.
+    agent.pending_input.open();
+
+    agent
+        .deliver_midturn(SendMessageData {
+            content: "also update the docs".into(),
+            msg_id: "msg-mid".into(),
+            turn_id: Some("turn-1".into()),
+            files: Vec::new(),
+            inject_skills: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+    let queued = agent.pending_input.drain();
+    assert_eq!(queued.len(), 1);
+    let text: String = queued[0]
+        .iter()
+        .filter_map(|block| match block {
+            dream_engine_types::message::ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(text.contains("also update the docs"), "{text}");
+}

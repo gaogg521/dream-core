@@ -17,6 +17,7 @@ use dream_engine_agent::ask_user_tool::AskUserTool;
 use dream_engine_agent::bootstrap::AgentBootstrap;
 use dream_engine_agent::engine::{AgentEngine, AgentResult};
 use dream_engine_agent::output::OutputSink;
+use dream_engine_agent::pending_input::PendingInput;
 use dream_engine_agent::session::Session;
 use dream_engine_config::compat::ProviderCompat;
 use dream_engine_config::config::{CliArgs, Config, McpServerConfig, ProviderType};
@@ -76,6 +77,11 @@ const DEFAULT_MAX_TURNS_PER_TURN: usize = 150;
 /// between steps. Thirty minutes is far past any real gap of that kind, while
 /// still being noticed in the same sitting rather than after three hours.
 const TURN_IDLE_LIMIT: Duration = Duration::from_secs(30 * 60);
+
+/// Rejection text for a mid-turn message that arrived after the turn ended.
+/// The conversation layer matches on "no active turn to steer" to fall back to
+/// a new turn (`steer_rejection_is_turn_ended`), so the phrase must stay.
+const MIDTURN_TURN_ENDED: &str = "no active turn to steer: the dream turn already ended";
 
 /// How one turn ended. Named rather than `Option<Result<_>>` because there are
 /// now three outcomes, and "timed out" must not be mistaken for "cancelled" —
@@ -273,6 +279,9 @@ pub struct DreamEngineAgentManager {
     cancel_notify: Arc<Notify>,
     /// Signalled after an in-flight turn emits its terminal event.
     turn_finished_notify: Arc<Notify>,
+    /// The engine's mid-run inbox, held outside `engine` so a message can be
+    /// handed to a running turn without waiting for the lock the turn holds.
+    pending_input: PendingInput,
 }
 
 impl Drop for DreamEngineAgentManager {
@@ -506,6 +515,7 @@ impl DreamEngineAgentManager {
             .collect();
 
         runtime.transition_to(ConversationStatus::Pending);
+        let pending_input = engine.pending_input();
 
         Ok(Self {
             runtime,
@@ -519,6 +529,7 @@ impl DreamEngineAgentManager {
             final_input_dump,
             cancel_notify: Arc::new(Notify::new()),
             turn_finished_notify: Arc::new(Notify::new()),
+            pending_input,
         })
     }
 
@@ -665,6 +676,12 @@ impl IAgentTask for DreamEngineAgentManager {
 
     fn subscribe(&self) -> broadcast::Receiver<AgentStreamEvent> {
         self.runtime.subscribe()
+    }
+
+    /// The engine folds a message into a running turn at its next step
+    /// boundary — see [`Self::deliver_midturn`].
+    fn supports_midturn_delivery(&self) -> bool {
+        true
     }
 
     async fn send_message(&self, data: SendMessageData) -> Result<(), AgentSendError> {
@@ -944,6 +961,39 @@ impl DreamEngineAgentManager {
 /// DreamEngine-specific operations reached through `AgentInstance::DreamEngine(..)`
 /// matches in the routes + services.
 impl DreamEngineAgentManager {
+    /// Hand a message to the turn that is running right now.
+    ///
+    /// The engine picks it up before its next model request — after the tool
+    /// call in flight, or, if the model was already writing its final answer,
+    /// by taking one more step to answer this too. Nothing here waits on the
+    /// engine lock: the running turn holds it until it ends.
+    ///
+    /// When no turn is running the engine's inbox refuses the message; that
+    /// comes back as the "no active turn to steer" rejection, which the
+    /// conversation layer answers by opening a new turn for it.
+    pub async fn deliver_midturn(&self, data: SendMessageData) -> Result<(), AgentSendError> {
+        let content = self.with_recalled_memory(&data.content).await;
+        let content_blocks = build_content_blocks(&content, &data.files);
+        if self.pending_input.push(content_blocks) {
+            self.runtime.bump_activity();
+            info!(
+                conversation_id = %self.runtime.conversation_id(),
+                msg_id = %data.msg_id,
+                "DreamEngine mid-turn message queued for the running turn"
+            );
+            Ok(())
+        } else {
+            info!(
+                conversation_id = %self.runtime.conversation_id(),
+                msg_id = %data.msg_id,
+                "DreamEngine mid-turn message refused: the turn already ended"
+            );
+            Err(AgentSendError::from_agent_error(AgentError::BadRequest(
+                MIDTURN_TURN_ENDED.into(),
+            )))
+        }
+    }
+
     pub fn confirm(&self, _msg_id: &str, call_id: &str, data: Value, always_allow: bool) -> Result<(), AgentError> {
         if let Ok(mut confs) = self.confirmations.write() {
             confs.retain(|c| c.call_id != call_id);

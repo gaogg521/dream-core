@@ -284,9 +284,7 @@ impl AgentInstance {
     pub async fn deliver_midturn(&self, data: SendMessageData) -> Result<(), AgentSendError> {
         match self {
             Self::Acp(m) => m.deliver_midturn(data).await,
-            Self::DreamEngine(_) => Err(AgentSendError::from_agent_error(AgentError::BadRequest(
-                "mid-turn delivery is not supported by this agent".into(),
-            ))),
+            Self::DreamEngine(m) => m.deliver_midturn(data).await,
             Self::Session(m) => m.deliver_midturn(data).await,
             #[cfg(any(test, feature = "test-support"))]
             Self::Mock(m) => m.deliver_midturn(data).await,
