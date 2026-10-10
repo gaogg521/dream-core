@@ -4265,12 +4265,11 @@ mod tests {
         })
         .await
         .unwrap();
-        let priced: i64 = sqlx::query_scalar(
-            "SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo' ORDER BY created_at DESC LIMIT 1",
-        )
-        .fetch_one(&sqlite)
-        .await
-        .unwrap();
+        let priced: i64 =
+            sqlx::query_scalar("SELECT MAX(estimated_cost_micros) FROM one_usage_events WHERE user_id = 'solo'")
+                .fetch_one(&sqlite)
+                .await
+                .unwrap();
         assert_eq!(priced, 60_000);
     }
 
