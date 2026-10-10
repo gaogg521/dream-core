@@ -531,7 +531,7 @@ impl OrgService {
                  (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
                   org_profile_synced_at, created_at, updated_at) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
-                 ON DUPLICATE KEY UPDATE user_id = user_id"
+                 ON DUPLICATE KEY UPDATE user_id = one_user_org.user_id"
             }
         };
         // The membership insert IS the guard, and it runs before the invite

@@ -58,6 +58,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "billing_012_signed_license",
         include_str!("../migrations/billing_012_signed_license.sql"),
     ),
+    (
+        "billing_013_mysql_audit_table_compat",
+        include_str!("../migrations/billing_013_mysql_audit_table_compat.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -92,6 +96,14 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "billing_008_usage_channel",
         include_str!("../migrations_mysql/billing_008_usage_channel.sql"),
+    ),
+    // Compatibility preflight must precede 009 on fresh databases: the
+    // immutable shipped file uses TEXT keys MySQL cannot create. Ledger
+    // order is explicit, independent of numeric names; existing ledgers
+    // apply only the new IF NOT EXISTS preflight.
+    (
+        "billing_013_mysql_audit_table_compat",
+        include_str!("../migrations_mysql/billing_013_mysql_audit_table_compat.sql"),
     ),
     (
         "billing_009_conversation_audit_requests",
@@ -204,6 +216,22 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(applied, MIGRATIONS_MYSQL.len() as i64);
+
+        // Simulate an existing deployment whose old migrations are already
+        // recorded: the new preflight must preserve its rows and indexes.
+        sqlx::query("INSERT INTO one_conversation_audit_requests (id, enterprise_id, tenant_id, target_user_id, conversation_id, requested_by, requested_at) VALUES ('retained', 'e', 't', 'u', 'c', 'a', 2000000000000)")
+            .execute(db.pool.mysql()).await.unwrap();
+        sqlx::query("DELETE FROM _one_migrations WHERE name = 'billing_013_mysql_audit_table_compat'")
+            .execute(db.pool.mysql())
+            .await
+            .unwrap();
+        run_one_billing_migrations(&db.pool).await.unwrap();
+        let retained: i64 =
+            sqlx::query_scalar("SELECT requested_at FROM one_conversation_audit_requests WHERE id = 'retained'")
+                .fetch_one(db.pool.mysql())
+                .await
+                .unwrap();
+        assert_eq!(retained, 2_000_000_000_000);
 
         db.cleanup().await.unwrap();
     }

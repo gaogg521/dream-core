@@ -26,12 +26,9 @@
 //! So a tenant may opt one resource type into [`ExtraGrants::restrictive`],
 //! where granted means *only* the granted ones.
 //!
-//! That mode is deliberately hard to enter by accident, because its failure
-//! mode is "the member sees nothing": it requires an explicit, readable
-//! setting, and every unhappy path on the way to reading it — no tenant, an
-//! unreadable matrix, an unreadable mode row, a value from a newer version —
-//! resolves back to additive. Widening on a bad read is recoverable; blanking
-//! a member's whole skill list is not.
+//! An absent setting retains additive compatibility. Enterprise policy read
+//! failures must return restrictive empty grants instead of widening scope.
+//! Personal editions without a grant source retain their standalone behavior.
 
 use async_trait::async_trait;
 
@@ -59,8 +56,8 @@ pub struct ExtraGrants {
     /// type: the grants below are the *only* thing reachable, instead of an
     /// addition to what `scope`/`visibility` already allow.
     ///
-    /// `false` is the default and the value every failure path resolves to —
-    /// see this module's header for why that asymmetry is deliberate.
+    /// `false` is the default for a known absent setting. An enterprise policy
+    /// read failure must instead return restrictive empty grants.
     pub restrictive: bool,
 }
 
@@ -80,9 +77,8 @@ impl ExtraGrants {
 /// edition; absent everywhere else.
 #[async_trait]
 pub trait ResourceGrantSource: Send + Sync {
-    /// Never fails the caller: a matrix that cannot be read must not make
-    /// registries disappear, so implementations log and return no grants
-    /// rather than surfacing an error. The viewer still sees everything their
-    /// `scope`/`visibility` already allowed.
+    /// The interface cannot return errors. On an enterprise policy read
+    /// failure, implementations log and return restrictive empty grants;
+    /// falling back to additive scope would bypass a configured whitelist.
     async fn extra_grants(&self, viewer_user_id: &str, resource_type: &str) -> ExtraGrants;
 }

@@ -283,6 +283,9 @@ async fn billing_get_license(
     State(state): State<OneBillingRouterState>,
     Extension(user): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<Option<LicenseInfoDto>>>, BillingError> {
+    if !state.service.is_billing_admin(&user.id).await? {
+        return Err(BillingError::Forbidden("license details are admin-only".into()));
+    }
     let Some(eid) = state.service.resolve_enterprise_id(&user.id).await? else {
         return Ok(Json(ApiResponse::ok(None)));
     };
@@ -314,7 +317,7 @@ async fn billing_license_request(
         .resolve_enterprise_id(&user.id)
         .await?
         .ok_or(BillingError::EnterpriseNotFound)?;
-    let app_id = "one-work-enterprise".to_owned();
+    let app_id = dream_core_common::license_key::LICENSE_APP_ID.to_owned();
     let requested_at = now_ms();
     let nonce = uuid::Uuid::now_v7().simple().to_string();
     // The deployment's random per-install identity (billing_011), NOT anything
@@ -959,6 +962,62 @@ async fn billing_set_department_budget(
 #[cfg(test)]
 mod tests {
     use super::is_company_channel_report;
+
+    #[tokio::test]
+    async fn license_details_are_billing_admin_only() {
+        use axum::{
+            Extension,
+            body::Body,
+            http::{Request, StatusCode},
+        };
+        use tower::ServiceExt;
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql("CREATE TABLE one_enterprise_members (user_id TEXT PRIMARY KEY, enterprise_id TEXT, role TEXT); CREATE TABLE one_user_org (user_id TEXT, tenant_id TEXT, role TEXT); CREATE TABLE one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT); INSERT INTO one_user_org VALUES ('member', 't', 'member'), ('auditor', 't', 'auditor'), ('org-admin', 't', 'org_admin'), ('system', 't', 'system_admin');").execute(&db).await.unwrap();
+        let service = std::sync::Arc::new(crate::service::BillingService::new(
+            dream_core_db::DbPool::Sqlite(db.clone()),
+            std::sync::Arc::new(crate::service::ManualBillingProvider),
+        ));
+        let router = super::one_billing_routes(crate::state::OneBillingRouterState::new(service));
+        for (id, expected) in [
+            ("member", StatusCode::FORBIDDEN),
+            ("auditor", StatusCode::FORBIDDEN),
+            ("org-admin", StatusCode::FORBIDDEN),
+            ("system", StatusCode::OK),
+        ] {
+            let user = dream_core_auth::CurrentUser {
+                id: id.into(),
+                username: id.into(),
+                ..dream_core_auth::CurrentUser::local_default()
+            };
+            let response = router
+                .clone()
+                .layer(Extension(user))
+                .oneshot(Request::get("/api/one/billing/license").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "role {id}");
+        }
+        // A company administrator is allowed independently of project-group role.
+        sqlx::query("INSERT INTO one_enterprise_members VALUES ('member', 'ent', 'admin')")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::raw_sql("CREATE TABLE one_enterprise_license (enterprise_id TEXT PRIMARY KEY, tier TEXT); CREATE TABLE one_license_activation (license_id TEXT, enterprise_id TEXT, license_key TEXT, activated_at INTEGER);").execute(&db).await.unwrap();
+        let user = dream_core_auth::CurrentUser {
+            id: "member".into(),
+            username: "member".into(),
+            ..dream_core_auth::CurrentUser::local_default()
+        };
+        let response = router
+            .layer(Extension(user))
+            .oneshot(Request::get("/api/one/billing/license").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 
     #[tokio::test]
     async fn unconfigured_webhook_is_explicitly_unavailable() {

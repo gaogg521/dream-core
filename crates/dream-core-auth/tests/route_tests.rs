@@ -41,6 +41,16 @@ async fn test_app_with_options_and_hook(
     dreampro_mode: bool,
     session_revoked_hook: Option<Arc<SessionRevokedHook>>,
 ) -> (Router, TestContext) {
+    test_app_with_mfa_options(local, bootstrap_secret, dreampro_mode, session_revoked_hook, false).await
+}
+
+async fn test_app_with_mfa_options(
+    local: bool,
+    bootstrap_secret: Option<&str>,
+    dreampro_mode: bool,
+    session_revoked_hook: Option<Arc<SessionRevokedHook>>,
+    enable_mfa: bool,
+) -> (Router, TestContext) {
     let db = init_database_memory().await.unwrap();
     let user_repo = Arc::new(SqliteUserRepository::new(db.pool().clone())) as Arc<dyn IUserRepository>;
     let jwt_service = Arc::new(JwtService::new("test_secret_for_routes".into()));
@@ -51,7 +61,13 @@ async fn test_app_with_options_and_hook(
     let qr_token_store = Arc::new(QrTokenStore::new());
 
     let state = AuthRouterState {
-        mfa: None,
+        mfa: enable_mfa.then(|| {
+            Arc::new(dream_core_auth::mfa::MfaService::new(
+                user_repo.clone(),
+                Arc::new(dream_core_db::SqliteMfaStore::new(db.pool().clone())),
+                [9u8; 32],
+            ))
+        }),
         jwt_service: jwt_service.clone(),
         user_repo: user_repo.clone(),
         fs_adopter: None,
@@ -177,6 +193,87 @@ fn get_anonymous(uri: &str) -> Request<Body> {
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn mfa_http_enrollment_issues_session_once_and_preserves_password_change_flag() {
+    let (app, ctx) = test_app_with_mfa_options(false, None, false, None, true).await;
+    create_test_user(&ctx, "mfa-user", "Strong-Pass-2026!").await;
+    let user = ctx.user_repo.find_by_username("mfa-user").await.unwrap().unwrap();
+    ctx.user_repo.set_must_change_password(&user.id, true).await.unwrap();
+    dream_core_db::DbPool::Sqlite(ctx._db.pool().clone())
+        .execute("INSERT INTO mfa_policy VALUES (1, 'mandatory', 'test', 0)", &[])
+        .await
+        .unwrap();
+    let response = app
+        .clone()
+        .oneshot(json_post(
+            "/login",
+            r#"{"username":"mfa-user","password":"Strong-Pass-2026!"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get(header::SET_COOKIE).is_none());
+    let challenge = body_json(response).await;
+    assert_eq!(challenge["purpose"], "enroll");
+    assert!(challenge.get("token").is_none());
+    let token = challenge["mfa_token"].as_str().unwrap();
+    let response = app
+        .clone()
+        .oneshot(get_anonymous(&format!("/api/auth/mfa/enroll-info?mfa_token={token}")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let info = body_json(response).await;
+    let code = dream_core_auth::totp::totp_code(info["secret"].as_str().unwrap(), dream_core_common::now_ms()).unwrap();
+    let payload = serde_json::json!({"mfa_token":token, "code":code}).to_string();
+    let response = app
+        .clone()
+        .oneshot(json_post("/api/auth/mfa/verify", &payload))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get(header::SET_COOKIE).is_some());
+    let login = body_json(response).await;
+    assert_eq!(login["user"]["mustChangePassword"], true);
+    let response = app
+        .clone()
+        .oneshot(json_post("/api/auth/mfa/verify", &payload))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::GONE);
+    // A login challenge issued before a real password change is revoked too.
+    let response = app
+        .clone()
+        .oneshot(json_post(
+            "/login",
+            r#"{"username":"mfa-user","password":"Strong-Pass-2026!"}"#,
+        ))
+        .await
+        .unwrap();
+    let pending = body_json(response).await;
+    assert_eq!(pending["purpose"], "login");
+    let response = app
+        .clone()
+        .oneshot(json_post_with_token(
+            "/api/auth/change-password",
+            r#"{"current_password":"Strong-Pass-2026!","new_password":"Changed-Pass-2026!"}"#,
+            login["token"].as_str().unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let next_code =
+        dream_core_auth::totp::totp_code(info["secret"].as_str().unwrap(), dream_core_common::now_ms() + 30_000)
+            .unwrap();
+    let payload = serde_json::json!({"mfa_token":pending["mfa_token"], "code":next_code}).to_string();
+    let response = app
+        .clone()
+        .oneshot(json_post("/api/auth/mfa/verify", &payload))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::GONE);
 }
 
 fn extract_session_token(resp: &axum::response::Response) -> Option<String> {

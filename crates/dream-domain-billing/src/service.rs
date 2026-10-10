@@ -2831,7 +2831,17 @@ mod tests {
         svc.set_tier("ent1", Tier::Free, Some(5)).await.unwrap();
         svc.set_tier("ent1", Tier::Free, Some(10)).await.unwrap();
         let license = svc.license_of("ent1").await.unwrap();
-        assert_eq!(license.seat_limit, Some(10));
+        assert_eq!(
+            license.seat_limit,
+            Some(3),
+            "unsigned free-tier projection cannot enlarge seats"
+        );
+        let stored_limit: Option<i64> =
+            sqlx::query_scalar("SELECT seat_limit FROM one_enterprise_license WHERE enterprise_id = 'ent1'")
+                .fetch_one(mysql_db.pool.mysql())
+                .await
+                .unwrap();
+        assert_eq!(stored_limit, Some(10), "MySQL upsert persisted the local policy");
 
         svc.set_department_budget("ent1", "dept1", Some(1_000_000))
             .await
@@ -3437,6 +3447,16 @@ mod tests {
         };
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS one_enterprises (id VARCHAR(255) PRIMARY KEY, provider VARCHAR(64) NULL, external_id VARCHAR(255) NULL, display_name VARCHAR(255) NULL, created_at BIGINT NULL, updated_at BIGINT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_as_cs;",
+        )
+        .execute(mysql_db.pool.mysql())
+        .await
+        .unwrap();
+        // The report's scope predicates also read the organization tables;
+        // mirror the SQLite fixture instead of omitting its dependencies.
+        sqlx::raw_sql(
+            "CREATE TABLE one_user_org (user_id VARCHAR(255) NOT NULL, tenant_id VARCHAR(255) NOT NULL, role VARCHAR(32) NOT NULL DEFAULT 'member', department_id VARCHAR(255), PRIMARY KEY(user_id, tenant_id));
+             CREATE TABLE one_active_tenant (user_id VARCHAR(255) PRIMARY KEY, tenant_id VARCHAR(255) NOT NULL);
+             CREATE TABLE one_enterprise_members (user_id VARCHAR(255) PRIMARY KEY, enterprise_id VARCHAR(255) NOT NULL, role VARCHAR(32) NOT NULL DEFAULT 'member', seat_status VARCHAR(32) NOT NULL DEFAULT 'active');",
         )
         .execute(mysql_db.pool.mysql())
         .await
@@ -5089,8 +5109,33 @@ mod tests {
         svc.ensure_default_license("ent-boot").await.unwrap();
         svc.ensure_default_license("ent-boot").await.unwrap(); // idempotent
         let license = svc.license_of("ent-boot").await.unwrap();
-        assert_eq!(license.tier, Tier::Enterprise);
-        assert_eq!(license.seat_limit, None);
+        assert_eq!(license.tier, Tier::Free);
+        assert_eq!(license.seat_limit, Some(3));
+
+        force_tier(&svc, "ent-boot", Tier::Enterprise, None).await;
+        let payload = serde_json::from_value(serde_json::json!({
+            "lid":"lic_ent-boot", "customer":"isolated MySQL test", "tier":"enterprise",
+            "seats":7, "iat":0, "instance_id":"ent-boot", "app_id":"one-work-enterprise"
+        }))
+        .unwrap();
+        sqlx::query("UPDATE one_license_activation SET license_key = ?, seats = 999")
+            .bind(fixture_key(&payload))
+            .execute(mysql_db.pool.mysql())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE one_enterprise_license SET seat_limit = 999")
+            .execute(mysql_db.pool.mysql())
+            .await
+            .unwrap();
+        assert_eq!(svc.license_of("ent-boot").await.unwrap().seat_limit, Some(7));
+        assert_eq!(svc.active_license("ent-boot").await.unwrap().unwrap().seats, Some(7));
+        let production = BillingService::new(mysql_db.pool.clone(), Arc::new(ManualBillingProvider));
+        assert_eq!(production.license_of("ent-boot").await.unwrap().tier, Tier::Free);
+        sqlx::query("UPDATE one_license_activation SET license_key = 'forged-by-customer'")
+            .execute(mysql_db.pool.mysql())
+            .await
+            .unwrap();
+        assert_eq!(svc.license_of("ent-boot").await.unwrap().tier, Tier::Free);
 
         mysql_db.cleanup().await.unwrap();
     }

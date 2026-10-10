@@ -44,6 +44,8 @@ use serde::{Deserialize, Serialize};
 /// One Work issuer. The private half is DPAPI-protected on the vendor machine
 /// and is never part of this repository or a customer deployment.
 pub const LICENSE_PUBLIC_KEY_B64: &str = "vCOzCflWWj5og2Ph7cXf40qKwHoZohgdwKSxbq5VArg";
+/// Current product audience. `one-work` was used by legacy issuer versions.
+pub const LICENSE_APP_ID: &str = "one-work-enterprise";
 
 /// Human-facing prefix, so a pasted key is recognizable and a stray copy of
 /// some other product's token fails fast with a clear message.
@@ -299,6 +301,8 @@ pub enum LicenseKeyError {
     Expired,
     #[error("license key specifies an unknown tier: {0}")]
     UnknownTier(String),
+    #[error("license key was issued for a different product")]
+    WrongProduct,
 }
 
 /// Verify a license key's signature and decode its claims.
@@ -339,6 +343,16 @@ pub fn verify_license_signature_with_public_key(
 
     if !matches!(payload.tier.as_str(), "free" | "team" | "enterprise") {
         return Err(LicenseKeyError::UnknownTier(payload.tier));
+    }
+    // A valid vendor signature is not sufficient if the same signing identity
+    // also issues licenses for a different product. Missing audiences remain
+    // compatible with historical keys that predate this field.
+    if payload
+        .app_id
+        .as_deref()
+        .is_some_and(|app| !matches!(app, LICENSE_APP_ID | "one-work"))
+    {
+        return Err(LicenseKeyError::WrongProduct);
     }
     Ok(payload)
 }
@@ -413,6 +427,28 @@ mod tests {
         p.instance_id = Some("ent-a".into());
         assert!(p.valid_for_instance("ent-a"));
         assert!(!p.valid_for_instance("ent-b"));
+    }
+
+    #[test]
+    fn signed_foreign_product_license_is_rejected() {
+        let mut p = payload("enterprise", None);
+        for app in [
+            None,
+            Some(LICENSE_APP_ID),
+            Some("one-work"),
+            Some("different-product"),
+            Some(""),
+        ] {
+            p.app_id = app.map(str::to_owned);
+            let (key, verifying) = issue_with_fresh_key(&p);
+            let public: [u8; 32] = URL_SAFE_NO_PAD.decode(verifying).unwrap().try_into().unwrap();
+            let result = verify_license_signature_with_public_key(&key, &public);
+            if matches!(app, Some("different-product" | "")) {
+                assert!(matches!(result, Err(LicenseKeyError::WrongProduct)));
+            } else {
+                assert!(result.is_ok());
+            }
+        }
     }
 
     fn payload(tier: &str, exp: Option<i64>) -> LicensePayload {

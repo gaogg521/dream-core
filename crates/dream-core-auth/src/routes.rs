@@ -818,7 +818,7 @@ async fn mfa_verify_handler(
     let Json(req) = body.map_err(ApiError::from)?;
     let ip = client_ip(&headers);
     let user = match mfa.verify(&req.mfa_token, &req.code, Some(ip.as_str())).await {
-        Ok(Ok((user_id, username, _enrolled))) => (user_id, username),
+        Ok(Ok((user_id, username, _enrolled, generation))) => (user_id, username, generation),
         Ok(Err((message, attempts_left))) => {
             return Ok((
                 StatusCode::TOO_MANY_REQUESTS,
@@ -843,22 +843,18 @@ async fn mfa_verify_handler(
         Err(e) => return Err(ApiError::BadRequest(e.message())),
     };
 
-    let session_generation = {
-        // 挑战签发时的 session_generation 已在 create/verify 期间未变；
-        // 读取最新代次防止登录前发生的会话吊销被绕过。
-        state
-            .user_repo
-            .find_by_id(&user.0)
-            .await
-            .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?
-            .map(|u| u.session_generation)
-            .unwrap_or(0)
-    };
+    let current = state
+        .user_repo
+        .find_by_id(&user.0)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?
+        .filter(|u| u.session_generation == user.2 && u.status == dream_core_db::models::UserStatus::Active)
+        .ok_or_else(|| ApiError::Unauthorized("MFA challenge was revoked; sign in again".into()))?;
     let (token, cookie) = mint_paired_webui_session(
         &state,
         &user.0,
         user.1.as_str(),
-        session_generation,
+        user.2,
         None,
         Some("MFA 浏览器登录".to_string()),
     )
@@ -867,7 +863,7 @@ async fn mfa_verify_handler(
         PublicUser {
             id: user.0,
             username: user.1,
-            must_change_password: false,
+            must_change_password: current.must_change_password,
         },
         token,
     );

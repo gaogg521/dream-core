@@ -86,8 +86,8 @@ pub struct EffectiveGrantDto {
     pub all: bool,
     pub resource_ids: Vec<String>,
     /// Whether this tenant reads the matrix as a whitelist for this resource
-    /// type (`one_resource_grant_modes`). `false` — the default, and the value
-    /// every failure path resolves to — keeps the historical additive
+    /// type (`one_resource_grant_modes`). `false` for a known absent setting
+    /// keeps the historical additive
     /// behaviour, where a grant only ever adds reachability.
     pub restrictive: bool,
 }
@@ -110,13 +110,11 @@ impl GrantMode {
         }
     }
 
-    /// Anything unrecognised — including a row written by a newer version —
-    /// reads as additive. Widening on a bad read is recoverable; blanking every
-    /// member's resource list is not.
+    /// Unknown stored policy must not silently widen a whitelist.
     pub fn from_str_lossy(value: &str) -> Self {
         match value {
-            "restrictive" => GrantMode::Restrictive,
-            _ => GrantMode::Additive,
+            "additive" => GrantMode::Additive,
+            _ => GrantMode::Restrictive,
         }
     }
 }

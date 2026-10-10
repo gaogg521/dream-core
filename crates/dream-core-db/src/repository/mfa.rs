@@ -61,6 +61,7 @@ impl MfaChallengePurpose {
 pub struct MfaChallengeRow {
     pub token_hash: String,
     pub user_id: String,
+    pub session_generation: i64,
     pub purpose: MfaChallengePurpose,
     pub attempts: i64,
     pub expires_at: i64,
@@ -104,6 +105,7 @@ pub trait MfaStore: Send + Sync {
         &self,
         token_hash: &str,
         user_id: &str,
+        session_generation: i64,
         purpose: MfaChallengePurpose,
         pending_secret_cipher: Option<&str>,
         redirect_target: Option<&str>,
@@ -121,7 +123,12 @@ pub trait MfaStore: Send + Sync {
 
     /// One-time consume: marks the challenge used, returns true when it was
     /// still unused (a concurrent verify loses the race).
-    async fn challenge_consume(&self, token_hash: &str) -> Result<bool, DbError>;
+    async fn challenge_complete(
+        &self,
+        challenge: &MfaChallengeRow,
+        step: i64,
+        secret_cipher: &str,
+    ) -> Result<bool, DbError>;
 
     async fn challenge_save_pending_secret(&self, token_hash: &str, secret_cipher: &str) -> Result<(), DbError>;
 
@@ -201,6 +208,7 @@ impl MfaStore for SqliteMfaStore {
         &self,
         token_hash: &str,
         user_id: &str,
+        session_generation: i64,
         purpose: MfaChallengePurpose,
         pending_secret_cipher: Option<&str>,
         redirect_target: Option<&str>,
@@ -212,8 +220,8 @@ impl MfaStore for SqliteMfaStore {
         let now = now_ms();
         sqlx::query(
             "INSERT INTO mfa_challenges (token_hash, user_id, purpose, attempts, expires_at, used, \
-             pending_secret_cipher, redirect_target, desktop, scheme, created_ip, created_at) \
-             VALUES (?, ?, ?, 0, ?, 0, ?, ?, ?, ?, ?, ?)",
+             pending_secret_cipher, redirect_target, desktop, scheme, created_ip, created_at, session_generation) \
+             VALUES (?, ?, ?, 0, ?, 0, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(token_hash)
         .bind(user_id)
@@ -225,6 +233,7 @@ impl MfaStore for SqliteMfaStore {
         .bind(scheme)
         .bind(ip)
         .bind(now)
+        .bind(session_generation)
         .execute(&self.pool)
         .await?;
         Ok(now + ttl_ms)
@@ -242,9 +251,10 @@ impl MfaStore for SqliteMfaStore {
             Option<String>,
             i64,
             Option<String>,
+            i64,
         )> = sqlx::query_as(
             "SELECT token_hash, user_id, purpose, attempts, expires_at, used, \
-             pending_secret_cipher, redirect_target, desktop, scheme \
+             pending_secret_cipher, redirect_target, desktop, scheme, session_generation \
              FROM mfa_challenges WHERE token_hash = ?",
         )
         .bind(token_hash)
@@ -262,9 +272,11 @@ impl MfaStore for SqliteMfaStore {
                 redirect_target,
                 desktop,
                 scheme,
+                session_generation,
             )| MfaChallengeRow {
                 token_hash,
                 user_id,
+                session_generation,
                 purpose: match purpose.as_str() {
                     "enroll" => MfaChallengePurpose::Enroll,
                     _ => MfaChallengePurpose::Login,
@@ -281,46 +293,81 @@ impl MfaStore for SqliteMfaStore {
     }
 
     async fn challenge_fail(&self, token_hash: &str) -> Result<AttemptBump, DbError> {
-        let row: Option<(i64,)> =
-            sqlx::query_as("SELECT attempts FROM mfa_challenges WHERE token_hash = ? AND used = 0")
-                .bind(token_hash)
-                .fetch_optional(&self.pool)
-                .await?;
-        let Some((attempts,)) = row else {
+        // Increment and invalidate in one statement: concurrent failures must
+        // not read the same counter and silently grant extra guesses.
+        let row: Option<(i64, bool)> = sqlx::query_as(
+            "UPDATE mfa_challenges SET attempts = attempts + 1, used = (attempts + 1 >= ?) \
+             WHERE token_hash = ? AND used = 0 AND expires_at > ? RETURNING attempts, used",
+        )
+        .bind(MFA_MAX_ATTEMPTS)
+        .bind(token_hash)
+        .bind(now_ms())
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((attempts, invalidated)) = row else {
             return Ok(AttemptBump {
                 attempts: 0,
                 invalidated: true,
             });
         };
-        let next = attempts + 1;
-        let invalidated = next >= MFA_MAX_ATTEMPTS;
-        if invalidated {
-            sqlx::query("UPDATE mfa_challenges SET attempts = ?, used = 1 WHERE token_hash = ?")
-                .bind(next)
-                .bind(token_hash)
-                .execute(&self.pool)
-                .await?;
-        } else {
-            sqlx::query("UPDATE mfa_challenges SET attempts = ? WHERE token_hash = ?")
-                .bind(next)
-                .bind(token_hash)
-                .execute(&self.pool)
-                .await?;
-        }
-        Ok(AttemptBump {
-            attempts: next,
-            invalidated,
-        })
+        Ok(AttemptBump { attempts, invalidated })
     }
 
-    async fn challenge_consume(&self, token_hash: &str) -> Result<bool, DbError> {
-        let result =
-            sqlx::query("UPDATE mfa_challenges SET used = 1 WHERE token_hash = ? AND used = 0 AND expires_at > ?")
-                .bind(token_hash)
-                .bind(now_ms())
-                .execute(&self.pool)
-                .await?;
-        Ok(result.rows_affected() > 0)
+    async fn challenge_complete(
+        &self,
+        challenge: &MfaChallengeRow,
+        step: i64,
+        secret_cipher: &str,
+    ) -> Result<bool, DbError> {
+        let mut tx = self.pool.begin().await?;
+        // Take the write lock before checking the user. The challenge and the
+        // user's replay counter must commit together across all login attempts.
+        let consumed = sqlx::query(
+            "UPDATE mfa_challenges SET used = 1 WHERE token_hash = ? AND used = 0 AND expires_at > ? \
+             AND session_generation = ?",
+        )
+        .bind(&challenge.token_hash)
+        .bind(now_ms())
+        .bind(challenge.session_generation)
+        .execute(&mut *tx)
+        .await?;
+        if consumed.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        let enrolled = challenge.purpose == MfaChallengePurpose::Enroll;
+        let update = if enrolled {
+            "UPDATE users SET mfa_secret_cipher = ?, mfa_enabled = 1, mfa_bound_at = ?, \
+             mfa_last_step = ?, updated_at = ? WHERE id = ? AND session_generation = ? AND status = 'active' \
+             AND mfa_enabled = 0 AND (mfa_last_step IS NULL OR mfa_last_step < ?)"
+        } else {
+            "UPDATE users SET mfa_last_step = ?, updated_at = ? WHERE id = ? AND session_generation = ? \
+             AND status = 'active' AND mfa_enabled = 1 AND mfa_secret_cipher = ? \
+             AND (mfa_last_step IS NULL OR mfa_last_step < ?)"
+        };
+        let mut query = sqlx::query(update);
+        if enrolled {
+            query = query.bind(secret_cipher).bind(now_ms());
+        }
+        query = query
+            .bind(step)
+            .bind(now_ms())
+            .bind(&challenge.user_id)
+            .bind(challenge.session_generation);
+        if !enrolled {
+            query = query.bind(secret_cipher);
+        }
+        let changed = query.bind(step).execute(&mut *tx).await?;
+        if changed.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        if enrolled {
+            sqlx::query("UPDATE mfa_challenges SET used = 1, pending_secret_cipher = NULL WHERE user_id = ? AND purpose = 'enroll'")
+                .bind(&challenge.user_id).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        Ok(true)
     }
 
     async fn challenge_save_pending_secret(&self, token_hash: &str, secret_cipher: &str) -> Result<(), DbError> {
@@ -337,6 +384,7 @@ impl MfaStore for SqliteMfaStore {
             "SELECT pending_secret_cipher FROM mfa_challenges \
              WHERE user_id = ? AND purpose = ? AND pending_secret_cipher IS NOT NULL \
              AND pending_secret_cipher != '' AND created_at >= ? \
+             AND session_generation = (SELECT session_generation FROM users WHERE id = user_id AND status = 'active') \
              ORDER BY created_at DESC LIMIT 1",
         )
         .bind(user_id)
@@ -348,11 +396,13 @@ impl MfaStore for SqliteMfaStore {
     }
 
     async fn clear_pending_enroll_secrets(&self, user_id: &str) -> Result<(), DbError> {
-        sqlx::query("UPDATE mfa_challenges SET pending_secret_cipher = NULL WHERE user_id = ? AND purpose = ?")
-            .bind(user_id)
-            .bind(MfaChallengePurpose::Enroll.as_str())
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE mfa_challenges SET used = 1, pending_secret_cipher = NULL WHERE user_id = ? AND purpose = ?",
+        )
+        .bind(user_id)
+        .bind(MfaChallengePurpose::Enroll.as_str())
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

@@ -160,7 +160,7 @@ impl IUserRepository for SqliteUserRepository {
 
     async fn clear_mfa_binding(&self, user_id: &str) -> Result<(), DbError> {
         sqlx::query(
-            "UPDATE users SET mfa_secret_cipher = NULL, mfa_enabled = 0, mfa_bound_at = NULL,              mfa_last_step = NULL, updated_at = ? WHERE id = ?",
+            "UPDATE users SET mfa_secret_cipher = NULL, mfa_enabled = 0, mfa_bound_at = NULL,              mfa_last_step = NULL, session_generation = session_generation + 1, updated_at = ? WHERE id = ?",
         )
         .bind(dream_core_common::now_ms())
         .bind(user_id)

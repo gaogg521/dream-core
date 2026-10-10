@@ -157,6 +157,7 @@ impl MfaService {
             .challenge_create(
                 &token_hash,
                 &user.id,
+                user.session_generation,
                 purpose,
                 secret_cipher.as_deref(),
                 redirect_target,
@@ -189,7 +190,7 @@ impl MfaService {
         mfa_token: &str,
         code: &str,
         ip: Option<&str>,
-    ) -> Result<Result<(String, String, bool), (String, i64)>, MfaError> {
+    ) -> Result<Result<(String, String, bool, i64), (String, i64)>, MfaError> {
         let token_hash = sha256_hex(mfa_token.as_bytes());
         let Some(challenge) = self.store.challenge_get(&token_hash).await? else {
             return Err(MfaError::NotFound);
@@ -201,6 +202,13 @@ impl MfaService {
         let Some(user) = self.user_repo.find_by_id(&challenge.user_id).await? else {
             return Err(MfaError::NotFound);
         };
+        if user.status != dream_core_db::models::UserStatus::Active
+            || user.session_generation != challenge.session_generation
+            || (challenge.purpose == MfaChallengePurpose::Login && !user.mfa_enabled)
+            || (challenge.purpose == MfaChallengePurpose::Enroll && user.mfa_enabled)
+        {
+            return Err(MfaError::NotFound);
+        }
 
         // 解出待校验的密文：login 挑战用已绑定的密钥，enroll 挑战用暂存密钥。
         let secret_cipher = match challenge.purpose {
@@ -214,18 +222,12 @@ impl MfaService {
 
         match totp::verify_with_window(&secret, code, user.mfa_last_step, dream_core_common::now_ms()) {
             Some(step) => {
-                // 一次性消费：并发第二次 verify 抢不到 → 拒绝。
-                if !self.store.challenge_consume(&token_hash).await? {
+                // Commit consumption, binding and the user's replay counter
+                // atomically; different challenges cannot reuse the same step.
+                if !self.store.challenge_complete(&challenge, step, &cipher).await? {
                     return Err(MfaError::NotFound);
                 }
                 let enrolled = challenge.purpose == MfaChallengePurpose::Enroll;
-                if enrolled {
-                    self.user_repo
-                        .set_mfa_binding(&user.id, &cipher, dream_core_common::now_ms())
-                        .await?;
-                    self.store.clear_pending_enroll_secrets(&user.id).await?;
-                }
-                self.user_repo.set_mfa_last_step(&user.id, step).await?;
                 self.audit(
                     Some(&user.id),
                     user.username.as_deref(),
@@ -238,6 +240,7 @@ impl MfaService {
                     user.id,
                     user.username.unwrap_or_else(|| "external_user".into()),
                     enrolled,
+                    challenge.session_generation,
                 )))
             }
             None => {
@@ -277,9 +280,19 @@ impl MfaService {
         if challenge.used || challenge.expires_at <= dream_core_common::now_ms() {
             return Err(MfaError::NotFound);
         }
+        let user = self
+            .user_repo
+            .find_by_id(&challenge.user_id)
+            .await?
+            .ok_or(MfaError::NotFound)?;
+        if user.status != dream_core_db::models::UserStatus::Active
+            || user.session_generation != challenge.session_generation
+            || user.mfa_enabled
+        {
+            return Err(MfaError::NotFound);
+        }
         let MfaChallengeRow {
             purpose,
-            user_id,
             pending_secret_cipher,
             ..
         } = challenge;
@@ -290,12 +303,7 @@ impl MfaService {
             return Err(MfaError::Internal("enroll challenge has no pending secret".into()));
         };
         let secret = decrypt_string(&cipher, &self.encryption_key).map_err(|e| MfaError::Internal(e.to_string()))?;
-        let username = self
-            .user_repo
-            .find_by_id(&user_id)
-            .await?
-            .and_then(|u| u.username)
-            .unwrap_or_else(|| "external_user".into());
+        let username = user.username.unwrap_or_else(|| "external_user".into());
         Ok((
             totp::otpauth_uri(OPTRAUTH_ISSUER_PLACEHOLDER, &username, &secret),
             secret,
@@ -569,7 +577,7 @@ mod tests {
 
         // A code from that one secret completes enrollment via the newer challenge.
         let code = totp::totp_code(&secret, dream_core_common::now_ms()).unwrap();
-        let (_, _, enrolled) = svc.verify(&t2, &code, None).await.unwrap().unwrap();
+        let (_, _, enrolled, _) = svc.verify(&t2, &code, None).await.unwrap().unwrap();
         assert!(enrolled);
     }
 
@@ -585,6 +593,7 @@ mod tests {
         let old = enroll_secret(&svc, &t1).await;
 
         svc.admin_reset(&u.id, "admin", "lost phone").await.unwrap();
+        let u = users.find_by_id(&u.id).await.unwrap().unwrap();
         let (t2, _, _) = svc
             .create_challenge(&u, MfaChallengePurpose::Enroll, None, None, false, None)
             .await
@@ -608,5 +617,98 @@ mod tests {
             svc.self_enroll_start(&u.id, None).await.unwrap_err(),
             MfaError::AlreadyEnrolled
         ));
+    }
+
+    #[tokio::test]
+    async fn revoked_generation_invalidates_enrollment_and_login_challenges() {
+        let (svc, users) = service().await;
+        let u = user(&users, "revoked").await;
+        let (token, _) = svc.self_enroll_start(&u.id, None).await.unwrap();
+        let secret = enroll_secret(&svc, &token).await;
+        users.increment_session_generation(&u.id).await.unwrap();
+        let code = totp::totp_code(&secret, dream_core_common::now_ms()).unwrap();
+        assert!(matches!(svc.enroll_info(&token).await, Err(MfaError::NotFound)));
+        assert!(matches!(svc.verify(&token, &code, None).await, Err(MfaError::NotFound)));
+        // A stale first-factor snapshot cannot issue a usable new challenge.
+        let (stale, _, _) = svc
+            .create_challenge(&u, MfaChallengePurpose::Enroll, None, None, false, None)
+            .await
+            .unwrap();
+        assert!(matches!(svc.enroll_info(&stale).await, Err(MfaError::NotFound)));
+        let cipher = encrypt_string(&secret, &KEY).unwrap();
+        users.set_mfa_binding(&u.id, &cipher, 1).await.unwrap();
+        let current = users.find_by_id(&u.id).await.unwrap().unwrap();
+        let (login, _, _) = svc
+            .create_challenge(&current, MfaChallengePurpose::Login, None, None, false, None)
+            .await
+            .unwrap();
+        users.increment_session_generation(&u.id).await.unwrap();
+        assert!(matches!(svc.verify(&login, &code, None).await, Err(MfaError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn disabled_user_and_reset_binding_cannot_complete_old_challenges() {
+        let (svc, users) = service().await;
+        let u = user(&users, "disabled").await;
+        let (token, _) = svc.self_enroll_start(&u.id, None).await.unwrap();
+        let secret = enroll_secret(&svc, &token).await;
+        let code = totp::totp_code(&secret, dream_core_common::now_ms()).unwrap();
+        users
+            .set_status(&u.id, dream_core_db::models::UserStatus::Disabled)
+            .await
+            .unwrap();
+        assert!(matches!(svc.enroll_info(&token).await, Err(MfaError::NotFound)));
+        assert!(matches!(svc.verify(&token, &code, None).await, Err(MfaError::NotFound)));
+        users
+            .set_status(&u.id, dream_core_db::models::UserStatus::Active)
+            .await
+            .unwrap();
+        svc.admin_reset(&u.id, "operator", "test reset").await.unwrap();
+        assert!(matches!(svc.verify(&token, &code, None).await, Err(MfaError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn different_challenges_cannot_replay_the_same_totp_step() {
+        let (svc, users) = service().await;
+        let u = user(&users, "parallel-login").await;
+        let secret = totp::generate_secret();
+        users
+            .set_mfa_binding(&u.id, &encrypt_string(&secret, &KEY).unwrap(), 1)
+            .await
+            .unwrap();
+        let u = users.find_by_id(&u.id).await.unwrap().unwrap();
+        let (a, _, _) = svc
+            .create_challenge(&u, MfaChallengePurpose::Login, None, None, false, None)
+            .await
+            .unwrap();
+        let (b, _, _) = svc
+            .create_challenge(&u, MfaChallengePurpose::Login, None, None, false, None)
+            .await
+            .unwrap();
+        let code = totp::totp_code(&secret, dream_core_common::now_ms()).unwrap();
+        let (ra, rb) = tokio::join!(svc.verify(&a, &code, None), svc.verify(&b, &code, None));
+        assert_eq!([&ra, &rb].iter().filter(|r| matches!(r, Ok(Ok(_)))).count(), 1);
+        let recorded = users.find_by_id(&u.id).await.unwrap().unwrap().mfa_last_step.unwrap();
+        assert!(totp::verify_with_window(&secret, &code, Some(recorded), dream_core_common::now_ms()).is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_failures_exhaust_exactly_five_attempts() {
+        let (svc, users) = service().await;
+        let u = user(&users, "parallel-failures").await;
+        let (token, _) = svc.self_enroll_start(&u.id, None).await.unwrap();
+        let hash = sha256_hex(token.as_bytes());
+        let mut tasks = Vec::new();
+        for _ in 0..20 {
+            let store = svc.store.clone();
+            let hash = hash.clone();
+            tasks.push(tokio::spawn(async move { store.challenge_fail(&hash).await.unwrap() }));
+        }
+        for task in tasks {
+            task.await.unwrap();
+        }
+        let challenge = svc.store.challenge_get(&hash).await.unwrap().unwrap();
+        assert_eq!(challenge.attempts, MFA_MAX_ATTEMPTS);
+        assert!(challenge.used);
     }
 }

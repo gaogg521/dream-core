@@ -2427,10 +2427,8 @@ pub fn create_router_with_states(services: &AppServices, states: ModuleStates) -
 /// registries own a trait, the enterprise plane owns the data, and this layer
 /// is the only place that knows both exist.
 ///
-/// A matrix that cannot be read yields no grants rather than an error. The
-/// registries then fall back to their own `scope`/`visibility` predicates,
-/// which is the same posture the policy gates take: an unreachable enterprise
-/// plane must not make a member's skills vanish from their own workbench.
+/// An unreadable enterprise policy yields a restrictive empty grant set.
+/// Availability failures must not widen an administrator's whitelist.
 #[cfg(feature = "enterprise")]
 struct MatrixGrantSource {
     platform: std::sync::Arc<dream_domain_platform::PlatformService>,
@@ -2474,8 +2472,11 @@ impl dream_domain_devops::grants::ResourceGrantSource for MatrixGrantSource {
         let tenant_id = match self.org.tenant_of(viewer_user_id).await {
             Ok(id) => id,
             Err(e) => {
-                tracing::warn!(user_id = viewer_user_id, error = %e, "resource matrix: no tenant for viewer; no extra grants");
-                return Default::default();
+                tracing::warn!(user_id = viewer_user_id, error = %e, "resource matrix: tenant unreadable; denying resource access");
+                return dream_domain_devops::grants::ExtraGrants {
+                    restrictive: true,
+                    ..Default::default()
+                };
             }
         };
         match self
@@ -2489,12 +2490,12 @@ impl dream_domain_devops::grants::ResourceGrantSource for MatrixGrantSource {
                 restrictive: dto.restrictive,
             },
             Err(e) => {
-                // `Default` is additive with no grants — the viewer keeps
-                // exactly what scope/visibility already allowed. Never
-                // restrictive: a matrix this process could not read must not
-                // be the reason a member's list comes back empty.
-                tracing::warn!(user_id = viewer_user_id, resource_type, error = %e, "resource matrix unreadable; no extra grants");
-                Default::default()
+                // An unreadable whitelist cannot fall back to wider org scope.
+                tracing::warn!(user_id = viewer_user_id, resource_type, error = %e, "resource matrix unreadable; denying resource access");
+                dream_domain_devops::grants::ExtraGrants {
+                    restrictive: true,
+                    ..Default::default()
+                }
             }
         }
     }

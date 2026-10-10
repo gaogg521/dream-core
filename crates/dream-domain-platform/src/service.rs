@@ -1049,14 +1049,11 @@ impl PlatformService {
 
     /// This tenant's matrix mode for one resource type.
     ///
-    /// Infallible on purpose, and additive on every unhappy path — no row, an
-    /// unreadable table, a value written by a newer version. Restrictive mode
-    /// is the only setting in this crate whose failure mode is "the member
-    /// sees nothing", so it is never entered by accident: it takes an explicit,
-    /// readable `restrictive` row to turn on.
+    /// A known absent setting retains additive compatibility. A read failure
+    /// or unknown stored mode must not widen an existing whitelist.
     pub async fn grant_mode(&self, tenant_id: &str, resource_type: &str) -> GrantMode {
-        // Employees are the one deliberate exception to the fail-additive
-        // rule: their historical behavior (one_employee_grants' design) IS a
+        // Employees are the deliberate exception to the absent-setting
+        // default: their historical behavior (one_employee_grants' design) IS a
         // whitelist — a shared employee was never usable tenant-wide without
         // a row — so "fail to the historical behavior" here means
         // Restrictive, always. No mode row for 'employee' is honored; the
@@ -1079,9 +1076,9 @@ impl PlatformService {
                     tenant_id,
                     resource_type,
                     error = %e,
-                    "grant mode unreadable; falling back to additive"
+                    "grant mode unreadable; restricting access to explicit grants"
                 );
-                GrantMode::Additive
+                GrantMode::Restrictive
             }
         }
     }
@@ -6507,14 +6504,32 @@ mod tests {
         assert_eq!(service.grant_mode("t1", "employee").await, GrantMode::Restrictive);
     }
 
-    /// A value this build does not recognise — a row from a newer version —
-    /// reads as additive, never as a whitelist.
+    /// Unknown policy values cannot widen an existing whitelist.
     #[test]
-    fn an_unrecognised_mode_value_reads_as_additive() {
+    fn an_unrecognised_mode_value_remains_restrictive() {
         assert_eq!(GrantMode::from_str_lossy("restrictive"), GrantMode::Restrictive);
         assert_eq!(GrantMode::from_str_lossy("additive"), GrantMode::Additive);
-        assert_eq!(GrantMode::from_str_lossy("something_new"), GrantMode::Additive);
-        assert_eq!(GrantMode::from_str_lossy(""), GrantMode::Additive);
+        assert_eq!(GrantMode::from_str_lossy("something_new"), GrantMode::Restrictive);
+        assert_eq!(GrantMode::from_str_lossy(""), GrantMode::Restrictive);
+    }
+
+    #[tokio::test]
+    async fn unreadable_grant_mode_cannot_widen_a_whitelist() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "alice", "t1", "member").await;
+        assert_eq!(service.grant_mode("t1", "skill").await, GrantMode::Additive);
+        service
+            .set_grant_mode("t1", "skill", GrantMode::Restrictive, "admin")
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE one_resource_grant_modes RENAME TO qa_unavailable_modes")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let grants = service.effective_resource_ids("t1", "alice", "skill").await.unwrap();
+        assert!(grants.restrictive);
+        assert!(!grants.all);
+        assert!(grants.resource_ids.is_empty());
     }
 
     // --- E5 security policy baseline ---
