@@ -964,6 +964,28 @@ fn linked_entries(root: &Path) -> Vec<String> {
     links
 }
 
+/// Parents of `links` (root-relative) whose every entry is one of `links`.
+fn link_only_dirs(root: &Path, links: &[String]) -> Vec<String> {
+    let mut parents: Vec<&str> = links
+        .iter()
+        .filter_map(|link| link.rsplit_once('/').map(|(p, _)| p))
+        .collect();
+    parents.sort_unstable();
+    parents.dedup();
+    parents
+        .into_iter()
+        .filter(|parent| {
+            let Ok(entries) = std::fs::read_dir(root.join(parent)) else {
+                return false;
+            };
+            entries
+                .flatten()
+                .all(|entry| std::fs::symlink_metadata(entry.path()).is_ok_and(|meta| meta.file_type().is_symlink()))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
 /// One root-anchored ignore pattern matching exactly `relative`, with the
 /// characters git's pattern syntax gives meaning to escaped.
 fn exact_ignore_pattern(relative: &str) -> String {
@@ -1001,6 +1023,14 @@ fn init_repository_blocking(path: &Path) -> Result<(), git2::Error> {
         for link in &links {
             rules.push_str(&exact_ignore_pattern(link));
             rules.push('\n');
+        }
+        // A directory holding nothing but links — a skills dir — is ignored as
+        // a whole, in the `/<dir>/` form the skill linker writes. The linker
+        // then finds it already covered and does not add a `.gitignore` to the
+        // folder on the next turn, which would show up as a change nobody made.
+        for dir in link_only_dirs(path, &links) {
+            rules.push_str(&exact_ignore_pattern(&dir));
+            rules.push_str("/\n");
         }
         if let Some(parent) = exclude.parent() {
             std::fs::create_dir_all(parent).map_err(|err| git2::Error::from_str(&format!("create info dir: {err}")))?;

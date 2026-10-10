@@ -2792,6 +2792,10 @@ async fn init_repository_keeps_linked_skill_folders_out() {
         tree.get_path(Path::new(".dream/skills/skill-a")).is_err(),
         "the link is not snapshotted"
     );
+    // The whole links-only skills dir is ignored in the skill linker's own
+    // `/<dir>/` form, so the linker never adds a `.gitignore` afterwards.
+    let exclude = std::fs::read_to_string(repo.path().join("info").join("exclude")).unwrap();
+    assert!(exclude.lines().any(|line| line == "/.dream/skills/"), "{exclude}");
 
     // Changing the shared skill is not a change in this folder.
     write(store.path(), "skill-a/SKILL.md", "updated elsewhere\n");

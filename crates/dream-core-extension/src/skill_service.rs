@@ -1579,7 +1579,15 @@ async fn ensure_skills_ignored(workspace: &Path, skills_rel_dirs: &[&str]) -> st
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e),
     };
-    let existing_lines: Vec<&str> = existing.lines().map(str::trim).collect();
+    // When the workspace is itself the repository root, a rule already in the
+    // repository's own `info/exclude` covers the dir as well — e.g. the one
+    // written when the folder was put under version control from the Changes
+    // panel. Writing a `.gitignore` on top of it would only add a file to the
+    // user's folder that then lists as a change.
+    let local_exclude = tokio::fs::read_to_string(workspace.join(".git").join("info").join("exclude"))
+        .await
+        .unwrap_or_default();
+    let existing_lines: Vec<&str> = existing.lines().chain(local_exclude.lines()).map(str::trim).collect();
     let mut missing: Vec<String> = Vec::new();
     for rel in skills_rel_dirs {
         // Anchored to the .gitignore's own directory, which is the workspace
@@ -4197,6 +4205,29 @@ mod tests {
             again.matches("/.claude/skills/").count(),
             1,
             "entry must not be appended twice: {again}"
+        );
+    }
+
+    #[tokio::test]
+    async fn link_workspace_skills_respects_the_repository_local_exclude() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(workspace.join(".git").join("info")).unwrap();
+        std::fs::write(
+            workspace.join(".git").join("info").join("exclude"),
+            "# Links to content kept outside this folder (added by One Work)\n/.claude/skills/\n",
+        )
+        .unwrap();
+        let source_root = tmp.path().join("sources");
+        let resolved = vec![resolved_skill(&source_root, "my-skill")];
+
+        link_workspace_skills(&workspace, &[".claude/skills"], &resolved)
+            .await
+            .unwrap();
+
+        assert!(
+            !workspace.join(".gitignore").exists(),
+            "already ignored locally: no .gitignore may appear in the user's folder"
         );
     }
 
