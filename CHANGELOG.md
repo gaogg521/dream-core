@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.1.81](https://github.com/gaogg521/dream-core/compare/v0.1.80...v0.1.81) (2026-10-10)
+
+
+### Features
+
+* **agent:** deliver mid-turn messages to the dream engine ([ae7fc99](https://github.com/gaogg521/dream-core/commit/ae7fc99876d7484245cfd26d578ed7fa8fe80394))
+* **scm:** put a conversation folder under version control on request ([1627082](https://github.com/gaogg521/dream-core/commit/1627082f086207d59d53241100399b9b0d8e28dc))
+* **team:** let the user steer a busy teammate mid-turn ([b9bdcc8](https://github.com/gaogg521/dream-core/commit/b9bdcc83aa5e9f8d17366b25d3223e11c1f9fa8a))
+
+
+### Bug Fixes
+
+* **auth:** keep the initial password out of logs; stronger password rules ([af52674](https://github.com/gaogg521/dream-core/commit/af526747c9dd8066504788d96cd2f09bc4b33a8a))
+* **ci:** gate enterprise conversation revision checks ([7358e2e](https://github.com/gaogg521/dream-core/commit/7358e2e1dc34e553f54089eff3e2421145ae7dfb))
+* **conversation:** report mid-turn support for dream conversations before the agent exists ([a91ff2f](https://github.com/gaogg521/dream-core/commit/a91ff2f14df2e791e578a9e40da02f045c4ceda5))
+* **enterprise:** execute employee bindings with current resource permissions ([79e63d3](https://github.com/gaogg521/dream-core/commit/79e63d339c63f8c9ff54fef61223e762303a023d))
+* **enterprise:** support online employee authoring and parallel market sync ([8e02519](https://github.com/gaogg521/dream-core/commit/8e025194cd07495442ede30377489805af842456))
+* **enterprise:** validate functional flows and add signed online updates ([0fa7926](https://github.com/gaogg521/dream-core/commit/0fa7926971af7ef8a8d488abbca44f5b349849f3))
+* **mfa:** stop mandatory MFA from locking every admin out ([52c6502](https://github.com/gaogg521/dream-core/commit/52c650202045fbd85567267d027b2692da8697fb))
+* **scm:** keep the skill linker from adding a .gitignore after init ([549b020](https://github.com/gaogg521/dream-core/commit/549b020069ce5cb4ea3b92ba5f54c8e19160c56b))
+* **security:** no credentialed CORS; encrypt SSO secrets; bind OAuth state ([60bd2a7](https://github.com/gaogg521/dream-core/commit/60bd2a7ae7f94fad5211f09ee98a4eb6f727ecf4))
+* **sso:** bind SAML responses to initiating browser ([6aad14a](https://github.com/gaogg521/dream-core/commit/6aad14a5851553d24b376e94ef7de3699c364c70))
+
+
+### Documentation
+
+* note the 2026-10-09 security fixes in CLAUDE.md ([d3b0b69](https://github.com/gaogg521/dream-core/commit/d3b0b698b2a2d7e64f67ac0e3a6382efbbc6a3d5))
+* **release:** say the Release workflow must be dispatched by hand ([944d26d](https://github.com/gaogg521/dream-core/commit/944d26dc44aa479848b74252d472b4eefadd7745))
+
 ## [0.1.80](https://github.com/gaogg521/dream-core/compare/v0.1.79...v0.1.80) (2026-10-08)
 
 
