@@ -1509,30 +1509,37 @@ fn unique_test_workspace_path(label: &str) -> PathBuf {
     workspace
 }
 
-fn assert_dated_workspace_path(workspace_root: &Path, workspace: &Path, expected_file_name: &str) {
-    // Per-user, type-first layout: conversations/users/{user_dir}/{Y}/{M}/{D}/{leaf}
-    let relative = workspace
+fn workspace_parts(workspace_root: &Path, workspace: &Path) -> Vec<String> {
+    workspace
         .strip_prefix(workspace_root.join("conversations"))
-        .expect("workspace should be under the conversations root");
-    let parts = relative
+        .expect("workspace should be under the conversations root")
         .iter()
-        .map(|part| part.to_str().expect("workspace path should be utf-8"))
-        .collect::<Vec<_>>();
+        .map(|part| part.to_str().expect("workspace path should be utf-8").to_owned())
+        .collect()
+}
 
+fn assert_one_level_date(segment: &str) {
+    let fields: Vec<&str> = segment.split('-').collect();
+    assert!(
+        matches!(fields.as_slice(), [y, m, d]
+            if y.len() == 4 && m.len() == 2 && d.len() == 2
+                && [y, m, d].iter().all(|f| f.chars().all(|ch| ch.is_ascii_digit()))),
+        "expected a Y-M-D date directory, got {segment:?}"
+    );
+}
+
+fn assert_dated_workspace_path(workspace_root: &Path, workspace: &Path, expected_file_name: &str) {
+    // Per-user layout: conversations/users/{user_dir}/{Y-M-D}/{leaf}
+    let parts = workspace_parts(workspace_root, workspace);
     assert_eq!(
         parts.len(),
-        6,
-        "expected conversations/users/{{dir}}/Y/M/D/leaf, got {parts:?}"
+        4,
+        "expected conversations/users/{{dir}}/Y-M-D/leaf, got {parts:?}"
     );
     assert_eq!(parts[0], "users");
     assert!(!parts[1].is_empty(), "user dir segment must be present");
-    assert_eq!(parts[2].len(), 4);
-    assert_eq!(parts[3].len(), 2);
-    assert_eq!(parts[4].len(), 2);
-    assert!(parts[2].chars().all(|ch| ch.is_ascii_digit()));
-    assert!(parts[3].chars().all(|ch| ch.is_ascii_digit()));
-    assert!(parts[4].chars().all(|ch| ch.is_ascii_digit()));
-    assert_eq!(parts[5], expected_file_name);
+    assert_one_level_date(&parts[2]);
+    assert_eq!(parts[3], expected_file_name);
 }
 
 async fn upsert_test_assistant_definition(
@@ -2865,8 +2872,7 @@ async fn delete_removes_empty_date_workspace_parents() {
     let first_workspace = PathBuf::from(first.extra["workspace"].as_str().unwrap());
     let second_workspace = PathBuf::from(second.extra["workspace"].as_str().unwrap());
     let day_dir = first_workspace.parent().unwrap().to_path_buf();
-    let month_dir = day_dir.parent().unwrap().to_path_buf();
-    let year_dir = month_dir.parent().unwrap().to_path_buf();
+    let user_dir = day_dir.parent().unwrap().to_path_buf();
 
     svc.delete("user_1", &first.id).await.unwrap();
 
@@ -2875,9 +2881,33 @@ async fn delete_removes_empty_date_workspace_parents() {
 
     svc.delete("user_1", &second.id).await.unwrap();
 
-    assert!(!day_dir.exists());
-    assert!(!month_dir.exists());
-    assert!(!year_dir.exists());
+    assert!(!day_dir.exists(), "the emptied date dir is pruned");
+    assert!(user_dir.is_dir(), "pruning stops at the date: the account dir stays");
+}
+
+#[tokio::test]
+async fn a_single_user_install_puts_auto_workspaces_one_date_level_under_conversations() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace_root = temp.path().join("one-data");
+    let (svc, _broadcaster, _repo, _task_mgr) = make_service_with_workspace_root(workspace_root.clone());
+    let svc = svc.with_auto_workspace_layout(crate::AutoWorkspaceLayout::SingleUser);
+    let req: CreateConversationRequest = serde_json::from_value(json!({ "type": "acp", "extra": {} })).unwrap();
+
+    let conv = svc.create("system_default_user", req).await.unwrap();
+    let workspace = PathBuf::from(conv.extra["workspace"].as_str().unwrap());
+
+    let parts = workspace_parts(&workspace_root, &workspace);
+    assert_eq!(parts.len(), 2, "expected conversations/Y-M-D/leaf, got {parts:?}");
+    assert_one_level_date(&parts[0]);
+    assert_eq!(parts[1], format!("acp-temp-{}", conv.id));
+    assert!(workspace.is_dir());
+
+    // Recognised as ours: deleting the conversation removes the workspace and
+    // the date dir it emptied, and never `conversations/` itself.
+    svc.delete("system_default_user", &conv.id).await.unwrap();
+    assert!(!workspace.exists());
+    assert!(!workspace.parent().unwrap().exists());
+    assert!(workspace_root.join("conversations").is_dir());
 }
 
 #[tokio::test]

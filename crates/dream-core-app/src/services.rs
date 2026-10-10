@@ -140,6 +140,7 @@ impl AppServices {
             runtime_token_service: self.runtime_token_service.clone(),
             project_service: self.project_service.clone(),
             encryption_key: derive_encryption_key(&self.data_secret_raw),
+            auto_workspace_layout: auto_workspace_layout_for(self.identity_mode),
         });
         self
     }
@@ -636,6 +637,7 @@ impl AppServices {
             runtime_token_service: runtime_token_service.clone(),
             project_service: project_service.clone(),
             encryption_key,
+            auto_workspace_layout: auto_workspace_layout_for(identity_mode),
         });
 
         Ok(Self {
@@ -705,6 +707,19 @@ struct ConversationServiceDeps<'a> {
     runtime_token_service: Arc<RuntimeTokenService>,
     project_service: ProjectService,
     encryption_key: [u8; 32],
+    /// Single-user installs group auto workspaces without an account level.
+    auto_workspace_layout: dream_core_conversation::AutoWorkspaceLayout,
+}
+
+/// A local install has exactly one account, so an account directory under
+/// `conversations/` would only add a level to every chat's folder. Any mode
+/// that signs several accounts in keeps them apart on disk.
+fn auto_workspace_layout_for(identity_mode: IdentityMode) -> dream_core_conversation::AutoWorkspaceLayout {
+    if identity_mode.is_local() {
+        dream_core_conversation::AutoWorkspaceLayout::SingleUser
+    } else {
+        dream_core_conversation::AutoWorkspaceLayout::PerUser
+    }
 }
 
 fn build_conversation_service(deps: ConversationServiceDeps<'_>) -> ConversationService {
@@ -723,7 +738,8 @@ fn build_conversation_service(deps: ConversationServiceDeps<'_>) -> Conversation
     )
     .with_runtime_state(deps.conversation_runtime_state)
     .with_runtime_helper_context(deps.runtime_helper_bin, deps.runtime_base_url)
-    .with_runtime_token_service(deps.runtime_token_service);
+    .with_runtime_token_service(deps.runtime_token_service)
+    .with_auto_workspace_layout(deps.auto_workspace_layout);
     service.with_mcp_server_repo(Arc::new(SqliteMcpServerRepository::new(
         deps.database.pool().clone(),
         deps.encryption_key,

@@ -4,6 +4,7 @@
 mod acp_error_recovery;
 mod agent_health_policy;
 pub(crate) mod auto_workspace;
+pub use auto_workspace::AutoWorkspaceLayout;
 mod background_stream;
 mod convert;
 pub mod error;

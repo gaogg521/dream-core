@@ -57,7 +57,8 @@ use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 use crate::auto_workspace::{
-    auto_workspace_parent, conversation_label, expected_auto_workspace_path, has_auto_workspace_structure,
+    AutoWorkspaceLayout, auto_workspace_parent, conversation_label, dated_parent_depth, expected_auto_workspace_path,
+    has_auto_workspace_structure,
 };
 use crate::convert::{
     TOOL_CONTENT_COMPACT_THRESHOLD_BYTES, row_to_artifact_response, row_to_message_response,
@@ -321,6 +322,8 @@ fn reject_deprecated_runtime_row(row: &ConversationRow) -> Result<(), Conversati
 #[derive(Clone)]
 pub struct ConversationService {
     workspace_root: PathBuf,
+    /// How new auto workspaces are grouped under `workspace_root`.
+    auto_workspace_layout: AutoWorkspaceLayout,
     broadcaster: Arc<dyn EventBroadcaster>,
     skill_resolver: Arc<dyn SkillResolver>,
     task_manager: Arc<dyn IWorkerTaskManager>,
@@ -455,6 +458,7 @@ impl ConversationService {
     ) -> Self {
         Self {
             workspace_root,
+            auto_workspace_layout: AutoWorkspaceLayout::default(),
             broadcaster,
             skill_resolver,
             task_manager,
@@ -482,6 +486,13 @@ impl ConversationService {
             agent_metadata_repo,
             acp_session_repo,
         }
+    }
+
+    /// Group new auto workspaces without an account directory — for a
+    /// single-user install. See [`AutoWorkspaceLayout`].
+    pub fn with_auto_workspace_layout(mut self, layout: AutoWorkspaceLayout) -> Self {
+        self.auto_workspace_layout = layout;
+        self
     }
 
     pub fn with_runtime_state(mut self, runtime_state: Arc<ConversationRuntimeStateService>) -> Self {
@@ -571,7 +582,8 @@ impl ConversationService {
     }
 
     pub fn create_team_temp_workspace(&self, user_id: &str, team_id: &str) -> Result<String, ConversationError> {
-        let ws_path = auto_workspace_parent(&self.workspace_root, user_id).join(format!("team-temp-{team_id}"));
+        let ws_path = auto_workspace_parent(&self.workspace_root, self.auto_workspace_layout, user_id)
+            .join(format!("team-temp-{team_id}"));
         std::fs::create_dir_all(&ws_path)
             .map_err(|e| ConversationError::internal(format!("Failed to create Team temporary workspace: {e}")))?;
         Ok(ws_path.to_string_lossy().into_owned())
@@ -1365,7 +1377,8 @@ impl ConversationService {
                     .map(|backend| serde_json::Value::String(backend.clone()))
                     .as_ref(),
             );
-            let ws_path = auto_workspace_parent(&self.workspace_root, user_id).join(format!("{label}-temp-{id}"));
+            let ws_path = auto_workspace_parent(&self.workspace_root, self.auto_workspace_layout, user_id)
+                .join(format!("{label}-temp-{id}"));
             std::fs::create_dir_all(&ws_path)
                 .map_err(|e| ConversationError::internal(format!("Failed to create workspace: {e}")))?;
             extra["workspace"] = serde_json::Value::String(ws_path.to_string_lossy().into_owned());
@@ -5187,6 +5200,7 @@ impl ConversationService {
         let seed = self.load_dream_engine_permission_seed(row).await?;
         let options =
             SessionContextBuilder::new(&self.workspace_root, &self.agent_metadata_repo, &self.acp_session_repo)
+                .auto_workspace_layout(self.auto_workspace_layout)
                 .build_options(row, seed)
                 .await?;
         self.persist_reprovisioned_workspace(row, &options).await;
@@ -5202,6 +5216,7 @@ impl ConversationService {
         let seed = self.load_dream_engine_permission_seed(row).await?;
         let options =
             SessionContextBuilder::new(&self.workspace_root, &self.agent_metadata_repo, &self.acp_session_repo)
+                .auto_workspace_layout(self.auto_workspace_layout)
                 .build_options_with_workspace_override(row, workspace_override, seed)
                 .await?;
         self.persist_reprovisioned_workspace(row, &options).await;
@@ -5241,6 +5256,7 @@ impl ConversationService {
         };
         let expected = expected_auto_workspace_path(
             &self.workspace_root,
+            self.auto_workspace_layout,
             user_id,
             &row.id,
             &agent_type,
@@ -5314,7 +5330,8 @@ impl ConversationService {
     /// pre-fix behavior) and warns, so the replay itself still runs.
     pub(crate) async fn refresh_resume_anchor_for_replay(&self, conv_id: &str, options: &mut BuildTaskOptions) {
         let builder =
-            SessionContextBuilder::new(&self.workspace_root, &self.agent_metadata_repo, &self.acp_session_repo);
+            SessionContextBuilder::new(&self.workspace_root, &self.agent_metadata_repo, &self.acp_session_repo)
+                .auto_workspace_layout(self.auto_workspace_layout);
         if let Err(err) = builder.refresh_resume_anchor(conv_id, options).await {
             warn!(
                 conversation_id = %conv_id,
@@ -5366,18 +5383,19 @@ impl ConversationService {
         let backend = context_backend_value(context);
 
         let workspace = PathBuf::from(context.workspace.path.trim());
-        if !context.workspace.is_custom {
-            let expected_workspace = expected_auto_workspace_path(
+        // Structural, not today's exact path: an auto workspace created on an
+        // earlier day — or before the layout changed — is still this
+        // conversation's own, and used to silently get no skill links at all.
+        if !context.workspace.is_custom
+            && !crate::session_context::is_auto_workspace(
                 &self.workspace_root,
-                &row.user_id,
                 &row.id,
                 &context.conversation.agent_type,
                 backend.as_ref(),
-            );
-
-            if workspace != expected_workspace {
-                return;
-            }
+                &workspace,
+            )
+        {
+            return;
         }
 
         let skill_names = context_skill_names(context);
@@ -5672,23 +5690,8 @@ fn is_auto_workspace_relative_path(relative: &Path) -> bool {
         return false;
     };
 
-    let dated = |year: &str, month: &str, day: &str| {
-        year.len() == 4
-            && month.len() == 2
-            && day.len() == 2
-            && year.chars().all(|ch| ch.is_ascii_digit())
-            && month.chars().all(|ch| ch.is_ascii_digit())
-            && day.chars().all(|ch| ch.is_ascii_digit())
-    };
-
-    match parts.as_slice() {
-        // legacy: bare leaf, or {Y}/{M}/{D}/leaf
-        [_file_name] => true,
-        [year, month, day, _file_name] => dated(year, month, day),
-        // per-user, type-first: users/{user_dir}/{Y}/{M}/{D}/leaf
-        ["users", _user_dir, year, month, day, _file_name] => dated(year, month, day),
-        _ => false,
-    }
+    // legacy bare leaf, or any dated layout (see `dated_parent_depth`)
+    matches!(parts.as_slice(), [_file_name]) || dated_parent_depth(&parts).is_some()
 }
 
 async fn cleanup_empty_date_workspace_parents(workspace_root: &Path, workspace_path: &Path) {
@@ -5719,42 +5722,21 @@ async fn cleanup_empty_date_workspace_parents(workspace_root: &Path, workspace_p
     }
 }
 
-fn date_workspace_parent_dirs(workspace_root: &Path, workspace_path: &Path) -> Option<[PathBuf; 3]> {
+/// The date directories above a deleted auto workspace, innermost first:
+/// `{Y-M-D}` alone for the current layout, `{D}`, `{M}`, `{Y}` for the older
+/// one. Never the `users/{dir}` level or anything above it.
+fn date_workspace_parent_dirs(workspace_root: &Path, workspace_path: &Path) -> Option<Vec<PathBuf>> {
     let conversations_root = std::fs::canonicalize(workspace_root.join("conversations")).ok()?;
     let relative = workspace_path.strip_prefix(&conversations_root).ok()?;
-    if !is_dated_auto_workspace_relative_path(relative) {
-        return None;
-    }
-
-    let day_dir = workspace_path.parent()?.to_path_buf();
-    let month_dir = day_dir.parent()?.to_path_buf();
-    let year_dir = month_dir.parent()?.to_path_buf();
-    Some([day_dir, month_dir, year_dir])
-}
-
-fn is_dated_auto_workspace_relative_path(relative: &Path) -> bool {
-    let parts = relative.iter().map(|part| part.to_str()).collect::<Option<Vec<_>>>();
-    let Some(parts) = parts else {
-        return false;
-    };
-
-    // Per-user, type-first layout: users/{user_dir}/{Y}/{M}/{D}/{file}. The
-    // legacy userless {Y}/{M}/{D}/{file} form is still accepted so old
-    // conversations' empty date dirs are pruned on delete.
-    let dated = |year: &str, month: &str, day: &str| {
-        year.len() == 4
-            && month.len() == 2
-            && day.len() == 2
-            && year.chars().all(|ch| ch.is_ascii_digit())
-            && month.chars().all(|ch| ch.is_ascii_digit())
-            && day.chars().all(|ch| ch.is_ascii_digit())
-    };
-    matches!(
-        parts.as_slice(),
-        [year, month, day, _file_name] if dated(year, month, day)
-    ) || matches!(
-        parts.as_slice(),
-        ["users", _user_dir, year, month, day, _file_name] if dated(year, month, day)
+    let parts = relative.iter().map(|part| part.to_str()).collect::<Option<Vec<_>>>()?;
+    let depth = dated_parent_depth(&parts)?;
+    Some(
+        workspace_path
+            .ancestors()
+            .skip(1)
+            .take(depth)
+            .map(Path::to_path_buf)
+            .collect(),
     )
 }
 

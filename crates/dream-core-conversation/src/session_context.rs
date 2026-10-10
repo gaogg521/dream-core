@@ -14,7 +14,10 @@ use dream_core_db::models::ConversationRow;
 use dream_core_db::{IAcpSessionRepository, IAgentMetadataRepository};
 use tracing::{debug, info, warn};
 
-use crate::auto_workspace::{conversation_label, expected_auto_workspace_path, has_auto_workspace_structure};
+use crate::auto_workspace::{
+    AutoWorkspaceLayout, conversation_label, dated_parent_depth, expected_auto_workspace_path,
+    has_auto_workspace_structure,
+};
 use crate::convert::string_to_enum;
 use crate::error::ConversationError;
 use crate::task_options::provider_model_from_conversation_row;
@@ -24,6 +27,7 @@ const LEGACY_CONVERSATION_ARCHIVED_MESSAGE: &str =
 
 pub(crate) struct SessionContextBuilder<'a> {
     workspace_root: &'a Path,
+    auto_workspace_layout: AutoWorkspaceLayout,
     agent_metadata_repo: &'a Arc<dyn IAgentMetadataRepository>,
     acp_session_repo: &'a Arc<dyn IAcpSessionRepository>,
 }
@@ -36,9 +40,16 @@ impl<'a> SessionContextBuilder<'a> {
     ) -> Self {
         Self {
             workspace_root,
+            auto_workspace_layout: AutoWorkspaceLayout::default(),
             agent_metadata_repo,
             acp_session_repo,
         }
+    }
+
+    /// Where a missing auto workspace is re-provisioned.
+    pub(crate) fn auto_workspace_layout(mut self, layout: AutoWorkspaceLayout) -> Self {
+        self.auto_workspace_layout = layout;
+        self
     }
 
     pub(crate) async fn build_options(
@@ -113,6 +124,7 @@ impl<'a> SessionContextBuilder<'a> {
     ) -> Result<WorkspaceContext, ConversationError> {
         let expected_auto_workspace = expected_auto_workspace_path(
             self.workspace_root,
+            self.auto_workspace_layout,
             &row.user_id,
             &row.id,
             agent_type,
@@ -627,10 +639,11 @@ fn decode_persisted_session_state(state: dream_core_db::PersistedSessionState) -
 ///
 /// Matches by path STRUCTURE, not by an exact per-user/dated path. The leaf
 /// carries the globally-unique `conversation_id` and the caller has already
-/// validated ownership, so the `users/{dir}` segment and the `{Y}/{M}/{D}`
-/// date are wildcarded. Accepts:
+/// validated ownership, so the `users/{dir}` segment and the date are
+/// wildcarded. Accepts every dated layout `dated_parent_depth` does:
 ///   - legacy userless:     `conversations/{Y}/{M}/{D}/{leaf}`
 ///   - per-user type-first: `conversations/users/{any_dir}/{Y}/{M}/{D}/{leaf}`
+///   - current:             `conversations/[users/{any_dir}/]{Y-M-D}/{leaf}`
 ///
 /// The previous exact-match compared against `auto_workspace_parent(_, user_id)`
 /// built from TODAY's date and the acting user's dir. That misclassified as
@@ -638,7 +651,7 @@ fn decode_persisted_session_state(state: dream_core_db::PersistedSessionState) -
 /// under `users/system_default_user/` after an account adoption. Structural
 /// matching fixes both. Mirrors the delete-side
 /// `is_dated_auto_workspace_relative_path` in `service.rs`.
-fn is_auto_workspace(
+pub(crate) fn is_auto_workspace(
     workspace_root: &Path,
     conversation_id: &str,
     agent_type: &AgentType,
@@ -652,19 +665,7 @@ fn is_auto_workspace(
     let Some(parts) = relative.iter().map(|part| part.to_str()).collect::<Option<Vec<_>>>() else {
         return false;
     };
-    let dated = |year: &str, month: &str, day: &str| {
-        year.len() == 4
-            && month.len() == 2
-            && day.len() == 2
-            && year.chars().all(|ch| ch.is_ascii_digit())
-            && month.chars().all(|ch| ch.is_ascii_digit())
-            && day.chars().all(|ch| ch.is_ascii_digit())
-    };
-    match parts.as_slice() {
-        [year, month, day, leaf] => dated(year, month, day) && *leaf == expected_leaf,
-        ["users", _user_dir, year, month, day, leaf] => dated(year, month, day) && *leaf == expected_leaf,
-        _ => false,
-    }
+    parts.last() == Some(&expected_leaf.as_str()) && dated_parent_depth(&parts).is_some()
 }
 
 fn map_runtime_workspace_validation_error(error: WorkspacePathValidationError) -> ConversationError {
@@ -1303,7 +1304,14 @@ mod tests {
     fn is_auto_workspace_matches_by_structure_across_user_and_date() {
         let root = std::path::Path::new("/w");
         let user = "user_019f8de8-3537-7c73-8d92-3bfde17eb1ee";
-        let new_path = expected_auto_workspace_path(root, user, "conv-1", &AgentType::Acp, None);
+        let new_path = expected_auto_workspace_path(
+            root,
+            AutoWorkspaceLayout::PerUser,
+            user,
+            "conv-1",
+            &AgentType::Acp,
+            None,
+        );
         // `join` uses the platform separator, so normalize before matching a
         // slash-written segment — otherwise this only ever passes on Unix.
         assert!(

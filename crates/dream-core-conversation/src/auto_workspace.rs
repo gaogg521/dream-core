@@ -42,7 +42,9 @@ const WORKSPACES_SUBDIR: &str = "workspaces";
 /// Recognises a `{label}-temp-{id}` leaf whose parent is an auto root:
 ///   - `conversations/{leaf}` (legacy userless)
 ///   - `conversations/{Y}/{M}/{D}/{leaf}` (dated)
-///   - `conversations/users/{dir}/{Y}/{M}/{D}/{leaf}` (per-user, current)
+///   - `conversations/users/{dir}/{Y}/{M}/{D}/{leaf}` (per-user)
+///   - `conversations/{Y-M-D}/{leaf}` and `conversations/users/{dir}/{Y-M-D}/{leaf}`
+///     (current, see [`AutoWorkspaceLayout`])
 ///   - `{userData}/1one/{leaf}` (pre-`conversations/` releases)
 ///
 /// plus any leaf directly inside `{userData}/1one/workspaces/`, the generation
@@ -105,36 +107,79 @@ pub(crate) fn is_reported_temporary_workspace(workspace: &str, root: &Path) -> b
     Path::new(trimmed).starts_with(root) || has_auto_workspace_structure(trimmed)
 }
 
+/// How the auto workspaces under `{workspace_root}/conversations` are grouped.
+///
+/// The work dir is a folder the user picks and browses, so every level here is
+/// one more click to reach a conversation's files. Releases up to 0.1.81 always
+/// wrote `users/{user_dir}/{Y}/{M}/{D}/{leaf}` — six levels below
+/// `conversations/`, two of which said nothing on a desktop install with one
+/// user. Paths already stored keep working: every recogniser accepts both.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AutoWorkspaceLayout {
+    /// `users/{user_dir}/{Y-M-D}/{leaf}` — one directory per account, for a
+    /// deployment several accounts sign in to.
+    #[default]
+    PerUser,
+    /// `{Y-M-D}/{leaf}` — a single-user install, where an account directory
+    /// isolates nothing and only adds a level.
+    SingleUser,
+}
+
 /// Where this conversation's auto workspace belongs today:
-/// `{workspace_root}/conversations/users/{user_dir}/{Y}/{M}/{D}/{label}-temp-{id}`.
+/// `{workspace_root}/conversations/[users/{user_dir}/]{Y-M-D}/{label}-temp-{id}`.
 ///
 /// The dated parent is built from the CURRENT date, so re-provisioning an old
 /// conversation lands under today — [`has_auto_workspace_structure`] wildcards
 /// the date segments precisely so that stays recognisable.
 pub(crate) fn expected_auto_workspace_path(
     workspace_root: &Path,
+    layout: AutoWorkspaceLayout,
     user_id: &str,
     conversation_id: &str,
     agent_type: &AgentType,
     backend: Option<&serde_json::Value>,
 ) -> PathBuf {
-    auto_workspace_parent(workspace_root, user_id).join(format!(
+    auto_workspace_parent(workspace_root, layout, user_id).join(format!(
         "{}-temp-{conversation_id}",
         conversation_label(agent_type, backend)
     ))
 }
 
-/// The dated per-user directory auto workspaces are created under.
-pub(crate) fn auto_workspace_parent(workspace_root: &Path, user_id: &str) -> PathBuf {
-    let dir = dream_core_common::user_dir_name(user_id).unwrap_or_else(|_| user_id.to_owned());
+/// The dated directory auto workspaces are created under today.
+pub(crate) fn auto_workspace_parent(workspace_root: &Path, layout: AutoWorkspaceLayout, user_id: &str) -> PathBuf {
+    let mut parent = workspace_root.join("conversations");
+    if layout == AutoWorkspaceLayout::PerUser {
+        let dir = dream_core_common::user_dir_name(user_id).unwrap_or_else(|_| user_id.to_owned());
+        parent = parent.join("users").join(dir);
+    }
     let now = chrono::Local::now();
-    workspace_root
-        .join("conversations")
-        .join("users")
-        .join(dir)
-        .join(format!("{:04}", now.year()))
-        .join(format!("{:02}", now.month()))
-        .join(format!("{:02}", now.day()))
+    parent.join(format!("{:04}-{:02}-{:02}", now.year(), now.month(), now.day()))
+}
+
+/// How many date directories sit between the account level and the leaf of
+/// `parts` — a path relative to `{workspace_root}/conversations`, leaf
+/// included — or `None` when it is not a dated auto-workspace path.
+///
+/// Accepts the dated parents of every release: `{Y}/{M}/{D}` (3) and the
+/// current `{Y-M-D}` (1), each optionally under `users/{user_dir}`. Callers
+/// add their own rule for the leaf; deleting a conversation uses the depth to
+/// prune the date directories it emptied, and nothing above them.
+pub(crate) fn dated_parent_depth(parts: &[&str]) -> Option<usize> {
+    let (_leaf, dirs) = parts.split_last()?;
+    let dated = match dirs {
+        ["users", _user_dir, rest @ ..] => rest,
+        rest => rest,
+    };
+    let digits = |s: &str, len: usize| s.len() == len && s.chars().all(|ch| ch.is_ascii_digit());
+    match dated {
+        [year, month, day] if digits(year, 4) && digits(month, 2) && digits(day, 2) => Some(3),
+        [date] => {
+            let fields: Vec<&str> = date.split('-').collect();
+            let ok = matches!(fields.as_slice(), [y, m, d] if digits(y, 4) && digits(m, 2) && digits(d, 2));
+            ok.then_some(1)
+        }
+        _ => None,
+    }
 }
 
 /// The leaf's label: an ACP conversation is named after its backend (`claude`,
@@ -169,6 +214,58 @@ mod tests {
         assert!(reported(
             "/srv/one-data/conversations/users/u1/2026/10/06/dream-temp-abc"
         ));
+        assert!(auto("/srv/one-data/conversations/2026-10-10/dream-temp-abc"));
+        assert!(auto(
+            r"D:\onework测试\conversations\users\u1\2026-10-10\claude-temp-abc"
+        ));
+    }
+
+    #[test]
+    fn the_single_user_layout_drops_the_account_level_and_folds_the_date() {
+        let root = Path::new("/w");
+        let agent = AgentType::DreamEngine;
+        let single = expected_auto_workspace_path(root, AutoWorkspaceLayout::SingleUser, "u1", "c1", &agent, None);
+        let per_user = expected_auto_workspace_path(root, AutoWorkspaceLayout::PerUser, "u1", "c1", &agent, None);
+
+        let rel = |p: &Path| -> Vec<String> {
+            p.strip_prefix("/w/conversations")
+                .unwrap()
+                .iter()
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect()
+        };
+        let single = rel(&single);
+        let per_user = rel(&per_user);
+        assert_eq!(single.len(), 2, "{single:?}");
+        assert_eq!(single[1], "dream-temp-c1");
+        assert_eq!(per_user.len(), 4, "{per_user:?}");
+        assert_eq!(&per_user[..2], ["users", "u1"]);
+        assert_eq!(per_user[2], single[0], "both use the same one-level date");
+
+        // What we write is what we recognise.
+        fn parts(v: &[String]) -> Vec<&str> {
+            v.iter().map(String::as_str).collect()
+        }
+        assert_eq!(dated_parent_depth(&parts(&single)), Some(1));
+        assert_eq!(dated_parent_depth(&parts(&per_user)), Some(1));
+    }
+
+    #[test]
+    fn dated_parent_depth_covers_every_release_and_nothing_else() {
+        assert_eq!(dated_parent_depth(&["2026", "10", "06", "x-temp-1"]), Some(3));
+        assert_eq!(
+            dated_parent_depth(&["users", "u", "2026", "10", "06", "x-temp-1"]),
+            Some(3)
+        );
+        assert_eq!(dated_parent_depth(&["2026-10-06", "x-temp-1"]), Some(1));
+        assert_eq!(dated_parent_depth(&["users", "u", "2026-10-06", "x-temp-1"]), Some(1));
+
+        assert_eq!(dated_parent_depth(&["x-temp-1"]), None);
+        assert_eq!(dated_parent_depth(&["2026-10", "x-temp-1"]), None);
+        assert_eq!(dated_parent_depth(&["2026-10-06-01", "x-temp-1"]), None);
+        assert_eq!(dated_parent_depth(&["notes", "x-temp-1"]), None);
+        assert_eq!(dated_parent_depth(&["users", "u", "x-temp-1"]), None);
+        assert_eq!(dated_parent_depth(&["YYYY", "MM", "DD", "x-temp-1"]), None);
     }
 
     #[test]
