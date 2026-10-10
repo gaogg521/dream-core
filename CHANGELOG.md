@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.83](https://github.com/gaogg521/dream-core/compare/v0.1.82...v0.1.83) (2026-10-10)
+
+
+### Bug Fixes
+
+* **enterprise:** close MFA replay and authorization failure gaps ([9e75e57](https://github.com/gaogg521/dream-core/commit/9e75e57bb2b54dc285790fc239ae63ae29294126))
+* **enterprise:** verify signed licenses at every entitlement boundary ([ae9c0a5](https://github.com/gaogg521/dream-core/commit/ae9c0a5a5eaa5e47ebb60ac59686c912964c1cf4))
+
 ## [0.1.82](https://github.com/gaogg521/dream-core/compare/v0.1.81...v0.1.82) (2026-10-10)
 
 
