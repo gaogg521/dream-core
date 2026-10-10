@@ -248,6 +248,17 @@ pub enum AgentTurnExecutionError {
 #[async_trait]
 pub trait AgentTurnExecutionPort: Send + Sync {
     async fn run_agent_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutcome, AgentTurnExecutionError>;
+
+    /// Hand `content` to the turn the teammate's conversation is running right
+    /// now, so the user can steer a busy teammate instead of waiting for it.
+    ///
+    /// `false` means it did not reach a running turn (nothing running, or a
+    /// backend that cannot take mid-turn input) and the caller must queue it
+    /// as usual. Defaults to `false`: a port that cannot deliver mid-turn
+    /// simply never does.
+    async fn deliver_into_running_turn(&self, _conversation_id: &str, _content: String, _files: Vec<String>) -> bool {
+        false
+    }
 }
 
 #[async_trait]

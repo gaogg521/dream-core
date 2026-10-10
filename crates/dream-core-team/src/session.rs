@@ -602,12 +602,23 @@ impl TeamSession {
         content: &str,
         files: Option<Vec<String>>,
     ) -> Result<TeamRunAckResponse, TeamError> {
+        self.send_message_with(content, files, false).await
+    }
+
+    /// [`Self::send_message`], optionally interjecting: with `interject`, a
+    /// lead that is mid-turn gets the message in that turn instead of after it.
+    pub async fn send_message_with(
+        &self,
+        content: &str,
+        files: Option<Vec<String>>,
+        interject: bool,
+    ) -> Result<TeamRunAckResponse, TeamError> {
         let lead_slot_id = self
             .scheduler
             .find_lead_slot_id()
             .await
             .ok_or_else(|| TeamError::AgentNotFound("no lead agent in team".into()))?;
-        self.enqueue_user_message(&lead_slot_id, TeamRunTargetRole::Lead, content, files)
+        self.enqueue_user_message(&lead_slot_id, TeamRunTargetRole::Lead, content, files, interject)
             .await
     }
 
@@ -617,8 +628,20 @@ impl TeamSession {
         content: &str,
         files: Option<Vec<String>>,
     ) -> Result<TeamRunAckResponse, TeamError> {
+        self.send_message_to_agent_with(slot_id, content, files, false).await
+    }
+
+    /// [`Self::send_message_to_agent`] with the same `interject` option as
+    /// [`Self::send_message_with`].
+    pub async fn send_message_to_agent_with(
+        &self,
+        slot_id: &str,
+        content: &str,
+        files: Option<Vec<String>>,
+        interject: bool,
+    ) -> Result<TeamRunAckResponse, TeamError> {
         let agent = self.scheduler.get_agent(slot_id).await?;
-        self.enqueue_user_message(slot_id, target_role_for(agent.role), content, files)
+        self.enqueue_user_message(slot_id, target_role_for(agent.role), content, files, interject)
             .await
     }
 
@@ -681,6 +704,7 @@ impl TeamSession {
         role: TeamRunTargetRole,
         content: &str,
         files: Option<Vec<String>>,
+        interject: bool,
     ) -> Result<TeamRunAckResponse, TeamError> {
         // Human-direct delivery: lazily wake a dormant teammate. Failures stay
         // inline for the user, so do NOT notify the leader.
@@ -753,6 +777,13 @@ impl TeamSession {
             }
             SlashCommandRecognition::NotCommand => fallback_source,
         };
+        // A command must run as its own bare turn; never splice it into one.
+        if interject
+            && !matches!(source, WorkSource::UserCommand)
+            && let Some(ack) = self.try_interject(slot_id, &agent, content, files.as_deref()).await?
+        {
+            return Ok(ack);
+        }
         let lease = self.work_coordinator.acquire_enqueue(EnqueueRequest {
             slot_id: slot_id.to_owned(),
             role,
@@ -779,24 +810,8 @@ impl TeamSession {
             }
         };
 
-        let projection = TeamMessageProjection::new(self.projection_store.clone(), self.broadcaster.clone());
-        let request = TeamProjectionRequest::user_visible(
-            &self.user_id,
-            &self.team.id,
-            slot_id,
-            &agent.conversation_id,
-            content,
-            files.unwrap_or_default(),
-        );
-        if let Err(error) = projection.project(request).await {
-            warn!(
-                team_id = %self.team.id,
-                slot_id,
-                conversation_id = %agent.conversation_id,
-                error = %error,
-                "failed to project user right bubble (non-fatal)"
-            );
-        }
+        self.project_user_bubble(slot_id, &agent, content, files.unwrap_or_default())
+            .await;
 
         let commit = self
             .commit_persisted_enqueue(&lease, mailbox_message.id.clone())
@@ -815,7 +830,107 @@ impl TeamSession {
             },
             message_id: mailbox_message.id,
             run,
+            delivered_midturn: false,
         })
+    }
+
+    /// Show the user's message as a right bubble in the target conversation.
+    /// Failure is logged, not returned: the message itself was already taken.
+    async fn project_user_bubble(&self, slot_id: &str, agent: &TeamAgent, content: &str, files: Vec<String>) {
+        let projection = TeamMessageProjection::new(self.projection_store.clone(), self.broadcaster.clone());
+        let request = TeamProjectionRequest::user_visible(
+            &self.user_id,
+            &self.team.id,
+            slot_id,
+            &agent.conversation_id,
+            content,
+            files,
+        );
+        if let Err(error) = projection.project(request).await {
+            warn!(
+                team_id = %self.team.id,
+                slot_id,
+                conversation_id = %agent.conversation_id,
+                error = %error,
+                "failed to project user right bubble (non-fatal)"
+            );
+        }
+    }
+
+    /// Hand a user message to the turn `slot_id` is running right now, so the
+    /// user can steer a busy teammate instead of waiting for it to finish.
+    ///
+    /// `Ok(None)` means it was not delivered (no runtime, nothing running, a
+    /// backend without mid-turn delivery, or the turn just ended) and the
+    /// caller queues it as usual — nothing has been written at that point.
+    /// Once delivered, the message is still recorded in the mailbox, but as
+    /// already read: the running turn has it, so the next wake must not hand it
+    /// over a second time.
+    async fn try_interject(
+        &self,
+        slot_id: &str,
+        agent: &TeamAgent,
+        content: &str,
+        files: Option<&[String]>,
+    ) -> Result<Option<TeamRunAckResponse>, TeamError> {
+        // A dormant teammate is not running anything; the ordinary path is the
+        // one that wakes it.
+        if !self.event_loops.has(slot_id) {
+            return Ok(None);
+        }
+        let Some(run) = self.team_run_manager.current_payload(&self.work_coordinator.snapshot()) else {
+            return Ok(None);
+        };
+        // Same shape as a wake payload's message list, so the agent reads it
+        // as the team protocol it already knows.
+        let payload = format!("## New Messages\n\n- From `user` [message]: {content}\n");
+        let delivered = self
+            .turn_port
+            .deliver_into_running_turn(
+                &agent.conversation_id,
+                payload,
+                files.map(<[String]>::to_vec).unwrap_or_default(),
+            )
+            .await;
+        if !delivered {
+            return Ok(None);
+        }
+
+        let mailbox_message = self
+            .mailbox
+            .write_with_files(
+                &self.team.id,
+                slot_id,
+                "user",
+                MailboxMessageType::Message,
+                content,
+                None,
+                files,
+            )
+            .await?;
+        self.mailbox
+            .mark_read_batch(&self.team.id, std::slice::from_ref(&mailbox_message.id))
+            .await?;
+        self.project_user_bubble(
+            slot_id,
+            agent,
+            content,
+            files.map(<[String]>::to_vec).unwrap_or_default(),
+        )
+        .await;
+        info!(
+            team_id = %self.team.id,
+            slot_id,
+            conversation_id = %agent.conversation_id,
+            message_id = %mailbox_message.id,
+            "team user message delivered into the running turn"
+        );
+        Ok(Some(TeamRunAckResponse {
+            enqueue_status: TeamMessageEnqueueStatus::Accepted,
+            message_id: mailbox_message.id,
+            run,
+            delivered_midturn: true,
+        }))
     }
 
     /// Project a semantic system notice into the target teammate conversation.
@@ -4166,6 +4281,137 @@ mod tests {
                 .iter()
                 .any(|message| message.id == queued.message_id)
         );
+        release_tx.send(()).unwrap();
+        session.stop();
+    }
+
+    /// A running turn (via [`BlockingRunningTurnPort`]) whose conversation
+    /// either takes mid-turn input (`accept`) or does not, recording what it
+    /// was handed.
+    struct InterjectingTurnPort {
+        inner: BlockingRunningTurnPort,
+        accept: bool,
+        delivered: Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::ports::AgentTurnExecutionPort for InterjectingTurnPort {
+        async fn run_agent_turn(
+            &self,
+            request: crate::ports::AgentTurnRequest,
+        ) -> Result<crate::ports::AgentTurnOutcome, crate::ports::AgentTurnExecutionError> {
+            self.inner.run_agent_turn(request).await
+        }
+
+        async fn deliver_into_running_turn(
+            &self,
+            _conversation_id: &str,
+            content: String,
+            _files: Vec<String>,
+        ) -> bool {
+            self.delivered.lock().unwrap().push(content);
+            self.accept
+        }
+    }
+
+    /// Lead busy on "first"; returns the session, its port and the release handle.
+    async fn busy_lead_session(
+        accept: bool,
+    ) -> (
+        Arc<TeamSession>,
+        Arc<InterjectingTurnPort>,
+        tokio::sync::oneshot::Sender<()>,
+        TeamRunAckResponse,
+    ) {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let port = Arc::new(InterjectingTurnPort {
+            inner: BlockingRunningTurnPort::new(started_tx, release_rx),
+            accept,
+            delivered: Mutex::new(Vec::new()),
+        });
+        let repo: Arc<dyn ITeamRepository> = Arc::new(MockTeamRepo::new());
+        let broadcaster: Arc<dyn EventBroadcaster> = Arc::new(NullBroadcaster);
+        let session = TeamSession::start(
+            make_team(),
+            repo,
+            broadcaster,
+            backend_path(),
+            empty_task_manager(),
+            port.clone(),
+            noop_cancellation_port(),
+            noop_projection_store(),
+            "user-test".into(),
+            Weak::<TeamSessionService>::new(),
+        )
+        .await
+        .unwrap();
+        let session = Arc::new(session);
+        register_test_event_loop(&session, "lead-1");
+        let first = session.send_message("first", None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), started_rx)
+            .await
+            .expect("first turn should start")
+            .expect("start signal should be sent");
+        (session, port, release_tx, first)
+    }
+
+    async fn lead_unread_ids(session: &TeamSession) -> Vec<String> {
+        session
+            .mailbox
+            .peek_unread("t1", "lead-1")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|message| message.id)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn interjecting_a_busy_lead_hands_the_message_to_its_running_turn() {
+        let (session, port, release_tx, first) = busy_lead_session(true).await;
+
+        let ack = session.send_message_with("steer now", None, true).await.unwrap();
+
+        assert!(ack.delivered_midturn);
+        assert_eq!(ack.enqueue_status, TeamMessageEnqueueStatus::Accepted);
+        assert_eq!(ack.run.team_run_id, first.run.team_run_id);
+        let delivered = port.delivered.lock().unwrap().clone();
+        assert_eq!(delivered.len(), 1);
+        assert!(
+            delivered[0].contains("From `user` [message]: steer now"),
+            "delivered in the team message format: {}",
+            delivered[0]
+        );
+        // Recorded, but read: the next wake must not deliver it a second time.
+        assert!(!lead_unread_ids(&session).await.contains(&ack.message_id));
+        release_tx.send(()).unwrap();
+        session.stop();
+    }
+
+    #[tokio::test]
+    async fn interjection_falls_back_to_the_queue_when_the_turn_cannot_take_it() {
+        let (session, port, release_tx, _first) = busy_lead_session(false).await;
+
+        let ack = session.send_message_with("later then", None, true).await.unwrap();
+
+        assert_eq!(port.delivered.lock().unwrap().len(), 1, "delivery was attempted");
+        assert!(!ack.delivered_midturn);
+        assert_eq!(ack.enqueue_status, TeamMessageEnqueueStatus::Queued);
+        assert!(lead_unread_ids(&session).await.contains(&ack.message_id));
+        release_tx.send(()).unwrap();
+        session.stop();
+    }
+
+    #[tokio::test]
+    async fn a_plain_send_never_interjects() {
+        let (session, port, release_tx, _first) = busy_lead_session(true).await;
+
+        let ack = session.send_message("wait your turn", None).await.unwrap();
+
+        assert!(port.delivered.lock().unwrap().is_empty());
+        assert!(!ack.delivered_midturn);
+        assert_eq!(ack.enqueue_status, TeamMessageEnqueueStatus::Queued);
         release_tx.send(()).unwrap();
         session.stop();
     }

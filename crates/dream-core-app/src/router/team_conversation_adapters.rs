@@ -143,6 +143,12 @@ impl AgentTurnExecutionPort for TeamConversationAdapters {
             runtime: Some(outcome.runtime),
         })
     }
+
+    async fn deliver_into_running_turn(&self, conversation_id: &str, content: String, files: Vec<String>) -> bool {
+        self.conversation_service
+            .deliver_into_active_turn(conversation_id, content, files)
+            .await
+    }
 }
 
 #[async_trait]

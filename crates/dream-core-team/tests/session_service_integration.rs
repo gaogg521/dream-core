@@ -2474,7 +2474,7 @@ async fn teammate_first_wake_uses_canonical_prompt_at_service_boundary() {
     // Leader-only warmup: the teammate is dormant at first start. Delivering a
     // message lazily wakes it, and its first turn is a cold wake built with the
     // canonical role prompt plus the delivered content (spec 5.1).
-    svc.send_message_to_agent("user1", &created.id, &worker_slot_id, "do X", None)
+    svc.send_message_to_agent("user1", &created.id, &worker_slot_id, "do X", None, false)
         .await
         .expect("deliver to teammate triggers lazy wakeup");
 
@@ -3965,7 +3965,7 @@ async fn spawned_preset_assistant_snapshot_is_frozen() {
         .expect("create team");
     let lead_slot_id = created.leader_assistant_id.clone().expect("lead slot");
     svc.ensure_session("user1", &created.id).await.expect("ensure session");
-    svc.send_message("user1", &created.id, "start active run", None)
+    svc.send_message("user1", &created.id, "start active run", None, false)
         .await
         .expect("active run");
 
@@ -6630,7 +6630,7 @@ async fn spawn_agent_in_session_aborts_lease_when_persistence_fails() {
         .await
         .expect("create team");
     svc.ensure_session("user1", &created.id).await.unwrap();
-    svc.send_message("user1", &created.id, "start active run", None)
+    svc.send_message("user1", &created.id, "start active run", None, false)
         .await
         .expect("active run");
     team_repo.fail_agent_updates();
@@ -6676,7 +6676,7 @@ async fn spawn_agent_in_session_compensates_when_welcome_mailbox_write_fails() {
         .await
         .expect("create team");
     svc.ensure_session("user1", &created.id).await.unwrap();
-    svc.send_message("user1", &created.id, "start active run", None)
+    svc.send_message("user1", &created.id, "start active run", None, false)
         .await
         .expect("active run");
     team_repo.fail_message_writes();
@@ -6901,7 +6901,7 @@ async fn ss4_stop_session_rejects_cross_user_access() {
 #[tokio::test]
 async fn sm4_send_message_no_session_returns_error() {
     let svc = setup();
-    let result = svc.send_message("user1", "nonexistent", "Hello", None).await;
+    let result = svc.send_message("user1", "nonexistent", "Hello", None, false).await;
     assert!(result.is_err());
 }
 
@@ -6921,7 +6921,7 @@ async fn sm1_send_message_with_active_session() {
         .unwrap();
 
     svc.ensure_session("user1", &created.id).await.unwrap();
-    svc.send_message("user1", &created.id, "Hello team", None)
+    svc.send_message("user1", &created.id, "Hello team", None, false)
         .await
         .unwrap();
 }
@@ -6941,7 +6941,7 @@ async fn sm2_send_message_rejects_cross_user_access() {
         .await
         .unwrap();
 
-    let result = svc.send_message("user2", &created.id, "Hello", None).await;
+    let result = svc.send_message("user2", &created.id, "Hello", None, false).await;
 
     assert!(matches!(result, Err(dream_core_team::TeamError::TeamNotFound(_))));
 }
@@ -6963,7 +6963,7 @@ async fn sa_send_message_to_agent_with_active_session() {
 
     svc.ensure_session("user1", &created.id).await.unwrap();
     let worker_slot = created.assistants[1].slot_id.clone();
-    svc.send_message_to_agent("user1", &created.id, &worker_slot, "Do this", None)
+    svc.send_message_to_agent("user1", &created.id, &worker_slot, "Do this", None, false)
         .await
         .unwrap();
 }
@@ -6985,7 +6985,7 @@ async fn sa2_send_message_to_agent_rejects_cross_user_access() {
     let worker_slot = created.assistants[1].slot_id.clone();
 
     let result = svc
-        .send_message_to_agent("user2", &created.id, &worker_slot, "Do this", None)
+        .send_message_to_agent("user2", &created.id, &worker_slot, "Do this", None, false)
         .await;
 
     assert!(matches!(result, Err(dream_core_team::TeamError::TeamNotFound(_))));
@@ -7008,7 +7008,7 @@ async fn sa3_send_message_to_nonexistent_agent() {
 
     svc.ensure_session("user1", &created.id).await.unwrap();
     let result = svc
-        .send_message_to_agent("user1", &created.id, "nonexistent", "Hello", None)
+        .send_message_to_agent("user1", &created.id, "nonexistent", "Hello", None, false)
         .await;
     assert!(result.is_err());
 }
@@ -7075,7 +7075,7 @@ async fn td_delete_team_stops_session() {
     svc.ensure_session("user1", &created.id).await.unwrap();
     svc.remove_team("user1", &created.id).await.unwrap();
 
-    let result = svc.send_message("user1", &created.id, "Hello", None).await;
+    let result = svc.send_message("user1", &created.id, "Hello", None, false).await;
     assert!(result.is_err());
 }
 
@@ -7607,7 +7607,7 @@ async fn d9_ensure_session_rollbacks_when_build_fails() {
         "the dormant teammate is never built or killed on a leader bootstrap failure"
     );
 
-    let send_result = svc.send_message("user1", &created.id, "Hello", None).await;
+    let send_result = svc.send_message("user1", &created.id, "Hello", None, false).await;
     assert!(
         send_result.is_err(),
         "session must not be registered after leader build failure"
@@ -8235,7 +8235,7 @@ async fn failed_teammate_wakeup_does_not_flip_session_to_failed() {
     // dormant teammate — the failure must stay inline.
     recorder.clear();
     fail_next.store(true, Ordering::SeqCst);
-    svc.send_message_to_agent("user1", &created.id, &worker.slot_id, "please do X", None)
+    svc.send_message_to_agent("user1", &created.id, &worker.slot_id, "please do X", None, false)
         .await
         .expect("human delivery acks immediately even though the lazy attach will fail");
 
@@ -8314,7 +8314,7 @@ async fn lazy_attach_failure_preserves_unread_and_skips_leader_on_human_delivery
 
     // Arm the failure and deliver to the dormant teammate (human-direct).
     fail_next.store(true, Ordering::SeqCst);
-    svc.send_message_to_agent("user1", &created.id, &worker.slot_id, "please do X", None)
+    svc.send_message_to_agent("user1", &created.id, &worker.slot_id, "please do X", None, false)
         .await
         .expect("human delivery acks immediately even though the lazy attach will fail");
 

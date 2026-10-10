@@ -2438,12 +2438,13 @@ impl TeamSessionService {
         team_id: &str,
         content: &str,
         files: Option<Vec<ChatFileRef>>,
+        interject: bool,
     ) -> Result<TeamRunAckResponse, TeamError> {
         self.load_owned_team(user_id, team_id).await?;
         self.ensure_session_inner(team_id, Some(user_id)).await?;
         let (content, files) = self.resolve_message_attachments(user_id, content, files).await?;
         let session = self.published_session(team_id)?;
-        session.send_message(&content, files).await
+        session.send_message_with(&content, files, interject).await
     }
 
     pub async fn send_message_to_agent(
@@ -2453,12 +2454,15 @@ impl TeamSessionService {
         slot_id: &str,
         content: &str,
         files: Option<Vec<ChatFileRef>>,
+        interject: bool,
     ) -> Result<TeamRunAckResponse, TeamError> {
         self.load_owned_team(user_id, team_id).await?;
         self.ensure_session_inner(team_id, Some(user_id)).await?;
         let (content, files) = self.resolve_message_attachments(user_id, content, files).await?;
         let session = self.published_session(team_id)?;
-        session.send_message_to_agent(slot_id, &content, files).await
+        session
+            .send_message_to_agent_with(slot_id, &content, files, interject)
+            .await
     }
 
     pub async fn interrupt_agent(
@@ -4291,15 +4295,15 @@ mod tests {
         task_manager.reset_kills();
 
         let leader_ack = svc
-            .send_message("user-test", &created.id, "/clear", None)
+            .send_message("user-test", &created.id, "/clear", None, false)
             .await
             .unwrap();
         let member_ack = svc
-            .send_message_to_agent("user-test", &created.id, &worker.slot_id, "/clear", None)
+            .send_message_to_agent("user-test", &created.id, &worker.slot_id, "/clear", None, false)
             .await
             .unwrap();
         let named_ack = svc
-            .send_message("user-test", &created.id, " \t/clear\t  My Worker \t", None)
+            .send_message("user-test", &created.id, " \t/clear\t  My Worker \t", None, false)
             .await
             .unwrap();
 
@@ -4903,7 +4907,10 @@ mod tests {
             .await
             .unwrap();
 
-        let ack = svc.send_message("user-test", &created.id, "hello", None).await.unwrap();
+        let ack = svc
+            .send_message("user-test", &created.id, "hello", None, false)
+            .await
+            .unwrap();
         let state = svc.get_run_state("user-test", &created.id).await.unwrap();
         let active_run = state.active_run.expect("active run state");
 

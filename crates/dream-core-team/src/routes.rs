@@ -512,7 +512,7 @@ async fn send_message(
     let Json(req) = body.map_err(ApiError::from)?;
     let ack = state
         .service
-        .send_message(&user.id, &id, &req.content, req.files)
+        .send_message(&user.id, &id, &req.content, req.files, req.interject)
         .await?;
     Ok(Json(ApiResponse::ok(ack)))
 }
@@ -526,7 +526,14 @@ async fn send_message_to_agent(
     let Json(req) = body.map_err(ApiError::from)?;
     let ack = state
         .service
-        .send_message_to_agent(&user.id, &params.id, &params.slot_id, &req.content, req.files)
+        .send_message_to_agent(
+            &user.id,
+            &params.id,
+            &params.slot_id,
+            &req.content,
+            req.files,
+            req.interject,
+        )
         .await?;
     Ok(Json(ApiResponse::ok(ack)))
 }

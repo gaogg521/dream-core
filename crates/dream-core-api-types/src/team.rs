@@ -285,6 +285,11 @@ pub struct SendTeamMessageRequest {
     pub content: String,
     #[serde(default)]
     pub files: Option<Vec<ChatFileRef>>,
+    /// Deliver into the lead's running turn when it is mid-turn and its
+    /// backend can take that, instead of queueing it for after the turn.
+    /// Falls back to the queue whenever that is not possible.
+    #[serde(default)]
+    pub interject: bool,
 }
 
 /// Request body for `POST /api/teams/:id/agents/:slotId/messages`.
@@ -296,6 +301,9 @@ pub struct SendAgentMessageRequest {
     pub content: String,
     #[serde(default)]
     pub files: Option<Vec<ChatFileRef>>,
+    /// Same as [`SendTeamMessageRequest::interject`], for this agent.
+    #[serde(default)]
+    pub interject: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -379,6 +387,9 @@ pub struct TeamRunAckResponse {
     pub enqueue_status: TeamMessageEnqueueStatus,
     pub message_id: String,
     pub run: TeamRunPayload,
+    /// The message went into the target's running turn rather than its queue.
+    #[serde(default)]
+    pub delivered_midturn: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1791,6 +1802,7 @@ mod tests {
             enqueue_status: TeamMessageEnqueueStatus::Queued,
             message_id: "message-1".into(),
             run: active_run_payload(),
+            delivered_midturn: false,
         };
 
         let value = serde_json::to_value(ack).unwrap();

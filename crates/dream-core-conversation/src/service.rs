@@ -3891,6 +3891,58 @@ pub(crate) async fn apply_message_receipt(
 }
 
 impl ConversationService {
+    /// Hand `content` to the turn this conversation is running right now.
+    ///
+    /// For upper layers that own their own message projection (team mode):
+    /// nothing is persisted here and no turn is claimed. Returns `false` —
+    /// never an error — whenever the message did not reach a running turn
+    /// (no active turn, a backend without mid-turn delivery, a pending
+    /// confirmation card, or the turn ending first), so the caller can fall
+    /// back to its ordinary queue without losing the message.
+    pub async fn deliver_into_active_turn(&self, conversation_id: &str, content: String, files: Vec<String>) -> bool {
+        let Some(active_turn_id) = self.runtime_state.active_turn_id_for(conversation_id) else {
+            return false;
+        };
+        let Some(agent) = self.task_manager.get_task(conversation_id) else {
+            return false;
+        };
+        // Same gates as the user-facing path: a backend that cannot take it,
+        // or a turn blocked on a confirmation/question card (spec §4.6).
+        if !agent.supports_midturn_delivery() || !agent.get_confirmations().is_empty() {
+            return false;
+        }
+        let msg_id = Self::mint_msg_id();
+        let data = dream_core_ai_agent::types::SendMessageData {
+            content,
+            msg_id: msg_id.clone(),
+            turn_id: Some(active_turn_id.clone()),
+            files,
+            inject_skills: Vec::new(),
+        };
+        match agent.deliver_midturn(data).await {
+            Ok(()) => {
+                info!(
+                    conversation_id = %conversation_id,
+                    route = "midturn_delivery",
+                    active_turn_id = %active_turn_id,
+                    msg_id = %msg_id,
+                    "upper-layer message delivered into the active turn"
+                );
+                true
+            }
+            Err(e) if steer_rejection_is_turn_ended(&e) => false,
+            Err(e) => {
+                warn!(
+                    conversation_id = %conversation_id,
+                    active_turn_id = %active_turn_id,
+                    error = %e,
+                    "mid-turn delivery failed; caller falls back to its queue"
+                );
+                false
+            }
+        }
+    }
+
     /// B5: deliver a message into the RUNNING turn (no claim, no new turn id).
     ///
     /// Persists the user message with the pending-receipt status

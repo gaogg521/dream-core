@@ -4207,6 +4207,58 @@ impl IMockAgent for MidturnMockAgent {
     }
 }
 
+/// Team mode steers a busy teammate through `deliver_into_active_turn`: it
+/// reaches the running turn without persisting a row (the team layer projects
+/// its own bubble), and reports `false` instead of failing whenever it cannot,
+/// so the team falls back to its mailbox queue.
+#[tokio::test]
+async fn deliver_into_active_turn_reaches_only_a_running_turn() {
+    let task_mgr = Arc::new(MockTaskManager::new());
+    let (svc, _broadcaster, repo) = make_service_with_mock_task_manager(task_mgr.clone());
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    let agent = Arc::new(MidturnMockAgent::new(&conv.id));
+    task_mgr.insert_agent(&conv.id, AgentInstance::Mock(agent.clone()));
+    let rows_before = repo.messages.lock().unwrap().len();
+
+    // Nothing running: not delivered.
+    assert!(
+        !svc.deliver_into_active_turn(&conv.id, "too early".into(), Vec::new())
+            .await
+    );
+    assert!(agent.delivered.lock().unwrap().is_empty());
+
+    let _claim = svc
+        .runtime_state()
+        .try_claim_turn(&conv.id, "turn_active")
+        .expect("claim the active turn");
+    assert!(svc.deliver_into_active_turn(&conv.id, "steer".into(), Vec::new()).await);
+    let delivered = agent.delivered.lock().unwrap().clone();
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(delivered[0].content, "steer");
+    assert_eq!(delivered[0].turn_id.as_deref(), Some("turn_active"));
+    assert_eq!(
+        repo.messages.lock().unwrap().len(),
+        rows_before,
+        "the caller owns the visible message; nothing is persisted here"
+    );
+
+    // A pending confirmation card is the answer channel, not a place to steer.
+    agent.confirmations.lock().unwrap().push(Confirmation {
+        id: "c1".into(),
+        call_id: "call-1".into(),
+        title: None,
+        action: None,
+        description: "Edit main.rs".into(),
+        command_type: None,
+        questions: None,
+        options: vec![],
+    });
+    assert!(
+        !svc.deliver_into_active_turn(&conv.id, "blocked".into(), Vec::new())
+            .await
+    );
+}
+
 /// B5 routing (spec §4.3): an ACTIVE turn + a supporting backend → the message
 /// is delivered mid-turn (no 409, no new turn id), persisted with the
 /// pending-receipt status, and `message.userCreated` carries the correlation

@@ -2047,7 +2047,7 @@ impl EmployeeService {
 
         let prompt = build_run_prompt(&agent);
         team_session
-            .send_message_to_agent(owner_user_id, team_id, slot_id, &prompt, None)
+            .send_message_to_agent(owner_user_id, team_id, slot_id, &prompt, None, false)
             .await
             .map_err(|e| EmployeeError::Internal(format!("team send_message_to_agent: {e}")))?;
 
