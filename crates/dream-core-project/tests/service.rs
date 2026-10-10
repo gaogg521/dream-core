@@ -157,6 +157,48 @@ async fn validate_workspace_match_accepts_matching_folder() {
 }
 
 #[tokio::test]
+async fn attached_folders_lists_only_the_attached_roots_with_their_paths() {
+    let ws = tempfile::tempdir().unwrap();
+    let named = tempfile::tempdir().unwrap();
+    let plain = tempfile::tempdir().unwrap();
+    let (svc, _db) = service().await;
+    let out = svc
+        .create_standard("system_default_user", uri_of(ws.path()))
+        .await
+        .unwrap();
+    let project_id = out.project.project_id.clone();
+    assert_eq!(
+        svc.attached_folders("system_default_user", &project_id).await.unwrap(),
+        Vec::new(),
+        "the workspace itself is not an attached folder"
+    );
+
+    for (dir, display_name) in [(&named, Some("Docs")), (&plain, None)] {
+        svc.attach_folder(
+            "system_default_user",
+            AttachInput {
+                project_id: project_id.clone(),
+                uri: uri_of(dir.path()),
+                display_name: display_name.map(str::to_owned),
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    let folders = svc.attached_folders("system_default_user", &project_id).await.unwrap();
+    let listed: Vec<(&str, &std::path::Path)> = folders.iter().map(|f| (f.name.as_str(), f.path.as_path())).collect();
+    let plain_name = plain.path().file_name().unwrap().to_string_lossy().into_owned();
+    // The path is the one the user picked, casing intact — not the canonical
+    // form, which is lowercased on Windows.
+    assert_eq!(
+        listed,
+        vec![("Docs", named.path()), (plain_name.as_str(), plain.path())],
+        "Explorer order; a folder without a display name goes by its directory name"
+    );
+}
+
+#[tokio::test]
 async fn attach_then_remove_attached_entry() {
     let ws = tempfile::tempdir().unwrap();
     let att = tempfile::tempdir().unwrap();

@@ -105,6 +105,14 @@ pub struct ReferenceInput {
     pub op: FileOp,
 }
 
+/// A local folder attached to a project beyond its workspace, as an agent
+/// needs it: the name the Explorer shows and where it lives on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachedFolder {
+    pub name: String,
+    pub path: std::path::PathBuf,
+}
+
 /// A reference resolved to a concrete child resource within a folder root.
 /// Identity + containment only — no IO is performed to produce it.
 #[derive(Debug, Clone, Serialize)]

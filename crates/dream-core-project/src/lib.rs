@@ -22,6 +22,6 @@ pub use chat_files::ResolvedChatMessage;
 pub use routes::{ProjectRouterState, project_routes};
 pub use service::ProjectService;
 pub use types::{
-    AttachInput, FileOp, FolderDto, ProjectDetail, ProjectError, ProjectExplorerEntry, ProjectExplorerView,
-    ReferenceInput, ResolveOutput, ResolvedResource, RuntimeStatus,
+    AttachInput, AttachedFolder, FileOp, FolderDto, ProjectDetail, ProjectError, ProjectExplorerEntry,
+    ProjectExplorerView, ReferenceInput, ResolveOutput, ResolvedResource, RuntimeStatus,
 };

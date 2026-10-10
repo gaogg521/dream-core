@@ -10,6 +10,7 @@ pub mod error;
 pub mod markers;
 pub(crate) mod message_cursor;
 mod message_persistence;
+mod project_folders;
 pub mod response_middleware;
 pub mod routes;
 pub mod routes_aux;

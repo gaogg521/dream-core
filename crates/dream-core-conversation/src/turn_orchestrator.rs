@@ -554,8 +554,21 @@ impl ConversationTurnOrchestrator {
             }
         }
 
+        // Folders the user attached to the project next to the workspace are
+        // otherwise invisible to the agent — see `crate::project_folders`.
+        let attached_folders = self
+            .service
+            .attached_project_folders(&input.user_id, &input.conversation)
+            .await;
+        if !attached_folders.is_empty() {
+            info!(
+                conversation_id = %conv_id,
+                folder_count = attached_folders.len(),
+                "attached project folders announced to the agent"
+            );
+        }
         let initial_send = SendMessageData {
-            content: input.content,
+            content: crate::project_folders::with_attached_folders_note(input.content, &attached_folders),
             msg_id: first_turn_msg_id.clone(),
             turn_id: Some(turn_id.clone()),
             files: input.files,

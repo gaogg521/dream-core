@@ -691,6 +691,36 @@ impl ConversationService {
         }
     }
 
+    /// The folders attached to this conversation's project beyond its
+    /// workspace — see [`crate::project_folders`].
+    ///
+    /// Best-effort: an unbound conversation, a missing service or a store
+    /// error all yield none, logged at `warn` for the last; a turn must never
+    /// fail because the agent could not be told about extra folders.
+    pub(crate) async fn attached_project_folders(
+        &self,
+        user_id: &str,
+        conversation: &ConversationRow,
+    ) -> Vec<dream_core_project::AttachedFolder> {
+        let Some(project_id) = conversation.project_id.as_deref() else {
+            return Vec::new();
+        };
+        let Some(project_service) = self.project_service.read().ok().and_then(|guard| guard.clone()) else {
+            return Vec::new();
+        };
+        match project_service.attached_folders(user_id, project_id).await {
+            Ok(folders) => folders,
+            Err(err) => {
+                warn!(
+                    conversation_id = %conversation.id,
+                    error = err.code(),
+                    "attached project folders unavailable; the agent sees the workspace only"
+                );
+                Vec::new()
+            }
+        }
+    }
+
     /// Resolve a send's file attachments to absolute paths and re-inline them
     /// into the message content (`[[DREAM_FILES]]` form) at the send boundary.
     /// Atomic — a bad reference fails the whole send. Empty `files` is a no-op

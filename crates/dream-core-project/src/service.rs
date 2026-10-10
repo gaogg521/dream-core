@@ -10,8 +10,8 @@ use crate::canonical::{self, Canonical};
 use crate::containment;
 use crate::scm::ScmInbound;
 use crate::types::{
-    AttachInput, FolderDto, ProjectDetail, ProjectError, ProjectExplorerEntry, ProjectExplorerView, ReferenceInput,
-    ResolveOutput, ResolvedResource, RuntimeStatus,
+    AttachInput, AttachedFolder, FolderDto, ProjectDetail, ProjectError, ProjectExplorerEntry, ProjectExplorerView,
+    ReferenceInput, ResolveOutput, ResolvedResource, RuntimeStatus,
 };
 
 /// Orchestrates the three project-bind tables through an injected
@@ -298,6 +298,34 @@ impl ProjectService {
             created_at: project.created_at,
             updated_at: project.updated_at,
         })
+    }
+
+    /// The local folders attached to a project beyond its workspace, in
+    /// Explorer order.
+    ///
+    /// The path comes from the URI the user picked rather than the canonical
+    /// one, which folds casing on Windows — an agent shown a lowercased path
+    /// would echo it back to the user. A folder whose URI is not a local path
+    /// is left out: there is nothing an agent could open.
+    pub async fn attached_folders(&self, user_id: &str, project_id: &str) -> Result<Vec<AttachedFolder>, ProjectError> {
+        let mut out = Vec::new();
+        for (entry, folder) in self.store.list_entries(user_id, project_id).await? {
+            if entry.role == Role::Workspace.as_str() {
+                continue;
+            }
+            let Ok(path) = canonical::uri_to_path(&folder.resource_uri)
+                .or_else(|_| canonical::uri_to_path(&folder.resource_canonical))
+            else {
+                continue;
+            };
+            let name = entry
+                .display_name
+                .filter(|name| !name.trim().is_empty())
+                .or_else(|| path.file_name().map(|s| s.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            out.push(AttachedFolder { name, path });
+        }
+        Ok(out)
     }
 
     // ── resource resolution (identity + containment, no IO) ─────────────
