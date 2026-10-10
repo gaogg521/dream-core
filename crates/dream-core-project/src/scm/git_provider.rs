@@ -917,10 +917,122 @@ fn check_anchor(caps: ScmCapabilities, anchor: ContentRef) -> Result<(), ScmErro
     Ok(())
 }
 
+/// Author of the starting-point commit when the user has no git identity
+/// configured — common on a machine that has never run git.
+const INIT_FALLBACK_NAME: &str = "One Work";
+const INIT_FALLBACK_EMAIL: &str = "onework@localhost";
+const INIT_COMMIT_MESSAGE: &str = "Starting point recorded by One Work";
+
+/// Every symlink or junction under `root`, as a root-relative `/`-separated
+/// path, without following any of them.
+///
+/// A conversation folder links each enabled skill in from the shared skill
+/// store (`.dream/skills/<name>` → a junction on Windows). Those links point at
+/// content that does not belong to the folder: snapshotting through them would
+/// copy the whole skill store into the starting point, and every skill update
+/// would then show up as a change the agent never made.
+fn linked_entries(root: &Path) -> Vec<String> {
+    let mut links = Vec::new();
+    let mut pending = vec![(root.to_path_buf(), String::new())];
+    while let Some((dir, prefix)) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if prefix.is_empty() && name == ".git" {
+                continue;
+            }
+            let relative = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            };
+            // `symlink_metadata` does not follow the link; on Windows a junction
+            // reports as a symlink here too.
+            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+                continue;
+            };
+            if meta.file_type().is_symlink() {
+                links.push(relative);
+            } else if meta.is_dir() {
+                pending.push((entry.path(), relative));
+            }
+        }
+    }
+    links.sort();
+    links
+}
+
+/// One root-anchored ignore pattern matching exactly `relative`, with the
+/// characters git's pattern syntax gives meaning to escaped.
+fn exact_ignore_pattern(relative: &str) -> String {
+    let mut pattern = String::from("/");
+    for ch in relative.chars() {
+        if matches!(ch, '*' | '?' | '[' | ']' | '\\' | '!' | '#') {
+            pattern.push('\\');
+        }
+        pattern.push(ch);
+    }
+    pattern
+}
+
+/// `git init` at `path` plus one commit of everything there now (honouring any
+/// `.gitignore` already present). Without that commit every existing file would
+/// list as new, burying the changes the user actually wants to see. A path that
+/// already opens as a repository is left untouched.
+///
+/// Links inside the folder are kept out through the repository's own
+/// `info/exclude` rather than a `.gitignore`, so no file appears in the user's
+/// folder that they did not put there. See [`linked_entries`].
+fn init_repository_blocking(path: &Path) -> Result<(), git2::Error> {
+    if Repository::open(path).is_ok() {
+        return Ok(());
+    }
+    let links = linked_entries(path);
+    let repo = Repository::init(path)?;
+    if !links.is_empty() {
+        let exclude = repo.path().join("info").join("exclude");
+        let mut rules = std::fs::read_to_string(&exclude).unwrap_or_default();
+        if !rules.is_empty() && !rules.ends_with('\n') {
+            rules.push('\n');
+        }
+        rules.push_str("# Links to content kept outside this folder (added by One Work)\n");
+        for link in &links {
+            rules.push_str(&exact_ignore_pattern(link));
+            rules.push('\n');
+        }
+        if let Some(parent) = exclude.parent() {
+            std::fs::create_dir_all(parent).map_err(|err| git2::Error::from_str(&format!("create info dir: {err}")))?;
+        }
+        std::fs::write(&exclude, rules).map_err(|err| git2::Error::from_str(&format!("write info/exclude: {err}")))?;
+    }
+    let mut index = repo.index()?;
+    index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
+    index.write()?;
+    let tree = repo.find_tree(index.write_tree()?)?;
+    let signature = repo
+        .signature()
+        .or_else(|_| git2::Signature::now(INIT_FALLBACK_NAME, INIT_FALLBACK_EMAIL))?;
+    repo.commit(Some("HEAD"), &signature, &signature, INIT_COMMIT_MESSAGE, &tree, &[])?;
+    Ok(())
+}
+
 #[async_trait]
 impl IScmProvider for GitScmProvider {
     fn provider_id(&self) -> &str {
         "git"
+    }
+
+    async fn init_repository(&self, root: &ResolvedRoot) -> Result<(), ScmError> {
+        let path = PathBuf::from(&root.absolute_path);
+        tokio::task::spawn_blocking(move || init_repository_blocking(&path))
+            .await
+            .map_err(|err| ScmError::OperationFailed {
+                context: "init",
+                message: format!("blocking task failed: {err}"),
+            })?
+            .map_err(|e| engine_error("init", &e))
     }
 
     fn capabilities(&self) -> ScmCapabilities {

@@ -2672,3 +2672,136 @@ fn repo_id_folds_relative_path_for_child_repositories() {
         "the same child always yields the same repo id"
     );
 }
+
+// ── init_repository ─────────────────────────────────────────────────────────
+
+/// Putting a plain folder under version control records what is there now as
+/// the starting point: the folder surfaces as a repository with a clean change
+/// list, and only what changes afterwards shows up.
+#[tokio::test]
+async fn init_repository_records_the_current_files_as_the_starting_point() {
+    let tmp = TempDir::new().expect("tempdir");
+    write(tmp.path(), "notes.md", "before\n");
+    write(tmp.path(), "src/app.js", "let a = 1;\n");
+    let provider = GitScmProvider::new();
+    let root = workspace_root_at("pe1", tmp.path(), "workspace");
+    assert!(provider.discover(&root).await.expect("discover ok").is_empty());
+
+    provider.init_repository(&root).await.expect("init ok");
+
+    let (provider, repo) = discovered(tmp.path()).await;
+    let status = provider.status(&repo).await.expect("status ok");
+    assert!(
+        status.resources.is_empty(),
+        "existing files are the starting point, not changes: {:?}",
+        status.resources
+    );
+
+    write(tmp.path(), "notes.md", "after\n");
+    let status = provider.status(&repo).await.expect("status ok");
+    assert!(
+        find(&status, "notes.md", Some(false)).is_some(),
+        "a later edit is a change"
+    );
+    assert_eq!(status.resources.len(), 1);
+}
+
+#[tokio::test]
+async fn init_repository_honours_an_existing_gitignore() {
+    let tmp = TempDir::new().expect("tempdir");
+    write(tmp.path(), ".gitignore", "secret.txt\n");
+    write(tmp.path(), "secret.txt", "token\n");
+    write(tmp.path(), "kept.txt", "kept\n");
+    let provider = GitScmProvider::new();
+    provider
+        .init_repository(&root_at("pe1", tmp.path(), "fixture"))
+        .await
+        .expect("init ok");
+
+    let repo = Repository::open(tmp.path()).expect("now a repository");
+    let tree = repo.head().unwrap().peel_to_tree().unwrap();
+    assert!(tree.get_name("kept.txt").is_some());
+    assert!(
+        tree.get_name("secret.txt").is_none(),
+        "ignored files stay out of the snapshot"
+    );
+}
+
+#[tokio::test]
+async fn init_repository_leaves_an_existing_repository_alone() {
+    let tmp = TempDir::new().expect("tempdir");
+    let repo = init_repo(tmp.path());
+    write(tmp.path(), "a.txt", "a\n");
+    let head = commit_all(&repo, "user's own history");
+    write(tmp.path(), "a.txt", "uncommitted\n");
+
+    GitScmProvider::new()
+        .init_repository(&root_at("pe1", tmp.path(), "fixture"))
+        .await
+        .expect("init ok");
+
+    let repo = Repository::open(tmp.path()).expect("still a repository");
+    assert_eq!(repo.head().unwrap().target(), Some(head), "no commit was added");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+        "uncommitted\n"
+    );
+}
+
+/// Point `link` at `target` the way a conversation folder links a skill in: a
+/// junction on Windows (no privilege needed), a symlink elsewhere.
+fn link_dir(target: &Path, link: &Path) {
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .expect("run mklink");
+        assert!(status.status.success(), "mklink /J failed: {status:?}");
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).expect("symlink");
+}
+
+/// A skill linked in from the shared store is not part of the folder: it stays
+/// out of the starting point and never shows up as a change.
+#[tokio::test]
+async fn init_repository_keeps_linked_skill_folders_out() {
+    let store = TempDir::new().expect("store");
+    write(store.path(), "skill-a/SKILL.md", "shared skill\n");
+    let tmp = TempDir::new().expect("tempdir");
+    write(tmp.path(), "report.md", "mine\n");
+    std::fs::create_dir_all(tmp.path().join(".dream").join("skills")).expect("mkdir");
+    link_dir(
+        &store.path().join("skill-a"),
+        &tmp.path().join(".dream").join("skills").join("skill-a"),
+    );
+
+    let provider = GitScmProvider::new();
+    provider
+        .init_repository(&root_at("pe1", tmp.path(), "fixture"))
+        .await
+        .expect("init ok");
+
+    let repo = Repository::open(tmp.path()).expect("now a repository");
+    let tree = repo.head().unwrap().peel_to_tree().unwrap();
+    assert!(tree.get_name("report.md").is_some());
+    assert!(
+        tree.get_path(Path::new(".dream/skills/skill-a")).is_err(),
+        "the link is not snapshotted"
+    );
+
+    // Changing the shared skill is not a change in this folder.
+    write(store.path(), "skill-a/SKILL.md", "updated elsewhere\n");
+    let (provider, repo_ref) = discovered(tmp.path()).await;
+    let status = provider.status(&repo_ref).await.expect("status ok");
+    assert!(status.resources.is_empty(), "{:?}", status.resources);
+}
+
+#[test]
+fn exact_ignore_pattern_escapes_pattern_syntax() {
+    assert_eq!(exact_ignore_pattern(".dream/skills/a"), "/.dream/skills/a");
+    assert_eq!(exact_ignore_pattern("x/[draft]*#1!"), "/x/\\[draft\\]\\*\\#1\\!");
+}

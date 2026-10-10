@@ -76,6 +76,14 @@ pub trait IScmProvider: Send + Sync {
     /// means the request as a whole was refused, before anything was touched.
     async fn revert(&self, repo: &RepoRef, files: &[FileRef]) -> Result<ScmActionOutcome, ScmError>;
 
+    /// Put `root` under version control, recording what is there now as the
+    /// starting point, so later changes — typically the agent's — show up as
+    /// changes rather than the whole folder showing up as new. A root that is
+    /// already a repository is left exactly as it is.
+    async fn init_repository(&self, _root: &ResolvedRoot) -> Result<(), ScmError> {
+        Err(ScmError::CapabilityUnsupported { capability: "init" })
+    }
+
     /// Staging operations, or `None` when this provider has no staging area.
     fn staging(&self) -> Option<&dyn IScmStaging> {
         None

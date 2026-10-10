@@ -177,6 +177,7 @@ impl ScmActor {
             "scm/stage" => self.stage(user_id, params, true).await,
             "scm/unstage" => self.stage(user_id, params, false).await,
             "scm/discard" => self.discard(user_id, params).await,
+            "scm/init" => self.init_repository(user_id, params).await,
             other => {
                 tracing::warn!(session, method = %other, "scm dispatch: unknown method");
                 self.push.push(
@@ -207,6 +208,47 @@ impl ScmActor {
         // closes the window where an attach lands between the two.
         self.runtime.register_interest(session, project_id).await;
         let roots = self.roots_of(user_id, project_id).await?;
+        let repositories = self.runtime.discover(project_id, &roots).await;
+        Ok(json!({ "repositories": repositories }))
+    }
+
+    /// Put one of a project's roots under version control, then announce the new
+    /// repository the same way an attached folder would (`repositoriesChanged`),
+    /// so every open panel switches over without asking.
+    ///
+    /// `pe_id` picks the root; it may be omitted only when the project has a
+    /// single local root, which is the ordinary case — a conversation working in
+    /// its own folder. With several, guessing would turn a folder the user did
+    /// not mean into a repository.
+    async fn init_repository(&self, user_id: &str, params: Value) -> Result<Value, ScmError> {
+        let project_id = params
+            .get("project_id")
+            .and_then(Value::as_str)
+            .ok_or(ScmError::InvalidParams { what: "project_id" })?;
+        let pe_id = params.get("pe_id").and_then(Value::as_str);
+
+        let roots = self.roots_of(user_id, project_id).await?;
+        let root = match pe_id {
+            Some(pe_id) => roots.iter().find(|root| root.pe_id == pe_id),
+            None if roots.len() == 1 => roots.first(),
+            None => None,
+        }
+        .ok_or(ScmError::InvalidParams { what: "pe_id" })?;
+
+        // Creating `.git` and a commit is a write into the root.
+        self.authorize_file(
+            user_id,
+            &FileRef {
+                pe_id: root.pe_id.clone(),
+                relative_path: String::new(),
+            },
+            FileOp::Write,
+        )
+        .await?;
+        self.runtime.provider().init_repository(root).await?;
+        tracing::info!(project_id, pe_id = %root.pe_id, "scm: root put under version control");
+
+        self.on_roots_changed(project_id, user_id).await;
         let repositories = self.runtime.discover(project_id, &roots).await;
         Ok(json!({ "repositories": repositories }))
     }

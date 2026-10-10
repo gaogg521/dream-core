@@ -804,3 +804,81 @@ async fn a_fully_successful_subscribe_omits_the_failure_list() {
         "no `failed` key when nothing failed: {reply}"
     );
 }
+
+/// A project over a plain folder (no repository), with a live actor.
+async fn plain_folder_fixture() -> Fixture {
+    let db = init_database_memory().await.expect("db");
+    let store: Arc<dyn IProjectStore> = Arc::new(SqliteProjectStore::new(db.pool().clone()));
+    let service = Arc::new(ProjectService::new(Arc::clone(&store), std::env::temp_dir()));
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("notes.md"), "draft\n").expect("write");
+    let created = service
+        .create_standard("system_default_user", to_file_uri(dir.path()).expect("uri"))
+        .await
+        .expect("create project");
+    let push = Arc::new(CollectingPush {
+        sent: std::sync::Mutex::new(Vec::new()),
+    });
+    let actor = ScmActor::new(Arc::clone(&service), Arc::clone(&push) as Arc<dyn ScmWirePush>).expect("actor");
+    let (inbound, inbound_rx) = unbounded_channel();
+    tokio::spawn(actor.run(inbound_rx));
+    service.set_scm_roots_sender(inbound.clone());
+    Fixture {
+        _db: db,
+        _repo_dir: dir,
+        service,
+        push,
+        inbound,
+        pe_id: created.project_explorer.pe_id.clone(),
+        project_id: created.project.project_id.clone(),
+    }
+}
+
+/// "Put under version control" from the empty source-control panel: the folder
+/// becomes a repository with its current files as the starting point, and the
+/// panel that was showing "not a repository" is told so without asking.
+#[tokio::test]
+async fn init_puts_a_plain_folder_under_version_control_and_announces_it() {
+    let fx = plain_folder_fixture().await;
+    let listed = fx
+        .call(1, "scm/listRepositories", json!({ "project_id": fx.project_id }))
+        .await;
+    assert_eq!(listed["result"]["repositories"], json!([]), "{listed}");
+    let before = fx.frame_count();
+
+    let reply = fx.call(2, "scm/init", json!({ "project_id": fx.project_id })).await;
+
+    assert!(reply.get("error").is_none(), "{reply}");
+    let repositories = reply["result"]["repositories"].as_array().expect("repositories");
+    assert_eq!(repositories.len(), 1, "{reply}");
+    let changed = fx
+        .wait_for_notification("conn-1", "scm/repositoriesChanged", before)
+        .await;
+    assert_eq!(changed["added"].as_array().map(Vec::len), Some(1), "{changed}");
+
+    // The starting point is committed: nothing lists as changed yet.
+    let repo_id = repositories[0]["repo_id"].as_str().expect("repo id").to_owned();
+    let status = fx.call(3, "scm/status", json!({ "repository": repo_id })).await;
+    assert_eq!(status["result"]["resources"], json!([]), "{status}");
+}
+
+#[tokio::test]
+async fn init_refuses_a_root_that_is_not_in_the_project() {
+    let fx = plain_folder_fixture().await;
+
+    let reply = fx
+        .call(
+            1,
+            "scm/init",
+            json!({ "project_id": fx.project_id, "pe_id": "pe-not-here" }),
+        )
+        .await;
+
+    assert!(reply.get("error").is_some(), "{reply}");
+    assert!(
+        fx.call(2, "scm/listRepositories", json!({ "project_id": fx.project_id }))
+            .await["result"]["repositories"]
+            == json!([]),
+        "nothing was initialized"
+    );
+}
