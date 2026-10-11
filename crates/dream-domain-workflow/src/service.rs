@@ -219,6 +219,22 @@ impl WorkflowService {
         Ok(row.map(row_to_dto))
     }
 
+    /// Public detail reads follow the same visibility as the approval lists:
+    /// administrators can inspect tenant tasks; members only their own.
+    pub async fn get_task_for_user(&self, user_id: &str, id: &str) -> Result<Option<WorkflowTaskDto>, WorkflowError> {
+        let actor = self.require_member(user_id).await?;
+        let task = self.get_task(&actor.tenant_id, id).await?;
+        if let Some(task) = &task
+            && task.requester_id != user_id
+            && !is_admin_role(&actor.role)
+        {
+            return Err(WorkflowError::Forbidden(
+                "You cannot read another member's approval task".into(),
+            ));
+        }
+        Ok(task)
+    }
+
     /// Mark every deadline-passed pending task as expired, across tenants.
     /// Lazy by design — the terminal-tool wait loop and every list read keep
     /// the status truthful without a scheduler process.
@@ -460,6 +476,61 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn detail_reads_are_limited_to_requester_and_tenant_administrators() {
+        let (db, service) = setup().await;
+        for (user, tenant, role) in [
+            ("owner", "t1", "member"),
+            ("other", "t1", "member"),
+            ("auditor", "t1", "auditor"),
+            ("admin", "t1", "org_admin"),
+            ("outside", "t2", "org_admin"),
+        ] {
+            seed_membership(db.pool(), user, tenant, role).await;
+        }
+        let task = service
+            .create_task(
+                "t1",
+                "tool",
+                "owner",
+                "private request",
+                "private detail",
+                &serde_json::json!({"command": "private fixture"}),
+                None,
+            )
+            .await
+            .unwrap();
+        for user in ["owner", "admin"] {
+            assert_eq!(
+                service.get_task_for_user(user, &task.id).await.unwrap().unwrap().id,
+                task.id
+            );
+        }
+        for user in ["other", "auditor"] {
+            assert_eq!(
+                service.get_task_for_user(user, &task.id).await.unwrap_err().code(),
+                "FORBIDDEN"
+            );
+        }
+        assert!(service.get_task_for_user("outside", &task.id).await.unwrap().is_none());
+        assert!(service.get_task_for_user("owner", "missing").await.unwrap().is_none());
+        assert!(service.get_task_for_user("nonmember", &task.id).await.is_err());
+        service.decide("t1", &task.id, "approved", "admin", None).await.unwrap();
+        assert_eq!(
+            service
+                .get_task_for_user("owner", &task.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "approved"
+        );
+        assert_eq!(
+            service.get_task_for_user("other", &task.id).await.unwrap_err().code(),
+            "FORBIDDEN"
+        );
     }
 
     #[tokio::test]

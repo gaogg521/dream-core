@@ -30,12 +30,12 @@ pub fn one_workflow_routes(state: OneWorkflowRouterState) -> Router {
 
 async fn get_task(
     State(state): State<OneWorkflowRouterState>,
-    RequireWorkflowMember(actor): RequireWorkflowMember,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<WorkflowTaskDto>>, WorkflowError> {
     let task = state
         .service
-        .get_task(&actor.tenant_id, &id)
+        .get_task_for_user(&user.id, &id)
         .await?
         .ok_or_else(|| WorkflowError::NotFound("workflow task not found".into()))?;
     Ok(Json(ApiResponse::ok(task)))
