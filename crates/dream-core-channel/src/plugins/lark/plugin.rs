@@ -1242,6 +1242,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn websocket_accepts_fragmented_current_card_and_returns_callback_ack() {
+        use super::super::frame::{PbFrame, PbHeader};
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (message_tx, mut message_rx) = mpsc::channel(16);
+        let (confirm_tx, _confirm_rx) = mpsc::channel(16);
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let client = tokio::spawn(async move {
+            connect_and_listen(
+                &url,
+                7,
+                120,
+                &message_tx,
+                &confirm_tx,
+                &Arc::new(Mutex::new(HashMap::new())),
+                &mut shutdown_rx,
+            )
+            .await
+        });
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let payload = serde_json::json!({
+            "header": {"event_id":"fragmented-card", "event_type":"card.action.trigger"},
+            "event": {
+                "operator":{"open_id":"ou_actor"},
+                "action":{"tag":"button","value":{"action":"chat:chat.continue"}},
+                "context":{"open_chat_id":"oc_test","open_message_id":"om_test"}
+            }
+        })
+        .to_string()
+        .into_bytes();
+        let mut frame = PbFrame {
+            seq_id: 42,
+            log_id: 51,
+            service: 7,
+            method: METHOD_DATA,
+            headers: vec![
+                PbHeader {
+                    key: "type".into(),
+                    value: "event".into(),
+                },
+                PbHeader {
+                    key: "message_id".into(),
+                    value: "delivery-1".into(),
+                },
+                PbHeader {
+                    key: "sum".into(),
+                    value: "2".into(),
+                },
+                PbHeader {
+                    key: "seq".into(),
+                    value: "0".into(),
+                },
+                PbHeader {
+                    key: "trace_id".into(),
+                    value: "trace-test".into(),
+                },
+            ],
+            payload_encoding: String::new(),
+            payload_type: String::new(),
+            payload: payload[..payload.len() / 2].to_vec(),
+            log_id_new: String::new(),
+        };
+        socket
+            .send(WsMessage::Binary(encode_frame(&frame).into()))
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), socket.next())
+                .await
+                .is_err()
+        );
+        frame.headers.iter_mut().find(|h| h.key == "seq").unwrap().value = "1".into();
+        frame.payload = payload[payload.len() / 2..].to_vec();
+        socket
+            .send(WsMessage::Binary(encode_frame(&frame).into()))
+            .await
+            .unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(5), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let WsMessage::Binary(bytes) = response else {
+            panic!("expected protobuf ACK")
+        };
+        let ack = decode_frame(&bytes).unwrap();
+        assert_eq!(ack.seq_id, 42);
+        assert_eq!(get_header(&ack.headers, "trace_id"), Some("trace-test"));
+        assert_eq!(get_header(&ack.headers, "sum"), Some("2"));
+        let body: serde_json::Value = serde_json::from_slice(&ack.payload).unwrap();
+        assert_eq!(body["data"], "e30=");
+        let message = tokio::time::timeout(Duration::from_secs(5), message_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(message.chat_id, "oc_test");
+        assert_eq!(message.action.unwrap().action, "chat.continue");
+        shutdown_tx.send(true).unwrap();
+        client.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn current_card_event_dispatches_continue_once_with_context() {
         let (message_tx, mut message_rx) = mpsc::channel(16);
         let (confirm_tx, _confirm_rx) = mpsc::channel(16);
