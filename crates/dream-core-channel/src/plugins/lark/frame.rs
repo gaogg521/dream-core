@@ -63,16 +63,20 @@ pub fn build_ping_frame(service_id: i32) -> PbFrame {
 }
 
 pub fn build_ack_frame(original: &PbFrame) -> PbFrame {
-    let mut ack_headers = Vec::new();
-    for h in &original.headers {
-        if h.key == "type" || h.key == "message_id" || h.key == "trace_id" {
-            ack_headers.push(h.clone());
-        }
-    }
+    // Match the official SDK: echo delivery headers, including fragment and
+    // correlation metadata, rather than reconstructing a partial response.
+    let mut ack_headers = original.headers.clone();
+    ack_headers.retain(|header| header.key != "biz_rt");
     ack_headers.push(PbHeader {
         key: "biz_rt".into(),
         value: "0".into(),
     });
+    let is_card = get_header(&original.headers, "type") == Some("card")
+        || serde_json::from_slice::<serde_json::Value>(&original.payload)
+            .ok()
+            .and_then(|value| value.get("header")?.get("event_type")?.as_str().map(str::to_owned))
+            .as_deref()
+            == Some("card.action.trigger");
 
     PbFrame {
         seq_id: original.seq_id,
@@ -80,9 +84,15 @@ pub fn build_ack_frame(original: &PbFrame) -> PbFrame {
         service: original.service,
         method: METHOD_DATA,
         headers: ack_headers,
-        payload_encoding: String::new(),
-        payload_type: String::new(),
-        payload: br#"{"code":200}"#.to_vec(),
+        payload_encoding: original.payload_encoding.clone(),
+        payload_type: original.payload_type.clone(),
+        // Callback responses carry base64-encoded JSON data. Empty {} accepts
+        // the click promptly; model execution remains asynchronous.
+        payload: if is_card {
+            br#"{"code":200,"data":"e30="}"#.to_vec()
+        } else {
+            br#"{"code":200}"#.to_vec()
+        },
         log_id_new: original.log_id_new.clone(),
     }
 }
@@ -214,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn build_ack_frame_retains_only_allowed_headers() {
+    fn build_ack_frame_retains_delivery_headers() {
         let original = PbFrame {
             seq_id: 5,
             log_id: 10,
@@ -253,8 +263,19 @@ mod tests {
         assert!(keys.contains(&"message_id"));
         assert!(keys.contains(&"trace_id"));
         assert!(keys.contains(&"biz_rt"));
-        assert!(!keys.contains(&"sum"));
-        assert!(!keys.contains(&"seq"));
+        assert!(keys.contains(&"sum"));
+        assert!(keys.contains(&"seq"));
+    }
+
+    #[test]
+    fn current_card_ack_contains_callback_response() {
+        let mut original = build_ping_frame(1);
+        original.method = METHOD_DATA;
+        original.payload = br#"{"header":{"event_type":"card.action.trigger"}}"#.to_vec();
+        let ack = build_ack_frame(&original);
+        let response: serde_json::Value = serde_json::from_slice(&ack.payload).unwrap();
+        assert_eq!(response["code"], 200);
+        assert_eq!(response["data"], "e30="); // base64({})
     }
 
     #[test]

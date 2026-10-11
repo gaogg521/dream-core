@@ -381,12 +381,6 @@ async fn connect_and_listen(
                                 }
                             }
                             METHOD_DATA => {
-                                let ack = build_ack_frame(&frame);
-                                let ack_bytes = encode_frame(&ack);
-                                if let Err(e) = write.send(WsMessage::Binary(ack_bytes.into())).await {
-                                    warn!(error = %e, "Failed to send Lark ack frame");
-                                }
-
                                 let message_id = get_header(&frame.headers, "message_id")
                                     .unwrap_or("")
                                     .to_owned();
@@ -398,6 +392,14 @@ async fn connect_and_listen(
                                     .unwrap_or(0);
 
                                 if let Some(merged) = fragment_cache.push(&message_id, sum, seq, &frame.payload) {
+                                    // Acknowledge a complete delivery, as the official SDK does.
+                                    // An early fragment ACK can mark an incomplete event delivered.
+                                    let mut complete_frame = frame.clone();
+                                    complete_frame.payload = merged.clone();
+                                    let ack_bytes = encode_frame(&build_ack_frame(&complete_frame));
+                                    if let Err(e) = write.send(WsMessage::Binary(ack_bytes.into())).await {
+                                        warn!(error = %e, "Failed to send Lark ack frame");
+                                    }
                                     let msg_type = get_header(&frame.headers, "type").unwrap_or("");
                                     if msg_type == "event" || msg_type == "card" {
                                         if let Ok(text) = String::from_utf8(merged) {
