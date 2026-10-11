@@ -216,6 +216,15 @@ pub(crate) struct CardActionEvent {
     pub token: Option<String>,
     pub open_message_id: Option<String>,
     pub open_chat_id: Option<String>,
+    #[serde(default)]
+    pub context: Option<CardActionContext>,
+}
+
+/// Conversation coordinates used by current card.action.trigger callbacks.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct CardActionContext {
+    pub open_message_id: Option<String>,
+    pub open_chat_id: Option<String>,
 }
 
 /// Operator (user) who triggered the card action.

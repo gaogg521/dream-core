@@ -514,6 +514,11 @@ async fn handle_ws_text(
                         handle_message_event(event_data, message_tx).await;
                     }
                 }
+                "card.action.trigger" => {
+                    if let Some(event_data) = envelope.get("event").cloned() {
+                        handle_card_action(event_data, message_tx, confirm_tx).await;
+                    }
+                }
                 "application.bot.menu_v6" => {
                     if let Some(event_data) = envelope.get("event").cloned() {
                         handle_bot_menu_event(event_data, message_tx).await;
@@ -632,9 +637,20 @@ async fn handle_card_action(
         }
     }
 
-    let chat_id = evt.open_chat_id.as_deref().unwrap_or("").to_string();
+    let chat_id = evt
+        .context
+        .as_ref()
+        .and_then(|context| context.open_chat_id.as_deref())
+        .or(evt.open_chat_id.as_deref())
+        .unwrap_or("")
+        .to_string();
+    let message_id = evt
+        .context
+        .as_ref()
+        .and_then(|context| context.open_message_id.clone())
+        .or(evt.open_message_id.clone());
 
-    let message_id = evt.open_message_id.clone();
+    info!(recognized = parsed.is_some(), "Lark card callback received");
 
     let user = UnifiedUser {
         id: evt.operator.open_id.clone(),
@@ -1221,6 +1237,32 @@ mod tests {
         assert!(msg.action.is_some());
         let action = msg.action.unwrap();
         assert_eq!(action.action, "help.show");
+    }
+
+    #[tokio::test]
+    async fn current_card_event_dispatches_continue_once_with_context() {
+        let (message_tx, mut message_rx) = mpsc::channel(16);
+        let (confirm_tx, _confirm_rx) = mpsc::channel(16);
+        let dedup_cache = Arc::new(Mutex::new(HashMap::new()));
+        let payload = serde_json::json!({
+            "schema": "2.0",
+            "header": {"event_id": "card-event-1", "event_type": "card.action.trigger"},
+            "event": {
+                "operator": {"open_id": "ou_actor"},
+                "action": {"tag": "button", "value": {"action": "chat:chat.continue"}},
+                "context": {"open_message_id": "om_result", "open_chat_id": "oc_test"}
+            }
+        })
+        .to_string();
+        handle_ws_text(&payload, "event", &message_tx, &confirm_tx, &dedup_cache).await;
+        handle_ws_text(&payload, "event", &message_tx, &confirm_tx, &dedup_cache).await;
+        let msg = message_rx.try_recv().unwrap();
+        assert_eq!(msg.chat_id, "oc_test");
+        assert_eq!(msg.user.id, "ou_actor");
+        let action = msg.action.unwrap();
+        assert_eq!(action.action, "chat.continue");
+        assert_eq!(action.context.message_id.as_deref(), Some("om_result"));
+        assert!(message_rx.try_recv().is_err());
     }
 
     #[tokio::test]
