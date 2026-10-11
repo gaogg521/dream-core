@@ -517,7 +517,11 @@ async fn handle_ws_text(
                     }
                 }
                 "card.action.trigger" => {
-                    if let Some(event_data) = envelope.get("event").cloned() {
+                    info!(event_id = event_id.unwrap_or("missing"), "Lark card delivery received");
+                    if let Some(mut event_data) = envelope.get("event").cloned() {
+                        if let Some(id) = event_id {
+                            event_data["_delivery_id"] = id.into();
+                        }
                         handle_card_action(event_data, message_tx, confirm_tx).await;
                     }
                 }
@@ -608,6 +612,7 @@ async fn handle_card_action(
     message_tx: &mpsc::Sender<UnifiedIncomingMessage>,
     confirm_tx: &mpsc::Sender<(String, String)>,
 ) {
+    let delivery_id = data.get("_delivery_id").and_then(|v| v.as_str()).map(str::to_owned);
     let evt: CardActionEvent = match serde_json::from_value(data) {
         Ok(e) => e,
         Err(e) => {
@@ -683,7 +688,7 @@ async fn handle_card_action(
 
     let msg = UnifiedIncomingMessage {
         owner_user_id: None,
-        id: format!("card_{}", chrono_now()),
+        id: delivery_id.unwrap_or_else(|| format!("card_{}", chrono_now())),
         platform: PluginType::Lark,
         chat_id,
         user,
@@ -1365,6 +1370,7 @@ mod tests {
         handle_ws_text(&payload, "event", &message_tx, &confirm_tx, &dedup_cache).await;
         handle_ws_text(&payload, "event", &message_tx, &confirm_tx, &dedup_cache).await;
         let msg = message_rx.try_recv().unwrap();
+        assert_eq!(msg.id, "card-event-1");
         assert_eq!(msg.chat_id, "oc_test");
         assert_eq!(msg.user.id, "ou_actor");
         let action = msg.action.unwrap();

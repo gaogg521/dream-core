@@ -107,6 +107,22 @@ impl ChannelOrchestrator {
         let in_flight = Arc::clone(&self.in_flight);
 
         tokio::spawn(async move {
+            if platform == crate::types::PluginType::Lark
+                && !msg.id.is_empty()
+                && let Some(owner) = message_owner_user_id.as_deref()
+            {
+                match session_mgr.claim_delivery(owner, &plugin_id, &msg.id).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        info!(delivery_id = %msg.id, "duplicate channel delivery skipped");
+                        return;
+                    }
+                    Err(e) => {
+                        error!(error = %e, "cannot persist channel delivery receipt");
+                        return;
+                    }
+                }
+            }
             match executor.handle_incoming_message(&msg).await {
                 Ok(MessageResult::Action(response)) => {
                     if let Some(owner_user_id) = message_owner_user_id.as_deref() {
@@ -131,6 +147,7 @@ impl ChannelOrchestrator {
                         conversation_id.as_deref(),
                         &text,
                         chat_request,
+                        msg.action.as_ref().and_then(|a| a.context.message_id.as_deref()),
                         platform,
                         &plugin_id,
                         &chat_id,
@@ -196,6 +213,7 @@ async fn handle_dispatched(
     conversation_id: Option<&str>,
     text: &str,
     chat_request: Option<ChatRequest>,
+    source_message_id: Option<&str>,
     platform: crate::types::PluginType,
     plugin_id: &str,
     chat_id: &str,
@@ -277,7 +295,13 @@ async fn handle_dispatched(
             chat_id: chat_id.to_owned(),
             throttle_ms: throttle_ms_for_platform(platform),
         };
-        let relay = ChannelStreamRelay::new(relay_config, Arc::clone(sender));
+        let mut relay = ChannelStreamRelay::new(relay_config, Arc::clone(sender));
+        if platform == crate::types::PluginType::Lark
+            && chat_request == Some(ChatRequest::Regenerate)
+            && let Some(id) = source_message_id.filter(|id| !id.is_empty())
+        {
+            relay = relay.replace_message(id.to_owned());
+        }
         // Keep the session claim until streaming finishes, including card actions.
         relay.run(rx).await;
     } else {

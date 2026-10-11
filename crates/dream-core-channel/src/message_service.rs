@@ -317,7 +317,7 @@ impl ChannelMessageService {
     pub fn build_thinking_message() -> UnifiedOutgoingMessage {
         UnifiedOutgoingMessage {
             message_type: OutgoingMessageType::Text,
-            text: Some("\u{23f3} Thinking...".into()),
+            text: Some("\u{23f3} 正在思考，请稍候…".into()),
             parse_mode: None,
             buttons: None,
             keyboard: None,
@@ -339,17 +339,17 @@ impl ChannelMessageService {
             parse_mode: None,
             buttons: Some(vec![vec![
                 ActionButton {
-                    label: "\u{1f504} Regenerate".into(),
+                    label: "\u{1f504} 重新生成".into(),
                     action: "chat.regenerate".into(),
                     params: None,
                 },
                 ActionButton {
-                    label: "\u{25b6}\u{fe0f} Continue".into(),
+                    label: "\u{25b6}\u{fe0f} 继续".into(),
                     action: "chat.continue".into(),
                     params: None,
                 },
                 ActionButton {
-                    label: "\u{2795} New Session".into(),
+                    label: "\u{2795} 新会话".into(),
                     action: "session.new".into(),
                     params: None,
                 },
@@ -657,7 +657,7 @@ mod tests {
         let msg = ChannelMessageService::build_thinking_message();
         assert_eq!(msg.message_type, OutgoingMessageType::Text);
         let text = msg.text.unwrap();
-        assert!(text.contains("Thinking"));
+        assert!(text.contains("正在思考"));
     }
 
     // ── build_final_message ────────────────────────────────────────────

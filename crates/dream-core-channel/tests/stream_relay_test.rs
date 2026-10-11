@@ -76,7 +76,7 @@ async fn relay_sends_thinking_then_final_message() {
 
     let sends = recorder.take_sends();
     assert!(!sends.is_empty());
-    assert!(sends[0].text.as_deref().unwrap().contains("Thinking"));
+    assert!(sends[0].text.as_deref().unwrap().contains("正在思考"));
 
     let edits = recorder.take_edits();
     let last = edits.last().unwrap();
@@ -295,4 +295,52 @@ async fn relay_handles_channel_closed() {
     let edits = recorder.take_edits();
     assert!(!edits.is_empty());
     assert!(edits.last().unwrap().text.as_deref().unwrap().contains("partial"));
+}
+
+#[tokio::test]
+async fn regeneration_reuses_card_without_sending_another_message() {
+    let (tx, rx) = broadcast::channel(16);
+    let recorder = Arc::new(MessageRecorder::new());
+    let relay = ChannelStreamRelay::new(
+        RelayConfig {
+            owner_user_id: "owner".into(),
+            platform: PluginType::Lark,
+            plugin_id: "lark".into(),
+            chat_id: "chat".into(),
+            throttle_ms: 10,
+        },
+        recorder.clone(),
+    )
+    .replace_message("original-card".into());
+    tx.send(AgentStreamEvent::Text(TextEventData {
+        content: "新的回答".into(),
+    }))
+    .unwrap();
+    tx.send(AgentStreamEvent::Finish(FinishEventData {
+        session_id: None,
+        model: None,
+        input_tokens: None,
+        output_tokens: None,
+    }))
+    .unwrap();
+    relay.run(rx).await;
+    assert!(
+        recorder.take_sends().is_empty(),
+        "regeneration must not create a new card"
+    );
+    let edits = recorder.take_edits();
+    assert!(edits[0].text.as_deref().unwrap().contains("正在重新生成"));
+    assert!(
+        edits[0].buttons.is_none(),
+        "pending card must not offer duplicate actions"
+    );
+    let last = edits.last().unwrap();
+    assert_eq!(last.text.as_deref(), Some("新的回答"));
+    let labels: Vec<_> = last.buttons.as_ref().unwrap()[0]
+        .iter()
+        .map(|b| b.label.as_str())
+        .collect();
+    assert!(labels[0].contains("重新生成"));
+    assert!(labels[1].contains("继续"));
+    assert!(labels[2].contains("新会话"));
 }

@@ -18,6 +18,17 @@ impl SqliteChannelRepository {
 
 #[async_trait::async_trait]
 impl IChannelRepository for SqliteChannelRepository {
+    async fn claim_delivery(&self, owner: &str, platform: &str, delivery_id: &str, now: i64) -> Result<bool, DbError> {
+        // Seven days exceeds the observed multi-hour provider retry window.
+        sqlx::query("DELETE FROM assistant_delivery_receipts WHERE received_at < ?")
+            .bind(now - 7 * 24 * 60 * 60 * 1000)
+            .execute(&self.pool)
+            .await?;
+        let result = sqlx::query("INSERT OR IGNORE INTO assistant_delivery_receipts (owner_user_id, platform, delivery_id, received_at) VALUES (?, ?, ?, ?)")
+            .bind(owner).bind(platform).bind(delivery_id).bind(now).execute(&self.pool).await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     // ── Plugin CRUD ──────────────────────────────────────────────────
 
     async fn get_all_plugins(&self, owner_user_id: &str) -> Result<Vec<ChannelPluginRow>, DbError> {

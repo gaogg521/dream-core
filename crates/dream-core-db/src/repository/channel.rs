@@ -11,6 +11,19 @@ use crate::models::{AssistantSessionRow, AssistantUserRow, ChannelPluginRow, Pai
 /// Object-safe via `async_trait` to support `Arc<dyn IChannelRepository>`.
 #[async_trait::async_trait]
 pub trait IChannelRepository: Send + Sync {
+    /// Atomically claim an incoming delivery across reconnects and process restarts.
+    async fn claim_delivery(
+        &self,
+        _owner: &str,
+        _platform: &str,
+        _delivery_id: &str,
+        _now: i64,
+    ) -> Result<bool, DbError> {
+        Err(DbError::Init(
+            "Persistent delivery receipts are not supported by this repository".into(),
+        ))
+    }
+
     // ── Plugin CRUD ──────────────────────────────────────────────────
 
     /// Returns all registered plugins for an owner.

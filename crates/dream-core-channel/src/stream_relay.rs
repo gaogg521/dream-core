@@ -67,11 +67,22 @@ pub trait ChannelSender: Send + Sync {
 pub struct ChannelStreamRelay {
     config: RelayConfig,
     sender: Arc<dyn ChannelSender>,
+    replacement_message_id: Option<String>,
 }
 
 impl ChannelStreamRelay {
     pub fn new(config: RelayConfig, sender: Arc<dyn ChannelSender>) -> Self {
-        Self { config, sender }
+        Self {
+            config,
+            sender,
+            replacement_message_id: None,
+        }
+    }
+
+    /// Reuse the clicked card for regeneration, including its pending and error states.
+    pub fn replace_message(mut self, message_id: String) -> Self {
+        self.replacement_message_id = Some(message_id);
+        self
     }
 
     /// Run the relay loop until the agent stream ends.
@@ -194,21 +205,43 @@ impl ChannelStreamRelay {
     async fn run_editable(self, mut rx: broadcast::Receiver<AgentStreamEvent>) {
         let throttle = Duration::from_millis(self.config.throttle_ms);
 
-        let thinking_msg = ChannelMessageService::build_thinking_message();
-        let thinking_msg_id = match self
-            .sender
-            .send_message(
-                &self.config.owner_user_id,
-                &self.config.plugin_id,
-                &self.config.chat_id,
-                thinking_msg,
-            )
-            .await
-        {
-            Ok(id) => id,
-            Err(e) => {
-                error!(error = %e, "failed to send thinking message");
+        let thinking_msg = if self.replacement_message_id.is_some() {
+            ChannelMessageService::build_streaming_message("⏳ 正在重新生成，请稍候…")
+        } else {
+            ChannelMessageService::build_thinking_message()
+        };
+        let thinking_msg_id = if let Some(id) = &self.replacement_message_id {
+            if let Err(e) = self
+                .sender
+                .edit_message(
+                    &self.config.owner_user_id,
+                    &self.config.plugin_id,
+                    &self.config.chat_id,
+                    id,
+                    thinking_msg,
+                )
+                .await
+            {
+                error!(error = %e, "failed to update regeneration card");
                 return;
+            }
+            id.clone()
+        } else {
+            match self
+                .sender
+                .send_message(
+                    &self.config.owner_user_id,
+                    &self.config.plugin_id,
+                    &self.config.chat_id,
+                    thinking_msg,
+                )
+                .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    error!(error = %e, "failed to send thinking message");
+                    return;
+                }
             }
         };
 

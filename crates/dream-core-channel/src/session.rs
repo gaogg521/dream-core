@@ -22,6 +22,10 @@ impl SessionManager {
         Self { repo }
     }
 
+    pub async fn claim_delivery(&self, owner: &str, platform: &str, delivery_id: &str) -> Result<bool, ChannelError> {
+        Ok(self.repo.claim_delivery(owner, platform, delivery_id, now_ms()).await?)
+    }
+
     /// Finds an existing session for the user+chat pair, or creates one.
     ///
     /// - If found: updates `last_activity` and returns the existing session.
