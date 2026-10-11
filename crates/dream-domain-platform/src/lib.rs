@@ -15,6 +15,10 @@ pub mod models;
 pub mod object_storage;
 pub mod rbac;
 pub mod routes;
+pub mod secure_export;
+mod secure_export_routes;
+#[cfg(test)]
+mod secure_export_tests;
 pub mod service;
 pub mod siem;
 pub mod state;

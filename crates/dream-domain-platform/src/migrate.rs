@@ -68,6 +68,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "020_api_key_rate_limit",
         include_str!("../migrations/020_api_key_rate_limit.sql"),
     ),
+    ("021_secure_export", include_str!("../migrations/021_secure_export.sql")),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -136,6 +137,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "020_api_key_rate_limit",
         include_str!("../migrations_mysql/020_api_key_rate_limit.sql"),
+    ),
+    (
+        "021_secure_export",
+        include_str!("../migrations_mysql/021_secure_export.sql"),
     ),
 ];
 

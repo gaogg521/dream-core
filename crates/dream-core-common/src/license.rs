@@ -61,15 +61,18 @@ pub enum Feature {
     AdminOnlyVisibility,
     /// Fine-grained / custom RBAC beyond the built-in three roles.
     FineGrainedRbac,
+    /// Export watermarking and encrypted outbound packages (`.owenc`).
+    SecureExport,
 }
 
 /// Every feature, for building an entitlement map for the client.
-pub const ALL_FEATURES: [Feature; 5] = [
+pub const ALL_FEATURES: [Feature; 6] = [
     Feature::Sso,
     Feature::AuditLog,
     Feature::TeamResourceScope,
     Feature::AdminOnlyVisibility,
     Feature::FineGrainedRbac,
+    Feature::SecureExport,
 ];
 
 impl Feature {
@@ -80,6 +83,7 @@ impl Feature {
             Feature::TeamResourceScope => "team_resource_scope",
             Feature::AdminOnlyVisibility => "admin_only_visibility",
             Feature::FineGrainedRbac => "fine_grained_rbac",
+            Feature::SecureExport => "secure_export",
         }
     }
 }
@@ -241,6 +245,7 @@ mod tests {
         assert!(tier_allows(Tier::Team, Feature::TeamResourceScope));
         assert!(!tier_allows(Tier::Team, Feature::AuditLog));
         assert!(!tier_allows(Tier::Team, Feature::FineGrainedRbac));
+        assert!(!tier_allows(Tier::Team, Feature::SecureExport));
         // Free: nothing.
         assert!(ALL_FEATURES.iter().all(|f| !tier_allows(Tier::Free, *f)));
     }

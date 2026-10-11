@@ -119,6 +119,10 @@ pub struct PlatformService {
     /// the personal-edition shape, where the whole subsystem is unreachable
     /// anyway (the platform crate itself is enterprise-gated).
     conversation: Option<Arc<dyn dream_core_db::IConversationRepository>>,
+    /// Test-only stand-in for the signed license: `Some(allowed)` answers the
+    /// secure-export plan check without a vendor signature.
+    #[cfg(test)]
+    pub(crate) secure_export_plan_override: std::sync::Mutex<Option<bool>>,
 }
 
 fn is_admin_role(role: &str) -> bool {
@@ -169,6 +173,8 @@ impl PlatformService {
             siem_exporter: Arc::new(NoopSiemExporter),
             storage_root: None,
             conversation: None,
+            #[cfg(test)]
+            secure_export_plan_override: std::sync::Mutex::new(None),
         }
     }
 
@@ -182,7 +188,12 @@ impl PlatformService {
 
     /// Runs `sqlite_sql` or `mysql_sql` by backend — the two dialects
     /// diverge on upsert syntax only; params are shared.
-    async fn upsert(&self, sqlite_sql: &str, mysql_sql: &str, params: &[DbValue]) -> Result<u64, PlatformError> {
+    pub(crate) async fn upsert(
+        &self,
+        sqlite_sql: &str,
+        mysql_sql: &str,
+        params: &[DbValue],
+    ) -> Result<u64, PlatformError> {
         let sql = match self.db.backend() {
             DbBackend::Sqlite => sqlite_sql,
             DbBackend::MySql => mysql_sql,
@@ -260,6 +271,18 @@ impl PlatformService {
             None => Err(PlatformError::NotInEnterprise),
             Some(actor) if !can_manage_resources(&actor.role) => {
                 Err(PlatformError::Forbidden("Resource administrator role required".into()))
+            }
+            Some(actor) => Ok(actor),
+        }
+    }
+
+    /// Admins, plus the read-only `auditor` role — the gate for audit-style
+    /// reads (export records, watermark lookup) that change nothing.
+    pub async fn require_audit_reader(&self, user_id: &str) -> Result<PlatformActor, PlatformError> {
+        match self.resolve_actor(user_id).await? {
+            None => Err(PlatformError::NotInEnterprise),
+            Some(actor) if !is_admin_role(&actor.role) && actor.role != "auditor" => {
+                Err(PlatformError::Forbidden("Audit reader role required".into()))
             }
             Some(actor) => Ok(actor),
         }
@@ -1967,7 +1990,8 @@ impl PlatformService {
             .fetch_optional_as::<SecurityPolicyRow>(
                 "SELECT tier, terminal_tools_require_approval, destructive_commands_blocked, blocked_command_patterns, \
                     external_network_denied_by_default, message_scan_enabled, message_redact_enabled, \
-                    send_rate_limit_per_minute, updated_at, conversation_share_mode \
+                    send_rate_limit_per_minute, updated_at, conversation_share_mode, \
+                    export_watermark_enabled, export_encryption_mode \
              FROM one_security_policy WHERE tenant_id = ?",
                 &db_params![tenant_id],
             )
@@ -1993,6 +2017,8 @@ impl PlatformService {
             send_rate_limit_per_minute: row.7,
             updated_at: Some(row.8),
             conversation_share_mode: row.9,
+            export_watermark_enabled: row.10,
+            export_encryption_mode: row.11,
         }
     }
 
@@ -2020,6 +2046,8 @@ impl PlatformService {
                 message_redact_enabled: false,
                 send_rate_limit_per_minute: None,
                 conversation_share_mode: super::models::CONVERSATION_SHARE_OFF.to_owned(),
+                export_watermark_enabled: false,
+                export_encryption_mode: super::models::EXPORT_ENCRYPTION_OPTIONAL.to_owned(),
                 updated_at: None,
             },
             "standard" => SecurityPolicyDto {
@@ -2032,6 +2060,8 @@ impl PlatformService {
                 message_redact_enabled: false,
                 send_rate_limit_per_minute: Some(30),
                 conversation_share_mode: super::models::CONVERSATION_SHARE_OFF.to_owned(),
+                export_watermark_enabled: false,
+                export_encryption_mode: super::models::EXPORT_ENCRYPTION_OPTIONAL.to_owned(),
                 updated_at: None,
             },
             "strict" => SecurityPolicyDto {
@@ -2044,6 +2074,8 @@ impl PlatformService {
                 message_redact_enabled: true,
                 send_rate_limit_per_minute: Some(20),
                 conversation_share_mode: super::models::CONVERSATION_SHARE_OFF.to_owned(),
+                export_watermark_enabled: true,
+                export_encryption_mode: super::models::EXPORT_ENCRYPTION_REQUIRED.to_owned(),
                 updated_at: None,
             },
             _ => return None,
@@ -2089,10 +2121,22 @@ impl PlatformService {
         message_redact_enabled: bool,
         send_rate_limit_per_minute: Option<i64>,
         conversation_share_mode: &str,
+        export_watermark_enabled: bool,
+        export_encryption_mode: &str,
     ) -> Result<SecurityPolicyDto, PlatformError> {
         if !matches!(conversation_share_mode, "off" | "tenant" | "enterprise") {
             return Err(PlatformError::BadRequest(format!(
                 "conversationShareMode must be off/tenant/enterprise, got '{conversation_share_mode}'"
+            )));
+        }
+        if !matches!(
+            export_encryption_mode,
+            super::models::EXPORT_ENCRYPTION_OPTIONAL
+                | super::models::EXPORT_ENCRYPTION_DEFAULT
+                | super::models::EXPORT_ENCRYPTION_REQUIRED
+        ) {
+            return Err(PlatformError::BadRequest(format!(
+                "exportEncryptionMode must be optional/default/required, got '{export_encryption_mode}'"
             )));
         }
         // P0-1 constraint 2 (知情): turning sharing ON is a company-wide
@@ -2110,6 +2154,8 @@ impl PlatformService {
             message_redact_enabled,
             send_rate_limit_per_minute,
             conversation_share_mode: conversation_share_mode.to_owned(),
+            export_watermark_enabled,
+            export_encryption_mode: export_encryption_mode.to_owned(),
             updated_at: None,
         };
         let saved = self.upsert_security_policy(tenant_id, &dto).await?;
@@ -2148,8 +2194,9 @@ impl PlatformService {
             "INSERT INTO one_security_policy \
                  (tenant_id, tier, terminal_tools_require_approval, destructive_commands_blocked, \
                   blocked_command_patterns, external_network_denied_by_default, message_scan_enabled, \
-                  message_redact_enabled, send_rate_limit_per_minute, updated_at, conversation_share_mode) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                  message_redact_enabled, send_rate_limit_per_minute, updated_at, conversation_share_mode, \
+                  export_watermark_enabled, export_encryption_mode) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(tenant_id) DO UPDATE SET \
                  tier = excluded.tier, \
                  terminal_tools_require_approval = excluded.terminal_tools_require_approval, \
@@ -2160,12 +2207,15 @@ impl PlatformService {
                  message_redact_enabled = excluded.message_redact_enabled, \
                  send_rate_limit_per_minute = excluded.send_rate_limit_per_minute, \
                  conversation_share_mode = excluded.conversation_share_mode, \
+                 export_watermark_enabled = excluded.export_watermark_enabled, \
+                 export_encryption_mode = excluded.export_encryption_mode, \
                  updated_at = excluded.updated_at",
             "INSERT INTO one_security_policy \
                  (tenant_id, tier, terminal_tools_require_approval, destructive_commands_blocked, \
                   blocked_command_patterns, external_network_denied_by_default, message_scan_enabled, \
-                  message_redact_enabled, send_rate_limit_per_minute, updated_at, conversation_share_mode) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
+                  message_redact_enabled, send_rate_limit_per_minute, updated_at, conversation_share_mode, \
+                  export_watermark_enabled, export_encryption_mode) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
              ON DUPLICATE KEY UPDATE \
                  tier = new.tier, \
                  terminal_tools_require_approval = new.terminal_tools_require_approval, \
@@ -2176,6 +2226,8 @@ impl PlatformService {
                  message_redact_enabled = new.message_redact_enabled, \
                  send_rate_limit_per_minute = new.send_rate_limit_per_minute, \
                  conversation_share_mode = new.conversation_share_mode, \
+                 export_watermark_enabled = new.export_watermark_enabled, \
+                 export_encryption_mode = new.export_encryption_mode, \
                  updated_at = new.updated_at",
             &db_params![
                 tenant_id,
@@ -2189,6 +2241,8 @@ impl PlatformService {
                 dto.send_rate_limit_per_minute,
                 now_ms(),
                 &dto.conversation_share_mode,
+                dto.export_watermark_enabled,
+                &dto.export_encryption_mode,
             ],
         )
         .await?;
@@ -2616,9 +2670,10 @@ impl PlatformService {
             .get_policy_template(tenant_id, template_id)
             .await?
             .ok_or_else(|| PlatformError::NotFound("policy template not found".into()))?;
-        // Templates snapshot the original seven E5 fields only; sharing is
-        // orthogonal, so applying one preserves the tenant's current mode.
-        let conversation_share_mode = self.get_security_policy(tenant_id).await?.conversation_share_mode;
+        // Templates snapshot the original seven E5 fields only; sharing and
+        // export control are orthogonal, so applying one preserves them.
+        let current = self.get_security_policy(tenant_id).await?;
+        let conversation_share_mode = current.conversation_share_mode;
         let applied = self
             .upsert_security_policy(
                 tenant_id,
@@ -2632,6 +2687,8 @@ impl PlatformService {
                     message_redact_enabled: template.message_redact_enabled,
                     send_rate_limit_per_minute: template.send_rate_limit_per_minute,
                     conversation_share_mode,
+                    export_watermark_enabled: current.export_watermark_enabled,
+                    export_encryption_mode: current.export_encryption_mode,
                     updated_at: None,
                 },
             )
@@ -4256,6 +4313,8 @@ type SecurityPolicyRow = (
     Option<i64>, // send_rate_limit_per_minute
     i64,         // updated_at
     String,      // conversation_share_mode
+    bool,        // export_watermark_enabled
+    String,      // export_encryption_mode
 );
 
 type PolicyTemplateRow = (
@@ -4916,6 +4975,8 @@ mod tests {
                     false,
                     None,
                     crate::models::CONVERSATION_SHARE_TENANT,
+                    false,
+                    crate::models::EXPORT_ENCRYPTION_OPTIONAL,
                 )
                 .await
                 .unwrap();
@@ -4979,6 +5040,8 @@ mod tests {
                 false,
                 None,
                 crate::models::CONVERSATION_SHARE_TENANT,
+                false,
+                crate::models::EXPORT_ENCRYPTION_OPTIONAL,
             )
             .await
             .unwrap();
@@ -5083,6 +5146,8 @@ mod tests {
                 false,
                 None,
                 crate::models::CONVERSATION_SHARE_TENANT,
+                false,
+                crate::models::EXPORT_ENCRYPTION_OPTIONAL,
             )
             .await
             .unwrap();
@@ -5173,6 +5238,8 @@ mod tests {
                 false,
                 None,
                 crate::models::CONVERSATION_SHARE_TENANT,
+                false,
+                crate::models::EXPORT_ENCRYPTION_OPTIONAL,
             )
             .await
             .unwrap();
@@ -5252,6 +5319,8 @@ mod tests {
                 false,
                 None,
                 crate::models::CONVERSATION_SHARE_ENTERPRISE,
+                false,
+                crate::models::EXPORT_ENCRYPTION_OPTIONAL,
             )
             .await
             .unwrap();
@@ -5298,6 +5367,8 @@ mod tests {
                 false,
                 None,
                 crate::models::CONVERSATION_SHARE_TENANT,
+                false,
+                crate::models::EXPORT_ENCRYPTION_OPTIONAL,
             )
             .await
             .unwrap();
@@ -6604,6 +6675,8 @@ mod tests {
                 true,
                 Some(99),
                 "off",
+                false,
+                crate::models::EXPORT_ENCRYPTION_OPTIONAL,
             )
             .await
             .unwrap();

@@ -281,6 +281,7 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
             "/api/one/admin/platform/config-sets/{id}/references",
             get(config_set_references),
         )
+        .merge(crate::secure_export_routes::secure_export_routes())
         .with_state(state)
 }
 
@@ -980,6 +981,11 @@ struct SetSecurityPolicyBody {
     /// builds keep working against this endpoint).
     #[serde(default)]
     conversation_share_mode: Option<String>,
+    /// Absent = keep the current value, same reason as above.
+    #[serde(default)]
+    export_watermark_enabled: Option<bool>,
+    #[serde(default)]
+    export_encryption_mode: Option<String>,
 }
 
 async fn set_security_policy(
@@ -987,6 +993,7 @@ async fn set_security_policy(
     RequirePlatformAdmin(actor): RequirePlatformAdmin,
     Json(body): Json<SetSecurityPolicyBody>,
 ) -> Result<Json<ApiResponse<SecurityPolicyDto>>, PlatformError> {
+    let current = state.service.get_security_policy(&actor.tenant_id).await?;
     let dto = state
         .service
         .set_security_policy(
@@ -999,16 +1006,14 @@ async fn set_security_policy(
             body.message_redact_enabled,
             body.send_rate_limit_per_minute,
             // P2-2. Absent field = keep the current mode.
-            &match body.conversation_share_mode.as_deref() {
-                Some(mode) => mode.to_owned(),
-                None => {
-                    state
-                        .service
-                        .get_security_policy(&actor.tenant_id)
-                        .await?
-                        .conversation_share_mode
-                }
-            },
+            body.conversation_share_mode
+                .as_deref()
+                .unwrap_or(&current.conversation_share_mode),
+            body.export_watermark_enabled
+                .unwrap_or(current.export_watermark_enabled),
+            body.export_encryption_mode
+                .as_deref()
+                .unwrap_or(&current.export_encryption_mode),
         )
         .await?;
     Ok(Json(ApiResponse::ok(dto)))

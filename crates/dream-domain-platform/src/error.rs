@@ -29,6 +29,21 @@ pub enum PlatformError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    /// The company's plan does not include the feature behind this route.
+    /// Distinct from `Forbidden` so the client can hide the feature instead
+    /// of reporting a failure.
+    #[error("{0}")]
+    PlanRequired(String),
+
+    #[error("{0}")]
+    RateLimited(String),
+
+    /// A secure-export package that exists and that the caller may know
+    /// about, but can no longer be opened (`PACKAGE_REVOKED` /
+    /// `PACKAGE_EXPIRED`). The code is what the client renders from.
+    #[error("{1}")]
+    PackageUnavailable(&'static str, String),
 }
 
 impl PlatformError {
@@ -40,12 +55,17 @@ impl PlatformError {
             Self::BadRequest(_) => "BAD_REQUEST",
             Self::NotFound(_) => "NOT_FOUND",
             Self::Internal(_) => "INTERNAL_ERROR",
+            Self::PlanRequired(_) => "PLAN_FEATURE_REQUIRED",
+            Self::RateLimited(_) => "RATE_LIMITED",
+            Self::PackageUnavailable(code, _) => code,
         }
     }
 
     fn status(&self) -> StatusCode {
         match self {
-            Self::Forbidden(_) | Self::MachineBlocked(_) => StatusCode::FORBIDDEN,
+            Self::Forbidden(_) | Self::MachineBlocked(_) | Self::PlanRequired(_) => StatusCode::FORBIDDEN,
+            Self::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
+            Self::PackageUnavailable(..) => StatusCode::GONE,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             _ => StatusCode::BAD_REQUEST,

@@ -98,3 +98,21 @@ impl FromRequestParts<OnePlatformRouterState> for RequirePlatformMember {
         Ok(Self(actor))
     }
 }
+
+/// Admins and the read-only `auditor` role. For audit-style reads only —
+/// never put a state-changing route behind it.
+#[derive(Debug, Clone)]
+pub struct RequirePlatformAuditReader(pub PlatformActor);
+
+impl FromRequestParts<OnePlatformRouterState> for RequirePlatformAuditReader {
+    type Rejection = PlatformError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &OnePlatformRouterState) -> Result<Self, Self::Rejection> {
+        let user = parts
+            .extensions
+            .get::<CurrentUser>()
+            .cloned()
+            .ok_or_else(|| PlatformError::Forbidden("Authentication required".into()))?;
+        Ok(Self(state.service.require_audit_reader(&user.id).await?))
+    }
+}

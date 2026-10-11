@@ -150,7 +150,20 @@ pub struct SecurityPolicyDto {
     /// (share company-wide). Unlike the E5 fields above this one HAS an
     /// enforcer — the conversation-share endpoints.
     pub conversation_share_mode: String,
+    /// Stamp a signed watermark line on every exported Markdown file. The
+    /// member's client enforces it (exports never pass through a backend).
+    pub export_watermark_enabled: bool,
+    /// `"optional" | "default" | "required"` — see `EXPORT_ENCRYPTION_*`.
+    pub export_encryption_mode: String,
 }
+
+/// `one_security_policy.export_encryption_mode` — encryption is offered on
+/// export but not preselected (default).
+pub const EXPORT_ENCRYPTION_OPTIONAL: &str = "optional";
+/// `…export_encryption_mode` — encryption is preselected and can be unticked.
+pub const EXPORT_ENCRYPTION_DEFAULT: &str = "default";
+/// `…export_encryption_mode` — plaintext export is unavailable.
+pub const EXPORT_ENCRYPTION_REQUIRED: &str = "required";
 
 /// `one_security_policy.conversation_share_mode` — off (default).
 pub const CONVERSATION_SHARE_OFF: &str = "off";
