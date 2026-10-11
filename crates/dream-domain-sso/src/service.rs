@@ -668,7 +668,7 @@ fn has_minimal_config(provider: &str, config_json: &str) -> bool {
     match provider {
         "feishu" => has_non_empty("appId") && has_non_empty("appSecret"),
         "dingtalk" => has_non_empty("appKey") && has_non_empty("appSecret"),
-        "wecom" => has_non_empty("corpId") && has_non_empty("secret"),
+        "wecom" => has_non_empty("corpId") && has_non_empty("agentId") && has_non_empty("secret"),
         "oidc" => has_non_empty("issuer") && has_non_empty("clientId"),
         "saml" => {
             has_non_empty("idpEntityId")
@@ -881,6 +881,15 @@ pub fn parse_saml_config(row: &SsoProviderRow) -> Option<SamlProviderConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wecom_login_button_requires_agent_id() {
+        assert!(!has_minimal_config("wecom", r#"{"corpId":"corp","secret":"secret"}"#));
+        assert!(has_minimal_config(
+            "wecom",
+            r#"{"corpId":"corp","agentId":"1000002","secret":"secret"}"#
+        ));
+    }
 
     #[test]
     fn sanitize_username_keeps_ascii_alphanum() {

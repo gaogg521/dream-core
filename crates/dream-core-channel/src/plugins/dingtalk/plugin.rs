@@ -634,8 +634,10 @@ async fn handle_stream_frame(
             Some(build_ack(&message_id))
         }
         "EVENT" => {
-            // Ack event frames
-            Some(build_ack(&message_id))
+            // EVENT acknowledgments use status, unlike CALLBACK's response envelope.
+            let mut ack = build_ack(&message_id);
+            ack.data = r#"{"status":"SUCCESS","message":"success"}"#.into();
+            Some(ack)
         }
         other => {
             debug!(frame_type = other, "DingTalk unhandled stream frame type");
@@ -653,7 +655,7 @@ async fn handle_bot_message(data_str: &str, message_tx: &mpsc::Sender<UnifiedInc
     let cb: BotMessageCallback = match serde_json::from_str(data_str) {
         Ok(c) => c,
         Err(e) => {
-            warn!(error = %e, raw = %&data_str[..data_str.len().min(200)], "Failed to parse DingTalk bot message");
+            warn!(error = %e, "Failed to parse DingTalk bot message");
             return;
         }
     };
@@ -727,15 +729,29 @@ async fn handle_card_action(
         "DingTalk card action received"
     );
 
-    // Extract action string from content field
-    let action_str = cb
+    // Official SDK decodes content.cardPrivateData.params; retain legacy direct action support.
+    let content = cb
         .content
         .as_deref()
-        .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok())
-        .and_then(|v| v.get("action").and_then(|a| a.as_str()).map(String::from))
-        .unwrap_or_default();
-
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok());
+    let action_str = content
+        .as_ref()
+        .and_then(|v| v.pointer("/cardPrivateData/params/action"))
+        .or_else(|| {
+            cb.card_private_data
+                .as_ref()
+                .and_then(|p| p.params.as_ref())
+                .and_then(|p| p.get("action"))
+        })
+        .or_else(|| content.as_ref().and_then(|v| v.get("action")))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_owned();
     let parsed = parse_dingtalk_callback(&action_str);
+    if parsed.is_none() || cb.user_id.as_deref().is_none_or(|id| id.trim().is_empty()) {
+        warn!("Ignoring DingTalk card callback with missing identity or unsupported action");
+        return;
+    }
 
     // Check if this is a tool confirmation
     if let Some((_, ref action, ref params)) = parsed
@@ -752,7 +768,12 @@ async fn handle_card_action(
     let user_id = cb.user_id.clone().unwrap_or_default();
     let chat_id = match cb.open_conversation_id.as_deref() {
         Some(cid) if !cid.is_empty() => format!("group:{cid}"),
-        _ => format!("user:{}", user_id),
+        _ => match cb.space_id.as_deref() {
+            Some(space) if space.starts_with("dtv1.card//IM_GROUP.") => {
+                format!("group:{}", space.trim_start_matches("dtv1.card//IM_GROUP."))
+            }
+            _ => format!("user:{}", user_id),
+        },
     };
 
     let user = UnifiedUser {
@@ -847,7 +868,7 @@ fn build_ack(message_id: &str) -> StreamAck {
             message_id: message_id.to_string(),
         },
         message: "OK".into(),
-        data: r#"{"response":"SUCCESS"}"#.into(),
+        data: r#"{"response":null}"#.into(),
     }
 }
 
@@ -1052,16 +1073,16 @@ mod tests {
         assert_eq!(ack.code, 200);
         assert_eq!(ack.headers.message_id, "msg_123");
         assert_eq!(ack.message, "OK");
-        assert_eq!(ack.data, r#"{"response":"SUCCESS"}"#);
+        assert_eq!(ack.data, r#"{"response":null}"#);
     }
 
     #[test]
-    fn build_ack_data_contains_response_success() {
+    fn build_ack_data_has_sdk_callback_response() {
         let ack = build_ack("msg_456");
         assert_eq!(ack.code, 200);
         assert_eq!(ack.headers.message_id, "msg_456");
         let data: serde_json::Value = serde_json::from_str(&ack.data).unwrap();
-        assert_eq!(data["response"], "SUCCESS");
+        assert!(data["response"].is_null());
     }
 
     // -- build_final_card_param_map for update (empty text, buttons only) ----
@@ -1131,6 +1152,19 @@ mod tests {
     }
 
     // -- handle_stream_frame: SYSTEM ping -----------------------------------
+
+    #[tokio::test]
+    async fn event_ack_uses_official_status_envelope() {
+        let (tx, _) = mpsc::channel(16);
+        let (confirm_tx, _) = mpsc::channel(16);
+        let frame = serde_json::json!({"type":"EVENT","headers":{"messageId":"event-1"},"data":"{}"});
+        let ack = handle_stream_frame(&frame.to_string(), &tx, &confirm_tx).await.unwrap();
+        assert_eq!(ack.headers.message_id, "event-1");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&ack.data).unwrap()["status"],
+            "SUCCESS"
+        );
+    }
 
     #[tokio::test]
     async fn handle_stream_frame_system_ping_returns_ack() {
@@ -1209,6 +1243,29 @@ mod tests {
         assert_eq!(msg.content.text, "hello bot");
         assert_eq!(msg.user.display_name, "Alice");
         assert_eq!(msg.platform, PluginType::Dingtalk);
+    }
+
+    #[tokio::test]
+    async fn official_nested_card_parameters_dispatch_continue_and_ignore_unknown_actions() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let (confirm_tx, _) = mpsc::channel(16);
+        for action in ["chat:chat.continue", "unsupported"] {
+            let payload = serde_json::json!({
+                "userId":"staff-1", "spaceId":"dtv1.card//IM_GROUP.group-1",
+                "content": serde_json::json!({"cardPrivateData":{
+                    "actionIds":["continue"], "params":{"action":action}
+                }}).to_string()
+            });
+            handle_card_action(&payload.to_string(), &tx, &confirm_tx).await;
+        }
+        let message = rx.try_recv().unwrap();
+        assert_eq!(message.action.unwrap().action, "chat.continue");
+        assert_eq!(message.chat_id, "group:group-1");
+        assert_eq!(message.user.id, "staff-1");
+        assert!(rx.try_recv().is_err());
+        // Invalid UTF-8 slicing used to panic when malformed Chinese payloads exceeded 200 bytes.
+        handle_bot_message(&"中".repeat(100), &tx).await;
+        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]

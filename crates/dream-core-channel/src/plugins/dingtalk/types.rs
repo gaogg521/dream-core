@@ -223,6 +223,9 @@ pub(crate) struct CardActionCallback {
     /// Open conversation ID.
     #[serde(default)]
     pub open_conversation_id: Option<String>,
+    /// Conversation space returned by the official card callback API.
+    #[serde(default)]
+    pub space_id: Option<String>,
     /// Content (JSON string from the button action).
     #[serde(default)]
     pub content: Option<String>,

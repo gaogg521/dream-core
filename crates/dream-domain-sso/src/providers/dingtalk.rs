@@ -37,6 +37,7 @@ fn default_external_id_field() -> String {
 #[serde(rename_all = "camelCase")]
 struct DingtalkUserTokenResponse {
     access_token: Option<String>,
+    corp_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -63,8 +64,13 @@ pub struct DingtalkProvider;
 impl DingtalkProvider {
     pub fn build_authorize_url(config: &DingtalkProviderConfig, state: &str) -> String {
         let redirect = config.redirect_uri.as_deref().unwrap_or("");
+        let scope = if config.corp_id.as_deref().is_some_and(|id| !id.trim().is_empty()) {
+            "openid%20corpid"
+        } else {
+            "openid"
+        };
         format!(
-            "{AUTHORIZE_URL}?redirect_uri={}&response_type=code&client_id={}&scope=openid&state={}&prompt=consent",
+            "{AUTHORIZE_URL}?redirect_uri={}&response_type=code&client_id={}&scope={scope}&state={}&prompt=consent",
             urlencode(redirect),
             urlencode(&config.app_key),
             urlencode(state),
@@ -86,6 +92,17 @@ impl DingtalkProvider {
             return Err(SsoError::Internal(format!(
                 "DingTalk token exchange failed: HTTP {status}"
             )));
+        }
+        Self::validate_token(config, data)
+    }
+
+    fn validate_token(config: &DingtalkProviderConfig, data: DingtalkUserTokenResponse) -> Result<String, SsoError> {
+        if let Some(expected) = config.corp_id.as_deref().map(str::trim).filter(|id| !id.is_empty())
+            && data.corp_id.as_deref() != Some(expected)
+        {
+            return Err(SsoError::BadRequest(
+                "DingTalk login organization does not match configured CorpId".into(),
+            ));
         }
         data.access_token
             .filter(|s| !s.is_empty())
@@ -209,6 +226,40 @@ fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_corp_requires_matching_verified_token_organization() {
+        let mut cfg = DingtalkProviderConfig {
+            app_key: "app".into(),
+            app_secret: "secret".into(),
+            corp_id: Some("corp-1".into()),
+            redirect_uri: Some("https://example.com/callback".into()),
+            external_id_field: "unionId".into(),
+        };
+        assert!(DingtalkProvider::build_authorize_url(&cfg, "state").contains("scope=openid%20corpid"));
+        for org in [None, Some("other-corp"), Some("corp-1")] {
+            let data = DingtalkUserTokenResponse {
+                access_token: Some("test-token".into()),
+                corp_id: org.map(str::to_owned),
+            };
+            assert_eq!(
+                DingtalkProvider::validate_token(&cfg, data).is_ok(),
+                org == Some("corp-1")
+            );
+        }
+        cfg.corp_id = None;
+        assert!(DingtalkProvider::build_authorize_url(&cfg, "state").contains("scope=openid&"));
+        assert!(
+            DingtalkProvider::validate_token(
+                &cfg,
+                DingtalkUserTokenResponse {
+                    access_token: Some("test-token".into()),
+                    corp_id: None
+                }
+            )
+            .is_ok()
+        );
+    }
 
     #[test]
     fn build_authorize_url_contains_required_params() {

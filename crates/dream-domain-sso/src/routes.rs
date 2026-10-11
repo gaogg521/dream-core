@@ -429,7 +429,7 @@ async fn build_authorize_goto(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CallbackQuery {
-    #[serde(default)]
+    #[serde(default, alias = "authCode")]
     code: Option<String>,
     #[serde(default)]
     state: Option<String>,
@@ -1305,6 +1305,16 @@ mod tests {
 
     /// Login CSRF: a callback carrying a valid server-issued state but no
     /// matching cookie (the victim never started this login) is refused.
+    #[test]
+    fn oauth_callback_accepts_dingtalk_auth_code_and_rejects_ambiguous_codes() {
+        let uri: axum::http::Uri = "/callback?authCode=ding-code&state=nonce".parse().unwrap();
+        let query = axum::extract::Query::<CallbackQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(query.code.as_deref(), Some("ding-code"));
+        assert_eq!(query.state.as_deref(), Some("nonce"));
+        let uri = "/callback?code=one&authCode=two&state=nonce".parse().unwrap();
+        assert!(axum::extract::Query::<CallbackQuery>::try_from_uri(&uri).is_err());
+    }
+
     #[test]
     fn state_cookie_must_match_the_callback_state() {
         let p = SsoProviderKind::Feishu;

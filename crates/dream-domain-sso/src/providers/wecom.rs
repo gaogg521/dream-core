@@ -33,7 +33,6 @@ struct WecomTokenResponse {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all(serialize = "camelCase", deserialize = "PascalCase"))]
 struct WecomUserInfoResponse {
     errcode: Option<i64>,
     errmsg: Option<String>,
@@ -95,6 +94,10 @@ impl WecomProvider {
         if !status.is_success() {
             return Err(SsoError::Internal(format!("WeCom user info failed: HTTP {status}")));
         }
+        Self::validate_user_info(data)
+    }
+
+    fn validate_user_info(data: WecomUserInfoResponse) -> Result<String, SsoError> {
         if data.errcode.unwrap_or(-1) != 0 {
             return Err(SsoError::Internal(
                 data.errmsg.unwrap_or_else(|| "WeCom user info failed".into()),
@@ -153,6 +156,22 @@ fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn official_user_info_response_accepts_members_and_rejects_errors_or_visitors() {
+        for key in ["UserId", "userid"] {
+            let data = serde_json::from_value(serde_json::json!({"errcode":0,"errmsg":"ok",key:" member-1 "})).unwrap();
+            assert_eq!(WecomProvider::validate_user_info(data).unwrap(), "member-1");
+        }
+        for response in [
+            serde_json::json!({"errcode":40029,"errmsg":"invalid code","UserId":"member-1"}),
+            serde_json::json!({"errcode":0,"OpenId":"visitor-1"}),
+            serde_json::json!({"UserId":"member-1"}),
+            serde_json::json!({"errcode":0,"UserId":" "}),
+        ] {
+            assert!(WecomProvider::validate_user_info(serde_json::from_value(response).unwrap()).is_err());
+        }
+    }
 
     #[test]
     fn build_authorize_url_contains_required_params() {
