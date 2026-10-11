@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.1.83](https://github.com/gaogg521/dream-core/compare/v0.1.82...v0.1.83) (2026-10-11)
+
+
+### Features
+
+* **platform:** add export watermark seeds and encrypted package key escrow ([f31d549](https://github.com/gaogg521/dream-core/commit/f31d549abecd745f05ac194a4fb64e6c4e042414))
+
+
+### Bug Fixes
+
+* **channel:** execute conversation card actions and serialize session turns ([c48225b](https://github.com/gaogg521/dream-core/commit/c48225b422633affef7b78b45894a4940bdfe109))
+* **enterprise:** close MFA replay and authorization failure gaps ([9e75e57](https://github.com/gaogg521/dream-core/commit/9e75e57bb2b54dc285790fc239ae63ae29294126))
+* **enterprise:** verify signed licenses at every entitlement boundary ([ae9c0a5](https://github.com/gaogg521/dream-core/commit/ae9c0a5a5eaa5e47ebb60ac59686c912964c1cf4))
+* **lark:** acknowledge complete callback deliveries with SDK response format ([09b57bb](https://github.com/gaogg521/dream-core/commit/09b57bbdaef3d805946d41e87407e8f2f83b2b1c))
+* **lark:** handle current card action event envelopes ([e73992d](https://github.com/gaogg521/dream-core/commit/e73992d5d51e45a325f2bcf41808c8da3d334d3e))
+* **lark:** reuse regenerated cards and persist delivery deduplication ([4b56ad2](https://github.com/gaogg521/dream-core/commit/4b56ad20b8f7be315cb489aa5f8a07608cdf7c23))
+* **memory:** reject ineffective grants on personal collections ([11a8e66](https://github.com/gaogg521/dream-core/commit/11a8e66f6d71a72aa77668eafc1e562caa937c73))
+* **org:** reject invalid restore rows as client errors ([2222431](https://github.com/gaogg521/dream-core/commit/22224317079cb972291c8bf562adfe98fe43ce42))
+* **sso:** align DingTalk and WeCom login and card protocols ([097f218](https://github.com/gaogg521/dream-core/commit/097f21855ff6cd7eb96e22c87f967d61a10d0929))
+* **workflow:** restrict approval detail reads to requester or admin ([cc3abec](https://github.com/gaogg521/dream-core/commit/cc3abeca32d10e0dbe0074da4b5de3ceabd7f84b))
+
 ## [0.1.82](https://github.com/gaogg521/dream-core/compare/v0.1.81...v0.1.82) (2026-10-10)
 
 
