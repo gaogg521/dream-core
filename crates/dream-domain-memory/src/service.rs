@@ -1167,9 +1167,15 @@ impl MemoryService {
         if subject_id.trim().is_empty() {
             return Err(MemoryError::BadRequest("grant subject id must not be empty".into()));
         }
-        self.load_collection(tenant_id, collection_id)
+        let collection = self
+            .load_collection(tenant_id, collection_id)
             .await?
             .ok_or_else(|| MemoryError::NotFound("memory collection not found".into()))?;
+        if collection_row_to_model(&collection).scope == "personal" {
+            return Err(MemoryError::BadRequest(
+                "personal memory is owner-only and cannot be granted to others".into(),
+            ));
+        }
         let subject_id = subject_id.trim();
         let existing: Option<(String,)> = self.db.fetch_optional_as::<(String,)>(
             "SELECT id FROM one_memory_grants WHERE tenant_id = ? AND collection_id = ? AND subject_type = ? AND subject_id = ?",
@@ -1780,6 +1786,12 @@ mod tests {
             .create_collection("t1", "m1", "member", "personal", None, None, "m1 personal", "")
             .await
             .unwrap();
+        let error = service
+            .grant_memory("t1", &personal.id, "member", "m2", "read", "admin1")
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "BAD_REQUEST");
+        assert!(service.list_grants("t1", &personal.id).await.unwrap().is_empty());
         service
             .add_item(
                 "t1",
