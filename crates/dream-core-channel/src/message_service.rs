@@ -8,6 +8,7 @@ use dream_core_db::models::AssistantSessionRow;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
+use crate::action::ChatRequest;
 use crate::channel_settings::{ChannelSettingsService, resolved_model_to_provider};
 use crate::constants::{STREAM_THROTTLE_INTERVAL, TOOL_CONFIRM_TIMEOUT};
 use crate::error::ChannelError;
@@ -30,6 +31,60 @@ pub struct ChannelMessageService {
 }
 
 impl ChannelMessageService {
+    /// Card actions use server-owned session history, never callback prompt data.
+    pub async fn send_chat_request(
+        &self,
+        owner_user_id: &str,
+        session: &AssistantSessionRow,
+        request: ChatRequest,
+        platform: PluginType,
+    ) -> Result<SendResult, ChannelError> {
+        let conversation_id = session
+            .conversation_id
+            .as_deref()
+            .ok_or_else(|| ChannelError::InvalidConfig("No previous response in this session".into()))?;
+        let mut before = None;
+        let text = loop {
+            let page = self
+                .conversation_svc
+                .list_messages(
+                    owner_user_id,
+                    conversation_id,
+                    dream_core_api_types::ListMessagesQuery {
+                        limit: Some(100),
+                        before,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?;
+            if let Some(text) = page
+                .items
+                .iter()
+                .rev()
+                .filter(|m| {
+                    !m.hidden
+                        && m.r#type == dream_core_common::MessageType::Text
+                        && m.position == Some(dream_core_common::MessagePosition::Right)
+                })
+                .filter_map(|m| m.content.get("content").and_then(|v| v.as_str()))
+                .find(|text| !text.trim().is_empty() && *text != "Please continue your previous response.")
+            {
+                break match request {
+                    ChatRequest::Regenerate => text.to_owned(),
+                    ChatRequest::Continue => "Please continue your previous response.".to_owned(),
+                };
+            }
+            if !page.has_more_before || page.oldest_cursor.is_none() {
+                return Err(ChannelError::InvalidConfig(
+                    "No previous user message in this session".into(),
+                ));
+            }
+            before = page.oldest_cursor;
+        };
+        self.send_to_agent(owner_user_id, session, &text, platform).await
+    }
+
     pub fn new(
         conversation_svc: Arc<ConversationService>,
         task_manager: Arc<dyn IWorkerTaskManager>,

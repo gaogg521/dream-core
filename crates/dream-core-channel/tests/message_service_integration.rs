@@ -69,14 +69,18 @@ impl SkillResolver for NoopSkillResolver {
 struct ScriptedAgent {
     conversation_id: String,
     event_tx: broadcast::Sender<AgentStreamEvent>,
+    sent: Arc<Mutex<Vec<String>>>,
+    workspace: String,
 }
 
 impl ScriptedAgent {
-    fn new(conversation_id: &str) -> Self {
+    fn new(conversation_id: &str, sent: Arc<Mutex<Vec<String>>>) -> Self {
         let (event_tx, _) = broadcast::channel(16);
         Self {
             conversation_id: conversation_id.to_owned(),
             event_tx,
+            sent,
+            workspace: std::env::temp_dir().to_string_lossy().into_owned(),
         }
     }
 }
@@ -92,7 +96,7 @@ impl IAgentTask for ScriptedAgent {
     }
 
     fn workspace(&self) -> &str {
-        "/tmp/dream-channel-test"
+        &self.workspace
     }
 
     fn status(&self) -> Option<ConversationStatus> {
@@ -107,7 +111,8 @@ impl IAgentTask for ScriptedAgent {
         self.event_tx.subscribe()
     }
 
-    async fn send_message(&self, _data: SendMessageData) -> Result<(), AgentSendError> {
+    async fn send_message(&self, data: SendMessageData) -> Result<(), AgentSendError> {
+        self.sent.lock().unwrap().push(data.content);
         let _ = self.event_tx.send(AgentStreamEvent::Finish(FinishEventData::default()));
         Ok(())
     }
@@ -125,12 +130,14 @@ impl IMockAgent for ScriptedAgent {}
 
 struct RecordingTaskManager {
     agents: Mutex<std::collections::HashMap<String, AgentInstance>>,
+    sent: Arc<Mutex<Vec<String>>>,
 }
 
 impl RecordingTaskManager {
     fn new() -> Self {
         Self {
             agents: Mutex::new(std::collections::HashMap::new()),
+            sent: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -151,7 +158,7 @@ impl IWorkerTaskManager for RecordingTaskManager {
             return Ok(agent.clone());
         }
 
-        let agent = AgentInstance::Mock(Arc::new(ScriptedAgent::new(conversation_id)));
+        let agent = AgentInstance::Mock(Arc::new(ScriptedAgent::new(conversation_id, Arc::clone(&self.sent))));
         agents.insert(conversation_id.to_owned(), agent.clone());
         Ok(agent)
     }
@@ -269,6 +276,95 @@ async fn send_to_agent_warms_cold_task_before_returning_stream_subscription() {
         );
         assert!(task_manager.get_task(&result.conversation_id).is_some());
     }
+}
+
+#[tokio::test]
+async fn card_actions_reach_agent_with_server_history_and_reject_other_owner() {
+    use dream_core_channel::action::ChatRequest;
+    use std::time::Duration;
+    let db = init_database_memory().await.unwrap();
+    let pool = db.pool().clone();
+    let manager = Arc::new(RecordingTaskManager::new());
+    let task_manager: Arc<dyn IWorkerTaskManager> = manager.clone();
+    let broadcaster = Arc::new(TestBroadcaster::new());
+    let conversation_svc = Arc::new(ConversationService::new(
+        std::env::temp_dir(),
+        broadcaster.clone(),
+        Arc::new(NoopSkillResolver),
+        Arc::clone(&task_manager),
+        Arc::new(SqliteConversationRepository::new(pool.clone())),
+        Arc::new(SqliteAgentMetadataRepository::new(pool.clone())),
+        Arc::new(SqliteAcpSessionRepository::new(pool.clone())),
+    ));
+    let settings = Arc::new(ChannelSettingsService::new(Arc::new(
+        SqliteClientPreferenceRepository::new(pool),
+    )));
+    let svc = ChannelMessageService::new(conversation_svc, task_manager, settings);
+    let mut session = AssistantSessionRow {
+        id: "card-session".into(),
+        user_id: "paired-user".into(),
+        agent_type: "dream".into(),
+        conversation_id: None,
+        workspace: None,
+        chat_id: Some("card-chat".into()),
+        created_at: 1,
+        last_activity: 1,
+    };
+    let missing = svc
+        .send_chat_request(TEST_OWNER_USER_ID, &session, ChatRequest::Continue, PluginType::Lark)
+        .await
+        .unwrap_err();
+    assert!(matches!(missing, ChannelError::InvalidConfig(_)));
+    assert!(manager.sent.lock().unwrap().is_empty());
+    let result = svc
+        .send_to_agent(TEST_OWNER_USER_ID, &session, "original user prompt", PluginType::Lark)
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "agent did not receive request: {error:?}; fixture events: {:?}",
+                broadcaster.events.lock().unwrap()
+            )
+        });
+    session.conversation_id = Some(result.conversation_id);
+    for (expected_count, request) in [(1, ChatRequest::Continue), (2, ChatRequest::Regenerate)] {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while manager.sent.lock().unwrap().len() != expected_count {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "agent did not receive request: {error:?}; fixture events: {:?}",
+                broadcaster.events.lock().unwrap()
+            )
+        });
+        tokio::task::yield_now().await;
+        svc.send_chat_request(TEST_OWNER_USER_ID, &session, request, PluginType::Lark)
+            .await
+            .unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while manager.sent.lock().unwrap().len() != 3 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        *manager.sent.lock().unwrap(),
+        vec![
+            "original user prompt",
+            "Please continue your previous response.",
+            "original user prompt"
+        ]
+    );
+    let cross_owner = svc
+        .send_chat_request("another-owner", &session, ChatRequest::Regenerate, PluginType::Lark)
+        .await
+        .unwrap_err();
+    assert!(cross_owner.to_string().contains("not found"));
+    assert_eq!(manager.sent.lock().unwrap().len(), 3);
 }
 
 #[tokio::test]

@@ -10,6 +10,12 @@ use crate::types::{
     ActionBehavior, ActionButton, ActionCategory, ActionResponse, UnifiedAction, UnifiedIncomingMessage,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatRequest {
+    Regenerate,
+    Continue,
+}
+
 /// Result of processing an incoming message.
 ///
 /// The caller (ChannelManager / plugin) uses this to decide what to send
@@ -24,6 +30,7 @@ pub enum MessageResult {
         owner_user_id: String,
         session_id: String,
         conversation_id: Option<String>,
+        chat_request: Option<ChatRequest>,
     },
     /// Message was a text but user already has an active agent stream
     /// (no duplicate dispatch needed).
@@ -97,6 +104,39 @@ impl ActionExecutor {
 
         // 2. Button callback → action routing
         if let Some(action) = &msg.action {
+            let chat_request = match (action.category, action.action.as_str()) {
+                (ActionCategory::Chat, "chat.regenerate") => Some(ChatRequest::Regenerate),
+                (ActionCategory::Chat, "chat.continue") => Some(ChatRequest::Continue),
+                _ => None,
+            };
+            if let Some(chat_request) = chat_request {
+                // Resolve from the authenticated platform user and actual chat;
+                // never accept a conversation ID or prompt supplied by a button.
+                let session = self
+                    .session_mgr
+                    .get_active_sessions(owner_user_id)
+                    .await?
+                    .into_iter()
+                    .find(|s| s.user_id == internal_user_id && s.chat_id.as_deref() == Some(chat_id));
+                if let Some(session) = session.filter(|s| s.conversation_id.is_some()) {
+                    info!(session_id = %session.id, request = ?chat_request, "channel card action dispatched");
+                    return Ok(MessageResult::Dispatched {
+                        owner_user_id: owner_user_id.to_owned(),
+                        session_id: session.id,
+                        conversation_id: session.conversation_id,
+                        chat_request: Some(chat_request),
+                    });
+                }
+                return Ok(MessageResult::Action(ActionResponse {
+                    text: Some("No previous response in this session. Send a message first.".into()),
+                    parse_mode: None,
+                    buttons: None,
+                    keyboard: None,
+                    behavior: ActionBehavior::Send,
+                    toast: None,
+                    edit_message_id: None,
+                }));
+            }
             let response = self.route_action(owner_user_id, action, &internal_user_id).await?;
             return Ok(MessageResult::Action(response));
         }
@@ -126,6 +166,7 @@ impl ActionExecutor {
             owner_user_id: owner_user_id.to_owned(),
             session_id: session.id,
             conversation_id: session.conversation_id,
+            chat_request: None,
         })
     }
 
@@ -390,19 +431,15 @@ impl ActionExecutor {
 
     async fn handle_chat_action(&self, action: &UnifiedAction) -> Result<ActionResponse, ChannelError> {
         match action.action.as_str() {
-            "chat.send" | "chat.regenerate" | "chat.continue" => {
-                // These are handled by the message flow, not action responses.
-                // Return a placeholder; the real logic is in ChannelMessageService.
-                Ok(ActionResponse {
-                    text: None,
-                    parse_mode: None,
-                    buttons: None,
-                    keyboard: None,
-                    behavior: ActionBehavior::Send,
-                    toast: Some("Processing...".into()),
-                    edit_message_id: None,
-                })
-            }
+            "chat.send" => Ok(ActionResponse {
+                text: None,
+                parse_mode: None,
+                buttons: None,
+                keyboard: None,
+                behavior: ActionBehavior::Send,
+                toast: Some("Processing...".into()),
+                edit_message_id: None,
+            }),
             "action.copy" => Ok(ActionResponse {
                 text: None,
                 parse_mode: None,
@@ -903,6 +940,66 @@ mod tests {
             }
             _ => panic!("Expected Dispatched result for authorized user"),
         }
+    }
+
+    #[tokio::test]
+    async fn chat_buttons_dispatch_only_the_authorized_users_current_chat() {
+        let (executor, repo) = setup();
+        repo.add_authorized_user("lark_42", "lark");
+        let initial = make_text_message("lark_42", "chat_1", "Original", PluginType::Lark);
+        let MessageResult::Dispatched { session_id, .. } = executor.handle_incoming_message(&initial).await.unwrap()
+        else {
+            panic!("expected dispatch")
+        };
+        executor
+            .session_mgr
+            .bind_conversation(OWNER_ID, &session_id, "server-owned-conversation")
+            .await
+            .unwrap();
+        for (name, expected) in [
+            ("chat.regenerate", ChatRequest::Regenerate),
+            ("chat.continue", ChatRequest::Continue),
+        ] {
+            let msg = make_action_message(
+                "lark_42",
+                "chat_1",
+                name,
+                ActionCategory::Chat,
+                PluginType::Lark,
+                Some(HashMap::from([("conversationId".into(), "forged-conversation".into())])),
+            );
+            let MessageResult::Dispatched {
+                session_id: actual,
+                conversation_id,
+                chat_request,
+                ..
+            } = executor.handle_incoming_message(&msg).await.unwrap()
+            else {
+                panic!("card must dispatch")
+            };
+            assert_eq!(actual, session_id);
+            assert_eq!(conversation_id.as_deref(), Some("server-owned-conversation"));
+            assert_eq!(chat_request, Some(expected));
+            let other_chat =
+                make_action_message("lark_42", "chat_2", name, ActionCategory::Chat, PluginType::Lark, None);
+            let MessageResult::Action(response) = executor.handle_incoming_message(&other_chat).await.unwrap() else {
+                panic!("must not reuse another chat")
+            };
+            assert!(response.text.unwrap().contains("Send a message first"));
+        }
+        repo.users.lock().unwrap().clear();
+        let revoked = make_action_message(
+            "lark_42",
+            "chat_1",
+            "chat.regenerate",
+            ActionCategory::Chat,
+            PluginType::Lark,
+            None,
+        );
+        let MessageResult::Action(response) = executor.handle_incoming_message(&revoked).await.unwrap() else {
+            panic!("revoked action must not dispatch")
+        };
+        assert!(response.text.unwrap().contains("pairing code"));
     }
 
     // ── Platform action tests ──────────────────────────────────────────

@@ -1,9 +1,11 @@
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
-use crate::action::{ActionExecutor, MessageResult};
+use crate::action::{ActionExecutor, ChatRequest, MessageResult};
 use crate::message_service::ChannelMessageService;
 use crate::session::SessionManager;
 use crate::stream_relay::{ChannelSender, ChannelStreamRelay, RelayConfig, throttle_ms_for_platform};
@@ -22,6 +24,31 @@ pub struct ChannelOrchestrator {
     message_service: Arc<ChannelMessageService>,
     session_manager: Arc<SessionManager>,
     sender: Arc<dyn ChannelSender>,
+    in_flight: Arc<Mutex<HashSet<(String, String)>>>,
+}
+
+struct SessionClaim {
+    active: Arc<Mutex<HashSet<(String, String)>>>,
+    key: (String, String),
+}
+
+impl SessionClaim {
+    fn acquire(active: &Arc<Mutex<HashSet<(String, String)>>>, owner: &str, session: &str) -> Option<Self> {
+        let key = (owner.to_owned(), session.to_owned());
+        if !active.lock().unwrap().insert(key.clone()) {
+            return None;
+        }
+        Some(Self {
+            active: Arc::clone(active),
+            key,
+        })
+    }
+}
+
+impl Drop for SessionClaim {
+    fn drop(&mut self) {
+        self.active.lock().unwrap().remove(&self.key);
+    }
 }
 
 impl ChannelOrchestrator {
@@ -36,6 +63,7 @@ impl ChannelOrchestrator {
             message_service,
             session_manager,
             sender,
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -76,6 +104,7 @@ impl ChannelOrchestrator {
         let msg_svc = Arc::clone(&self.message_service);
         let session_mgr = Arc::clone(&self.session_manager);
         let sender = Arc::clone(&self.sender);
+        let in_flight = Arc::clone(&self.in_flight);
 
         tokio::spawn(async move {
             match executor.handle_incoming_message(&msg).await {
@@ -90,8 +119,10 @@ impl ChannelOrchestrator {
                     owner_user_id,
                     session_id,
                     conversation_id,
+                    chat_request,
                 }) => {
                     handle_dispatched(
+                        &in_flight,
                         &msg_svc,
                         &session_mgr,
                         &sender,
@@ -99,6 +130,7 @@ impl ChannelOrchestrator {
                         &session_id,
                         conversation_id.as_deref(),
                         &text,
+                        chat_request,
                         platform,
                         &plugin_id,
                         &chat_id,
@@ -155,6 +187,7 @@ async fn send_action_response(
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_dispatched(
+    in_flight: &Arc<Mutex<HashSet<(String, String)>>>,
     msg_svc: &Arc<ChannelMessageService>,
     session_mgr: &Arc<SessionManager>,
     sender: &Arc<dyn ChannelSender>,
@@ -162,10 +195,28 @@ async fn handle_dispatched(
     session_id: &str,
     conversation_id: Option<&str>,
     text: &str,
+    chat_request: Option<ChatRequest>,
     platform: crate::types::PluginType,
     plugin_id: &str,
     chat_id: &str,
 ) {
+    let Some(_claim) = SessionClaim::acquire(in_flight, owner_user_id, session_id) else {
+        let busy = UnifiedOutgoingMessage {
+            message_type: OutgoingMessageType::Text,
+            text: Some("A response is still being generated. Please wait before trying again.".into()),
+            parse_mode: None,
+            buttons: None,
+            keyboard: None,
+            image_url: None,
+            file_url: None,
+            file_name: None,
+            media_actions: None,
+            reply_to_message_id: None,
+            silent: None,
+        };
+        let _ = sender.send_message(owner_user_id, plugin_id, chat_id, busy).await;
+        return;
+    };
     let session = match session_mgr.get_session_by_id(owner_user_id, session_id).await {
         Ok(Some(s)) => s,
         Ok(None) => {
@@ -178,7 +229,15 @@ async fn handle_dispatched(
         }
     };
 
-    let send_result = match msg_svc.send_to_agent(owner_user_id, &session, text, platform).await {
+    let send = match chat_request {
+        Some(request) => {
+            msg_svc
+                .send_chat_request(owner_user_id, &session, request, platform)
+                .await
+        }
+        None => msg_svc.send_to_agent(owner_user_id, &session, text, platform).await,
+    };
+    let send_result = match send {
         Ok(r) => r,
         Err(e) => {
             error!(error = %e, "failed to send to agent");
@@ -219,12 +278,30 @@ async fn handle_dispatched(
             throttle_ms: throttle_ms_for_platform(platform),
         };
         let relay = ChannelStreamRelay::new(relay_config, Arc::clone(sender));
-        tokio::spawn(relay.run(rx));
+        // Keep the session claim until streaming finishes, including card actions.
+        relay.run(rx).await;
     } else {
         warn!(
             conversation_id = %send_result.conversation_id,
             "no agent task for stream subscription"
         );
+    }
+}
+
+#[cfg(test)]
+mod claim_tests {
+    use super::*;
+
+    #[test]
+    fn running_session_rejects_duplicate_and_releases_after_completion() {
+        let active = Arc::new(Mutex::new(HashSet::new()));
+        let claim = SessionClaim::acquire(&active, "owner", "session").unwrap();
+        assert!(SessionClaim::acquire(&active, "owner", "session").is_none());
+        assert!(SessionClaim::acquire(&active, "other-owner", "session").is_some());
+        assert!(SessionClaim::acquire(&active, "owner", "other-session").is_some());
+        drop(claim);
+        assert!(SessionClaim::acquire(&active, "owner", "session").is_some());
+        assert!(active.lock().unwrap().is_empty());
     }
 }
 
