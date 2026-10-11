@@ -404,7 +404,7 @@ pub async fn import_bundle(pool: &DbPool, bundle: &BackupBundle) -> Result<Impor
             continue;
         }
 
-        for row in rows {
+        for (row_index, row) in rows.iter().enumerate() {
             let columns: Vec<&String> = live_columns.iter().filter(|c| row.contains_key(*c)).collect();
             if columns.is_empty() {
                 continue;
@@ -486,7 +486,25 @@ pub async fn import_bundle(pool: &DbPool, bundle: &BackupBundle) -> Result<Impor
                     Some(other) => DbValue::Text(other.to_string()),
                 });
             }
-            tx.execute(&statement, &params).await?;
+            if let Err(error) = tx.execute(&statement, &params).await {
+                // Invalid input is actionable by the operator, unlike a database
+                // outage. Do not echo database messages: they can contain values.
+                if let sqlx::Error::Database(database) = &error
+                    && (matches!(
+                        database.kind(),
+                        sqlx::error::ErrorKind::NotNullViolation
+                            | sqlx::error::ErrorKind::UniqueViolation
+                            | sqlx::error::ErrorKind::ForeignKeyViolation
+                            | sqlx::error::ErrorKind::CheckViolation
+                    ) || database.code().as_deref() == Some("1364"))
+                {
+                    return Err(OrgError::BadRequest(format!(
+                        "invalid backup row: {table}, row {}; required fields or data constraints are not satisfied",
+                        row_index + 1
+                    )));
+                }
+                return Err(error.into());
+            }
             if *table == "one_rag_documents"
                 && has_chunks
                 && let Some(id) = row.get("id").and_then(serde_json::Value::as_str)
@@ -853,6 +871,36 @@ mod tests {
             matches!(err, OrgError::BadRequest(ref m) if m.contains("unsupported backup version")),
             "expected a version refusal, got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn invalid_restore_row_reports_position_without_values_and_rolls_back() {
+        let target = pool().await;
+        seed(&target).await;
+        let db = DbPool::Sqlite(target.clone());
+        let mut bundle = export_bundle(&db, "t1", 0).await.unwrap();
+        let rows = bundle.tables.get_mut("one_tenants").unwrap();
+        rows[0].insert("name".into(), serde_json::json!("Should roll back"));
+        rows.push(
+            serde_json::json!({"id":"PRIVATE_ROW_VALUE"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+
+        let error = import_bundle(&db, &bundle).await.unwrap_err();
+        assert!(matches!(&error, OrgError::BadRequest(message)
+            if message.contains("one_tenants, row 2") && !message.contains("PRIVATE_ROW_VALUE")));
+        let name: String = sqlx::query_scalar("SELECT name FROM one_tenants WHERE id = 't1'")
+            .fetch_one(&target)
+            .await
+            .unwrap();
+        assert_eq!(name, "Group One");
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_tenants")
+            .fetch_one(&target)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     /// A bundle from a newer build may carry columns this deployment lacks;
