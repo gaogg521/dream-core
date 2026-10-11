@@ -349,7 +349,13 @@ async fn t14_1_fresh_non_local_system_is_already_bootstrapped() {
         json["needs_setup"], false,
         "the first-boot bootstrap already seeded a password"
     );
-    assert_eq!(json["user_count"], 1);
+    // Roster size is not disclosed to anonymous callers (ae9c0a5); count the
+    // seeded account directly instead.
+    assert!(
+        json.get("user_count").is_none(),
+        "anonymous status must not reveal the roster size"
+    );
+    assert_eq!(services.user_repo.count_users().await.unwrap(), 1);
 
     // The seeded password is system-generated, not chosen by anyone — the
     // account must be flagged to change it before it can do anything else.
