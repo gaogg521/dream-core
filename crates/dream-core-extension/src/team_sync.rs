@@ -263,6 +263,34 @@ pub async fn sync_team_skills(
     Ok(report)
 }
 
+/// `(name, SKILL.md)` of the team skill materialized from registry row
+/// `registry_id`, or `None` when this machine holds no such copy.
+///
+/// The `.team-origin` marker must name the same registry id: the directory
+/// name alone is the sanitized id, and two ids that sanitize alike must not
+/// resolve to each other's content.
+pub async fn read_team_skill(team_skills_dir: &Path, registry_id: &str) -> Option<(String, String)> {
+    let dir_id = sanitize_id(registry_id);
+    if dir_id.is_empty() {
+        return None;
+    }
+    let skill_dir = team_skills_dir.join(dir_id);
+    let marker = tokio::fs::read_to_string(skill_dir.join(TEAM_ORIGIN_MARKER))
+        .await
+        .ok()?;
+    if marker.trim() != registry_id {
+        return None;
+    }
+    let manifest = tokio::fs::read_to_string(skill_dir.join(SKILL_MANIFEST_FILE))
+        .await
+        .ok()?;
+    let name = split_skill_document(&manifest)
+        .and_then(|(frontmatter, _)| serde_yaml::from_str::<serde_yaml::Value>(frontmatter).ok())
+        .and_then(|value| value.get("name")?.as_str().map(str::to_owned))
+        .unwrap_or_else(|| registry_id.to_owned());
+    Some((name, manifest))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +305,26 @@ mod tests {
             category: None,
             tags: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn read_team_skill_resolves_by_registry_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("team-skills");
+        sync_team_skills(
+            &dir,
+            &[payload("oskill_a", "weekly-report", "Write the weekly report.")],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (name, manifest) = read_team_skill(&dir, "oskill_a").await.expect("materialized skill");
+        assert_eq!(name, "weekly-report");
+        assert!(manifest.contains("Write the weekly report."));
+        assert!(read_team_skill(&dir, "oskill_missing").await.is_none());
+        // Sanitizes to the same directory, but the marker names another id.
+        assert!(read_team_skill(&dir, "oskill_a/").await.is_none());
     }
 
     #[tokio::test]

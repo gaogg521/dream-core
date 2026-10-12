@@ -40,7 +40,7 @@ use crate::models::{
     CONTENT_RESOURCE_TYPES, CatalogEntryDto, ContentCategoryRow, ContentTagRow, EMPLOYEE_GRANT_ALL,
     EMPLOYEE_GRANT_SUBJECT_TYPES, EMPLOYEE_PERMISSION_MANAGE, EMPLOYEE_PERMISSION_USE, EmployeeGrantRow,
     EmployeeRunRow, PersonalAgentDto, PersonalAgentRow, RUN_FAILED, RUN_RUNNING, RUN_SUCCESS, TRIGGER_BREAKDOWN,
-    TRIGGER_CRON, TRIGGER_MANUAL,
+    TRIGGER_CHAT, TRIGGER_CRON, TRIGGER_MANUAL,
 };
 
 /// Outcome of a blocking run: the run/conversation linkage plus the agent's
@@ -1177,6 +1177,20 @@ impl EmployeeService {
         actor: &str,
         conversation_id: &str,
     ) -> Result<Option<PersonalAgentRow>, EmployeeError> {
+        Ok(self
+            .runtime_binding_for_conversation(actor, conversation_id)
+            .await?
+            .map(|(agent, _)| agent))
+    }
+
+    /// [`Self::runtime_agent_for_conversation`] plus the binding's trigger
+    /// (`chat`, `manual`, `cron`, …) — a chat is the one binding with no run
+    /// prompt carrying the employee's instructions.
+    pub async fn runtime_binding_for_conversation(
+        &self,
+        actor: &str,
+        conversation_id: &str,
+    ) -> Result<Option<(PersonalAgentRow, String)>, EmployeeError> {
         let run = self.db.fetch_optional_as::<EmployeeRunRow>(
             "SELECT * FROM one_employee_runs WHERE conversation_id = ? AND owner_user_id = ? ORDER BY started_at DESC LIMIT 1",
             &db_params![conversation_id, actor],
@@ -1184,9 +1198,8 @@ impl EmployeeService {
         let Some(run) = run else {
             return Ok(None);
         };
-        self.resolve_agent_for_use(actor, &run.tenant_id, &run.agent_id)
-            .await
-            .map(Some)
+        let agent = self.resolve_agent_for_use(actor, &run.tenant_id, &run.agent_id).await?;
+        Ok(Some((agent, run.trigger_source)))
     }
 
     /// Unscoped read by id — for re-fetching a row after `get_for_manage`
@@ -1828,6 +1841,30 @@ impl EmployeeService {
         let agent = self.resolve_agent_for_use(user_id, tenant_id, agent_id).await?;
         self.start_personal_run(user_id, &agent, TRIGGER_MANUAL, Some(task_context))
             .await
+    }
+
+    /// Open a conversation with an employee for the member to drive by chat.
+    ///
+    /// Provisions the conversation and the `one_employee_runs` row binding it
+    /// to the employee — that row, never client-supplied conversation extra,
+    /// is what makes the runtime load the employee's persona, skills and
+    /// connectors — and sends nothing: the member's first message is the
+    /// task. Same access rule as `run_now`.
+    pub async fn start_chat(
+        &self,
+        user_id: &str,
+        tenant_id: &str,
+        agent_id: &str,
+    ) -> Result<(String, String), EmployeeError> {
+        let agent = self.resolve_agent_for_use(user_id, tenant_id, agent_id).await?;
+        let (run_id, conversation_id) = self.provision_run(user_id, &agent, TRIGGER_CHAT).await?;
+        self.db
+            .execute(
+                "UPDATE one_employee_runs SET status = ?, finished_at = started_at WHERE id = ?",
+                &db_params![RUN_SUCCESS, &run_id],
+            )
+            .await?;
+        Ok((run_id, conversation_id))
     }
 
     /// Provision a fresh personal run: create the conversation (with the

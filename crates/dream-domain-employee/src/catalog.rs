@@ -11,8 +11,9 @@
 //!
 //!    - **Placeholder rows** (the "seed"): `origin='catalog'`,
 //!      `visibility='shared'`, owner = the [`CATALOG_OWNER_SENTINEL`]
-//!      (`'catalog'`), persona stored in `automation_config.instructions` so
-//!      the run path (`build_run_prompt`) picks it up unchanged. They exist
+//!      (`'catalog'`), persona stored in `automation_config.persona` — the
+//!      field every other employee keeps its persona in, which the run time
+//!      injects as standing instructions. They exist
 //!      because the admin registry page lists `one_personal_agents` rows and
 //!      the T12 grant matrix (`one_employee_grants`) attaches to employee
 //!      ids — a catalog entry can only be "visible in the registry and
@@ -67,6 +68,54 @@ pub(crate) const CATALOG_ORIGIN: &str = "catalog";
 /// other employee.
 const CATALOG_AGENT_TYPE: &str = "claude";
 
+/// Move a catalog persona out of `automation_config.instructions`, where
+/// rows seeded before the persona field existed kept it, into
+/// `automation_config.persona`.
+///
+/// `instructions` means "the task a scheduled run performs"; a persona parked
+/// there was sent to the model as the task itself, while the admin console
+/// (which edits `persona`) showed the employee as having none. Idempotent and
+/// dialect-neutral (plain select + update), so it runs on every startup
+/// after the schema migrations.
+pub(crate) async fn migrate_catalog_persona(pool: &DbPool) -> Result<u64, EmployeeError> {
+    let rows = match pool
+        .fetch_all_as::<PersonalAgentRow>(
+            "SELECT * FROM one_personal_agents WHERE origin = ?",
+            &db_params![CATALOG_ORIGIN],
+        )
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) if is_missing_table_error(&e) => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    let mut moved = 0;
+    for row in rows {
+        let Ok(serde_json::Value::Object(mut config)) = serde_json::from_str(&row.automation_config) else {
+            continue;
+        };
+        let has_persona = config
+            .get("persona")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty());
+        if has_persona {
+            continue;
+        }
+        let Some(persona) = config.remove("instructions") else {
+            continue;
+        };
+        config.insert("persona".into(), persona);
+        let config = serde_json::Value::Object(config).to_string();
+        pool.execute(
+            "UPDATE one_personal_agents SET automation_config = ? WHERE id = ?",
+            &db_params![&config, &row.id],
+        )
+        .await?;
+        moved += 1;
+    }
+    Ok(moved)
+}
+
 fn catalog_agent_id() -> String {
     let uuid = uuid::Uuid::now_v7().simple().to_string();
     format!("pa_{uuid}")
@@ -83,7 +132,7 @@ async fn seed_catalog_for_tenant(pool: &DbPool, tenant_id: &str) -> Result<(), E
         .await?;
     let now = now_ms() as i64;
     for entry in entries {
-        let config = serde_json::json!({ "instructions": entry.persona }).to_string();
+        let config = serde_json::json!({ "persona": entry.persona }).to_string();
         pool.execute(
             "INSERT INTO one_personal_agents \
                  (id, owner_user_id, tenant_id, name, description, agent_type, automation_config, \
@@ -234,7 +283,7 @@ pub(crate) async fn instantiate_catalog_entry(
 
     let id = catalog_agent_id();
     let now = now_ms() as i64;
-    let config = serde_json::json!({ "instructions": entry.persona }).to_string();
+    let config = serde_json::json!({ "persona": entry.persona }).to_string();
     pool.execute(
         "INSERT INTO one_personal_agents \
              (id, owner_user_id, tenant_id, name, description, agent_type, automation_config, \
@@ -323,7 +372,7 @@ mod tests {
                 .iter()
                 .all(|e| !e.instantiated && e.instance_id.is_none() && e.grant_count == 0)
         );
-        // The seeded placeholder carries the persona where the run path reads it.
+        // The seeded placeholder carries the persona where the runtime injects it.
         let config: String = pool
             .fetch_one_scalar(
                 "SELECT automation_config FROM one_personal_agents \
@@ -332,7 +381,12 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(config.contains("instructions"));
+        let config: serde_json::Value = serde_json::from_str(&config).unwrap();
+        assert!(config["persona"].as_str().is_some_and(|p| !p.is_empty()));
+        assert!(
+            config.get("instructions").is_none(),
+            "a persona is not a scheduled task"
+        );
 
         // Second list: no duplicate entries, no duplicate placeholders.
         let second = list_catalog(&pool, "t1").await.unwrap();
@@ -389,8 +443,12 @@ mod tests {
         assert_eq!(instance.published, 1);
         let config: serde_json::Value = serde_json::from_str(&instance.automation_config).unwrap();
         assert_eq!(
-            config["instructions"], entry.persona,
-            "persona rides in automation_config.instructions"
+            config["persona"], entry.persona,
+            "persona rides in automation_config.persona"
+        );
+        assert!(
+            config.get("instructions").is_none(),
+            "a persona is not a scheduled task"
         );
 
         // The placeholder is untouched — grants and the registry listing keep
@@ -530,5 +588,57 @@ mod tests {
                 .is_some(),
             "explicit grant → usable"
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_catalog_persona_moves_out_of_instructions_once() {
+        let pool = test_pool().await;
+        let now = now_ms() as i64;
+        for (id, origin, config) in [
+            (
+                "pa_legacy",
+                "catalog",
+                r#"{"instructions":"You are the K8s operator."}"#,
+            ),
+            (
+                "pa_edited",
+                "catalog",
+                r#"{"persona":"Kept.","instructions":"Restart pods nightly."}"#,
+            ),
+            ("pa_member", "self_built", r#"{"instructions":"Daily standup digest."}"#),
+        ] {
+            pool.execute(
+                "INSERT INTO one_personal_agents (id, owner_user_id, tenant_id, name, agent_type, \
+                 automation_config, origin, created_at, updated_at) VALUES (?, 'u1', 't1', ?, 'dream', ?, ?, ?, ?)",
+                &db_params![id, id, config, origin, now, now],
+            )
+            .await
+            .unwrap();
+        }
+
+        assert_eq!(migrate_catalog_persona(&pool).await.unwrap(), 1);
+        assert_eq!(migrate_catalog_persona(&pool).await.unwrap(), 0, "idempotent");
+
+        let config = |id: &'static str| {
+            let pool = pool.clone();
+            async move {
+                let row = pool
+                    .fetch_optional_as::<PersonalAgentRow>(
+                        "SELECT * FROM one_personal_agents WHERE id = ?",
+                        &db_params![id],
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                serde_json::from_str::<serde_json::Value>(&row.automation_config).unwrap()
+            }
+        };
+        let legacy = config("pa_legacy").await;
+        assert_eq!(legacy["persona"], "You are the K8s operator.");
+        assert!(legacy.get("instructions").is_none());
+        // A real persona already set means `instructions` is a genuine task.
+        assert_eq!(config("pa_edited").await["instructions"], "Restart pods nightly.");
+        // Only catalog rows are touched: a member's instructions are a task.
+        assert_eq!(config("pa_member").await["instructions"], "Daily standup digest.");
     }
 }

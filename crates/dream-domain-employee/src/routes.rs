@@ -28,6 +28,7 @@ pub fn one_employee_routes(state: OneEmployeeRouterState) -> Router {
             get(get_agent).put(update_agent).delete(delete_agent),
         )
         .route("/api/one/employee/agents/{agent_id}/run", post(run_agent))
+        .route("/api/one/employee/agents/{agent_id}/chat", post(start_chat))
         .route("/api/one/employee/agents/{agent_id}/run-team", post(run_agent_team))
         .route("/api/one/employee/agents/{agent_id}/schedule", put(set_schedule))
         .route("/api/one/employee/agents/{agent_id}/visibility", put(set_visibility))
@@ -393,6 +394,19 @@ async fn run_agent(
 ) -> Result<Json<ApiResponse<RunNowDto>>, EmployeeError> {
     let tenant = state.tenant_of(&user.id).await;
     let (run_id, conversation_id) = state.service.run_now(&user.id, &tenant, &agent_id).await?;
+    Ok(Json(ApiResponse::ok(RunNowDto {
+        run_id,
+        conversation_id,
+    })))
+}
+
+async fn start_chat(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<ApiResponse<RunNowDto>>, EmployeeError> {
+    let tenant = state.tenant_of(&user.id).await;
+    let (run_id, conversation_id) = state.service.start_chat(&user.id, &tenant, &agent_id).await?;
     Ok(Json(ApiResponse::ok(RunNowDto {
         run_id,
         conversation_id,

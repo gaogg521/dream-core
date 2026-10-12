@@ -544,7 +544,7 @@ impl AppServices {
             dump_prompts,
             broadcaster: event_bus.clone(),
             backend_binary_path: backend_binary_path.clone(),
-            mcp_server_repo: Some(mcp_server_repo),
+            mcp_server_repo: Some(mcp_server_repo.clone()),
             codex_bridge_config_repo: Some(codex_bridge_config_repo),
             local_base_url: runtime_base_url.clone(),
             claude_bridge_config_repo: Some(claude_bridge_config_repo),
@@ -607,7 +607,12 @@ impl AppServices {
             }) as Arc<dyn dream_core_ai_agent::TurnMemoryRecall>),
         });
 
-        let employee_runtime = Arc::new(crate::employee_runtime::EmployeeRuntime::default());
+        let employee_runtime = Arc::new(crate::employee_runtime::EmployeeRuntime::new(
+            crate::employee_runtime::TeamResourceSource {
+                mcp: dream_core_mcp::McpConfigService::new(mcp_server_repo.clone()),
+                skills_dir: skill_paths.team_skills_dir(),
+            },
+        ));
         let factory = employee_runtime.wrap(factory);
 
         // Agent factory is now wired. Future extension/custom agents

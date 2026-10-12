@@ -448,6 +448,28 @@ fn team_registry_id_of(original_json: Option<&str>) -> Option<String> {
 }
 
 impl McpConfigService {
+    /// Local row id and transport of the enabled team connector this member's
+    /// client materialized from registry row `registry_id`, if any.
+    ///
+    /// A digital employee distributed by the company names its connectors by
+    /// registry id; on a member's machine the registry lives on the company
+    /// server, and the only local copy is the one [`Self::sync_team_servers`]
+    /// wrote — so that is where an employee run resolves its binding.
+    pub async fn team_server_transport(
+        &self,
+        user_id: &str,
+        registry_id: &str,
+    ) -> Result<Option<(String, McpServerTransport)>, McpError> {
+        for row in self.repo.list(user_id).await? {
+            if !row.enabled || team_registry_id_of(row.original_json.as_deref()).as_deref() != Some(registry_id) {
+                continue;
+            }
+            let server = McpServer::from_row(row)?;
+            return Ok(Some((server.id, server.transport)));
+        }
+        Ok(None)
+    }
+
     /// Materialize team registry MCP connectors into the local config and
     /// reconcile removals. `authoritative` MUST be true only when `payloads`
     /// is the complete current server view (server reachable); offline calls
@@ -1708,6 +1730,38 @@ mod team_sync_tests {
         assert!(
             search.original_json.as_deref().unwrap_or("").contains("omcp_a"),
             "ownership marker stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn team_server_transport_resolves_by_registry_id_only() {
+        let svc = svc();
+        svc.sync_team_servers(
+            TEST_USER_ID,
+            &[payload("omcp_a", "team-search", "sse", "https://mcp.corp/sse")],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let resolved = svc.team_server_transport(TEST_USER_ID, "omcp_a").await.unwrap();
+        let local_id = svc.list_servers(TEST_USER_ID).await.unwrap()[0].id.clone();
+        assert!(
+            matches!(&resolved, Some((id, McpServerTransport::Sse { url, .. })) if *id == local_id && url == "https://mcp.corp/sse"),
+            "materialized connector resolves by its registry id, got {resolved:?}"
+        );
+        assert!(
+            svc.team_server_transport(TEST_USER_ID, "omcp_missing")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // The local row id is not a registry id; resolving by it must not match.
+        assert!(
+            svc.team_server_transport(TEST_USER_ID, &local_id)
+                .await
+                .unwrap()
+                .is_none()
         );
     }
 

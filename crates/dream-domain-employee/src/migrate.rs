@@ -96,6 +96,10 @@ pub async fn run_one_employee_migrations(pool: &DbPool) -> Result<(), EmployeeEr
         },
     )
     .await?;
+    let moved = crate::catalog::migrate_catalog_persona(pool).await?;
+    if moved > 0 {
+        tracing::info!(moved, "one-employee moved catalog personas out of instructions");
+    }
     Ok(())
 }
 

@@ -8,6 +8,11 @@ pub const TRIGGER_CRON: &str = "cron";
 /// A blocking run driven by devops breakdown (agent asked to split an
 /// epic/feature into child requirements). Distinguished in run history.
 pub const TRIGGER_BREAKDOWN: &str = "breakdown";
+/// A conversation the member opened with the employee to drive by chat. The
+/// row only binds the conversation to the employee; it is settled as
+/// `success` at creation because there is no single outcome to wait for (the
+/// status column's CHECK admits only running/success/failed).
+pub const TRIGGER_CHAT: &str = "chat";
 
 pub const RUN_RUNNING: &str = "running";
 pub const RUN_SUCCESS: &str = "success";

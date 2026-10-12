@@ -22,9 +22,9 @@ pub mod tenant;
 
 pub use error::EmployeeError;
 pub use migrate::run_one_employee_migrations;
-pub use models::CatalogEntryDto;
+pub use models::{CatalogEntryDto, TRIGGER_CHAT};
 pub use routes::one_employee_routes;
 pub use service::{EmployeeService, RunReply};
 pub use state::OneEmployeeRouterState;
-pub use team_sync::{TeamAgentPayload, TeamAgentSyncReport};
+pub use team_sync::{TEAM_ORIGIN, TeamAgentPayload, TeamAgentSyncReport};
 pub use tenant::{DEFAULT_TENANT, TenantResolver};
