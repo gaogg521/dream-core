@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.87](https://github.com/gaogg521/dream-core/compare/v0.1.86...v0.1.87) (2026-10-13)
+
+
+### Bug Fixes
+
+* **channel:** offer authorized WeChat/Telegram users as push targets before they chat ([f443584](https://github.com/gaogg521/dream-core/commit/f44358430061b774e83c6063e47cfb68cc3f637d))
+
 ## [0.1.86](https://github.com/gaogg521/dream-core/compare/v0.1.85...v0.1.86) (2026-10-13)
 
 
