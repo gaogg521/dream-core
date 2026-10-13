@@ -4630,6 +4630,58 @@ impl ConversationService {
         Ok(page.items.iter().rev().find_map(error_message_from_message_row))
     }
 
+    /// The assistant's closing text of the most recent turn: the run of text
+    /// segments after the last tool call or user message. Scheduled runs push
+    /// this to a chat bot, where the mid-turn narration ("let me search...")
+    /// that precedes tool calls would only be noise.
+    pub async fn latest_assistant_reply(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+    ) -> Result<Option<String>, ConversationError> {
+        let page = self
+            .conversation_repo
+            .list_messages_page(
+                user_id,
+                conversation_id,
+                &MessagePageParams {
+                    limit: 60,
+                    direction: MessagePageDirection::InitialLatest,
+                },
+            )
+            .await?;
+
+        let mut segments: Vec<String> = Vec::new();
+        for row in page.items.iter().rev() {
+            if row.r#type != "text" {
+                if segments.is_empty() {
+                    // Tool calls or tips after the last text: keep looking back for the text.
+                    continue;
+                }
+                break;
+            }
+            if row.position.as_deref() != Some("left") {
+                break;
+            }
+            let Some(text) = serde_json::from_str::<serde_json::Value>(&row.content)
+                .ok()
+                .and_then(|content| content.get("content").and_then(non_empty_json_string))
+            else {
+                continue;
+            };
+            segments.push(text);
+        }
+        if segments.is_empty() {
+            return Ok(None);
+        }
+        segments.reverse();
+        Ok(Some(segments.join(
+            "
+
+",
+        )))
+    }
+
     /// Emit the terminal frame for a turn that ended before any `StreamRelay`
     /// existed.
     ///

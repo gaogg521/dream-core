@@ -290,6 +290,9 @@ pub async fn build_module_states(
     )
     .await;
     tracing::info!(elapsed_ms = boot.elapsed().as_millis(), "startup: channel state built");
+    cron.cron_service.set_result_pusher(Arc::new(ChannelCronPusher {
+        manager: channel_state.manager.clone(),
+    }));
 
     let backend_binary_path = services.backend_binary_path();
     tracing::info!(
@@ -643,6 +646,43 @@ impl dream_core_channel::channel_settings::ChannelGeneratedAssistantMaterializer
         if let Err(error) = self.assistant.list_for_user(user_id).await {
             tracing::warn!(user_id, error = %error, "channel default: generated assistant materialization failed");
         }
+    }
+}
+
+/// Delivers a finished scheduled run to one of the owner's chat bots. Lives
+/// here because the cron crate knows nothing about channels and the channel
+/// crate nothing about cron: only the composition layer sees both.
+struct ChannelCronPusher {
+    manager: Arc<dream_core_channel::manager::ChannelManager>,
+}
+
+#[async_trait::async_trait]
+impl dream_core_cron::pusher::CronResultPusher for ChannelCronPusher {
+    async fn push(
+        &self,
+        owner_user_id: &str,
+        target: &dream_core_api_types::CronPushTarget,
+        text: &str,
+    ) -> Result<(), String> {
+        use dream_core_channel::types::{OutgoingMessageType, UnifiedOutgoingMessage};
+        let message = UnifiedOutgoingMessage {
+            message_type: OutgoingMessageType::Text,
+            text: Some(text.to_owned()),
+            parse_mode: None,
+            buttons: None,
+            keyboard: None,
+            image_url: None,
+            file_url: None,
+            file_name: None,
+            media_actions: None,
+            reply_to_message_id: None,
+            silent: None,
+        };
+        self.manager
+            .send_message(owner_user_id, &target.plugin_id, &target.chat_id, message)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 }
 

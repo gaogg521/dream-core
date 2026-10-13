@@ -6302,6 +6302,64 @@ async fn latest_conversation_error_message_prefers_error_detail() {
     );
 }
 
+fn reply_test_row(id: &str, conversation_id: &str, kind: &str, position: &str, text: &str, at: i64) -> MessageRow {
+    MessageRow {
+        id: id.into(),
+        conversation_id: conversation_id.into(),
+        msg_id: None,
+        r#type: kind.into(),
+        content: serde_json::json!({ "content": text }).to_string(),
+        position: Some(position.into()),
+        status: Some("finish".into()),
+        hidden: false,
+        created_at: at,
+        backend_turn_id: None,
+    }
+}
+
+#[tokio::test]
+async fn latest_assistant_reply_is_the_closing_text_after_the_last_tool_call() {
+    let (svc, _broadcaster, repo, _task_mgr) = make_service();
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    for row in [
+        reply_test_row("m1", &conv.id, "text", "right", "run the daily brief", 1),
+        reply_test_row("m2", &conv.id, "text", "left", "let me search first", 2),
+        reply_test_row("m3", &conv.id, "tool_group", "left", "", 3),
+        reply_test_row("m4", &conv.id, "text", "left", "Here is the brief.", 4),
+        reply_test_row("m5", &conv.id, "text", "left", "Nothing else today.", 5),
+    ] {
+        repo.insert_message("user_1", &row).await.unwrap();
+    }
+
+    let reply = svc.latest_assistant_reply("user_1", &conv.id).await.unwrap();
+
+    assert_eq!(
+        reply.as_deref(),
+        Some(
+            "Here is the brief.
+
+Nothing else today."
+        )
+    );
+}
+
+#[tokio::test]
+async fn latest_assistant_reply_ignores_text_from_earlier_turns() {
+    let (svc, _broadcaster, repo, _task_mgr) = make_service();
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    for row in [
+        reply_test_row("m1", &conv.id, "text", "right", "first", 1),
+        reply_test_row("m2", &conv.id, "text", "left", "old answer", 2),
+        reply_test_row("m3", &conv.id, "text", "right", "second", 3),
+    ] {
+        repo.insert_message("user_1", &row).await.unwrap();
+    }
+
+    let reply = svc.latest_assistant_reply("user_1", &conv.id).await.unwrap();
+
+    assert_eq!(reply, None);
+}
+
 #[tokio::test]
 async fn send_message_persists_openclaw_gateway_unreachable_tip_when_turn_build_fails() {
     let (svc, broadcaster, repo, _default_task_mgr) = make_service();

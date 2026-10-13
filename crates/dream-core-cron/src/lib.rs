@@ -6,6 +6,7 @@ pub mod error;
 pub mod events;
 pub mod executor;
 pub mod prompt;
+pub mod pusher;
 pub mod routes;
 pub mod scheduler;
 pub mod service;

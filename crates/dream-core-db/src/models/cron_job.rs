@@ -30,6 +30,8 @@ pub struct CronJobRow {
     pub retry_count: i64,
     pub max_retries: i64,
     pub queue_enabled: bool,
+    /// JSON: `{"plugin_id", "chat_id"}` of the channel bot a finished run is pushed to; `None` pushes nowhere.
+    pub push_target: Option<String>,
 }
 
 #[cfg(test)]
@@ -65,6 +67,7 @@ mod tests {
             retry_count: 0,
             max_retries: 3,
             queue_enabled: true,
+            push_target: None,
         };
         let json = serde_json::to_string(&row).expect("serialize");
         let restored: CronJobRow = serde_json::from_str(&json).expect("deserialize");
@@ -104,6 +107,7 @@ mod tests {
             retry_count: 0,
             max_retries: 3,
             queue_enabled: false,
+            push_target: None,
         };
         assert!(row.schedule_tz.is_none());
         assert!(row.agent_config.is_none());

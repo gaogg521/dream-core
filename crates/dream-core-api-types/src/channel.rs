@@ -245,6 +245,31 @@ pub struct ChannelSessionResponse {
 }
 
 // ---------------------------------------------------------------------------
+// H2. Push targets — where a scheduled run's result can be delivered
+// ---------------------------------------------------------------------------
+
+/// One chat a bot can message: `chat_id` is what the platform needs to address it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PushTargetChat {
+    pub chat_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+}
+
+/// An enabled bot of the caller's with the chats it has talked to, returned by
+/// `GET /api/channel/push-targets`. A bot with no chats cannot be pushed to yet:
+/// the person has to message it once so the platform reveals the chat.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PushTargetResponse {
+    pub plugin_id: String,
+    #[serde(rename = "type")]
+    pub plugin_type: String,
+    pub name: String,
+    pub connected: bool,
+    pub chats: Vec<PushTargetChat>,
+}
+
+// ---------------------------------------------------------------------------
 // I. WebSocket event payloads
 // ---------------------------------------------------------------------------
 

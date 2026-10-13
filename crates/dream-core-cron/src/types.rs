@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use dream_core_api_types::{
     CronAgentConfigReadDto, CronJobMetadataDto, CronJobPayloadDto, CronJobResponse, CronJobStateDto, CronJobTargetDto,
-    CronScheduleDto,
+    CronPushTarget, CronScheduleDto,
 };
 use dream_core_common::{ProviderWithModel, TimestampMs};
 use dream_core_db::models::CronJobRow;
@@ -176,6 +176,8 @@ pub struct CronJob {
     pub retry_count: i64,
     pub max_retries: i64,
     pub queue_enabled: bool,
+    /// Channel bot (and chat) a finished run is pushed to; `None` keeps the result in the app.
+    pub push_target: Option<CronPushTarget>,
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +228,10 @@ pub fn cron_job_from_row(row: CronJobRow) -> Result<CronJob, CronError> {
         retry_count: row.retry_count,
         max_retries: row.max_retries,
         queue_enabled: row.queue_enabled,
+        push_target: row
+            .push_target
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<CronPushTarget>(raw).ok()),
     })
 }
 
@@ -299,6 +305,7 @@ pub fn cron_job_to_row(job: &CronJob) -> Result<CronJobRow, CronError> {
         retry_count: job.retry_count,
         max_retries: job.max_retries,
         queue_enabled: job.queue_enabled,
+        push_target: job.push_target.as_ref().map(serde_json::to_string).transpose()?,
     })
 }
 
@@ -387,6 +394,7 @@ pub fn cron_job_to_response(job: &CronJob) -> CronJobResponse {
             max_retries: job.max_retries,
             queue_enabled: job.queue_enabled,
         },
+        push_target: job.push_target.clone(),
     }
 }
 
@@ -584,6 +592,7 @@ mod tests {
             retry_count: 0,
             max_retries: 3,
             queue_enabled: false,
+            push_target: None,
         }
     }
 
@@ -627,6 +636,7 @@ mod tests {
             retry_count: 0,
             max_retries: 3,
             queue_enabled: false,
+            push_target: None,
         }
     }
 

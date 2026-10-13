@@ -126,6 +126,13 @@ pub struct CronJobStateDto {
     pub queue_enabled: bool,
 }
 
+/// Where a finished run is pushed: one of the owner's channel bots and the chat to message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CronPushTarget {
+    pub plugin_id: String,
+    pub chat_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CronJobResponse {
     pub id: String,
@@ -137,6 +144,8 @@ pub struct CronJobResponse {
     pub target: CronJobTargetDto,
     pub metadata: CronJobMetadataDto,
     pub state: CronJobStateDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_target: Option<CronPushTarget>,
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +173,8 @@ pub struct CreateCronJobRequest {
     pub queue_enabled: bool,
     #[serde(default)]
     pub agent_config: Option<CronAgentConfigWriteDto>,
+    #[serde(default)]
+    pub push_target: Option<CronPushTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,6 +225,18 @@ pub struct UpdateCronJobRequest {
     pub max_retries: Option<i64>,
     #[serde(default)]
     pub queue_enabled: Option<bool>,
+    /// Absent keeps the current target, `null` clears it, a value sets it.
+    #[serde(default, deserialize_with = "deserialize_optional_nullable")]
+    pub push_target: Option<Option<CronPushTarget>>,
+}
+
+fn deserialize_optional_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    let value: Option<T> = Option::deserialize(deserializer)?;
+    Ok(Some(value))
 }
 
 // ---------------------------------------------------------------------------
@@ -616,6 +639,7 @@ mod tests {
                 max_retries: 3,
                 queue_enabled: false,
             },
+            push_target: None,
         }
     }
 
@@ -685,6 +709,7 @@ mod tests {
                 max_retries: 3,
                 queue_enabled: true,
             },
+            push_target: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert!(json["target"].get("execution_mode").is_none());

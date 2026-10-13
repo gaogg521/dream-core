@@ -22,6 +22,7 @@ use crate::prompt::{
     build_existing_conversation_prompt, build_new_conversation_prompt_with_skill_suggest,
     build_new_conversation_with_skill_prompt,
 };
+use crate::pusher::{CronResultPusher, compose_push_text};
 use crate::skill_file::{cron_skill_name, read_skill_content, write_raw_skill_file, write_skill_file};
 use crate::skill_suggest::SkillSuggestDetector;
 use crate::types::{CronJob, ExecutionMode};
@@ -63,6 +64,8 @@ pub struct JobExecutor {
     broadcaster: Arc<dyn EventBroadcaster>,
     agent_registry: Arc<AgentRegistry>,
     skill_suggest_detector: SkillSuggestDetector,
+    /// Set once at startup by the composition root; absent when no chat channels exist.
+    result_pusher: std::sync::OnceLock<Arc<dyn CronResultPusher>>,
 }
 
 impl JobExecutor {
@@ -86,6 +89,14 @@ impl JobExecutor {
             broadcaster,
             agent_registry,
             skill_suggest_detector,
+            result_pusher: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Wire the delivery of finished runs to a chat bot (jobs with a `push_target`).
+    pub fn set_result_pusher(&self, pusher: Arc<dyn CronResultPusher>) {
+        if self.result_pusher.set(pusher).is_err() {
+            warn!("cron result pusher was already set; keeping the first");
         }
     }
 
@@ -801,6 +812,7 @@ impl JobExecutor {
                         workspace,
                     });
                 }
+                self.spawn_result_push(job, &user_id, conversation_id);
                 info!(
                     job_id = %job.id,
                     conversation_id,
@@ -829,6 +841,47 @@ impl JobExecutor {
                 ExecutionResult::Error { message: e.to_string() }
             }
         }
+    }
+
+    /// Deliver the run's closing reply to the job's push target, if it has one.
+    ///
+    /// Runs detached: a slow or failing chat platform must neither hold up the
+    /// scheduler nor turn a run that succeeded into a failed one, so every
+    /// problem here is logged and dropped.
+    fn spawn_result_push(&self, job: &CronJob, user_id: &str, conversation_id: &str) {
+        let Some(target) = job.push_target.clone() else {
+            return;
+        };
+        let Some(pusher) = self.result_pusher.get().cloned() else {
+            warn!(job_id = %job.id, "Cron job has a push target but no chat channel is available");
+            return;
+        };
+        let conversation_service = Arc::clone(&self.conversation_service);
+        let job_id = job.id.clone();
+        let job_name = job.name.clone();
+        let user_id = user_id.to_owned();
+        let conversation_id = conversation_id.to_owned();
+        tokio::spawn(async move {
+            let reply = match conversation_service
+                .latest_assistant_reply(&user_id, &conversation_id)
+                .await
+            {
+                Ok(Some(reply)) => reply,
+                Ok(None) => {
+                    warn!(job_id, conversation_id, "Cron run produced no reply to push");
+                    return;
+                }
+                Err(e) => {
+                    warn!(job_id, conversation_id, error = %e, "Failed to read cron run reply for push");
+                    return;
+                }
+            };
+            let text = compose_push_text(&job_name, &reply);
+            match pusher.push(&user_id, &target, &text).await {
+                Ok(()) => info!(job_id, plugin_id = %target.plugin_id, "Cron result pushed to chat bot"),
+                Err(e) => warn!(job_id, plugin_id = %target.plugin_id, error = %e, "Failed to push cron result"),
+            }
+        });
     }
 
     async fn conversation_turn_failed_message(
@@ -1391,6 +1444,7 @@ mod tests {
             retry_count: 0,
             max_retries: 3,
             queue_enabled: false,
+            push_target: None,
         }
     }
 

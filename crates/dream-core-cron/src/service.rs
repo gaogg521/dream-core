@@ -96,6 +96,11 @@ impl CronService {
     // CRUD
     // -----------------------------------------------------------------------
 
+    /// Route finished runs of jobs with a push target to a chat bot.
+    pub fn set_result_pusher(&self, pusher: Arc<dyn crate::pusher::CronResultPusher>) {
+        self.executor.set_result_pusher(pusher);
+    }
+
     pub async fn add_job(&self, user_id: &str, req: CreateCronJobRequest) -> Result<CronJob, CronError> {
         self.add_job_internal(user_id, req, None, None).await
     }
@@ -126,6 +131,7 @@ impl CronService {
             created_by: "agent".to_owned(),
             execution_mode: Some("existing".to_owned()),
             queue_enabled: false,
+            push_target: None,
             agent_config,
         };
 
@@ -214,6 +220,7 @@ impl CronService {
                     conversation_title: None,
                     max_retries: None,
                     queue_enabled: None,
+                    push_target: None,
                 },
             )
             .await?;
@@ -318,6 +325,7 @@ impl CronService {
             retry_count: 0,
             max_retries: 3,
             queue_enabled: req.queue_enabled,
+            push_target: normalize_push_target(req.push_target)?,
         };
 
         self.validate_job_workspace(&job).await?;
@@ -406,6 +414,9 @@ impl CronService {
         }
         if let Some(queue_enabled) = req.queue_enabled {
             job.queue_enabled = queue_enabled;
+        }
+        if let Some(push_target) = &req.push_target {
+            job.push_target = normalize_push_target(push_target.clone())?;
         }
 
         if req.schedule.is_some() || req.enabled.is_some() {
@@ -2300,7 +2311,34 @@ fn build_update_params(job: &CronJob, req: &UpdateCronJobRequest) -> UpdateCronJ
         run_count: None,
         retry_count: None,
         queue_enabled: req.queue_enabled,
+        push_target: req
+            .push_target
+            .as_ref()
+            .map(|target| target.as_ref().and_then(|t| serde_json::to_string(t).ok())),
     }
+}
+
+/// A push target must name both a bot and a chat; blank values mean "no target".
+fn normalize_push_target(
+    target: Option<dream_core_api_types::CronPushTarget>,
+) -> Result<Option<dream_core_api_types::CronPushTarget>, CronError> {
+    let Some(target) = target else {
+        return Ok(None);
+    };
+    let plugin_id = target.plugin_id.trim();
+    let chat_id = target.chat_id.trim();
+    if plugin_id.is_empty() && chat_id.is_empty() {
+        return Ok(None);
+    }
+    if plugin_id.is_empty() || chat_id.is_empty() {
+        return Err(CronError::InvalidAgentConfig(
+            "push target needs both a bot and a chat".to_owned(),
+        ));
+    }
+    Ok(Some(dream_core_api_types::CronPushTarget {
+        plugin_id: plugin_id.to_owned(),
+        chat_id: chat_id.to_owned(),
+    }))
 }
 
 fn sanitize_agent_config_dto(
@@ -2623,6 +2661,7 @@ mod tests {
             retry_count: 0,
             max_retries: 3,
             queue_enabled: false,
+            push_target: None,
         }
     }
 
@@ -2640,6 +2679,7 @@ mod tests {
             conversation_title: None,
             max_retries: None,
             queue_enabled: None,
+            push_target: None,
         };
         let params = build_update_params(&job, &req);
         assert_eq!(params.name.as_deref(), Some("New Name"));
@@ -2674,6 +2714,7 @@ mod tests {
             conversation_title: None,
             max_retries: None,
             queue_enabled: None,
+            push_target: None,
         };
         let params = build_update_params(&job, &req);
         assert_eq!(params.schedule_kind.as_deref(), Some("cron"));
@@ -2716,6 +2757,7 @@ mod tests {
             conversation_title: None,
             max_retries: None,
             queue_enabled: None,
+            push_target: None,
         };
 
         let params = build_update_params(&job, &req);
@@ -2779,6 +2821,7 @@ mod tests {
             conversation_title: None,
             max_retries: None,
             queue_enabled: None,
+            push_target: None,
         };
         let params = build_update_params(&job, &req);
         assert_eq!(params.enabled, Some(false));
@@ -2799,6 +2842,7 @@ mod tests {
             conversation_title: None,
             max_retries: None,
             queue_enabled: None,
+            push_target: None,
         };
         let params = build_update_params(&job, &req);
         assert_eq!(

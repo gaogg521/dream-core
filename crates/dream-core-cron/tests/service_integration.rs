@@ -1138,6 +1138,7 @@ fn make_create_req(name: &str, schedule: CronScheduleDto) -> CreateCronJobReques
         created_by: "user".into(),
         execution_mode: None,
         queue_enabled: false,
+        push_target: None,
         agent_config: Some(dream_core_api_types::CronAgentConfigWriteDto {
             name: "Default Assistant".into(),
             cli_path: None,
@@ -1194,6 +1195,7 @@ fn make_cron_row_with_workspace(id: &str, user_id: &str, conversation_id: &str, 
         retry_count: 0,
         max_retries: 3,
         queue_enabled: false,
+        push_target: None,
     }
 }
 
@@ -1622,6 +1624,7 @@ async fn list_jobs_allows_legacy_custom_agent_id_without_assistant_id() {
             retry_count: 0,
             max_retries: 3,
             queue_enabled: false,
+            push_target: None,
         })
         .await
         .unwrap();
@@ -1701,6 +1704,7 @@ async fn cj8_update_job() {
         conversation_title: None,
         max_retries: None,
         queue_enabled: None,
+        push_target: None,
     };
 
     let updated = svc.update_job("u1", &created.id, req).await.unwrap();
@@ -1712,6 +1716,98 @@ async fn cj8_update_job() {
     let events = bc.take_events();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].name, "cron.job-updated");
+}
+
+fn lark_target(plugin_id: &str, chat_id: &str) -> dream_core_api_types::CronPushTarget {
+    dream_core_api_types::CronPushTarget {
+        plugin_id: plugin_id.into(),
+        chat_id: chat_id.into(),
+    }
+}
+
+fn empty_update() -> UpdateCronJobRequest {
+    UpdateCronJobRequest {
+        name: None,
+        description: None,
+        enabled: None,
+        schedule: None,
+        message: None,
+        execution_mode: None,
+        agent_config: None,
+        conversation_title: None,
+        max_retries: None,
+        queue_enabled: None,
+        push_target: None,
+    }
+}
+
+#[tokio::test]
+async fn push_target_is_stored_on_create_and_trimmed() {
+    let (svc, repo, _) = setup().await;
+    let mut req = make_create_req("Daily", every_60s());
+    req.push_target = Some(lark_target("  lark ", " oc_1 "));
+
+    let job = svc.add_job("u1", req).await.unwrap();
+
+    assert_eq!(job.push_target, Some(lark_target("lark", "oc_1")));
+    let row = repo.get_by_id_system(&job.id).await.unwrap().unwrap();
+    assert_eq!(
+        row.push_target.as_deref(),
+        Some(r#"{"plugin_id":"lark","chat_id":"oc_1"}"#)
+    );
+}
+
+#[tokio::test]
+async fn push_target_with_only_one_half_is_rejected() {
+    let (svc, _, _) = setup().await;
+    let mut req = make_create_req("Daily", every_60s());
+    req.push_target = Some(lark_target("lark", "  "));
+
+    let err = svc.add_job("u1", req).await.unwrap_err();
+
+    assert!(
+        err.to_string().contains("push target needs both a bot and a chat"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn blank_push_target_means_no_target() {
+    let (svc, _, _) = setup().await;
+    let mut req = make_create_req("Daily", every_60s());
+    req.push_target = Some(lark_target(" ", ""));
+
+    let job = svc.add_job("u1", req).await.unwrap();
+
+    assert_eq!(job.push_target, None);
+}
+
+#[tokio::test]
+async fn update_sets_keeps_and_clears_the_push_target() {
+    let (svc, _, _) = setup().await;
+    let created = svc.add_job("u1", make_create_req("Daily", every_60s())).await.unwrap();
+    assert_eq!(created.push_target, None);
+
+    let set = UpdateCronJobRequest {
+        push_target: Some(Some(lark_target("lark", "oc_9"))),
+        ..empty_update()
+    };
+    let updated = svc.update_job("u1", &created.id, set).await.unwrap();
+    assert_eq!(updated.push_target, Some(lark_target("lark", "oc_9")));
+
+    let rename = UpdateCronJobRequest {
+        name: Some("Renamed".into()),
+        ..empty_update()
+    };
+    let kept = svc.update_job("u1", &created.id, rename).await.unwrap();
+    assert_eq!(kept.push_target, Some(lark_target("lark", "oc_9")));
+
+    let clear = UpdateCronJobRequest {
+        push_target: Some(None),
+        ..empty_update()
+    };
+    let cleared = svc.update_job("u1", &created.id, clear).await.unwrap();
+    assert_eq!(cleared.push_target, None);
 }
 
 #[tokio::test]
@@ -1745,6 +1841,7 @@ async fn update_existing_conversation_job_rejects_agent_config_changes() {
         conversation_title: None,
         max_retries: None,
         queue_enabled: None,
+        push_target: None,
     };
 
     let err = svc.update_job("u1", &created.id, req).await.unwrap_err();
@@ -1784,6 +1881,7 @@ async fn update_existing_conversation_job_rejects_agent_config_even_when_switchi
         conversation_title: None,
         max_retries: None,
         queue_enabled: None,
+        push_target: None,
     };
 
     let err = svc.update_job("u1", &created.id, req).await.unwrap_err();
@@ -1820,6 +1918,7 @@ async fn update_existing_job_to_new_conversation_keeps_owner_anchor() {
                 conversation_title: None,
                 max_retries: None,
                 queue_enabled: None,
+                push_target: None,
             },
         )
         .await
@@ -1881,6 +1980,7 @@ async fn update_existing_job_to_new_conversation_clears_previous_auto_workspace(
             conversation_title: None,
             max_retries: None,
             queue_enabled: None,
+            push_target: None,
         },
     )
     .await
@@ -1926,6 +2026,7 @@ async fn update_existing_job_to_new_conversation_preserves_custom_workspace() {
             conversation_title: None,
             max_retries: None,
             queue_enabled: None,
+            push_target: None,
         },
     )
     .await
@@ -1961,6 +2062,7 @@ async fn update_team_conversation_job_rejects_execution_mode_change() {
         conversation_title: None,
         max_retries: None,
         queue_enabled: None,
+        push_target: None,
     };
 
     let err = svc.update_job("u1", &created.id, req).await.unwrap_err();
@@ -1997,6 +2099,7 @@ async fn update_job_strips_legacy_agent_ids_when_assistant_id_present() {
         conversation_title: None,
         max_retries: None,
         queue_enabled: None,
+        push_target: None,
     };
 
     let updated = svc.update_job("u1", &created.id, req).await.unwrap();
@@ -2034,6 +2137,7 @@ async fn update_job_rejects_when_assistant_id_cannot_resolve() {
         conversation_title: None,
         max_retries: None,
         queue_enabled: None,
+        push_target: None,
     };
 
     let err = svc
@@ -2069,6 +2173,7 @@ async fn cj9_update_schedule_type() {
         conversation_title: None,
         max_retries: None,
         queue_enabled: None,
+        push_target: None,
     };
 
     let updated = svc.update_job("u1", &created.id, req).await.unwrap();
@@ -2095,6 +2200,7 @@ async fn cj10_update_nonexistent() {
         conversation_title: None,
         max_retries: None,
         queue_enabled: None,
+        push_target: None,
     };
     let err = svc.update_job("u1", "cron_nonexistent", req).await.unwrap_err();
     assert!(matches!(err, dream_core_cron::error::CronError::JobNotFound(_)));
@@ -3265,6 +3371,7 @@ async fn update_max_retries() {
         conversation_title: None,
         max_retries: Some(5),
         queue_enabled: None,
+        push_target: None,
     };
     let updated = svc.update_job("u1", &job.id, req).await.unwrap();
     assert_eq!(updated.max_retries, 5);
@@ -3296,6 +3403,7 @@ async fn create_and_update_queue_enabled() {
                     conversation_title: None,
                     max_retries: None,
                     queue_enabled: None,
+                    push_target: None,
                 }
             },
         )

@@ -69,6 +69,7 @@ fn make_job(id: &str) -> CronJobRow {
         retry_count: 0,
         max_retries: 3,
         queue_enabled: false,
+        push_target: None,
     }
 }
 
@@ -458,6 +459,74 @@ async fn sk7_delete_clears_skill() {
     r.delete_for_user("user_1", "cron_sk7").await.unwrap();
     let found = r.get_by_id_system("cron_sk7").await.unwrap();
     assert!(found.is_none());
+}
+
+// ── Push target ─────────────────────────────────────────────────────
+
+const PUSH_TARGET_JSON: &str = r#"{"plugin_id":"lark","chat_id":"oc_123"}"#;
+
+#[tokio::test]
+async fn push_target_round_trips_through_insert_and_read() {
+    let (r, _db) = repo().await;
+    let mut job = make_job("cron_push1");
+    job.push_target = Some(PUSH_TARGET_JSON.into());
+    r.insert(&job).await.unwrap();
+
+    let found = r.get_by_id_system("cron_push1").await.unwrap().unwrap();
+    assert_eq!(found.push_target.as_deref(), Some(PUSH_TARGET_JSON));
+    let plain = make_job("cron_push2");
+    r.insert(&plain).await.unwrap();
+    assert_eq!(
+        r.get_by_id_system("cron_push2").await.unwrap().unwrap().push_target,
+        None
+    );
+}
+
+#[tokio::test]
+async fn push_target_can_be_set_kept_and_cleared_by_update() {
+    let (r, _db) = repo().await;
+    r.insert(&make_job("cron_push3")).await.unwrap();
+
+    let set = UpdateCronJobParams {
+        push_target: Some(Some(PUSH_TARGET_JSON.into())),
+        ..Default::default()
+    };
+    r.update_for_user("user_1", "cron_push3", &set).await.unwrap();
+    assert_eq!(
+        r.get_by_id_system("cron_push3")
+            .await
+            .unwrap()
+            .unwrap()
+            .push_target
+            .as_deref(),
+        Some(PUSH_TARGET_JSON)
+    );
+
+    // An update that does not mention the target leaves it alone.
+    let rename = UpdateCronJobParams {
+        name: Some("Renamed".into()),
+        ..Default::default()
+    };
+    r.update_for_user("user_1", "cron_push3", &rename).await.unwrap();
+    assert_eq!(
+        r.get_by_id_system("cron_push3")
+            .await
+            .unwrap()
+            .unwrap()
+            .push_target
+            .as_deref(),
+        Some(PUSH_TARGET_JSON)
+    );
+
+    let clear = UpdateCronJobParams {
+        push_target: Some(None),
+        ..Default::default()
+    };
+    r.update_for_user("user_1", "cron_push3", &clear).await.unwrap();
+    assert_eq!(
+        r.get_by_id_system("cron_push3").await.unwrap().unwrap().push_target,
+        None
+    );
 }
 
 // ── Execution state tracking ────────────────────────────────────────

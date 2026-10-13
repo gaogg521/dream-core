@@ -118,6 +118,7 @@ pub fn channel_routes(state: ChannelRouterState) -> Router {
             put(set_channel_default_model_setting),
         )
         .route("/api/channel/settings/sync", post(sync_channel_settings))
+        .route("/api/channel/push-targets", get(crate::push_targets::get_push_targets))
         .with_state(state)
 }
 

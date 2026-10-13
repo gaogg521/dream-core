@@ -38,9 +38,9 @@ impl ICronRepository for SqliteCronRepository {
                 schedule_description, payload_message, execution_mode, agent_config, \
                 conversation_id, conversation_title, created_by, \
                 skill_content, description, created_at, updated_at, next_run_at, last_run_at, \
-                last_status, last_error, run_count, retry_count, max_retries, queue_enabled\
+                last_status, last_error, run_count, retry_count, max_retries, queue_enabled, push_target\
             ) VALUES (\
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?\
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?\
             )",
         )
         .bind(&row.id)
@@ -69,6 +69,7 @@ impl ICronRepository for SqliteCronRepository {
         .bind(row.retry_count)
         .bind(row.max_retries)
         .bind(row.queue_enabled)
+        .bind(&row.push_target)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -451,6 +452,7 @@ impl SqliteCronRepository {
         push_opt_str!(conversation_title);
         push_opt_str!(skill_content);
         push_opt_str!(description);
+        push_opt_str!(push_target);
         push_opt_i64!(next_run_at);
         push_opt_i64!(last_run_at);
         push_opt_str!(last_status);
@@ -578,6 +580,7 @@ mod tests {
             retry_count: 0,
             max_retries: 3,
             queue_enabled: false,
+            push_target: None,
         }
     }
 

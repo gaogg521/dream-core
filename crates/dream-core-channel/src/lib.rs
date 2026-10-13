@@ -12,6 +12,7 @@ pub mod orchestrator;
 pub mod pairing;
 pub mod plugin;
 pub mod plugins;
+mod push_targets;
 pub mod routes;
 pub mod session;
 pub mod stream_relay;
