@@ -47,6 +47,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "employee_009_employee_catalog",
         include_str!("../migrations/009_employee_catalog.sql"),
     ),
+    (
+        "employee_010_schedule_task",
+        include_str!("../migrations/010_schedule_task.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -82,6 +86,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "employee_009_employee_catalog",
         include_str!("../migrations_mysql/009_employee_catalog.sql"),
+    ),
+    (
+        "employee_010_schedule_task",
+        include_str!("../migrations_mysql/010_schedule_task.sql"),
     ),
 ];
 

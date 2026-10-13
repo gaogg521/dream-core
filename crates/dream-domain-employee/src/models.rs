@@ -47,6 +47,9 @@ pub struct PersonalAgentRow {
     pub schedule: Option<String>,
     pub schedule_enabled: i64,
     pub next_run_at: Option<i64>,
+    /// What a scheduled run asks the employee to do. Kept apart from
+    /// `automation_config` (see migration 010).
+    pub schedule_task: Option<String>,
     /// 'private' (owner-only) or 'shared' (usable by any same-tenant member).
     pub visibility: String,
     /// `'self_built'` (admin/owner created it directly), `'market'` (reserved
@@ -88,6 +91,7 @@ pub struct PersonalAgentDto {
     pub schedule: Option<serde_json::Value>,
     pub schedule_enabled: bool,
     pub next_run_at: Option<i64>,
+    pub schedule_task: Option<String>,
     pub visibility: String,
     pub origin: String,
     pub category_id: Option<String>,
@@ -127,6 +131,7 @@ impl From<PersonalAgentRow> for PersonalAgentDto {
             schedule,
             schedule_enabled: row.schedule_enabled != 0,
             next_run_at: row.next_run_at,
+            schedule_task: row.schedule_task,
             visibility: row.visibility,
             origin: row.origin,
             category_id: row.category_id,

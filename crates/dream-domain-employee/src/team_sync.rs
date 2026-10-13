@@ -333,7 +333,7 @@ mod tests {
             .unwrap();
         pool.execute(
             "UPDATE one_personal_agents SET schedule = '{\"kind\":\"cron\"}', schedule_enabled = 1, \
-             next_run_at = 12345 WHERE id = 'pa-1'",
+             next_run_at = 12345, schedule_task = 'Summarise release risks' WHERE id = 'pa-1'",
             &[],
         )
         .await
@@ -351,6 +351,11 @@ mod tests {
         );
         assert_eq!(row.schedule_enabled, 1);
         assert_eq!(row.next_run_at, Some(12345));
+        assert_eq!(
+            row.schedule_task.as_deref(),
+            Some("Summarise release risks"),
+            "the task the member scheduled is theirs, not the server's"
+        );
     }
 
     #[tokio::test]

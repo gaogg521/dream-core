@@ -166,3 +166,59 @@ async fn chat_requires_authentication() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(body_json(resp).await["code"], "UNAUTHORIZED");
 }
+
+#[tokio::test]
+async fn a_company_employee_can_be_scheduled_with_a_task_that_survives_resync() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "member", "pw12345678").await;
+    sync_team_employee(&app, &token, &csrf).await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_with_token(
+            "PUT",
+            &format!("/api/one/employee/agents/{AGENT_ID}/schedule"),
+            json!({
+                "schedule": { "kind": "every", "every_ms": 3_600_000 },
+                "enabled": true,
+                "task": "  汇总本周发布风险  "
+            }),
+            &token,
+            &csrf,
+        ))
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["scheduleEnabled"], true);
+    assert_eq!(
+        body["data"]["scheduleTask"], "汇总本周发布风险",
+        "the task is stored trimmed"
+    );
+
+    // The company changes the employee; the member's schedule and task stay.
+    sync_team_employee(&app, &token, &csrf).await;
+    let resp = app
+        .clone()
+        .oneshot(get_with_token(&format!("/api/one/employee/agents/{AGENT_ID}"), &token))
+        .await
+        .unwrap();
+    let agent = body_json(resp).await;
+    assert_eq!(agent["data"]["scheduleEnabled"], true);
+    assert_eq!(agent["data"]["scheduleTask"], "汇总本周发布风险");
+
+    // Writing the schedule again without a task clears it.
+    let resp = app
+        .clone()
+        .oneshot(json_with_token(
+            "PUT",
+            &format!("/api/one/employee/agents/{AGENT_ID}/schedule"),
+            json!({ "schedule": { "kind": "every", "every_ms": 3_600_000 }, "enabled": true }),
+            &token,
+            &csrf,
+        ))
+        .await
+        .unwrap();
+    assert!(body_json(resp).await["data"]["scheduleTask"].is_null());
+}

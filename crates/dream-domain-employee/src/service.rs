@@ -104,6 +104,9 @@ pub struct UpdateEmployeeInput {
 pub struct ScheduleInput {
     pub schedule: Option<CronScheduleDto>,
     pub enabled: Option<bool>,
+    /// The task scheduled runs perform. Written wholesale with the schedule:
+    /// `None` (or blank) clears it.
+    pub task: Option<String>,
 }
 
 fn short_id(prefix: &str) -> String {
@@ -177,6 +180,24 @@ fn build_run_prompt(agent: &PersonalAgentRow) -> String {
         );
     }
     format!("你是「{}」。请立即执行你的日常职责，完成后输出可交付摘要。", agent.name)
+}
+
+/// Runtime mode a run must be put in. Only a scheduled (unattended) run
+/// forces one; see the call site in `execute_run`.
+fn scheduled_runtime_mode(trigger_source: &str) -> Option<String> {
+    (trigger_source == TRIGGER_CRON).then(|| "yolo".to_owned())
+}
+
+/// Prompt for a run, by what started it. A scheduled run performs the task its
+/// schedule carries; everything else (manual run, devops dispatch) keeps the
+/// employee's own instructions. A schedule with no task of its own behaves as
+/// it always did.
+fn run_prompt_for(agent: &PersonalAgentRow, trigger_source: &str) -> String {
+    let task = agent.schedule_task.as_deref().map(str::trim).filter(|t| !t.is_empty());
+    match task {
+        Some(task) if trigger_source == TRIGGER_CRON => task.to_owned(),
+        _ => build_run_prompt(agent),
+    }
 }
 
 /// Employees a user may *use* (own or shared within their tenant). Free
@@ -1761,15 +1782,17 @@ impl EmployeeService {
             _ => None,
         };
 
+        let task = input.task.as_deref().map(str::trim).filter(|t| !t.is_empty());
         self.db
             .execute(
                 "UPDATE one_personal_agents \
-             SET schedule = ?, schedule_enabled = ?, next_run_at = ?, updated_at = ? \
+             SET schedule = ?, schedule_enabled = ?, next_run_at = ?, schedule_task = ?, updated_at = ? \
              WHERE id = ?",
                 &db_params![
                     &schedule_json,
                     if enabled { 1 } else { 0 },
                     next_run_at,
+                    task,
                     now_ms() as i64,
                     agent_id
                 ],
@@ -2167,7 +2190,7 @@ impl EmployeeService {
         trigger_source: &str,
         task_context: Option<String>,
     ) {
-        let prompt = append_task_context(build_run_prompt(agent), task_context.as_deref());
+        let prompt = append_task_context(run_prompt_for(agent, trigger_source), task_context.as_deref());
         let turn_req = ConversationAgentTurnRequest {
             user_id: owner_user_id.to_owned(),
             conversation_id: conversation_id.to_owned(),
@@ -2177,9 +2200,15 @@ impl EmployeeService {
             persist_user_message: true,
             user_message_hidden: true,
             on_started: None,
-            // Autopilot employee runs don't force a runtime mode; keep the
-            // agent's own resolved mode (matches pre-v0.1.45 behavior).
-            required_runtime_mode: None,
+            // A scheduled run has nobody at the keyboard: left in the agent's
+            // default mode its first tool call waits forever for a permission
+            // click (observed: a scheduled company employee parked on
+            // `waiting_confirmation` with its task half done). Scheduled runs
+            // therefore ask for full-auto, the same way cron jobs do. Company
+            // policy gates (terminal approval, DLP, tool security) are separate
+            // from the permission mode and still apply. Every other trigger
+            // keeps the agent's own resolved mode (pre-v0.1.45 behaviour).
+            required_runtime_mode: scheduled_runtime_mode(trigger_source),
         };
 
         let (status, turn_id, summary, error) = match self.conversation_service.run_agent_turn(turn_req).await {
@@ -2577,6 +2606,7 @@ mod tests {
             schedule: None,
             schedule_enabled: 0,
             next_run_at: None,
+            schedule_task: None,
             visibility: "private".into(),
             origin: "self_built".into(),
             category_id: None,
@@ -2584,6 +2614,30 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         }
+    }
+
+    #[test]
+    fn only_a_scheduled_run_is_put_in_full_auto() {
+        assert_eq!(scheduled_runtime_mode(TRIGGER_CRON).as_deref(), Some("yolo"));
+        for trigger in [TRIGGER_MANUAL, TRIGGER_CHAT, TRIGGER_BREAKDOWN] {
+            assert_eq!(scheduled_runtime_mode(trigger), None, "{trigger}");
+        }
+    }
+
+    #[test]
+    fn a_scheduled_run_performs_the_schedules_task_and_nothing_else_does() {
+        let mut agent = agent_row("dream");
+        agent.automation_config = r#"{"instructions":"调研今日热点"}"#.into();
+        // No task of its own: unchanged behaviour.
+        assert_eq!(run_prompt_for(&agent, TRIGGER_CRON), "调研今日热点");
+
+        agent.schedule_task = Some("  每周一汇总发布风险  ".into());
+        assert_eq!(run_prompt_for(&agent, TRIGGER_CRON), "每周一汇总发布风险");
+        // A manual run is not the schedule's task.
+        assert_eq!(run_prompt_for(&agent, TRIGGER_MANUAL), "调研今日热点");
+
+        agent.schedule_task = Some("   ".into());
+        assert_eq!(run_prompt_for(&agent, TRIGGER_CRON), "调研今日热点", "blank is no task");
     }
 
     #[test]

@@ -443,6 +443,8 @@ struct SetScheduleBody {
     schedule: Option<CronScheduleDto>,
     #[serde(default)]
     enabled: Option<bool>,
+    #[serde(default)]
+    task: Option<String>,
 }
 
 async fn set_schedule(
@@ -461,6 +463,7 @@ async fn set_schedule(
             ScheduleInput {
                 schedule: body.schedule,
                 enabled: body.enabled,
+                task: body.task,
             },
         )
         .await?;
