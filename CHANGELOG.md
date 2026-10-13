@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.86](https://github.com/gaogg521/dream-core/compare/v0.1.85...v0.1.86) (2026-10-13)
+
+
+### Features
+
+* **cron:** push a finished run's result to the owner's chat bot ([a607e5b](https://github.com/gaogg521/dream-core/commit/a607e5b185fdb66ba3beb644bdd9f090ea67a3ca))
+* **devops:** let company members keep their own knowledge documents ([f3d63f7](https://github.com/gaogg521/dream-core/commit/f3d63f70febb4fb82e103d606d63d23b5d2d81c1))
+
 ## [0.1.85](https://github.com/gaogg521/dream-core/compare/v0.1.84...v0.1.85) (2026-10-13)
 
 
