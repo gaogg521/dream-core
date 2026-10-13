@@ -29,7 +29,7 @@ use crate::models::{
     FileVaultObjectDto, FileVaultReconcileEntry, GrantMode, GrantModeDto, ImChannelMemberDto, ImChannelPluginDto,
     ImPipelineDto, IpAllowlistConfigDto, MyNotificationDto, MyNotificationsDto, MySceneDto, MySceneResourceSummaryDto,
     NewApiKeyDto, NotificationDto, PlatformVersionDto, PolicyTemplateBindingDto, ResourceGrantDto,
-    SENSITIVE_PLACEHOLDER, SceneDto, SecurityPolicyDto, SecurityPolicyTemplateDto, ShareConversationInput,
+    SENSITIVE_PLACEHOLDER, SceneDto, SceneIntent, SecurityPolicyDto, SecurityPolicyTemplateDto, ShareConversationInput,
     SharedConversationDetail, SharedMessageDto, SiemConfigDto,
 };
 use crate::siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
@@ -147,7 +147,15 @@ type MySceneRow = (
     i64,
     i64,
     Option<String>,
+    Option<String>,
 );
+
+/// A scene's intent as stored (JSON text). Anything missing or unreadable is "no
+/// intent": the scene then behaves as it did before the column existed.
+fn parse_scene_intent(raw: Option<&str>) -> Option<SceneIntent> {
+    raw.filter(|value| !value.trim().is_empty())
+        .and_then(|value| serde_json::from_str(value).ok())
+}
 
 /// A notification row as read for a recipient: id, kind, category, title,
 /// body, created_by, created_at, read_at.
@@ -1343,6 +1351,7 @@ impl PlatformService {
             avatar_ref: row.4,
             job_functions: serde_json::from_str(&row.5).unwrap_or_default(),
             prompt: row.9,
+            intent: parse_scene_intent(row.10.as_deref()),
             built_in: row.6,
             member_count,
             created_at: row.7,
@@ -1680,7 +1689,7 @@ impl PlatformService {
         let rows: Vec<SceneRow> = self
             .db
             .fetch_all_as::<SceneRow>(
-                "SELECT id, tenant_id, name, description, avatar_ref, job_functions, built_in, created_at, updated_at, prompt \
+                "SELECT id, tenant_id, name, description, avatar_ref, job_functions, built_in, created_at, updated_at, prompt, intent \
              FROM one_scenes WHERE tenant_id = ? ORDER BY built_in DESC, name ASC",
                 &db_params![tenant_id],
             )
@@ -1727,7 +1736,7 @@ impl PlatformService {
         let row: Option<SceneRow> = self
             .db
             .fetch_optional_as::<SceneRow>(
-                "SELECT id, tenant_id, name, description, avatar_ref, job_functions, built_in, created_at, updated_at, prompt \
+                "SELECT id, tenant_id, name, description, avatar_ref, job_functions, built_in, created_at, updated_at, prompt, intent \
              FROM one_scenes WHERE tenant_id = ? AND id = ?",
                 &db_params![tenant_id, scene_id],
             )
@@ -1783,6 +1792,91 @@ impl PlatformService {
             .execute(
                 "UPDATE one_scenes SET prompt = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
                 &db_params![prompt, now_ms(), tenant_id, scene_id],
+            )
+            .await?;
+        if changed == 0 {
+            return Err(PlatformError::NotFound("scene not found".into()));
+        }
+        Ok(())
+    }
+
+    /// Bounds on a scene's intent. Its text rides into the system prompt of every
+    /// conversation opened from the scene, so each part is capped.
+    const MAX_SCENE_STARTERS: usize = 4;
+    const MAX_SCENE_STARTER_CHARS: usize = 120;
+    const MAX_SCENE_QUESTIONS: usize = 8;
+    const MAX_SCENE_QUESTION_CHARS: usize = 200;
+    const MAX_SCENE_INTENT_TEXT_CHARS: usize = 2_000;
+
+    /// Write the scene's intent wholesale. Blank lines are dropped and text is
+    /// trimmed; an intent with nothing in it (no discovery, no text) is stored as
+    /// NULL, which is how a scene says "prompt and resources only".
+    pub async fn update_scene_intent(
+        &self,
+        tenant_id: &str,
+        scene_id: &str,
+        intent: Option<&SceneIntent>,
+    ) -> Result<(), PlatformError> {
+        let clean_lines = |items: &[String], max_items: usize, max_chars: usize, what: &str| {
+            let lines: Vec<String> = items
+                .iter()
+                .map(|item| item.trim().to_owned())
+                .filter(|item| !item.is_empty())
+                .collect();
+            if lines.len() > max_items {
+                return Err(PlatformError::BadRequest(format!(
+                    "a scene can have at most {max_items} {what}"
+                )));
+            }
+            if lines.iter().any(|line| line.chars().count() > max_chars) {
+                return Err(PlatformError::BadRequest(format!(
+                    "a scene {what} entry is longer than {max_chars} characters"
+                )));
+            }
+            Ok(lines)
+        };
+        let clean_text = |text: &str, what: &str| {
+            let text = text.trim().to_owned();
+            if text.chars().count() > Self::MAX_SCENE_INTENT_TEXT_CHARS {
+                return Err(PlatformError::BadRequest(format!(
+                    "scene {what} is longer than {} characters",
+                    Self::MAX_SCENE_INTENT_TEXT_CHARS
+                )));
+            }
+            Ok(text)
+        };
+        let stored: Option<String> = match intent {
+            None => None,
+            Some(intent) => {
+                let cleaned = SceneIntent {
+                    discovery: intent.discovery,
+                    starters: clean_lines(
+                        &intent.starters,
+                        Self::MAX_SCENE_STARTERS,
+                        Self::MAX_SCENE_STARTER_CHARS,
+                        "starters",
+                    )?,
+                    questions: clean_lines(
+                        &intent.questions,
+                        Self::MAX_SCENE_QUESTIONS,
+                        Self::MAX_SCENE_QUESTION_CHARS,
+                        "questions",
+                    )?,
+                    constraints: clean_text(&intent.constraints, "constraints")?,
+                    deliverables: clean_text(&intent.deliverables, "deliverables")?,
+                };
+                if cleaned == SceneIntent::default() {
+                    None
+                } else {
+                    Some(serde_json::to_string(&cleaned).map_err(|e| PlatformError::Internal(e.to_string()))?)
+                }
+            }
+        };
+        let changed = self
+            .db
+            .execute(
+                "UPDATE one_scenes SET intent = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+                &db_params![stored, now_ms(), tenant_id, scene_id],
             )
             .await?;
         if changed == 0 {
@@ -1950,7 +2044,7 @@ impl PlatformService {
             .db
             .fetch_all_as::<MySceneRow>(
                 "SELECT s.id, s.name, s.description, s.avatar_ref, s.job_functions, s.built_in, s.created_at, s.updated_at, \
-                        s.prompt \
+                        s.prompt, s.intent \
                  FROM one_scene_members m \
                  JOIN one_scenes s ON s.tenant_id = m.tenant_id AND s.id = m.scene_id \
                  WHERE m.tenant_id = ? AND m.user_id = ? \
@@ -1991,7 +2085,19 @@ impl PlatformService {
             entry.1 |= resource_id == GRANT_ALL_RESOURCES;
         }
         let mut out = Vec::with_capacity(rows.len());
-        for (id, name, description, avatar_ref, job_functions_json, built_in, created_at, updated_at, prompt) in rows {
+        for (
+            id,
+            name,
+            description,
+            avatar_ref,
+            job_functions_json,
+            built_in,
+            created_at,
+            updated_at,
+            prompt,
+            intent_json,
+        ) in rows
+        {
             let per_type = packages.remove(&id).unwrap_or_default();
             let mut take_ids = |resource_type: &str| {
                 let mut ids = selectable
@@ -2034,6 +2140,7 @@ impl PlatformService {
                 avatar_ref,
                 job_functions: serde_json::from_str(&job_functions_json).unwrap_or_default(),
                 prompt,
+                intent: parse_scene_intent(intent_json.as_deref()),
                 built_in,
                 resources,
                 skill_ids,
@@ -4409,6 +4516,7 @@ type SceneRow = (
     i64,
     i64,
     Option<String>,
+    Option<String>,
 );
 
 /// one_config_sets row + aggregate: id, name, description, created_by,
@@ -6279,6 +6387,160 @@ mod tests {
 
         service.update_scene_prompt("t1", &scene.id, Some("   ")).await.unwrap();
         assert_eq!(service.list_my_scenes("t1", "u1").await.unwrap()[0].prompt, None);
+    }
+
+    fn sample_intent() -> SceneIntent {
+        SceneIntent {
+            discovery: true,
+            starters: vec!["  帮我做个官网吧  ".into(), "   ".into()],
+            questions: vec!["官网给谁看？".into(), "做完谁来维护？".into(), "".into()],
+            constraints: "  先出方案，确认前不写代码  ".into(),
+            deliverables: "需求清单、原型".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_scene_intent_round_trips_to_members_trimmed_and_is_cleared_by_an_empty_write() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "u1", "t1", "member").await;
+        let scene = service.create_scene("t1", "官网", None, &[]).await.unwrap();
+        service.add_scene_member("t1", &scene.id, "u1").await.unwrap();
+        assert_eq!(service.list_my_scenes("t1", "u1").await.unwrap()[0].intent, None);
+
+        service
+            .update_scene_intent("t1", &scene.id, Some(&sample_intent()))
+            .await
+            .unwrap();
+        let stored = service.list_my_scenes("t1", "u1").await.unwrap()[0]
+            .intent
+            .clone()
+            .unwrap();
+        assert!(stored.discovery);
+        assert_eq!(
+            stored.starters,
+            vec!["帮我做个官网吧".to_owned()],
+            "blank lines dropped, text trimmed"
+        );
+        assert_eq!(
+            stored.questions,
+            vec!["官网给谁看？".to_owned(), "做完谁来维护？".to_owned()]
+        );
+        assert_eq!(stored.constraints, "先出方案，确认前不写代码");
+        assert_eq!(
+            service.get_scene_for_admin("t1", &scene.id).await.unwrap().intent,
+            Some(stored),
+            "the admin reads back what members get"
+        );
+
+        // An intent with nothing in it is "no intent", not an empty object.
+        service
+            .update_scene_intent("t1", &scene.id, Some(&SceneIntent::default()))
+            .await
+            .unwrap();
+        assert_eq!(service.list_my_scenes("t1", "u1").await.unwrap()[0].intent, None);
+        service
+            .update_scene_intent("t1", &scene.id, Some(&sample_intent()))
+            .await
+            .unwrap();
+        service.update_scene_intent("t1", &scene.id, None).await.unwrap();
+        assert_eq!(service.list_my_scenes("t1", "u1").await.unwrap()[0].intent, None);
+    }
+
+    #[tokio::test]
+    async fn a_scene_intent_is_bounded_and_must_name_an_existing_scene_of_the_tenant() {
+        let (_db, service) = setup().await;
+        let scene = service.create_scene("t1", "官网", None, &[]).await.unwrap();
+        let bad = |intent: SceneIntent| {
+            let service = &service;
+            let id = scene.id.clone();
+            async move {
+                service
+                    .update_scene_intent("t1", &id, Some(&intent))
+                    .await
+                    .unwrap_err()
+                    .code()
+            }
+        };
+
+        assert_eq!(
+            bad(SceneIntent {
+                starters: (0..5).map(|i| format!("s{i}")).collect(),
+                ..Default::default()
+            })
+            .await,
+            "BAD_REQUEST"
+        );
+        assert_eq!(
+            bad(SceneIntent {
+                questions: (0..9).map(|i| format!("q{i}")).collect(),
+                ..Default::default()
+            })
+            .await,
+            "BAD_REQUEST"
+        );
+        assert_eq!(
+            bad(SceneIntent {
+                questions: vec!["字".repeat(201)],
+                ..Default::default()
+            })
+            .await,
+            "BAD_REQUEST"
+        );
+        assert_eq!(
+            bad(SceneIntent {
+                constraints: "字".repeat(2_001),
+                ..Default::default()
+            })
+            .await,
+            "BAD_REQUEST"
+        );
+        service
+            .update_scene_intent(
+                "t1",
+                &scene.id,
+                Some(&SceneIntent {
+                    starters: (0..4).map(|i| format!("s{i}")).collect(),
+                    questions: (0..8).map(|i| format!("q{i}")).collect(),
+                    constraints: "字".repeat(2_000),
+                    deliverables: "字".repeat(2_000),
+                    discovery: false,
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            service
+                .update_scene_intent("t1", "scene_missing", Some(&sample_intent()))
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND"
+        );
+        assert_eq!(
+            service
+                .update_scene_intent("t2", &scene.id, Some(&sample_intent()))
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND",
+            "another tenant's admin cannot write this scene's intent"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_stored_intent_is_no_intent() {
+        assert_eq!(parse_scene_intent(None), None);
+        assert_eq!(parse_scene_intent(Some("")), None);
+        assert_eq!(parse_scene_intent(Some("{not json")), None);
+        assert_eq!(
+            parse_scene_intent(Some(r#"{"discovery":true}"#)),
+            Some(SceneIntent {
+                discovery: true,
+                ..Default::default()
+            }),
+            "missing parts read as empty"
+        );
     }
 
     #[tokio::test]

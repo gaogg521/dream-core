@@ -314,10 +314,31 @@ pub struct SceneDto {
     pub job_functions: Vec<String>,
     /// What a conversation opened from this scene should know (see migration 022).
     pub prompt: Option<String>,
+    /// How the scene turns a rough request into a real one (see migration 023).
+    pub intent: Option<SceneIntent>,
     pub built_in: bool,
     pub member_count: i64,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// How a scene turns a rough request into a real one (see migration 023):
+/// whether the conversation runs a requirements round before building, what that
+/// round must always ask, the hard rules and the hand-over. The desktop turns it
+/// into the conversation's standing rules.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SceneIntent {
+    #[serde(default)]
+    pub discovery: bool,
+    /// Example first sentences, shown as hints; never sent on anyone's behalf.
+    #[serde(default)]
+    pub starters: Vec<String>,
+    #[serde(default)]
+    pub questions: Vec<String>,
+    #[serde(default)]
+    pub constraints: String,
+    #[serde(default)]
+    pub deliverables: String,
 }
 
 /// One resource-type slice of a scene's grant package, as the member-side
@@ -346,6 +367,8 @@ pub struct MySceneDto {
     pub job_functions: Vec<String>,
     /// What a conversation opened from this scene should know (see migration 022).
     pub prompt: Option<String>,
+    /// How the scene turns a rough request into a real one (see migration 023).
+    pub intent: Option<SceneIntent>,
     pub built_in: bool,
     pub resources: Vec<MySceneResourceSummaryDto>,
     /// Registry ids of the skills this scene grants explicitly (the `'*'`

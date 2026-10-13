@@ -47,7 +47,7 @@ use crate::models::{
     ConsoleSettingsDto, ContainerConfigDto, ConversationShareDto, EffectiveGrantDto, FileVaultDto, FileVaultObjectDto,
     FileVaultReconcileEntry, GrantMode, GrantModeDto, ImChannelMemberDto, ImPipelineDto, IpAllowlistConfigDto,
     MyNotificationsDto, MySceneDto, NewApiKeyDto, NotificationDto, PlatformVersionDto, PolicyTemplateBindingDto,
-    ResourceGrantDto, SceneDto, SecurityPolicyDto, SecurityPolicyTemplateDto, ShareConversationInput,
+    ResourceGrantDto, SceneDto, SceneIntent, SecurityPolicyDto, SecurityPolicyTemplateDto, ShareConversationInput,
     SharedConversationDetail, SharedMessageInput, SiemConfigDto,
 };
 use crate::object_storage::{ObjectListingDto, ObjectStorageConfigDto, ObjectStorageConfigInput, StorageProbeDto};
@@ -849,6 +849,8 @@ struct SceneBody {
     job_functions: Vec<String>,
     #[serde(default)]
     prompt: Option<String>,
+    #[serde(default)]
+    intent: Option<SceneIntent>,
 }
 
 async fn create_scene(
@@ -875,6 +877,12 @@ async fn create_scene(
         state
             .service
             .update_scene_prompt(&actor.tenant_id, &dto.id, body.prompt.as_deref())
+            .await?;
+    }
+    if body.intent.is_some() {
+        state
+            .service
+            .update_scene_intent(&actor.tenant_id, &dto.id, body.intent.as_ref())
             .await?;
     }
     Ok(Json(ApiResponse::ok(
@@ -906,6 +914,10 @@ async fn update_scene(
     state
         .service
         .update_scene_prompt(&actor.tenant_id, &dto.id, body.prompt.as_deref())
+        .await?;
+    state
+        .service
+        .update_scene_intent(&actor.tenant_id, &dto.id, body.intent.as_ref())
         .await?;
     Ok(Json(ApiResponse::ok(
         state.service.get_scene_for_admin(&actor.tenant_id, &dto.id).await?,
