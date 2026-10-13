@@ -16,6 +16,11 @@ use dream_core_db::models::{AssistantSessionRow, AssistantUserRow};
 
 use crate::routes::ChannelRouterState;
 
+/// Platforms whose direct-message chat id is the user's own id (WeChat uses the
+/// sender id as the chat; a Telegram private chat id equals the user id). Others
+/// (Lark, Slack, Discord, ...) use chat ids that only a session reveals.
+const DIRECT_CHAT_PLATFORMS: [&str; 2] = ["weixin", "telegram"];
+
 pub(crate) async fn get_push_targets(
     State(state): State<ChannelRouterState>,
     Extension(user): Extension<CurrentUser>,
@@ -62,6 +67,19 @@ pub(crate) fn build_push_targets(
                     chat_id: chat_id.to_owned(),
                     display_name: owner.display_name.clone(),
                 });
+            }
+            // A person who has been authorized but has not chatted since has no
+            // session yet. On these platforms a direct chat is addressed by the
+            // person's own id, so they can still be offered.
+            if DIRECT_CHAT_PLATFORMS.contains(&plugin.plugin_type.as_str()) {
+                for owner in users.iter().filter(|u| u.platform_type == plugin.plugin_type) {
+                    if !chats.iter().any(|chat| chat.chat_id == owner.platform_user_id) {
+                        chats.push(PushTargetChat {
+                            chat_id: owner.platform_user_id.clone(),
+                            display_name: owner.display_name.clone(),
+                        });
+                    }
+                }
             }
             PushTargetResponse {
                 plugin_id: plugin.plugin_id,
@@ -147,6 +165,31 @@ mod tests {
             }]
         );
         assert_eq!(targets[1].chats[0].chat_id, "chat-tg");
+    }
+
+    #[test]
+    fn an_authorized_user_who_never_chatted_is_offered_on_direct_chat_platforms_only() {
+        let users = [user("w1", "weixin", Some("wechat")), user("l1", "lark", Some("小王"))];
+        let targets = build_push_targets(vec![plugin("weixin", true), plugin("lark", true)], &users, &[]);
+        assert_eq!(
+            targets[0].chats,
+            vec![PushTargetChat {
+                chat_id: "pu-w1".into(),
+                display_name: Some("wechat".into())
+            }]
+        );
+        assert!(
+            targets[1].chats.is_empty(),
+            "a Lark chat id cannot be derived from the user id"
+        );
+    }
+
+    #[test]
+    fn a_session_chat_and_the_user_id_do_not_duplicate_on_direct_platforms() {
+        let users = [user("w1", "weixin", None)];
+        let sessions = [session("w1", Some("pu-w1"))];
+        let targets = build_push_targets(vec![plugin("weixin", true)], &users, &sessions);
+        assert_eq!(targets[0].chats.len(), 1);
     }
 
     #[test]
