@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.84](https://github.com/gaogg521/dream-core/compare/v0.1.83...v0.1.84) (2026-10-13)
+
+
+### Features
+
+* **employee:** open a chat with a digital employee on the member's machine ([8004d27](https://github.com/gaogg521/dream-core/commit/8004d272cccb1f65e304c211c63d32b160b55607))
+* **employee:** schedule a digital employee with a task, and run it unattended ([5d4229a](https://github.com/gaogg521/dream-core/commit/5d4229a427d2497ea6a9e0a02faad30f27fa2fc6))
+* **scene:** give a scene a prompt, and tell members which skills and MCP it grants ([19af41a](https://github.com/gaogg521/dream-core/commit/19af41a61d4b438d323f38e31fc163f6738f271d))
+
 ## [0.1.83](https://github.com/gaogg521/dream-core/compare/v0.1.82...v0.1.83) (2026-10-11)
 
 
