@@ -137,7 +137,17 @@ fn can_manage_resources(role: &str) -> bool {
 /// id, name, description, job_functions, built_in, created_at, updated_at.
 /// (`SceneRow` further down is the wider admin shape, which also carries
 /// `tenant_id`.)
-type MySceneRow = (String, String, Option<String>, Option<String>, String, bool, i64, i64);
+type MySceneRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    bool,
+    i64,
+    i64,
+    Option<String>,
+);
 
 /// A notification row as read for a recipient: id, kind, category, title,
 /// body, created_by, created_at, read_at.
@@ -1332,6 +1342,7 @@ impl PlatformService {
             description: row.3,
             avatar_ref: row.4,
             job_functions: serde_json::from_str(&row.5).unwrap_or_default(),
+            prompt: row.9,
             built_in: row.6,
             member_count,
             created_at: row.7,
@@ -1669,7 +1680,7 @@ impl PlatformService {
         let rows: Vec<SceneRow> = self
             .db
             .fetch_all_as::<SceneRow>(
-                "SELECT id, tenant_id, name, description, avatar_ref, job_functions, built_in, created_at, updated_at \
+                "SELECT id, tenant_id, name, description, avatar_ref, job_functions, built_in, created_at, updated_at, prompt \
              FROM one_scenes WHERE tenant_id = ? ORDER BY built_in DESC, name ASC",
                 &db_params![tenant_id],
             )
@@ -1716,7 +1727,7 @@ impl PlatformService {
         let row: Option<SceneRow> = self
             .db
             .fetch_optional_as::<SceneRow>(
-                "SELECT id, tenant_id, name, description, avatar_ref, job_functions, built_in, created_at, updated_at \
+                "SELECT id, tenant_id, name, description, avatar_ref, job_functions, built_in, created_at, updated_at, prompt \
              FROM one_scenes WHERE tenant_id = ? AND id = ?",
                 &db_params![tenant_id, scene_id],
             )
@@ -1742,6 +1753,36 @@ impl PlatformService {
             .execute(
                 "UPDATE one_scenes SET avatar_ref = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
                 &db_params![avatar_ref, now_ms(), tenant_id, scene_id],
+            )
+            .await?;
+        if changed == 0 {
+            return Err(PlatformError::NotFound("scene not found".into()));
+        }
+        Ok(())
+    }
+
+    /// Longest scene prompt accepted. It rides into the system prompt of every
+    /// conversation opened from the scene, so it is bounded.
+    const MAX_SCENE_PROMPT_CHARS: usize = 8_000;
+
+    pub async fn update_scene_prompt(
+        &self,
+        tenant_id: &str,
+        scene_id: &str,
+        prompt: Option<&str>,
+    ) -> Result<(), PlatformError> {
+        let prompt = prompt.map(str::trim).filter(|v| !v.is_empty());
+        if prompt.is_some_and(|v| v.chars().count() > Self::MAX_SCENE_PROMPT_CHARS) {
+            return Err(PlatformError::BadRequest(format!(
+                "scene prompt is longer than {} characters",
+                Self::MAX_SCENE_PROMPT_CHARS
+            )));
+        }
+        let changed = self
+            .db
+            .execute(
+                "UPDATE one_scenes SET prompt = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+                &db_params![prompt, now_ms(), tenant_id, scene_id],
             )
             .await?;
         if changed == 0 {
@@ -1908,7 +1949,8 @@ impl PlatformService {
         let rows: Vec<MySceneRow> = self
             .db
             .fetch_all_as::<MySceneRow>(
-                "SELECT s.id, s.name, s.description, s.avatar_ref, s.job_functions, s.built_in, s.created_at, s.updated_at \
+                "SELECT s.id, s.name, s.description, s.avatar_ref, s.job_functions, s.built_in, s.created_at, s.updated_at, \
+                        s.prompt \
                  FROM one_scene_members m \
                  JOIN one_scenes s ON s.tenant_id = m.tenant_id AND s.id = m.scene_id \
                  WHERE m.tenant_id = ? AND m.user_id = ? \
@@ -1930,7 +1972,16 @@ impl PlatformService {
                 &db_params![tenant_id],
             )
             .await?;
+        // scene_id -> resource_type -> explicit ids, for the types a
+        // conversation can actually select (skills and MCP connectors).
+        let mut selectable: std::collections::HashMap<(String, String), Vec<String>> = std::collections::HashMap::new();
         for (scene_id, resource_type, resource_id) in grants {
+            if resource_id != GRANT_ALL_RESOURCES && matches!(resource_type.as_str(), "skill" | "mcp") {
+                selectable
+                    .entry((scene_id.clone(), resource_type.clone()))
+                    .or_default()
+                    .push(resource_id.clone());
+            }
             let entry = packages
                 .entry(scene_id)
                 .or_default()
@@ -1940,8 +1991,17 @@ impl PlatformService {
             entry.1 |= resource_id == GRANT_ALL_RESOURCES;
         }
         let mut out = Vec::with_capacity(rows.len());
-        for (id, name, description, avatar_ref, job_functions_json, built_in, created_at, updated_at) in rows {
+        for (id, name, description, avatar_ref, job_functions_json, built_in, created_at, updated_at, prompt) in rows {
             let per_type = packages.remove(&id).unwrap_or_default();
+            let mut take_ids = |resource_type: &str| {
+                let mut ids = selectable
+                    .remove(&(id.clone(), resource_type.to_owned()))
+                    .unwrap_or_default();
+                ids.sort();
+                ids
+            };
+            let skill_ids = take_ids("skill");
+            let mcp_ids = take_ids("mcp");
             // Canonical order = the matrix's own type order, so the client
             // renders "skills before channels" consistently with the console.
             let mut resource_types: Vec<String> = GRANT_RESOURCE_TYPES
@@ -1973,8 +2033,11 @@ impl PlatformService {
                 description,
                 avatar_ref,
                 job_functions: serde_json::from_str(&job_functions_json).unwrap_or_default(),
+                prompt,
                 built_in,
                 resources,
+                skill_ids,
+                mcp_ids,
                 created_at,
                 updated_at,
             });
@@ -4345,6 +4408,7 @@ type SceneRow = (
     bool,
     i64,
     i64,
+    Option<String>,
 );
 
 /// one_config_sets row + aggregate: id, name, description, created_by,
@@ -6152,6 +6216,9 @@ mod tests {
         assert_eq!(scene.job_functions, vec!["职能一".to_owned()]);
         let skills = scene.resources.iter().find(|r| r.resource_type == "skill").unwrap();
         assert_eq!(skills.count, 2);
+        assert_eq!(scene.skill_ids, vec!["s1".to_owned(), "s2".to_owned()]);
+        assert!(scene.mcp_ids.is_empty());
+        assert_eq!(scene.prompt, None);
         assert!(!skills.includes_all);
         let channels = scene
             .resources
@@ -6166,6 +6233,90 @@ mod tests {
         // error, not somebody else's scene.
         let none = service.list_my_scenes("t1", "u2").await.unwrap();
         assert!(none.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_scene_prompt_round_trips_to_members_and_is_cleared_by_an_empty_write() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "u1", "t1", "member").await;
+        let scene = service.create_scene("t1", "发布", None, &[]).await.unwrap();
+        service.add_scene_member("t1", &scene.id, "u1").await.unwrap();
+        service
+            .grant_resource("t1", "scene", &scene.id, "mcp", "omcp_1", "use", "admin")
+            .await
+            .unwrap();
+        service
+            .grant_resource("t1", "scene", &scene.id, "skill", GRANT_ALL_RESOURCES, "use", "admin")
+            .await
+            .unwrap();
+
+        service
+            .update_scene_prompt("t1", &scene.id, Some("  你是发布经理。  "))
+            .await
+            .unwrap();
+        let mine = service.list_my_scenes("t1", "u1").await.unwrap();
+        assert_eq!(mine[0].prompt.as_deref(), Some("你是发布经理。"), "stored trimmed");
+        assert_eq!(mine[0].mcp_ids, vec!["omcp_1".to_owned()]);
+        assert!(
+            mine[0].skill_ids.is_empty(),
+            "the '*' wildcard is `includes_all`, never an id a conversation could select"
+        );
+        assert!(
+            mine[0]
+                .resources
+                .iter()
+                .any(|r| r.resource_type == "skill" && r.includes_all)
+        );
+        assert_eq!(
+            service
+                .get_scene_for_admin("t1", &scene.id)
+                .await
+                .unwrap()
+                .prompt
+                .as_deref(),
+            Some("你是发布经理。")
+        );
+
+        service.update_scene_prompt("t1", &scene.id, Some("   ")).await.unwrap();
+        assert_eq!(service.list_my_scenes("t1", "u1").await.unwrap()[0].prompt, None);
+    }
+
+    #[tokio::test]
+    async fn a_scene_prompt_is_bounded_and_must_name_an_existing_scene_of_the_tenant() {
+        let (_db, service) = setup().await;
+        let scene = service.create_scene("t1", "发布", None, &[]).await.unwrap();
+
+        let too_long = "字".repeat(8_001);
+        assert_eq!(
+            service
+                .update_scene_prompt("t1", &scene.id, Some(&too_long))
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+        service
+            .update_scene_prompt("t1", &scene.id, Some(&"字".repeat(8_000)))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            service
+                .update_scene_prompt("t1", "scene_missing", Some("x"))
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND"
+        );
+        assert_eq!(
+            service
+                .update_scene_prompt("t2", &scene.id, Some("x"))
+                .await
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND",
+            "another tenant's admin cannot write this scene's prompt"
+        );
     }
 
     #[tokio::test]

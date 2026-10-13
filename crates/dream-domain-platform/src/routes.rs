@@ -847,6 +847,8 @@ struct SceneBody {
     avatar_ref: Option<String>,
     #[serde(default)]
     job_functions: Vec<String>,
+    #[serde(default)]
+    prompt: Option<String>,
 }
 
 async fn create_scene(
@@ -867,6 +869,12 @@ async fn create_scene(
         state
             .service
             .update_scene_avatar(&actor.tenant_id, &dto.id, body.avatar_ref.as_deref())
+            .await?;
+    }
+    if body.prompt.is_some() {
+        state
+            .service
+            .update_scene_prompt(&actor.tenant_id, &dto.id, body.prompt.as_deref())
             .await?;
     }
     Ok(Json(ApiResponse::ok(
@@ -893,6 +901,11 @@ async fn update_scene(
     state
         .service
         .update_scene_avatar(&actor.tenant_id, &dto.id, body.avatar_ref.as_deref())
+        .await?;
+    // Written wholesale like the avatar: an edit that leaves it out clears it.
+    state
+        .service
+        .update_scene_prompt(&actor.tenant_id, &dto.id, body.prompt.as_deref())
         .await?;
     Ok(Json(ApiResponse::ok(
         state.service.get_scene_for_admin(&actor.tenant_id, &dto.id).await?,

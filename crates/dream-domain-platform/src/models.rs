@@ -312,6 +312,8 @@ pub struct SceneDto {
     pub description: Option<String>,
     pub avatar_ref: Option<String>,
     pub job_functions: Vec<String>,
+    /// What a conversation opened from this scene should know (see migration 022).
+    pub prompt: Option<String>,
     pub built_in: bool,
     pub member_count: i64,
     pub created_at: i64,
@@ -342,8 +344,16 @@ pub struct MySceneDto {
     pub description: Option<String>,
     pub avatar_ref: Option<String>,
     pub job_functions: Vec<String>,
+    /// What a conversation opened from this scene should know (see migration 022).
+    pub prompt: Option<String>,
     pub built_in: bool,
     pub resources: Vec<MySceneResourceSummaryDto>,
+    /// Registry ids of the skills this scene grants explicitly (the `'*'`
+    /// wildcard is `resources[].includes_all`, not an id). A conversation
+    /// opened from the scene selects these.
+    pub skill_ids: Vec<String>,
+    /// Same for MCP connectors.
+    pub mcp_ids: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
