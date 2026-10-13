@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.85](https://github.com/gaogg521/dream-core/compare/v0.1.84...v0.1.85) (2026-10-13)
+
+
+### Features
+
+* **scene:** let a scene say how to turn a rough request into a real one ([7dad8ea](https://github.com/gaogg521/dream-core/commit/7dad8ea76866e06cbf4dea3cfe3416147d353955))
+
 ## [0.1.84](https://github.com/gaogg521/dream-core/compare/v0.1.83...v0.1.84) (2026-10-13)
 
 
