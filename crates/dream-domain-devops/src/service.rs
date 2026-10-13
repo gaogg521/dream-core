@@ -1468,9 +1468,16 @@ impl DevopsService {
         const COLS: &str = "id, title, file_path, file_size, mime_type, status, last_error, chunk_count, \
                             scope, team_id, visibility, created_by, created_at, library_id";
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
+        // Personal documents belong to the member who made them: nobody else
+        // sees them, administrators included.
         if privileged {
-            let sql = format!("SELECT {COLS} FROM one_rag_documents ORDER BY created_at DESC");
-            return Ok(self.db.fetch_all_as::<RagDocumentDto>(&sql, &[]).await?);
+            let sql = format!(
+                "SELECT {COLS} FROM one_rag_documents                  WHERE scope <> 'personal' OR created_by = ? ORDER BY created_at DESC"
+            );
+            return Ok(self
+                .db
+                .fetch_all_as::<RagDocumentDto>(&sql, &db_params![viewer_user_id])
+                .await?);
         }
         // A matrix grant can only widen this predicate, never narrow it, so a
         // deployment with no matrix configured runs the identical query it ran
@@ -1488,7 +1495,63 @@ impl DevopsService {
         for value in &grant_ids {
             params.push(value.as_str().into());
         }
-        Ok(self.db.fetch_all_as::<RagDocumentDto>(&sql, &params).await?)
+        let mut docs = self.db.fetch_all_as::<RagDocumentDto>(&sql, &params).await?;
+        // The shared member predicate only reaches org/team scopes; the
+        // member's own personal documents are read separately so that
+        // predicate (shared with skills and MCP) stays untouched.
+        let own_sql = format!(
+            "SELECT {COLS} FROM one_rag_documents WHERE scope = 'personal' AND created_by = ? ORDER BY created_at DESC"
+        );
+        docs.extend(
+            self.db
+                .fetch_all_as::<RagDocumentDto>(&own_sql, &db_params![viewer_user_id])
+                .await?,
+        );
+        docs.sort_by_key(|doc| std::cmp::Reverse(doc.created_at));
+        Ok(docs)
+    }
+
+    /// Whether `user_id` may write company-wide registry content (skills, MCP,
+    /// knowledge distributed to members). Auditors read everything but write
+    /// nothing, so they are not included.
+    pub(crate) async fn is_registry_admin(&self, user_id: &str) -> Result<bool, DevopsError> {
+        Ok(match self.user_org_role(user_id).await? {
+            None => true,
+            Some(role) => matches!(role.as_str(), "org_admin" | "system_admin" | "admin" | "resource_admin"),
+        })
+    }
+
+    /// May `actor_user_id` change (edit, process, delete) this document?
+    ///
+    /// A member manages the documents they made themselves (`scope = 'personal'`)
+    /// and nothing else; what an administrator distributed is theirs to change.
+    /// Nobody — an administrator included — touches another member's private
+    /// document.
+    pub async fn assert_rag_writable(&self, actor_user_id: &str, id: &str) -> Result<(), DevopsError> {
+        let row: Option<(String, String)> = self
+            .db
+            .fetch_optional_as(
+                "SELECT scope, created_by FROM one_rag_documents WHERE id = ?",
+                &db_params![id],
+            )
+            .await?;
+        let (scope, owner) = row.ok_or_else(|| DevopsError::NotFound(format!("rag document {id}")))?;
+        if scope == "personal" {
+            return if owner == actor_user_id {
+                Ok(())
+            } else {
+                Err(DevopsError::Forbidden(
+                    "this is another member's private document".into(),
+                ))
+            };
+        }
+        if self.is_registry_admin(actor_user_id).await? {
+            Ok(())
+        } else {
+            Err(DevopsError::Forbidden(
+                "documents distributed by the administrator can only be changed by an administrator".into(),
+            ))
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1508,16 +1571,23 @@ impl DevopsService {
         if title.is_empty() {
             return Err(DevopsError::BadRequest("title is required".into()));
         }
-        let team_id = self
-            .validate_resource_scope(created_by, scope, team_id, visibility)
-            .await?;
-        // See the identical comment in `upsert_skill`. This function has no
-        // update-existing mode, so this is the only guard registration needs.
-        if !self.actor_can_touch_team(created_by, team_id).await? {
-            return Err(DevopsError::Forbidden(
-                "cannot register this document to a different project group".into(),
-            ));
-        }
+        // A personal document is private to its author: no project group, no
+        // distribution, so none of the company-resource checks apply to it.
+        let (scope, team_id, visibility) = if scope == "personal" {
+            ("personal", None, "all")
+        } else {
+            let team_id = self
+                .validate_resource_scope(created_by, scope, team_id, visibility)
+                .await?;
+            // See the identical comment in `upsert_skill`. This function has no
+            // update-existing mode, so this is the only guard registration needs.
+            if !self.actor_can_touch_team(created_by, team_id).await? {
+                return Err(DevopsError::Forbidden(
+                    "cannot register this document to a different project group".into(),
+                ));
+            }
+            (scope, team_id, visibility)
+        };
         let id = new_id("orag");
         let now = now_ms();
         let library_id = library_id
@@ -2163,6 +2233,29 @@ impl DevopsService {
         crate::retrieval::rebuild_index(&self.db).await
     }
 
+    /// The `d.`-qualified visibility predicate (and its binds) for retrieval.
+    ///
+    /// `member` is the shared member predicate with its binds, or `None` for a
+    /// privileged viewer. Either way the viewer's own personal documents are
+    /// in and other people's are out, administrators included.
+    fn rag_search_acl(viewer_user_id: &str, member: Option<(String, Vec<String>)>) -> (Option<String>, Vec<String>) {
+        match member {
+            None => (
+                Some("(d.scope <> 'personal' OR d.created_by = ?)".to_owned()),
+                vec![viewer_user_id.to_owned()],
+            ),
+            Some((predicate, mut binds)) => {
+                binds.push(viewer_user_id.to_owned());
+                (
+                    Some(format!(
+                        "(({predicate}) OR (d.scope = 'personal' AND d.created_by = ?))"
+                    )),
+                    binds,
+                )
+            }
+        }
+    }
+
     /// Retrieve the top-k knowledge-base chunks visible to `viewer_user_id`.
     ///
     /// Hybrid: a dense-vector ranking (cosine over the stored embeddings) is
@@ -2185,21 +2278,26 @@ impl DevopsService {
         }
         let limit = top_k.max(1);
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
-        // Widened with the SAME knowledge grants `list_rag_documents` applies,
-        // so a granted document is actually *searchable* and not merely listed.
-        // Without this the grant is half-effective in the one place it affects
-        // agent behaviour: the member sees the document in their knowledge list
-        // and gets zero chunks from it in retrieval.
         let (acl_predicate, acl_binds) = if privileged {
-            (None, Vec::new())
+            Self::rag_search_acl(viewer_user_id, None)
         } else {
+            // Widened with the SAME knowledge grants `list_rag_documents` applies,
+            // so a granted document is actually *searchable* and not merely
+            // listed. Without this the grant is half-effective in the one place
+            // it affects agent behaviour: the member sees the document in their
+            // knowledge list and gets zero chunks from it in retrieval.
             let grants = self
                 .extra_grants(viewer_user_id, crate::grants::resource_type::KNOWLEDGE)
                 .await;
-            let (predicate, extra) =
-                Self::apply_grants(&Self::member_visibility_where("d."), &grants, "d.", viewer_user_id);
-            // `extra` is already the complete bind list for `predicate`.
-            (Some(predicate), extra)
+            Self::rag_search_acl(
+                viewer_user_id,
+                Some(Self::apply_grants(
+                    &Self::member_visibility_where("d."),
+                    &grants,
+                    "d.",
+                    viewer_user_id,
+                )),
+            )
         };
 
         // Dense half. The ACL lives in the join, exactly as before.
@@ -4031,6 +4129,131 @@ mod tests {
         assert!(titles.contains(&"a-doc".to_string()));
         assert!(!titles.contains(&"b-doc".to_string()));
         assert!(!titles.contains(&"secret-doc".to_string()));
+    }
+
+    #[tokio::test]
+    async fn personal_rag_documents_are_private_to_their_author() {
+        let svc = service().await;
+        seed_two_group_enterprise(&svc).await;
+        svc.register_rag_document("org-doc", None, None, None, "org", None, "all", "admin1", None)
+            .await
+            .unwrap();
+        // Whatever ACL a caller passes, a personal document carries none.
+        let mine = svc
+            .register_rag_document(
+                "a-notes",
+                None,
+                None,
+                None,
+                "personal",
+                Some("tB"),
+                "admin",
+                "memberA",
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(mine.scope, "personal");
+        assert_eq!(mine.team_id, None);
+        assert_eq!(mine.visibility, "all");
+        svc.register_rag_document("b-notes", None, None, None, "personal", None, "all", "memberB", None)
+            .await
+            .unwrap();
+
+        let titles = |docs: Vec<RagDocumentDto>| -> Vec<String> { docs.into_iter().map(|d| d.title).collect() };
+        let a = titles(svc.list_rag_documents("memberA").await.unwrap());
+        assert_eq!(
+            a.len(),
+            2,
+            "memberA sees the company document and their own notes: {a:?}"
+        );
+        assert!(a.contains(&"org-doc".to_string()) && a.contains(&"a-notes".to_string()));
+        let b = titles(svc.list_rag_documents("memberB").await.unwrap());
+        assert!(b.contains(&"b-notes".to_string()) && !b.contains(&"a-notes".to_string()));
+        // An administrator sees what was distributed, not members' private notes.
+        let admin = titles(svc.list_rag_documents("admin1").await.unwrap());
+        assert_eq!(admin, vec!["org-doc".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn search_acl_includes_own_personal_documents_and_excludes_others() {
+        let svc = service().await;
+        seed_two_group_enterprise(&svc).await;
+        for (title, scope, author) in [
+            ("org-doc", "org", "admin1"),
+            ("a-notes", "personal", "memberA"),
+            ("b-notes", "personal", "memberB"),
+            ("admin-notes", "personal", "admin1"),
+        ] {
+            let doc = svc
+                .register_rag_document(title, None, None, None, scope, None, "all", author, None)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO one_rag_chunks (id, document_id, chunk_index, content, embedding, created_at) VALUES (?, ?, 0, ?, ?, 0)")
+                .bind(new_id("chunk"))
+                .bind(&doc.id)
+                .bind(format!("{title} body"))
+                .bind(Vec::<u8>::new())
+                .execute(svc.db.sqlite())
+                .await
+                .unwrap();
+        }
+        let titles_for = |viewer: &'static str, member: bool| {
+            let svc = &svc;
+            async move {
+                let member_part =
+                    member.then(|| (DevopsService::member_visibility_where("d."), vec![viewer.to_owned()]));
+                let (predicate, binds) = DevopsService::rag_search_acl(viewer, member_part);
+                let sql = format!(
+                    "SELECT d.title FROM one_rag_chunks c JOIN one_rag_documents d ON d.id = c.document_id WHERE {}",
+                    predicate.unwrap()
+                );
+                let mut q = sqlx::query_scalar::<_, String>(&sql);
+                for bind in &binds {
+                    q = q.bind(bind);
+                }
+                let mut titles = q.fetch_all(svc.db.sqlite()).await.unwrap();
+                titles.sort();
+                titles
+            }
+        };
+
+        assert_eq!(titles_for("memberA", true).await, vec!["a-notes", "org-doc"]);
+        assert_eq!(titles_for("memberB", true).await, vec!["b-notes", "org-doc"]);
+        assert_eq!(titles_for("admin1", false).await, vec!["admin-notes", "org-doc"]);
+    }
+
+    #[tokio::test]
+    async fn members_change_only_their_own_rag_documents() {
+        let svc = service().await;
+        seed_two_group_enterprise(&svc).await;
+        let company = svc
+            .register_rag_document("org-doc", None, None, None, "org", None, "all", "admin1", None)
+            .await
+            .unwrap();
+        let mine = svc
+            .register_rag_document("a-notes", None, None, None, "personal", None, "all", "memberA", None)
+            .await
+            .unwrap();
+
+        svc.assert_rag_writable("memberA", &mine.id).await.unwrap();
+        svc.assert_rag_writable("admin1", &company.id).await.unwrap();
+
+        let denied = svc.assert_rag_writable("memberA", &company.id).await.unwrap_err();
+        assert!(
+            matches!(&denied, DevopsError::Forbidden(m) if m.contains("distributed by the administrator")),
+            "{denied:?}"
+        );
+        // Not even an administrator edits another member's private document.
+        let denied = svc.assert_rag_writable("admin1", &mine.id).await.unwrap_err();
+        assert!(
+            matches!(&denied, DevopsError::Forbidden(m) if m.contains("private document")),
+            "{denied:?}"
+        );
+        let denied = svc.assert_rag_writable("memberB", &mine.id).await.unwrap_err();
+        assert!(matches!(denied, DevopsError::Forbidden(_)));
+        let missing = svc.assert_rag_writable("memberA", "orag_nope").await.unwrap_err();
+        assert!(matches!(missing, DevopsError::NotFound(_)));
     }
 
     #[tokio::test]

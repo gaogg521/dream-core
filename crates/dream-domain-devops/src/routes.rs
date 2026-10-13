@@ -1904,7 +1904,14 @@ async fn register_rag(
     Extension(user): Extension<CurrentUser>,
     Json(body): Json<RegisterRagBody>,
 ) -> Result<Json<ApiResponse<RagDocumentDto>>, DevopsError> {
-    require_registry_admin(&state, &user.id).await?;
+    // Administrators register company knowledge as asked. A member may add
+    // knowledge too, but only for themselves: whatever scope the request names,
+    // it is stored as a personal document nobody else can see.
+    let scope = if state.service.is_registry_admin(&user.id).await? {
+        body.scope.as_str()
+    } else {
+        "personal"
+    };
     let dto = state
         .service
         .register_rag_document(
@@ -1912,7 +1919,7 @@ async fn register_rag(
             body.file_path.as_deref(),
             body.file_size,
             body.mime_type.as_deref(),
-            &body.scope,
+            scope,
             body.team_id.as_deref(),
             &body.visibility,
             &user.id,
@@ -1927,7 +1934,7 @@ async fn delete_rag(
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
-    require_registry_admin(&state, &user.id).await?;
+    state.service.assert_rag_writable(&user.id, &id).await?;
     state.service.delete_rag_document(&user.id, &id).await?;
     Ok(Json(ApiResponse::ok(())))
 }
@@ -1942,7 +1949,7 @@ async fn get_rag_content(
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<String>>, DevopsError> {
-    require_registry_admin(&state, &user.id).await?;
+    state.service.assert_rag_writable(&user.id, &id).await?;
     let content = state.service.get_document_content(&user.id, &id).await?;
     Ok(Json(ApiResponse::ok(content)))
 }
@@ -1953,7 +1960,7 @@ async fn set_rag_content(
     Path(id): Path<String>,
     Json(body): Json<SetRagContentBody>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
-    require_registry_admin(&state, &user.id).await?;
+    state.service.assert_rag_writable(&user.id, &id).await?;
     state.service.set_document_content(&user.id, &id, &body.content).await?;
     Ok(Json(ApiResponse::ok(())))
 }
@@ -1969,7 +1976,7 @@ async fn process_rag(
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<ProcessResult>>, DevopsError> {
-    require_registry_admin(&state, &user.id).await?;
+    state.service.assert_rag_writable(&user.id, &id).await?;
     let chunk_count = state.service.process_rag_document(&user.id, &id).await?;
     Ok(Json(ApiResponse::ok(ProcessResult { chunk_count })))
 }
