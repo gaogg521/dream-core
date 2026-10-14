@@ -9,6 +9,7 @@ use crate::service::DevopsService;
 
 #[derive(Clone)]
 pub struct OneDevopsRouterState {
+    pub rag_source_dir: Option<std::path::PathBuf>,
     pub service: Arc<DevopsService>,
     /// Optional so unit tests can build state without the employee runtime.
     /// The dispatch endpoint returns a clear error when it is absent.
@@ -27,11 +28,17 @@ pub struct OneDevopsRouterState {
 impl OneDevopsRouterState {
     pub fn new(service: Arc<DevopsService>) -> Self {
         Self {
+            rag_source_dir: None,
             service,
             employee: None,
             tenant_resolver: None,
             usage_recorder: None,
         }
+    }
+
+    pub fn with_rag_source_dir(mut self, path: std::path::PathBuf) -> Self {
+        self.rag_source_dir = Some(path);
+        self
     }
 
     /// Wire the employee runtime so requirements can be dispatched to digital

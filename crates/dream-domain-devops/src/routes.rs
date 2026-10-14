@@ -28,6 +28,12 @@ use dream_core_common::governance_caller::{GovernanceCaller, classify_governance
 
 pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
     Router::new()
+        .route(
+            "/api/one/devops/rag/documents/{id}/source",
+            get(crate::rag_files::download)
+                .post(crate::rag_files::upload)
+                .layer(axum::extract::DefaultBodyLimit::max(101 * 1024 * 1024)),
+        )
         .route("/api/one/devops/requirements/tree", get(requirements_tree))
         .route("/api/one/devops/requirements", axum::routing::post(create_requirement))
         .route(

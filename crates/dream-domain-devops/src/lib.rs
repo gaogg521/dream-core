@@ -34,6 +34,7 @@ pub use market_sync::{MarketFetcher, MarketSourceDto, MarketSyncReportDto, Reqwe
 pub mod models;
 pub mod provider_channel;
 pub mod proxy_usage;
+mod rag_files;
 pub mod resource_pack;
 pub mod retrieval;
 pub mod routes;
