@@ -1480,7 +1480,7 @@ impl DevopsService {
             "SELECT d.id FROM one_rag_documents d WHERE \
              INSTR(LOWER(d.title), LOWER(?)) > 0 OR \
              INSTR(LOWER(COALESCE(d.content, '')), LOWER(?)) > 0 OR \
-             EXISTS (SELECT 1 FROM one_rag_chunks c WHERE c.document_id = d.id AND INSTR(LOWER(c.content), LOWER(?)) > 0)",
+             (COALESCE(d.content, '') = '' AND EXISTS (SELECT 1 FROM one_rag_chunks c WHERE c.document_id = d.id AND INSTR(LOWER(c.content), LOWER(?)) > 0))",
             &db_params![query, query, query],
         ).await?;
         let matches: std::collections::HashSet<_> = matches.into_iter().collect();
@@ -4164,6 +4164,24 @@ mod tests {
         assert!(svc.filter_rag_documents("memberA", "missing").await.unwrap().is_empty());
         assert_eq!(svc.filter_rag_documents("memberA", "  ").await.unwrap().len(), 2);
         assert_eq!(svc.filter_rag_documents("memberA", "draft").await.unwrap().len(), 1);
+        let extracted = svc
+            .list_rag_documents("admin1")
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|doc| doc.title == "Extracted")
+            .unwrap();
+        svc.set_document_content("admin1", &extracted.id, "Revised current body")
+            .await
+            .unwrap();
+        assert_eq!(svc.filter_rag_documents("memberA", "正文独有").await.unwrap().len(), 1);
+        assert_eq!(
+            svc.filter_rag_documents("memberA", "Revised current")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
