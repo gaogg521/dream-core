@@ -369,6 +369,9 @@ pub struct RagLibraryDto {
     pub created_by: String,
     pub created_at: i64,
     pub updated_at: i64,
+    pub parent_id: Option<String>,
+    pub kind: String,
+    pub scope: String,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]

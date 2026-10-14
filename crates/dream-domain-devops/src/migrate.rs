@@ -57,6 +57,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ),
     ("018_packs_kb_scan", include_str!("../migrations/018_packs_kb_scan.sql")),
     ("019_api_asset_mcp", include_str!("../migrations/019_api_asset_mcp.sql")),
+    (
+        "020_knowledge_directories",
+        include_str!("../migrations/020_knowledge_directories.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -114,6 +118,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "019_api_asset_mcp",
         include_str!("../migrations_mysql/019_api_asset_mcp.sql"),
+    ),
+    (
+        "020_knowledge_directories",
+        include_str!("../migrations_mysql/020_knowledge_directories.sql"),
     ),
 ];
 

@@ -1594,6 +1594,7 @@ impl DevopsService {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .unwrap_or("oraglib_default");
+        self.assert_rag_library_target(created_by, library_id, scope).await?;
         self.db.execute(
             "INSERT INTO one_rag_documents \
                 (id, title, file_path, file_size, mime_type, status, last_error, chunk_count, scope, team_id, visibility, created_by, created_at, library_id) \
@@ -1699,91 +1700,6 @@ impl DevopsService {
             created_by,
         )
         .await
-    }
-
-    pub async fn list_rag_libraries(&self) -> Result<Vec<crate::models::RagLibraryDto>, DevopsError> {
-        Ok(self
-            .db
-            .fetch_all_as::<crate::models::RagLibraryDto>(
-                "SELECT id, name, description, created_by, created_at, updated_at FROM one_rag_libraries ORDER BY name",
-                &[],
-            )
-            .await?)
-    }
-
-    pub async fn upsert_rag_library(
-        &self,
-        id: Option<&str>,
-        name: &str,
-        description: &str,
-        created_by: &str,
-    ) -> Result<crate::models::RagLibraryDto, DevopsError> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(DevopsError::BadRequest("library name is required".into()));
-        }
-        let now = now_ms();
-        let id = match id {
-            Some(existing) => {
-                let updated = self
-                    .db
-                    .execute(
-                        "UPDATE one_rag_libraries SET name = ?, description = ?, updated_at = ? WHERE id = ?",
-                        &db_params![name, description, now, existing],
-                    )
-                    .await?;
-                if updated == 0 {
-                    return Err(DevopsError::NotFound(format!("library {existing}")));
-                }
-                existing.to_owned()
-            }
-            None => {
-                let id = new_id("oraglib");
-                self.db
-                    .execute(
-                        "INSERT INTO one_rag_libraries (id, name, description, created_by, created_at, updated_at) \
-                         VALUES (?, ?, ?, ?, ?, ?)",
-                        &db_params![&id, name, description, created_by, now, now],
-                    )
-                    .await?;
-                id
-            }
-        };
-        Ok(self
-            .db
-            .fetch_one_as::<crate::models::RagLibraryDto>(
-                "SELECT id, name, description, created_by, created_at, updated_at FROM one_rag_libraries WHERE id = ?",
-                &db_params![&id],
-            )
-            .await?)
-    }
-
-    pub async fn delete_rag_library(&self, id: &str) -> Result<(), DevopsError> {
-        if id == "oraglib_default" {
-            return Err(DevopsError::BadRequest(
-                "cannot delete the default knowledge library".into(),
-            ));
-        }
-        let count: i64 = self
-            .db
-            .fetch_one_scalar(
-                "SELECT COUNT(*) FROM one_rag_documents WHERE library_id = ?",
-                &db_params![id],
-            )
-            .await?;
-        if count > 0 {
-            return Err(DevopsError::BadRequest(
-                "move or delete documents in this library first".into(),
-            ));
-        }
-        let deleted = self
-            .db
-            .execute("DELETE FROM one_rag_libraries WHERE id = ?", &db_params![id])
-            .await?;
-        if deleted == 0 {
-            return Err(DevopsError::NotFound(format!("library {id}")));
-        }
-        Ok(())
     }
 
     pub async fn get_scan_policy(&self) -> Result<crate::models::ScanPolicyDto, DevopsError> {
@@ -2924,6 +2840,68 @@ mod tests {
         .execute(svc.db.sqlite())
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn member_library_listing_excludes_hidden_and_private_documents() {
+        let svc = service().await;
+        seed_org(&svc).await;
+        let visible = svc
+            .upsert_rag_library(None, "Shared", "", "admin1")
+            .await
+            .unwrap();
+        let hidden = svc
+            .upsert_rag_library(None, "Restricted", "", "admin1")
+            .await
+            .unwrap();
+        let private = svc
+            .upsert_rag_library(None, "Private", "", "admin1")
+            .await
+            .unwrap();
+        svc.register_rag_document(
+            "shared",
+            None,
+            None,
+            None,
+            "org",
+            None,
+            "all",
+            "admin1",
+            Some(&visible.id),
+        )
+        .await
+        .unwrap();
+        svc.register_rag_document(
+            "restricted",
+            None,
+            None,
+            None,
+            "org",
+            None,
+            "admin",
+            "admin1",
+            Some(&hidden.id),
+        )
+        .await
+        .unwrap();
+        svc.register_rag_document(
+            "private",
+            None,
+            None,
+            None,
+            "personal",
+            None,
+            "all",
+            "member1",
+            Some(&private.id),
+        )
+        .await
+        .unwrap();
+        let member = svc.list_visible_rag_libraries("member1").await.unwrap();
+        assert_eq!(member.len(), 1);
+        assert_eq!(member[0].id, visible.id);
+        let admin = svc.list_visible_rag_libraries("admin1").await.unwrap();
+        assert!(admin.iter().any(|library| library.id == hidden.id));
     }
 
     /// F1 repro (2026-09-05, ent-audit3 live divergence): a plain member must

@@ -148,7 +148,10 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
             axum::routing::put(update_rag_library).delete(delete_rag_library),
         )
         .route("/api/one/devops/rag/documents", get(list_rag).post(register_rag))
-        .route("/api/one/devops/rag/documents/{id}", axum::routing::delete(delete_rag))
+        .route(
+            "/api/one/devops/rag/documents/{id}",
+            patch(update_rag_location).delete(delete_rag),
+        )
         .route(
             "/api/one/devops/rag/documents/{id}/content",
             get(get_rag_content).put(set_rag_content),
@@ -1818,8 +1821,7 @@ async fn list_rag_libraries(
     State(state): State<OneDevopsRouterState>,
     Extension(user): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<Vec<RagLibraryDto>>>, DevopsError> {
-    require_registry_admin(&state, &user.id).await?;
-    Ok(Json(ApiResponse::ok(state.service.list_rag_libraries().await?)))
+    Ok(Json(ApiResponse::ok(state.service.list_visible_rag_libraries(&user.id).await?)))
 }
 
 #[derive(Deserialize)]
@@ -1830,6 +1832,12 @@ struct UpsertRagLibraryBody {
     name: String,
     #[serde(default)]
     description: String,
+    #[serde(default)]
+    parent_id: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
 }
 
 async fn upsert_rag_library(
@@ -1837,11 +1845,18 @@ async fn upsert_rag_library(
     Extension(user): Extension<CurrentUser>,
     Json(body): Json<UpsertRagLibraryBody>,
 ) -> Result<Json<ApiResponse<RagLibraryDto>>, DevopsError> {
-    require_registry_admin(&state, &user.id).await?;
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .upsert_rag_library(body.id.as_deref(), &body.name, &body.description, &user.id)
+            .upsert_rag_container(
+                body.id.as_deref(),
+                &body.name,
+                &body.description,
+                body.parent_id.as_deref(),
+                body.kind.as_deref().unwrap_or("space"),
+                body.scope.as_deref().unwrap_or("org"),
+                &user.id,
+            )
             .await?,
     )))
 }
@@ -1852,7 +1867,7 @@ async fn update_rag_library(
     Path(id): Path<String>,
     Json(body): Json<UpsertRagLibraryBody>,
 ) -> Result<Json<ApiResponse<RagLibraryDto>>, DevopsError> {
-    require_registry_admin(&state, &user.id).await?;
+    state.service.assert_rag_library_writable(&user.id, &id).await?;
     Ok(Json(ApiResponse::ok(
         state
             .service
@@ -1866,7 +1881,7 @@ async fn delete_rag_library(
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
-    require_registry_admin(&state, &user.id).await?;
+    state.service.assert_rag_library_writable(&user.id, &id).await?;
     state.service.delete_rag_library(&id).await?;
     Ok(Json(ApiResponse::ok(())))
 }
@@ -1927,6 +1942,19 @@ async fn register_rag(
         )
         .await?;
     Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn update_rag_location(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(body): Json<RegisterRagBody>,
+) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    state
+        .service
+        .update_rag_document_location(&user.id, &id, &body.title, body.library_id.as_deref())
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
 }
 
 async fn delete_rag(
@@ -2542,6 +2570,32 @@ mod tests {
         let mut u = CurrentUser::local_default();
         u.id = id.to_owned();
         u
+    }
+
+    #[tokio::test]
+    async fn rag_library_member_can_browse_but_cannot_create() {
+        let app = router().await;
+        let mut request = Request::builder()
+            .uri("/api/one/devops/rag/libraries")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(user("memberA"));
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["data"], serde_json::json!([]));
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/one/devops/rag/libraries")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"Forbidden"}"#))
+            .unwrap();
+        request.extensions_mut().insert(user("memberA"));
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     async fn get_summary(router: axum::Router, who: CurrentUser) -> axum::http::Response<Body> {
