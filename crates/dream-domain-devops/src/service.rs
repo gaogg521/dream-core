@@ -2046,7 +2046,7 @@ impl DevopsService {
         let updated = self
             .db
             .execute(
-                "UPDATE one_rag_documents SET content = ? WHERE id = ?",
+                "UPDATE one_rag_documents SET content = ?, status = 'pending', last_error = NULL WHERE id = ?",
                 &db_params![content, id],
             )
             .await?;
@@ -2054,6 +2054,27 @@ impl DevopsService {
             return Err(DevopsError::NotFound(format!("rag document {id}")));
         }
         Ok(())
+    }
+
+    /// Read using the library visibility policy, including grants and private ownership.
+    pub async fn read_rag_document_content(&self, viewer: &str, id: &str) -> Result<String, DevopsError> {
+        if !self
+            .list_rag_documents(viewer)
+            .await?
+            .iter()
+            .any(|document| document.id == id)
+        {
+            return Err(DevopsError::Forbidden("document is not visible to this member".into()));
+        }
+        Ok(self
+            .db
+            .fetch_optional_scalar::<Option<String>>(
+                "SELECT content FROM one_rag_documents WHERE id = ?",
+                &db_params![id],
+            )
+            .await?
+            .flatten()
+            .unwrap_or_default())
     }
 
     /// Original text for the admin editor, with the same project boundary as writes.
@@ -2092,7 +2113,10 @@ impl DevopsService {
             ));
         }
         let content = content.unwrap_or_default();
-        let chunks = crate::embedding::chunk_text(&content, 800, 100);
+        static INLINE_IMAGES: std::sync::LazyLock<regex::Regex> =
+            std::sync::LazyLock::new(|| regex::Regex::new(r"!\[[^\]]*\]\(data:image/[^;]+;base64,[^)]+\)").unwrap());
+        let text = INLINE_IMAGES.replace_all(&content, " ");
+        let chunks = crate::embedding::chunk_text(&text, 800, 100);
         if chunks.is_empty() {
             return Err(DevopsError::BadRequest("document has no content to process".into()));
         }
@@ -2111,6 +2135,14 @@ impl DevopsService {
                 return Err(e);
             }
         };
+        let current: Option<String> = self
+            .db
+            .fetch_optional_scalar("SELECT content FROM one_rag_documents WHERE id = ?", &db_params![id])
+            .await?
+            .flatten();
+        if current.as_deref() != Some(content.as_str()) {
+            return Ok(0);
+        }
         let dims = vectors.first().map(|v| v.len() as i64);
 
         let now = now_ms();
@@ -2870,18 +2902,9 @@ mod tests {
     async fn member_library_listing_excludes_hidden_and_private_documents() {
         let svc = service().await;
         seed_org(&svc).await;
-        let visible = svc
-            .upsert_rag_library(None, "Shared", "", "admin1")
-            .await
-            .unwrap();
-        let hidden = svc
-            .upsert_rag_library(None, "Restricted", "", "admin1")
-            .await
-            .unwrap();
-        let private = svc
-            .upsert_rag_library(None, "Private", "", "admin1")
-            .await
-            .unwrap();
+        let visible = svc.upsert_rag_library(None, "Shared", "", "admin1").await.unwrap();
+        let hidden = svc.upsert_rag_library(None, "Restricted", "", "admin1").await.unwrap();
+        let private = svc.upsert_rag_library(None, "Private", "", "admin1").await.unwrap();
         svc.register_rag_document(
             "shared",
             None,

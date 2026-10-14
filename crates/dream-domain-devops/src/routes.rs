@@ -154,7 +154,9 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
         )
         .route(
             "/api/one/devops/rag/documents/{id}/content",
-            get(get_rag_content).put(set_rag_content),
+            get(get_rag_content)
+                .put(set_rag_content)
+                .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
         )
         .route(
             "/api/one/devops/rag/documents/{id}/process",
@@ -1821,7 +1823,9 @@ async fn list_rag_libraries(
     State(state): State<OneDevopsRouterState>,
     Extension(user): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<Vec<RagLibraryDto>>>, DevopsError> {
-    Ok(Json(ApiResponse::ok(state.service.list_visible_rag_libraries(&user.id).await?)))
+    Ok(Json(ApiResponse::ok(
+        state.service.list_visible_rag_libraries(&user.id).await?,
+    )))
 }
 
 #[derive(Deserialize)]
@@ -1988,8 +1992,7 @@ async fn get_rag_content(
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<String>>, DevopsError> {
-    state.service.assert_rag_writable(&user.id, &id).await?;
-    let content = state.service.get_document_content(&user.id, &id).await?;
+    let content = state.service.read_rag_document_content(&user.id, &id).await?;
     Ok(Json(ApiResponse::ok(content)))
 }
 
@@ -2001,6 +2004,24 @@ async fn set_rag_content(
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
     state.service.assert_rag_writable(&user.id, &id).await?;
     state.service.set_document_content(&user.id, &id, &body.content).await?;
+    if !body.content.trim().is_empty() {
+        let service = state.service.clone();
+        let actor = user.id.clone();
+        tokio::spawn(async move {
+            static QUEUE: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+                std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let _guard = QUEUE.lock().await;
+            for attempt in 0..3 {
+                if service.process_rag_document(&actor, &id).await.is_ok() {
+                    return;
+                }
+                tracing::warn!(document_id = %id, attempt, "automatic knowledge indexing failed; retry scheduled");
+                tokio::time::sleep(std::time::Duration::from_secs(5 * (attempt + 1))).await;
+            }
+        });
+    }
+
     Ok(Json(ApiResponse::ok(())))
 }
 
@@ -2593,9 +2614,7 @@ mod tests {
         request.extensions_mut().insert(user("memberA"));
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), 4096)
-            .await
-            .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["data"], serde_json::json!([]));
         let mut request = Request::builder()

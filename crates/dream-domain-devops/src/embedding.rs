@@ -54,8 +54,7 @@ pub fn env_embedding_config() -> (Option<String>, Option<String>, Option<String>
 /// 1. an explicitly stored `one_rag_config` row (both `base_url` and `model`
 ///    non-blank) — the admin's own choice always wins;
 /// 2. otherwise the deployment default from `env_*` — the bundled container;
-/// 3. otherwise `None` — the caller reports "not configured", unchanged from
-///    before this fallback existed.
+/// 3. otherwise the built-in local multilingual embedding model.
 ///
 /// A blank stored row (an admin who cleared the form) must NOT shadow the
 /// bundled default, hence the non-blank guard rather than a plain `is_some`.
@@ -75,7 +74,13 @@ pub fn resolve_embedding_config(
             model,
         });
     }
-    let base_url = env_base_url?;
+    let Some(base_url) = env_base_url else {
+        return Some(EmbeddingConfig {
+            base_url: "local://embedding".into(),
+            api_key: String::new(),
+            model: "paraphrase-multilingual-MiniLM-L12-v2".into(),
+        });
+    };
     let model = env_model?;
     if base_url.trim().is_empty() || model.trim().is_empty() {
         return None;
@@ -110,6 +115,40 @@ pub async fn embed(config: &EmbeddingConfig, inputs: &[String]) -> Result<Vec<Ve
         return Ok(vec![]);
     }
 
+    if config.base_url == "local://embedding" {
+        let texts = inputs.to_vec();
+        return tokio::task::spawn_blocking(move || {
+            static ENGINE: std::sync::LazyLock<std::sync::Mutex<Option<fastembed::TextEmbedding>>> =
+                std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+            let mut engine = ENGINE
+                .lock()
+                .map_err(|_| DevopsError::Internal("local embedding engine lock failed".into()))?;
+            if engine.is_none() {
+                let root = std::env::var_os("ONE_DATA_DIR")
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| std::env::var_os("LOCALAPPDATA").map(|p| std::path::PathBuf::from(p).join("OneWork")))
+                    .or_else(|| std::env::var_os("HOME").map(|p| std::path::PathBuf::from(p).join(".cache/onework")))
+                    .unwrap_or_else(|| std::env::temp_dir().join("onework"));
+                tracing::info!("initializing local knowledge embedding model");
+                *engine = Some(
+                    fastembed::TextEmbedding::try_new(
+                        fastembed::TextInitOptions::new(fastembed::EmbeddingModel::ParaphraseMLMiniLML12V2Q)
+                            .with_cache_dir(root.join("models/embedding"))
+                            .with_show_download_progress(false)
+                            .with_intra_threads(2),
+                    )
+                    .map_err(|e| DevopsError::Internal(format!("local embedding model initialization failed: {e}")))?,
+                );
+            }
+            engine
+                .as_mut()
+                .unwrap()
+                .embed(texts, Some(16))
+                .map_err(|e| DevopsError::Internal(format!("local embedding inference failed: {e}")))
+        })
+        .await
+        .map_err(|e| DevopsError::Internal(format!("local embedding worker failed: {e}")))?;
+    }
     let client = reqwest::Client::new();
     let mut req = client.post(config.endpoint()).json(&EmbeddingRequest {
         model: config.model.trim(),
@@ -357,8 +396,11 @@ mod tests {
     }
 
     #[test]
-    fn embedding_config_is_none_when_neither_source_is_set() {
-        assert!(resolve_embedding_config(None, None, None, None).is_none());
+    fn embedding_config_defaults_to_local_and_rejects_incomplete_overrides() {
+        assert_eq!(
+            resolve_embedding_config(None, None, None, None).unwrap().base_url,
+            "local://embedding"
+        );
         // base url present but model missing → still unusable.
         assert!(resolve_embedding_config(None, Some("http://embedding:80/v1".to_owned()), None, None).is_none());
         // blank env values are treated as absent.
