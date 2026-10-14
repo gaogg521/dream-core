@@ -1464,6 +1464,30 @@ impl DevopsService {
 
     // -- rag documents (metadata registry) ---------------------------------
 
+    /// Literal title/body search over the same authorized documents as browsing.
+    /// Drafts are searchable before embedding; extracted file chunks are included.
+    pub async fn filter_rag_documents(
+        &self,
+        viewer_user_id: &str,
+        query: &str,
+    ) -> Result<Vec<RagDocumentDto>, DevopsError> {
+        let mut documents = self.list_rag_documents(viewer_user_id).await?;
+        let query = query.trim();
+        if query.is_empty() || documents.is_empty() {
+            return Ok(documents);
+        }
+        let matches: Vec<String> = self.db.fetch_all_scalar(
+            "SELECT d.id FROM one_rag_documents d WHERE \
+             INSTR(LOWER(d.title), LOWER(?)) > 0 OR \
+             INSTR(LOWER(COALESCE(d.content, '')), LOWER(?)) > 0 OR \
+             EXISTS (SELECT 1 FROM one_rag_chunks c WHERE c.document_id = d.id AND INSTR(LOWER(c.content), LOWER(?)) > 0)",
+            &db_params![query, query, query],
+        ).await?;
+        let matches: std::collections::HashSet<_> = matches.into_iter().collect();
+        documents.retain(|document| matches.contains(&document.id));
+        Ok(documents)
+    }
+
     pub async fn list_rag_documents(&self, viewer_user_id: &str) -> Result<Vec<RagDocumentDto>, DevopsError> {
         const COLS: &str = "id, title, file_path, file_size, mime_type, status, last_error, chunk_count, \
                             scope, team_id, visibility, created_by, created_at, library_id";
@@ -4107,6 +4131,39 @@ mod tests {
         assert!(titles.contains(&"a-doc".to_string()));
         assert!(!titles.contains(&"b-doc".to_string()));
         assert!(!titles.contains(&"secret-doc".to_string()));
+    }
+
+    #[tokio::test]
+    async fn filter_rag_matches_draft_body_and_chunks_without_leaking_private_documents() {
+        let svc = service().await;
+        seed_two_group_enterprise(&svc).await;
+        for (title, scope, author) in [
+            ("Draft", "personal", "memberA"),
+            ("Secret", "personal", "memberB"),
+            ("Extracted", "org", "admin1"),
+        ] {
+            let doc = svc
+                .register_rag_document(title, None, None, None, scope, None, "all", author, None)
+                .await
+                .unwrap();
+            if title == "Extracted" {
+                sqlx::query("INSERT INTO one_rag_chunks (id, document_id, chunk_index, content, embedding, created_at) VALUES (?, ?, 0, ?, ?, 0)")
+                    .bind(new_id("chunk")).bind(&doc.id).bind("正文独有 KEY_100%")
+                    .bind(Vec::<u8>::new()).execute(svc.db.sqlite()).await.unwrap();
+            } else {
+                svc.set_document_content(author, &doc.id, "正文独有 KEY_100%")
+                    .await
+                    .unwrap();
+            }
+        }
+        let matches = svc.filter_rag_documents("memberA", "正文独有").await.unwrap();
+        assert_eq!(matches.len(), 2);
+        assert!(!matches.iter().any(|doc| doc.title == "Secret"));
+        assert_eq!(svc.filter_rag_documents("admin1", "正文独有").await.unwrap().len(), 1);
+        assert_eq!(svc.filter_rag_documents("memberA", "key_100%").await.unwrap().len(), 2);
+        assert!(svc.filter_rag_documents("memberA", "missing").await.unwrap().is_empty());
+        assert_eq!(svc.filter_rag_documents("memberA", "  ").await.unwrap().len(), 2);
+        assert_eq!(svc.filter_rag_documents("memberA", "draft").await.unwrap().len(), 1);
     }
 
     #[tokio::test]

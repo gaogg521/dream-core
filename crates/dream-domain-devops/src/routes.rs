@@ -1886,11 +1886,22 @@ async fn delete_rag_library(
     Ok(Json(ApiResponse::ok(())))
 }
 
+#[derive(Deserialize, Default)]
+struct RagListQuery {
+    query: Option<String>,
+}
+
 async fn list_rag(
     State(state): State<OneDevopsRouterState>,
     Extension(user): Extension<CurrentUser>,
+    Query(query): Query<RagListQuery>,
 ) -> Result<Json<ApiResponse<Vec<RagDocumentDto>>>, DevopsError> {
-    Ok(Json(ApiResponse::ok(state.service.list_rag_documents(&user.id).await?)))
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .filter_rag_documents(&user.id, query.query.as_deref().unwrap_or(""))
+            .await?,
+    )))
 }
 
 #[derive(Deserialize)]
