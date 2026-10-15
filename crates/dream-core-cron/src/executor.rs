@@ -18,6 +18,7 @@ use tracing::{error, info, warn};
 
 use crate::artifacts::{broadcast_artifact, build_cron_trigger_artifact};
 use crate::error::CronError;
+use crate::prompt::build_run_context;
 use crate::prompt::{
     build_existing_conversation_prompt, build_new_conversation_prompt_with_skill_suggest,
     build_new_conversation_with_skill_prompt,
@@ -1191,6 +1192,28 @@ async fn build_task_extra(registry: &AgentRegistry, job: &CronJob, skills: &[Str
 }
 
 fn build_prompt(job: &CronJob, saved_skill: Option<&SavedSkillContext>) -> String {
+    let context = build_run_context(&run_now_text(job), job.push_target.is_some());
+    format!("{context}{}", build_task_prompt(job, saved_skill))
+}
+
+/// The moment of this run as the owner reads a clock: in the job's own timezone
+/// when it has one, otherwise this machine's.
+fn run_now_text(job: &CronJob) -> String {
+    let now = chrono::Utc::now();
+    let job_tz = match &job.schedule {
+        crate::types::CronSchedule::Cron { tz: Some(tz), .. } => tz.parse::<chrono_tz::Tz>().ok(),
+        _ => None,
+    };
+    match job_tz {
+        Some(tz) => format!("{} ({})", now.with_timezone(&tz).format("%Y-%m-%d %H:%M %A"), tz.name()),
+        None => {
+            let local = now.with_timezone(&chrono::Local);
+            format!("{} (UTC{})", local.format("%Y-%m-%d %H:%M %A"), local.format("%:z"))
+        }
+    }
+}
+
+fn build_task_prompt(job: &CronJob, saved_skill: Option<&SavedSkillContext>) -> String {
     let schedule_desc = schedule_description_text(&job.schedule);
 
     match job.execution_mode {
@@ -1658,6 +1681,60 @@ mod tests {
         let prompt = build_prompt(&job, None);
         assert!(prompt.contains("[Scheduled Task Execution]"));
         assert!(prompt.contains("Task instruction:\ndo something"));
+    }
+
+    #[test]
+    fn build_prompt_tells_the_model_what_day_it_is() {
+        let prompt = build_prompt(&sample_job(), None);
+        assert!(
+            prompt.starts_with(
+                "[Run Context]
+Current date and time: "
+            ),
+            "{prompt}"
+        );
+        let year = chrono::Utc::now().format("%Y").to_string();
+        assert!(prompt.contains(&year), "the run context should carry the current year");
+        assert!(prompt.contains("Never answer from a year in your training data"));
+        // The task text is still there, after the context.
+        assert!(prompt.contains(
+            "Task instruction:
+do something"
+        ));
+    }
+
+    #[test]
+    fn build_prompt_uses_the_jobs_own_timezone_for_the_clock() {
+        let job = CronJob {
+            schedule: crate::types::CronSchedule::Cron {
+                expr: "0 19 * * *".into(),
+                tz: Some("Asia/Shanghai".into()),
+                description: None,
+            },
+            ..sample_job()
+        };
+        assert!(build_prompt(&job, None).contains("(Asia/Shanghai)"));
+    }
+
+    #[test]
+    fn build_prompt_only_mentions_delivery_when_the_job_pushes_to_a_bot() {
+        let plain = build_prompt(&sample_job(), None);
+        assert!(
+            !plain.contains("Delivery:"),
+            "a job with no push target must not be told about delivery"
+        );
+
+        let pushing = CronJob {
+            push_target: Some(dream_core_api_types::CronPushTarget {
+                plugin_id: "weixin".into(),
+                chat_id: "wx-user".into(),
+            }),
+            ..sample_job()
+        };
+        let prompt = build_prompt(&pushing, None);
+        assert!(prompt.contains("sent to the user's chat bot"));
+        assert!(prompt.contains("do NOT use messaging skills or CLIs"));
+        assert!(prompt.contains("no mention of files you wrote"));
     }
 
     #[test]

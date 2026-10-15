@@ -43,3 +43,32 @@ pub fn build_skill_suggest_prompt(task_name: &str) -> String {
         "The task \"{task_name}\" is a recurring scheduled task. Based on what you just did, please create a file named \"{SKILL_SUGGEST_FILENAME}\" in the current working directory to help future runs stay consistent.\n\nThe file should follow this format:\n\n```markdown\n---\nname: <short kebab-case name, e.g. daily-greeting>\ndescription: <one-line description of what this task does>\n---\n\n<Instructions capturing the pattern you used: output format, tone, sources checked, steps taken, quality criteria. Use concrete details from this execution, not placeholders.>\n```\n\nIf you think the task is too simple or one-off to benefit from a skill file, you can skip this."
     )
 }
+
+/// Facts about this particular run that the task text cannot know: when it is,
+/// and where the result goes. Prepended to the task prompt.
+///
+/// Without the date a model answers "the hottest words right now" from the year
+/// its training data ends in. Without the delivery note it tries to send the
+/// result itself (the first real WeChat run went looking for an enterprise-WeChat
+/// CLI and asked the user to scan a QR code) when the system already delivers it.
+pub fn build_run_context(now_text: &str, pushes_to_bot: bool) -> String {
+    let mut block = format!(
+        "[Run Context]
+Current date and time: {now_text}.
+- \"Latest\", \"today\", \"trending\" and \"current\" mean as of the date above. Never answer from a year in your training data; put the current date in web searches and say which date the information is from.
+"
+    );
+    if pushes_to_bot {
+        block.push_str(
+            "- Delivery: when you finish, your final reply is sent to the user's chat bot (WeChat, Lark, Telegram, ...) automatically. Do NOT send, push or notify anything yourself, do NOT use messaging skills or CLIs (wecom, wechat, lark, telegram, ...), and do NOT ask the user to authorise or set anything up for delivery.
+- Make the final reply the finished content itself, short enough to read in a chat window: plain text, no tables, no setup steps, and no mention of files you wrote (such as SKILL_SUGGEST.md).
+",
+        );
+    }
+    block.push_str(
+        "[/Run Context]
+
+",
+    );
+    block
+}
