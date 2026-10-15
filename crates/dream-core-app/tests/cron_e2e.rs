@@ -484,6 +484,7 @@ async fn cj5b_run_now_legacy_workspace_with_whitespace_succeeds() {
             retry_count: 0,
             max_retries: 3,
             queue_enabled: false,
+            push_target: None,
         })
         .await
         .unwrap();

@@ -272,7 +272,11 @@ mod tests {
                 .status(),
             StatusCode::FORBIDDEN
         );
-        let uploaded = app.clone().oneshot(request("POST", "owner", Body::from(body), None)).await.unwrap();
+        let uploaded = app
+            .clone()
+            .oneshot(request("POST", "owner", Body::from(body), None))
+            .await
+            .unwrap();
         let status = uploaded.status();
         let details = axum::body::to_bytes(uploaded.into_body(), 16384).await.unwrap();
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&details));
