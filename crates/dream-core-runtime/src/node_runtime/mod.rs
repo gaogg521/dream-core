@@ -1,4 +1,5 @@
 mod managed;
+mod shell_path;
 mod system;
 mod types;
 
@@ -11,6 +12,7 @@ pub use managed::{
     install_and_validate as install_managed_runtime, managed_node_contract_for_export,
     probe_support as probe_node_runtime_supported,
 };
+pub use shell_path::path_with_managed_node_fallback;
 pub use system::{derive_runtime_root, tool_command, validate_same_root};
 pub use types::{
     DoctorRow, NodeRuntimeError, NodeRuntimeFailureKind, NodeRuntimeProgress, NodeRuntimeProgressPhase,

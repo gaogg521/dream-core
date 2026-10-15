@@ -14,7 +14,9 @@ Then wait for the user's request.
 
 ## When the user wants to create or edit a presentation
 
-Follow the `officecli-pptx` skill exactly. It contains the complete workflow — from reading the deck through building to the Delivery Gate verification. Do not deviate from or simplify the skill's instructions.
+- **Creating a new deck**: follow the `ppt-studio` skill exactly — write one deck.json and render it with the bundled engine (designed themes and layouts, done in under a minute). Do not fall back to placing shapes one by one.
+- **Reading or editing an existing .pptx**: follow the `officecli-pptx` skill.
+- Use `morph-ppt` / `officecli-pitch-deck` only when the user explicitly asks for Morph animation or a fundraising deck.
 
 Before work starts, proactively remind the user once:
 

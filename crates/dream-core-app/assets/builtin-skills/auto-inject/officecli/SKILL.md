@@ -405,9 +405,11 @@ officecli add-part <file> <parent>                   # create new document part 
 
 ### PowerPoint (.pptx)
 
+**Making a NEW deck from scratch → use the `ppt-studio` skill instead** (one deck.json, designed themes, renders in seconds). The skills below are for reading/editing an existing .pptx, or when the user explicitly asks for officecli-built decks or Morph animation.
+
 | Name | When to use |
 |------|-------------|
-| `pptx` | Generic decks: board reviews, sales decks, all-hands, product launches |
+| `pptx` | Reading / editing existing decks; officecli-built decks on explicit request |
 | `pitch-deck` | **Fundraising only** — seed / Series A-C / SAFE / convertible / strategic raise. NOT for sales / product / board decks (route those to `pptx`) |
 | `morph-ppt` | Cinematic Morph-animated presentations. NOT for static decks (route those to `pptx`) |
 | `morph-ppt-3d` | 3D Morph: GLB models, camera moves, depth. NOT for 2D-only Morph (route those to `morph-ppt`) |

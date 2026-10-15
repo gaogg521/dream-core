@@ -220,7 +220,7 @@ pub(super) async fn build(
         skills: resolved_skills,
         extra_mcp_servers,
         bedrock_config,
-        runtime_env: ctx.runtime_env,
+        runtime_env: with_managed_node_on_path(ctx.runtime_env),
         prompt_dump_dir: crate::dev_prompt_dump::dump_dir_for_data_dir(&deps.data_dir, deps.dump_prompts),
         extra_headers: resolve_extra_headers(provider_id, &ctx.conversation_id),
     };
@@ -1159,6 +1159,19 @@ mod extra_headers_tests {
     }
 }
 
+/// Let the engine's shell commands reach the app's managed Node runtime when the
+/// machine has no system Node — bundled skills (e.g. the deck renderer) run `node`.
+/// A caller-provided PATH is left alone.
+fn with_managed_node_on_path(mut runtime_env: Vec<(String, String)>) -> Vec<(String, String)> {
+    if runtime_env.iter().any(|(name, _)| name.eq_ignore_ascii_case("PATH")) {
+        return runtime_env;
+    }
+    if let Some(path) = dream_core_runtime::node_runtime::path_with_managed_node_fallback() {
+        info!("managed node runtime appended to agent shell PATH");
+        runtime_env.push(("PATH".to_owned(), path.to_string_lossy().into_owned()));
+    }
+    runtime_env
+}
 #[cfg(test)]
 mod tests {
     use super::*;
