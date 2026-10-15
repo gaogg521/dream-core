@@ -90,14 +90,22 @@ pub(crate) async fn upload(
         .await
         .map_err(|e| DevopsError::Internal(e.to_string()))?;
     // Keep old versions on disk; replacing a source never destroys its prior bytes.
-    state
-        .service
-        .db
+    let mut transaction = state.service.db.begin().await?;
+    transaction
         .execute(
-            "UPDATE one_rag_documents SET file_path = ?, file_size = ?, mime_type = ? WHERE id = ?",
+            "UPDATE one_rag_documents SET file_path = ?, file_size = ?, mime_type = ?, \
+             content = '', status = 'ready', chunk_count = 0, last_error = NULL WHERE id = ?",
             &db_params![format!("{PREFIX}{key}"), data.len() as i64, mime(&name), &id],
         )
         .await?;
+    transaction
+        .execute("DELETE FROM one_rag_chunks WHERE document_id = ?", &db_params![&id])
+        .await?;
+    transaction.commit().await?;
+    // A new original must never keep matches from the previous file's text.
+    if let Err(error) = crate::retrieval::sync_document(&state.service.db, &id, &[]).await {
+        tracing::warn!(%error, document_id = %id, "could not clear original file lexical index");
+    }
     let doc = state
         .service
         .list_rag_documents(&user.id)
@@ -245,8 +253,27 @@ mod tests {
             .await
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
+        service
+            .db
+            .execute(
+                "UPDATE one_rag_documents SET content = 'previous original text', status = 'ready', chunk_count = 1 WHERE id = ?",
+                &db_params![&doc.id],
+            )
+            .await
+            .unwrap();
+        service.db.execute(
+            "INSERT INTO one_rag_chunks (id, document_id, chunk_index, content, embedding, created_at) VALUES (?, ?, 0, ?, ?, 0)",
+            &db_params!["previous-chunk", &doc.id, "previous original text", crate::embedding::pack_embedding(&[1.0])],
+        ).await.unwrap();
+        crate::retrieval::sync_document(
+            &service.db,
+            &doc.id,
+            &[("previous-chunk".into(), "previous original text".into())],
+        )
+        .await
+        .unwrap();
         let app = crate::routes::one_devops_routes(
-            OneDevopsRouterState::new(service).with_rag_source_dir(dir.path().to_path_buf()),
+            OneDevopsRouterState::new(service.clone()).with_rag_source_dir(dir.path().to_path_buf()),
         );
         let uri = format!("/api/one/devops/rag/documents/{}/source", doc.id);
         let body = "--boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"private.pdf\"\r\nContent-Type: application/pdf\r\n\r\n%PDF-original\r\n--boundary--\r\n";
@@ -280,6 +307,17 @@ mod tests {
         let status = uploaded.status();
         let details = axum::body::to_bytes(uploaded.into_body(), 16384).await.unwrap();
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&details));
+        assert_eq!(service.read_rag_document_content("owner", &doc.id).await.unwrap(), "");
+        let remaining: i64 = service
+            .db
+            .fetch_optional_scalar(
+                "SELECT COUNT(*) FROM one_rag_chunks WHERE document_id = ?",
+                &db_params![&doc.id],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(remaining, 0, "replacing an original must remove stale retrieval chunks");
         assert_eq!(
             app.clone()
                 .oneshot(request("GET", "intruder", Body::empty(), None))
