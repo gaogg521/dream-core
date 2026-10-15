@@ -33,7 +33,7 @@ for Morph animation or an investor pitch deck built with officecli.
    Keep deck.json next to the .pptx — later edits ("把第 5 页改成…", "换个主题") are deck.json edits
    + re-render, not officecli surgery.
 
-If `node` is not found, fall back to the `officecli-pptx` skill and tell the user in one line.
+If `node` is not found, load `officecli-pptx` and build the deck with it instead, and tell the user in one line that the designed engine could not run.
 
 ## deck.json
 

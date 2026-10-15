@@ -1,6 +1,6 @@
 ---
 name: officecli-pptx
-description: "Use this skill when an EXISTING .pptx is involved, or the user explicitly wants an officecli-built deck. For a NEW deck from scratch prefer ppt-studio (faster, designed themes). This includes: reading, parsing, or extracting text from any .pptx file; editing, modifying, or updating existing presentations; combining or splitting slide files; working with templates, layouts, speaker notes, or comments. Trigger whenever the user mentions 'deck', 'slides', 'presentation', 'pitch', or references a .pptx filename."
+description: "Use this skill when an EXISTING .pptx is involved, when the user explicitly wants an officecli-built deck, or as the fallback builder when ppt-studio's engine cannot run. For a NEW deck from scratch prefer ppt-studio (faster, designed themes). This includes: reading, parsing, or extracting text from any .pptx file; editing, modifying, or updating existing presentations; combining or splitting slide files; working with templates, layouts, speaker notes, or comments. Trigger whenever the user mentions 'deck', 'slides', 'presentation', 'pitch', or references a .pptx filename."
 ---
 
 > **⚠️ Platform note — read before running any command.** The shell snippets in this skill are written for **macOS / Linux** (bash/zsh). Always check which OS you are on first. On **Windows** do **not** run them verbatim — the underlying tool/CLI commands are usually cross-platform, but the surrounding shell syntax is not. Translate it to PowerShell before running:

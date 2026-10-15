@@ -45,6 +45,8 @@ Verify with `officecli --version`. If still not found after install, open a new 
 
 **Before doc work, check Specialized Skills** (bottom of this file). Fundraising decks, academic papers, financial models, dashboards, and Morph animations need their own skill loaded first — `load_skill` once, then proceed.
 
+> **PPT priority rule (overrides the table below).** Any request to create a NEW deck, presentation, slides, 路演, 汇报 or 宣讲 is handled by the auto-injected `ppt-studio` skill: load it with the Skill tool, write one `deck.json`, and render it with its bundled script. Do NOT load the `pptx` default for a new deck. Use `officecli-pptx` only to read or edit an existing .pptx, and `pitch-deck` / `morph-ppt` only when the user explicitly asks for a fundraising deck or Morph animation.
+
 ---
 
 ## Help System (IMPORTANT)
@@ -392,6 +394,7 @@ officecli add-part <file> <parent>                   # create new document part 
 
 **Loading rule**:
 - Pick the most specific match in "When to use"; if none fits, load the format default (`word` / `pptx` / `excel`).
+- Exception: a new PowerPoint deck never falls back to the `pptx` default — use `ppt-studio` (see the PPT priority rule above).
 - Scenes already contain the format default's rules — load **one** skill per artifact, never stack.
 - Loaded rules persist across turns; don't re-load each reply.
 - Two distinct artifacts → two separate loads.
