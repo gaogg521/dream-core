@@ -15,7 +15,8 @@ for Morph animation or an investor pitch deck built with officecli.
 
 ## Workflow (do not add steps)
 
-1. **Plan silently.** Decide the storyline and page list in your head. Don't ask clarifying questions
+1. **Plan silently.** Decide the storyline and the exact page list in your head — if the user named a
+   page count, plan exactly that many slides (cover and closing included) before writing anything. Don't ask clarifying questions
    unless the topic itself is unknowable; pick sensible defaults (10–14 pages, theme by scenario).
    If the user gave source material (files, data, a doc), read it first and build from it.
 2. **Write `deck.json`** into the workspace with the file-write tool (UTF-8). One write.
@@ -25,7 +26,8 @@ for Morph animation or an investor pitch deck built with officecli.
    ```
    Paths with spaces need the quotes. Same command on Windows/macOS/Linux.
 4. **Read the output.** `OK N 页` = success. Any `警告` line names a page whose text cannot fit even
-   at the minimum size → shorten that text in deck.json and re-run (re-runs take <1s). Errors name the
+   at the minimum size, a page missing its content field, or a page-count mismatch → fix exactly those
+   pages in deck.json (one edit pass covering all warnings) and re-run (re-runs take <1s). Errors name the
    bad field/value; fix and re-run.
 5. **Deliver**: tell the user the file name, page count and theme in 2–3 lines. Don't paste the JSON.
    Keep deck.json next to the .pptx — later edits ("把第 5 页改成…", "换个主题") are deck.json edits
@@ -40,11 +42,13 @@ If `node` is not found, fall back to the `officecli-pptx` skill and tell the use
   "title": "文件标题（写入属性）",
   "theme": "business-blue",
   "footer": "页脚文字，可省略",
+  "pages": 20,
   "slides": [ { "type": "cover", ... }, ... ]
 }
 ```
 
-Every slide accepts `"notes": "演讲者备注"`. Content slides accept `"kicker"` (short label above the
+`pages` = the page count the user asked for (omit if they didn't); the engine warns when the slide
+count differs. Every slide accepts `"notes": "演讲者备注"`. Content slides accept `"kicker"` (short label above the
 title, e.g. `增长趋势`) and `"subtitle"`. Full worked example covering every layout:
 `reference/example-deck.json` — read it once if unsure about a field.
 

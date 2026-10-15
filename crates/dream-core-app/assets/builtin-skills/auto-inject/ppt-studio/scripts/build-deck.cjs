@@ -56,9 +56,13 @@ function fitSize(ctx, text, w, h, max, min, opts = {}) {
     const hh = textHeight(text, w, pt, opts.bold, spacing) + (extra * pt * spacing) / 72;
     if (hh <= h) return pt;
   }
-  ctx.warn(`文字过多：「${String(text).slice(0, 24)}…」在 ${min}pt 仍放不下，请精简`);
+  // The width estimate is deliberately pessimistic; only a clear overflow is worth a rewrite round.
+  const atMin = textHeight(text, w, min, opts.bold, spacing) + (extra * min * spacing) / 72;
+  if (atMin > h * OVERFLOW_TOLERANCE) ctx.warn(`文字过多：「${String(text).slice(0, 24)}…」在 ${min}pt 仍放不下，请精简`);
   return min;
 }
+
+const OVERFLOW_TOLERANCE = 1.12;
 
 // ---------------------------------------------------------------- gradient backgrounds
 
@@ -256,7 +260,7 @@ function measureBullets(ctx, items, w, h, max = 20, min = 12) {
     const used = bulletsHeight(flat, w, pt);
     if (used <= h) return { pt, h: used };
   }
-  if (flat.length) ctx.warn(`列表文字过多：「${flat[0].text.slice(0, 20)}…」等 ${flat.length} 行在 ${min}pt 仍放不下，请精简或拆页`);
+  if (flat.length && bulletsHeight(flat, w, min) > h * OVERFLOW_TOLERANCE) ctx.warn(`列表文字过多：「${flat[0].text.slice(0, 20)}…」等 ${flat.length} 行在 ${min}pt 仍放不下，请精简或拆页`);
   return { pt: min, h };
 }
 
@@ -402,7 +406,10 @@ LAYOUTS.bullets = (ctx, slide, s) => {
     bulletList(ctx, slide, items.slice(0, half), M, top + 0.1, cw, h - 0.1);
     bulletList(ctx, slide, items.slice(half), M + cw + 0.6, top + 0.1, cw, h - 0.1);
   } else {
-    bulletList(ctx, slide, items, M, top + 0.1, textW, h - 0.1, { max: 24 });
+    // A short list sits balanced in the content area instead of hugging the title.
+    const m = measureBullets(ctx, items, textW, h - 0.1, 24, 12);
+    const y = img || s.highlight ? top + 0.1 : balance(top + 0.1, m.h * 1.15);
+    bulletList(ctx, slide, items, M, y, textW, CONTENT_BOTTOM - y, { pt: m.pt });
   }
 };
 
@@ -878,6 +885,9 @@ async function build(specPath, outPath) {
     fn(ctx, slide, raw);
     if (!NO_FOOTER.has(type)) footer(ctx, slide);
     if (raw.notes) slide.addNotes(asText(raw.notes));
+  }
+  if (Number.isInteger(deck.pages) && deck.pages !== deck.slides.length) {
+    warnings.push(`页数不符：要求 ${deck.pages} 页，实际 ${deck.slides.length} 页——增删页面后重跑`);
   }
   const out = outPath || specPath.replace(/\.json$/i, '') + '.pptx';
   await pptx.writeFile({ fileName: out });
