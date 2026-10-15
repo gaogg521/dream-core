@@ -30,7 +30,9 @@
 #   startup or link against it. Bundling it is future work if this
 #   deployment needs Office-file conversion.
 
-FROM rust:1.95-bookworm AS builder
+# ONNX Runtime needs newer libstdc++ symbols than Bookworm provides.
+# Keep the compiler and runtime distributions aligned.
+FROM rust:1.95-trixie AS builder
 
 # git: `.cargo/config.toml` sets `net.git-fetch-with-cli = true` (needed for
 # the `dream-engine-*` git dependencies below — the `rust:*` image does not
@@ -54,14 +56,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # The cache-mounted target/ dir is gone once this RUN layer ends, hence
 # copying the two binaries out to a plain (non-cache-mounted) location first.
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 # ca-certificates: both binaries call out to model provider APIs over HTTPS
 # (reqwest with rustls + native root certs — see the workspace Cargo.toml —
 # reads the OS trust store, it does not vendor one).
 # curl: used by the HEALTHCHECK below.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl libstdc++6 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --create-home --home-dir /app --shell /usr/sbin/nologin dreamcore
 
