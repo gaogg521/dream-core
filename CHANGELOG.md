@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.1.88](https://github.com/gaogg521/dream-core/compare/v0.1.87...v0.1.88) (2026-10-15)
+
+
+### Features
+
+* **knowledge:** add private and shared nested directories ([a91a4a7](https://github.com/gaogg521/dream-core/commit/a91a4a7470f20b561224bf91d527202bb8ce49d6))
+* **knowledge:** index saved documents with a default local model ([4e0fc3e](https://github.com/gaogg521/dream-core/commit/4e0fc3eaa232b50d18d72b66018ae6b2b7858083))
+* **knowledge:** retain original files with protected streaming ([1979cbd](https://github.com/gaogg521/dream-core/commit/1979cbd2bcc00ea69bbbeffe20087413035e8c76))
+* **skills:** add ppt-studio deck engine as the default for new decks ([7668fd7](https://github.com/gaogg521/dream-core/commit/7668fd79248a566d70800e3f90734415d8d5fac7))
+* **skills:** route new PowerPoint decks to ppt-studio by default ([1366cd7](https://github.com/gaogg521/dream-core/commit/1366cd7e2aca09f18dbde5ccdef2c568cb60bb88))
+
+
+### Bug Fixes
+
+* **ci:** add push_target to cron_e2e fixture and rustfmt rag_files ([4493a90](https://github.com/gaogg521/dream-core/commit/4493a9050f055e42ba6b9ab948f440fe8d9d6c38))
+* **cron:** tell scheduled runs today's date and that delivery is automatic ([a8df08c](https://github.com/gaogg521/dream-core/commit/a8df08c9206e2707d61a028bc82f15b7c01df1e9))
+* **knowledge:** align container C++ runtime for local embeddings ([5f9bbd9](https://github.com/gaogg521/dream-core/commit/5f9bbd94e9de381c303d6e3efd9a921a1c98c221))
+* **knowledge:** invalidate stale retrieval on original replacement ([b1c8824](https://github.com/gaogg521/dream-core/commit/b1c882474e2b9276d787ff4aab7949eb4fb4e90b))
+* **knowledge:** prefer saved content over stale search chunks ([00283a2](https://github.com/gaogg521/dream-core/commit/00283a20222c236664e0a0f5e4f3531b5c09c74f))
+* **knowledge:** search authorized document titles and content ([1c9dee3](https://github.com/gaogg521/dream-core/commit/1c9dee38eb25d3ee406437662cc0f970c6a3deb1))
+* **skills:** harden ppt-studio against real model output ([85307d8](https://github.com/gaogg521/dream-core/commit/85307d85d8fd128f7191a988bb7cf3bfd7a289b2))
+
+
+### Documentation
+
+* **knowledge:** record browser import and content search acceptance ([eee6281](https://github.com/gaogg521/dream-core/commit/eee62810eab7674a19200c6428a597a7fd2543f4))
+* **knowledge:** record original reader acceptance and remaining gaps ([2404390](https://github.com/gaogg521/dream-core/commit/240439089584a14ff889a2a1ceb45d7d2c9250d4))
+
 ## [0.1.87](https://github.com/gaogg521/dream-core/compare/v0.1.86...v0.1.87) (2026-10-13)
 
 
