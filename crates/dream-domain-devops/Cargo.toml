@@ -33,7 +33,12 @@ zip.workspace = true
 jsonwebtoken.workspace = true
 quick-xml.workspace = true
 calamine.workspace = true
-fastembed = { version = "7.1.1", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"] }
+# ONNX Runtime is loaded at run time from a shared library shipped next to the
+# binary (see `src/onnxruntime.rs`), not linked in: the prebuilt static ort
+# libraries need a newer glibc/libstdc++/MSVC CRT than the release builds target,
+# and do not exist at all for x86_64-apple-darwin.
+fastembed = { version = "7.1.1", default-features = false, features = ["ort-load-dynamic", "hf-hub-rustls-tls"] }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic"] }
 tokio-util = { version = "0.7", features = ["io"] }
 
 [dev-dependencies]

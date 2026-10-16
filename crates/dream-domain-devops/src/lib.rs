@@ -36,6 +36,7 @@ mod office_routes;
 pub mod office_service;
 pub mod office_session;
 mod office_text;
+pub mod onnxruntime;
 pub mod provider_channel;
 pub mod proxy_usage;
 mod rag_files;

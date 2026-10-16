@@ -47,10 +47,19 @@ WORKDIR /build
 # source edits — every crate's Cargo.toml, since this is a workspace.
 COPY Cargo.toml Cargo.lock ./
 COPY .cargo .cargo
+
+# ONNX Runtime is loaded at run time rather than linked (see
+# crates/dream-domain-devops/src/onnxruntime.rs): fetch the pinned official
+# build for this architecture; it is copied next to the binaries below.
+COPY scripts/onnxruntime-pin.txt scripts/fetch-onnxruntime.sh scripts/
+RUN case "$(uname -m)" in         x86_64) ort_target=x86_64-unknown-linux-gnu ;;         aarch64) ort_target=aarch64-unknown-linux-gnu ;;         *) echo "unsupported architecture $(uname -m)" >&2; exit 1 ;;     esac     && bash scripts/fetch-onnxruntime.sh "$ort_target" /build/onnxruntime     && test -f /build/onnxruntime/libonnxruntime.so
+
 COPY crates crates
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/root/.cache/ort.pyke.io \
     --mount=type=cache,target=/build/target \
-    cargo build --release --locked --features enterprise -p dream-core-app \
+    find crates -type f -name '*.rs' -exec touch {} + \
+    && cargo build --release --locked --features enterprise -p dream-core-app \
     && cp target/release/dreamcore /build/dreamcore \
     && cp target/release/dreamcore-admin /build/dreamcore-admin
 # The cache-mounted target/ dir is gone once this RUN layer ends, hence
@@ -69,6 +78,8 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY --from=builder /build/dreamcore /build/dreamcore-admin ./
+# Found by dreamcore next to its own executable.
+COPY --from=builder /build/onnxruntime/libonnxruntime.so ./
 RUN chmod +x ./dreamcore ./dreamcore-admin
 
 # 0.0.0.0, not the CLI's loopback default: a container's loopback is its own

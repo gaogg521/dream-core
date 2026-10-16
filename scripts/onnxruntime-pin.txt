@@ -1,0 +1,20 @@
+# ONNX Runtime shared libraries shipped next to `dreamcore` (loaded at run time,
+# see crates/dream-domain-devops/src/onnxruntime.rs). Official Microsoft release
+# archives, pinned by version and sha256. One line per Rust target:
+#
+#   <rust-target> <archive file name> <sha256>
+#
+# x86_64-apple-darwin is deliberately absent: Microsoft publishes no build for
+# Intel Macs at the version `ort` needs, so local embedding is unavailable there
+# (the program reports it; a remote embedding endpoint still works).
+#
+# Bumping: use a release whose minor version is >= the `api-NN` level the `ort`
+# crate is built for (24 today) and run scripts/fetch-onnxruntime.sh on each
+# platform. The sha256 values come from the release's asset digests:
+#   gh api repos/microsoft/onnxruntime/releases/tags/vX.Y.Z --jq '.assets[]|"\(.name) \(.digest)"'
+VERSION=1.28.3
+BASE_URL=https://github.com/microsoft/onnxruntime/releases/download/v1.28.3
+x86_64-unknown-linux-gnu onnxruntime-linux-x64-1.28.3.tgz db14e4863bd37893fc59729d986ab2a0d043d10b7d44da1913c4982b7e3d009c
+aarch64-unknown-linux-gnu onnxruntime-linux-aarch64-1.28.3.tgz 6c6b1ae96d7b0be9f555092857c6a4f2b0b5587a5298d732d9e52e8253038ce7
+aarch64-apple-darwin onnxruntime-osx-arm64-1.28.3.tgz c436bd9f47dbce6f6311ccc21de97f829b3c862c09d24aa321958cb72f0a1d32
+x86_64-pc-windows-msvc onnxruntime-win-x64-1.28.3.zip 1d6fab48e85f948436af7c8c971d2c145cf224e2c444755dec894f8b0de11a83

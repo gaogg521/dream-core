@@ -392,6 +392,10 @@ pub async fn embed(config: &EmbeddingConfig, inputs: &[String]) -> Result<Vec<Ve
                 .lock()
                 .map_err(|_| DevopsError::Internal("local embedding engine lock failed".into()))?;
             if engine.is_none() {
+                // The ONNX Runtime library is loaded, not linked: a missing or
+                // unsupported one must surface as a normal error here (it is
+                // recorded on the document), never as a panic inside `ort`.
+                crate::onnxruntime::ensure_loaded().map_err(DevopsError::Internal)?;
                 let root = local_model_data_root();
                 tracing::info!("initializing local knowledge embedding model");
                 // A panic inside fastembed (e.g. a partially seeded cache)

@@ -167,7 +167,15 @@ jobs:
         run: |
           mkdir -p dist
           ARCHIVE="dreamcore-v${VERSION}-${{ matrix.target }}.tar.gz"
-          tar -C target/${{ matrix.target }}/release -czf "dist/${ARCHIVE}" ${{ matrix.binary_name }}
+          # The ONNX Runtime shared library is loaded at run time, not linked, so
+          # it ships beside the binary (none exists for x86_64-apple-darwin).
+          scripts/fetch-onnxruntime.sh "${{ matrix.target }}" "target/${{ matrix.target }}/release"
+          FILES="${{ matrix.binary_name }}"
+          for lib in libonnxruntime.so libonnxruntime.dylib; do
+            if [[ -f "target/${{ matrix.target }}/release/${lib}" ]]; then FILES="${FILES} ${lib}"; fi
+          done
+          tar -C target/${{ matrix.target }}/release -czf "dist/${ARCHIVE}" ${FILES}
+          tar -tzvf "dist/${ARCHIVE}"
           echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
 
       - name: Package binary (Windows)
@@ -178,7 +186,16 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           $archive = "dreamcore-v${env:VERSION}-${{ matrix.target }}.zip"
-          Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" -DestinationPath "dist/${archive}" -Force
+          # The ONNX Runtime library is loaded at run time, not linked, so it ships
+          # beside the binary together with the Visual C++ runtime it needs.
+          $dir = "target/${{ matrix.target }}/release"
+          & scripts/fetch-onnxruntime.ps1 -Target "${{ matrix.target }}" -DestDir $dir
+          $files = @("$dir/${{ matrix.binary_name }}")
+          foreach ($name in 'onnxruntime.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll') {
+            if (Test-Path "$dir/$name") { $files += "$dir/$name" }
+          }
+          Compress-Archive -Path $files -DestinationPath "dist/${archive}" -Force
+          Get-ChildItem "dist/${archive}" | Format-List Name, Length
           "ARCHIVE=${archive}" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload release artifact
