@@ -210,6 +210,7 @@ pub use team_tools::{
     team_tool_descriptor, team_tool_descriptors, team_tool_descriptors_for_role, tool_name_for_cli_path,
 };
 pub use websocket::WebSocketMessage;
+pub mod knowledge_office;
 
 #[cfg(test)]
 mod public_contract_tests {

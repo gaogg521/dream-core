@@ -9,6 +9,7 @@ use crate::service::DevopsService;
 
 #[derive(Clone)]
 pub struct OneDevopsRouterState {
+    pub office: Option<Arc<crate::office_service::OfficeService>>,
     pub rag_source_dir: Option<std::path::PathBuf>,
     pub service: Arc<DevopsService>,
     /// Optional so unit tests can build state without the employee runtime.
@@ -28,12 +29,18 @@ pub struct OneDevopsRouterState {
 impl OneDevopsRouterState {
     pub fn new(service: Arc<DevopsService>) -> Self {
         Self {
+            office: None,
             rag_source_dir: None,
             service,
             employee: None,
             tenant_resolver: None,
             usage_recorder: None,
         }
+    }
+
+    pub fn with_office(mut self, office: Arc<crate::office_service::OfficeService>) -> Self {
+        self.office = Some(office);
+        self
     }
 
     pub fn with_rag_source_dir(mut self, path: std::path::PathBuf) -> Self {

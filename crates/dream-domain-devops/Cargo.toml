@@ -30,6 +30,9 @@ tower-http.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 zip.workspace = true
+jsonwebtoken.workspace = true
+quick-xml.workspace = true
+calamine.workspace = true
 fastembed = { version = "7.1.1", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"] }
 tokio-util = { version = "0.7", features = ["io"] }
 

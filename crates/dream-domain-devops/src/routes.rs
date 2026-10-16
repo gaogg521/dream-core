@@ -28,6 +28,9 @@ use dream_core_common::governance_caller::{GovernanceCaller, classify_governance
 
 pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
     Router::new()
+        .route("/api/one/devops/office", get(crate::office_routes::availability))
+        .route("/api/one/devops/rag/documents/{id}/office", axum::routing::post(crate::office_routes::start))
+        .route("/api/one/devops/office/sessions/{id}/flush", axum::routing::post(crate::office_routes::flush))
         .route(
             "/api/one/devops/rag/documents/{id}/source",
             get(crate::rag_files::download)
