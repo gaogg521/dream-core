@@ -3261,6 +3261,7 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
             platform: one_platform_service.clone(),
         }));
     let auth_mw_state = AuthState {
+        directory_identity: None,
         jwt_service: services.jwt_service.clone(),
         user_repo: services.user_repo.clone(),
         identity_mode: auth_identity_mode(services.identity_mode),
@@ -3400,6 +3401,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let login_risk: Option<std::sync::Arc<dyn LoginRiskGate>> = None;
 
     let auth_state = AuthRouterState {
+        directory_identity: None,
         mfa: Some(mfa_service.clone()),
         jwt_service: services.jwt_service.clone(),
         user_repo: services.user_repo.clone(),
@@ -3522,6 +3524,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let api_key_gate: Option<std::sync::Arc<dyn dream_core_auth::ApiKeyGate>> = None;
 
     let auth_mw_state = AuthState {
+        directory_identity: None,
         jwt_service: services.jwt_service.clone(),
         user_repo: services.user_repo.clone(),
         identity_mode: auth_identity_mode(services.identity_mode),

@@ -82,6 +82,7 @@ fn db_error_to_api_error(err: DbError) -> ApiError {
 /// Shared state for all auth route handlers.
 #[derive(Clone)]
 pub struct AuthRouterState {
+    pub directory_identity: Option<Arc<dyn crate::middleware::DirectoryIdentityGate>>,
     pub jwt_service: Arc<JwtService>,
     pub user_repo: Arc<dyn IUserRepository>,
     /// Optional on-disk adoption side-effect (Dream UI → DreamPro upgrade).
@@ -118,6 +119,7 @@ async fn mint_session_for_device(
     session_generation: i64,
     device_id: Option<&str>,
 ) -> Result<(String, String), ApiError> {
+    crate::middleware::check_directory_identity(state.directory_identity.as_deref(), user_id).await?;
     let ttl = if let Some(gate) = &state.login_risk {
         gate.session_ttl().await
     } else {
@@ -367,6 +369,7 @@ pub fn auth_routes(state: AuthRouterState) -> Router {
     action_limiter.start_cleanup_task(cleanup_interval);
 
     let auth_state = AuthState {
+        directory_identity: state.directory_identity.clone(),
         jwt_service: state.jwt_service.clone(),
         user_repo: state.user_repo.clone(),
         identity_mode: if state.dreampro_mode {
@@ -645,9 +648,11 @@ async fn login_handler(
 
     let Json(req) = body.map_err(ApiError::from)?;
 
-    // Input length validation (per API spec)
-    if req.username.len() > 32 {
-        return Err(ApiError::BadRequest("Username must not exceed 32 characters".into()));
+    // Enterprise admin provisioning accepts up to 64 ASCII characters. Login
+    // must also accept those existing identities; username-change rules are
+    // intentionally separate from credential verification.
+    if req.username.len() > 64 {
+        return Err(ApiError::BadRequest("Username must not exceed 64 characters".into()));
     }
     if req.password.len() > 128 {
         return Err(ApiError::BadRequest("Password must not exceed 128 characters".into()));

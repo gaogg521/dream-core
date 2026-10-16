@@ -179,6 +179,7 @@ fn protected_auth_app_with_mode_and_verifier(
     runtime_token_verifier: Option<Arc<dyn IRuntimeTokenVerifier>>,
 ) -> Router {
     let state = AuthState {
+        directory_identity: None,
         jwt_service,
         user_repo,
         identity_mode,
@@ -202,6 +203,7 @@ fn identity_echo_app(
     runtime_token_verifier: Option<Arc<dyn IRuntimeTokenVerifier>>,
 ) -> Router {
     let state = AuthState {
+        directory_identity: None,
         jwt_service,
         user_repo,
         identity_mode,
