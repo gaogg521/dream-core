@@ -147,10 +147,11 @@ pub fn weixin_login_route(state: ChannelRouterState) -> Router {
 ///
 /// A channel we do NOT implement is not listed here: it reaches users as an
 /// extension instead, and the extension registry supplies its own metadata.
-const BUILTIN_PLUGIN_NAMES: [(&str, &str); 6] = [
+const BUILTIN_PLUGIN_NAMES: [(&str, &str); 7] = [
     ("telegram", "Telegram"),
     ("lark", "Lark"),
     ("dingtalk", "DingTalk"),
+    ("wecom", "WeCom"),
     ("slack", "Slack"),
     ("discord", "Discord"),
     ("weixin", "WeChat"),
@@ -746,7 +747,7 @@ fn build_test_config(req: &TestPluginRequest) -> PluginConfig {
     };
 
     match req.plugin_id.as_str() {
-        "lark" => {
+        "lark" | "wecom" => {
             if let Some(ref extra) = req.extra_config {
                 credentials.app_id = extra.app_id.clone();
                 credentials.app_secret = extra.app_secret.clone();

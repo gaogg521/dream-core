@@ -312,6 +312,12 @@ async fn handle_dispatched(
     }
 }
 
+/// Forward a tool confirmation callback to the active agent.
+fn handle_confirm(call_id: &str, value: &str) {
+    // Channel conversations currently auto-approve tool calls.
+    info!(call_id = %call_id, value = %value, "forwarding tool confirmation");
+}
+
 #[cfg(test)]
 mod claim_tests {
     use super::*;
@@ -327,12 +333,4 @@ mod claim_tests {
         assert!(SessionClaim::acquire(&active, "owner", "session").is_some());
         assert!(active.lock().unwrap().is_empty());
     }
-}
-
-/// Forward a tool confirmation callback to the active agent.
-fn handle_confirm(call_id: &str, value: &str) {
-    // Channel conversations use yoloMode which auto-approves everything,
-    // so this path is rarely hit. When needed, we can add a
-    // call_id→conversation_id lookup via IWorkerTaskManager.
-    info!(call_id = %call_id, value = %value, "forwarding tool confirmation");
 }

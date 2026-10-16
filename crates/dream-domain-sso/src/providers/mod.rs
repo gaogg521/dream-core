@@ -72,7 +72,7 @@ mod tests {
         assert_eq!(synthetic_username_suffix(cjk, 16), cjk, "12 chars < 16, so all of it");
 
         let long_cjk = "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未";
-        assert_eq!(synthetic_username_suffix(&long_cjk, 16).chars().count(), 16);
+        assert_eq!(synthetic_username_suffix(long_cjk, 16).chars().count(), 16);
 
         // ASCII behaviour is unchanged for the ids this actually sees today.
         assert_eq!(

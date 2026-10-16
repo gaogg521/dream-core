@@ -26,6 +26,40 @@ use tokio::sync::broadcast;
 
 const TEST_OWNER_USER_ID: &str = "system_default_user";
 
+#[tokio::test]
+async fn missing_channel_model_fails_before_conversation_or_agent_creation() {
+    let db = init_database_memory().await.unwrap();
+    let pool = db.pool().clone();
+    let task_manager: Arc<dyn IWorkerTaskManager> = Arc::new(RecordingTaskManager::new());
+    let service = Arc::new(ConversationService::new(
+        std::env::temp_dir(),
+        Arc::new(TestBroadcaster::new()),
+        Arc::new(NoopSkillResolver),
+        Arc::clone(&task_manager),
+        Arc::new(SqliteConversationRepository::new(pool.clone())),
+        Arc::new(SqliteAgentMetadataRepository::new(pool.clone())),
+        Arc::new(SqliteAcpSessionRepository::new(pool.clone())),
+    ));
+    let settings = Arc::new(ChannelSettingsService::new(Arc::new(
+        SqliteClientPreferenceRepository::new(pool),
+    )));
+    let channel = ChannelMessageService::new(service, Arc::clone(&task_manager), settings);
+    let session = AssistantSessionRow {
+        id: "missing-model-session".into(),
+        user_id: "channel-user".into(),
+        agent_type: "dream".into(),
+        conversation_id: None,
+        workspace: None,
+        chat_id: Some("test-chat".into()),
+        created_at: 1,
+        last_activity: 1,
+    };
+    let result = channel
+        .send_to_agent(TEST_OWNER_USER_ID, &session, "test", PluginType::Dingtalk)
+        .await;
+    assert!(matches!(result, Err(ChannelError::InvalidConfig(message)) if message.contains("默认模型")));
+}
+
 struct TestBroadcaster {
     events: Mutex<Vec<WebSocketMessage<serde_json::Value>>>,
 }
@@ -231,6 +265,30 @@ fn bare_assistant_definition_params<'a>(
 async fn send_to_agent_warms_cold_task_before_returning_stream_subscription() {
     let db = init_database_memory().await.unwrap();
     let pool = db.pool().clone();
+    SqliteClientPreferenceRepository::new(pool.clone())
+        .upsert_batch(
+            TEST_OWNER_USER_ID,
+            &[
+                (
+                    "assistant.telegram.defaultModel",
+                    r#"{"id":"test-provider","use_model":"test-model"}"#,
+                ),
+                (
+                    "assistant.lark.defaultModel",
+                    r#"{"id":"test-provider","use_model":"test-model"}"#,
+                ),
+                (
+                    "assistant.dingtalk.defaultModel",
+                    r#"{"id":"test-provider","use_model":"test-model"}"#,
+                ),
+                (
+                    "assistant.weixin.defaultModel",
+                    r#"{"id":"test-provider","use_model":"test-model"}"#,
+                ),
+            ],
+        )
+        .await
+        .unwrap();
 
     let task_manager: Arc<dyn IWorkerTaskManager> = Arc::new(RecordingTaskManager::new());
     let conversation_svc = Arc::new(ConversationService::new(
@@ -284,6 +342,31 @@ async fn card_actions_reach_agent_with_server_history_and_reject_other_owner() {
     use std::time::Duration;
     let db = init_database_memory().await.unwrap();
     let pool = db.pool().clone();
+    SqliteClientPreferenceRepository::new(pool.clone())
+        .upsert_batch(
+            TEST_OWNER_USER_ID,
+            &[
+                (
+                    "assistant.telegram.defaultModel",
+                    r#"{"id":"test-provider","use_model":"test-model"}"#,
+                ),
+                (
+                    "assistant.lark.defaultModel",
+                    r#"{"id":"test-provider","use_model":"test-model"}"#,
+                ),
+                (
+                    "assistant.dingtalk.defaultModel",
+                    r#"{"id":"test-provider","use_model":"test-model"}"#,
+                ),
+                (
+                    "assistant.weixin.defaultModel",
+                    r#"{"id":"test-provider","use_model":"test-model"}"#,
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
     let manager = Arc::new(RecordingTaskManager::new());
     let task_manager: Arc<dyn IWorkerTaskManager> = manager.clone();
     let broadcaster = Arc::new(TestBroadcaster::new());
@@ -518,6 +601,30 @@ async fn send_to_agent_rejects_unresolvable_channel_assistant_binding() {
 async fn send_to_agent_without_saved_binding_defaults_to_bare_dream_engine_assistant() {
     let db = init_database_memory().await.unwrap();
     let pool = db.pool().clone();
+    SqliteClientPreferenceRepository::new(pool.clone())
+        .upsert_batch(
+            TEST_OWNER_USER_ID,
+            &[
+                (
+                    "assistant.telegram.defaultModel",
+                    r#"{"id":"test-provider","use_model":"test-model"}"#,
+                ),
+                (
+                    "assistant.lark.defaultModel",
+                    r#"{"id":"test-provider","use_model":"test-model"}"#,
+                ),
+                (
+                    "assistant.dingtalk.defaultModel",
+                    r#"{"id":"test-provider","use_model":"test-model"}"#,
+                ),
+                (
+                    "assistant.weixin.defaultModel",
+                    r#"{"id":"test-provider","use_model":"test-model"}"#,
+                ),
+            ],
+        )
+        .await
+        .unwrap();
 
     let task_manager: Arc<dyn IWorkerTaskManager> = Arc::new(RecordingTaskManager::new());
     let conversation_repo = Arc::new(SqliteConversationRepository::new(pool.clone()));
@@ -686,6 +793,30 @@ impl dream_core_conversation::SendGate for RejectingSendGate {
 async fn send_to_agent_is_blocked_by_a_rejecting_send_gate() {
     let db = init_database_memory().await.unwrap();
     let pool = db.pool().clone();
+    SqliteClientPreferenceRepository::new(pool.clone())
+        .upsert_batch(
+            TEST_OWNER_USER_ID,
+            &[
+                (
+                    "assistant.telegram.defaultModel",
+                    r#"{"id":"test-provider","use_model":"test-model"}"#,
+                ),
+                (
+                    "assistant.lark.defaultModel",
+                    r#"{"id":"test-provider","use_model":"test-model"}"#,
+                ),
+                (
+                    "assistant.dingtalk.defaultModel",
+                    r#"{"id":"test-provider","use_model":"test-model"}"#,
+                ),
+                (
+                    "assistant.weixin.defaultModel",
+                    r#"{"id":"test-provider","use_model":"test-model"}"#,
+                ),
+            ],
+        )
+        .await
+        .unwrap();
 
     let task_manager: Arc<dyn IWorkerTaskManager> = Arc::new(RecordingTaskManager::new());
     let conversation_svc = Arc::new(ConversationService::new(

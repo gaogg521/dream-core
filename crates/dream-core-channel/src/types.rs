@@ -17,6 +17,7 @@ pub enum PluginType {
     Telegram,
     Lark,
     Dingtalk,
+    Wecom,
     Weixin,
     /// Reserved variant for future Slack integration.
     Slack,
@@ -30,6 +31,7 @@ impl fmt::Display for PluginType {
             Self::Telegram => write!(f, "telegram"),
             Self::Lark => write!(f, "lark"),
             Self::Dingtalk => write!(f, "dingtalk"),
+            Self::Wecom => write!(f, "wecom"),
             Self::Weixin => write!(f, "weixin"),
             Self::Slack => write!(f, "slack"),
             Self::Discord => write!(f, "discord"),
@@ -44,6 +46,7 @@ impl PluginType {
             "telegram" => Some(Self::Telegram),
             "lark" => Some(Self::Lark),
             "dingtalk" => Some(Self::Dingtalk),
+            "wecom" => Some(Self::Wecom),
             "weixin" => Some(Self::Weixin),
             "slack" => Some(Self::Slack),
             "discord" => Some(Self::Discord),

@@ -133,16 +133,7 @@ struct AuthorizeQuery {
 /// Unlike the rest of the deep-link params, this one is NOT run through
 /// `urlencode` first, so it must never pass through anything other than one
 /// of these known-safe literals (e.g. a `javascript:` or quote-breaking
-/// value). Anything unrecognized silently falls back to the pre-rebrand
-/// production scheme, matching the hardcoded behavior for older clients that
-/// don't send `scheme` at all — those only ever registered `aionui://` with the
-/// OS, so handing them `dream://` would drop the callback on the floor.
-///
-/// `dream` / `dream-dev` must be allowed here BEFORE the desktop app starts
-/// asking for them. The app pairs with a pinned dreamcore release, so a client
-/// requesting a scheme this build does not know falls through to `aionui` and
-/// the callback reaches an app that stopped listening for it: login succeeds in
-/// the browser and never arrives.
+/// value). Unrecognized or omitted schemes use the One Work production protocol.
 /// Is `target` a path on THIS origin, safe to hand to `Redirect::to`?
 ///
 /// The post-login redirect target is a caller-supplied query param, and the
@@ -165,14 +156,10 @@ fn is_safe_local_redirect(target: &str) -> bool {
 }
 
 fn sanitize_deep_link_scheme(raw: Option<&str>) -> &'static str {
-    // The last two are the legacy schemes and the legacy fallback. A client that
-    // sends nothing is an older build that only ever registered the old scheme with
-    // the OS, so handing it anything else drops its SSO callback on the floor.
     match raw {
         Some("dream") => "dream",
         Some("dream-dev") => "dream-dev",
-        Some("aionui-dev") => "aionui-dev",
-        _ => "aionui",
+        _ => "dream",
     }
 }
 
@@ -589,8 +576,8 @@ async fn callback_inner(
     }
 
     // 登录二次认证闸：需要 MFA 时不签发会话，改把用户导向 Web 登录页的
-    // 第二步（挑战 token 只存哈希，≤5 分钟一次性）。桌面深链流程在挑战期间
-    // 暂不支持（v1 限制，见交付说明）——浏览器里完成两步后仍可直接使用控制台。
+    // 第二步（挑战 token 只存哈希，≤5 分钟一次性）。保留已校验的桌面
+    // 回跳上下文，完成第二步后由登录页交还桌面客户端。
     if let Some(mfa) = state.mfa.as_ref()
         && let dream_core_auth::mfa::MfaDecision::Challenge(purpose) = mfa.decide_for_user(&user_id, &username).await?
     {
@@ -605,10 +592,12 @@ async fn callback_inner(
                 Some(entry.deep_link_scheme),
             )
             .await?;
-        let login_path = format!(
-            "/admin/login?mfa_token={}&mfa_purpose={}",
-            urlencode(&mfa_token),
-            purpose.as_str()
+        let login_path = mfa_login_path(
+            &mfa_token,
+            purpose.as_str(),
+            entry.desktop,
+            entry.deep_link_scheme,
+            entry.redirect_target.as_deref(),
         );
         return Ok(Redirect::to(&login_path).into_response());
     }
@@ -791,10 +780,12 @@ async fn finish_external_login(
                 Some(entry.deep_link_scheme),
             )
             .await?;
-        let login_path = format!(
-            "/admin/login?mfa_token={}&mfa_purpose={}",
-            urlencode(&mfa_token),
-            purpose.as_str()
+        let login_path = mfa_login_path(
+            &mfa_token,
+            purpose.as_str(),
+            entry.desktop,
+            entry.deep_link_scheme,
+            entry.redirect_target.as_deref(),
         );
         return Ok(Redirect::to(&login_path).into_response());
     }
@@ -823,6 +814,24 @@ async fn finish_external_login(
             .unwrap_or_else(|| "/#/guid".to_owned());
         Ok(([(header::SET_COOKIE, session.cookie)], Redirect::to(&target)).into_response())
     }
+}
+
+fn mfa_login_path(token: &str, purpose: &str, desktop: bool, scheme: &str, redirect: Option<&str>) -> String {
+    let mut path = format!(
+        "/admin/login?mfa_token={}&mfa_purpose={}",
+        urlencode(token),
+        urlencode(purpose)
+    );
+    if desktop {
+        path.push_str(&format!(
+            "&desktop=1&scheme={}",
+            urlencode(sanitize_deep_link_scheme(Some(scheme)))
+        ));
+    }
+    if let Some(redirect) = redirect.filter(|r| is_safe_local_redirect(r)) {
+        path.push_str(&format!("&redirect={}", urlencode(redirect)));
+    }
+    path
 }
 
 /// Run the provider-specific OAuth exchange + return normalized user info.
@@ -1251,6 +1260,19 @@ const _: fn() = || {
 mod tests {
     use super::*;
 
+    #[test]
+    fn mfa_redirect_preserves_desktop_context_without_accepting_external_redirects() {
+        let path = mfa_login_path("token", "enroll", true, "dream-dev", Some("/settings/enterprise"));
+        assert!(path.contains("desktop=1&scheme=dream-dev"));
+        assert!(path.contains("redirect=%2Fsettings%2Fenterprise"));
+        let browser = mfa_login_path("token", "verify", false, "dream-dev", Some("https://example.com"));
+        assert!(!browser.contains("desktop="));
+        assert!(!browser.contains("redirect="));
+        let unsafe_scheme = mfa_login_path("token", "verify", true, "javascript", None);
+        assert!(unsafe_scheme.contains("scheme=dream"));
+        assert!(!unsafe_scheme.contains("javascript"));
+    }
+
     #[tokio::test]
     async fn forwarded_saml_response_cannot_consume_login_state_or_issue_session() {
         let db = dream_core_db::init_database_memory().await.unwrap();
@@ -1471,14 +1493,14 @@ mod tests {
     #[test]
     fn desktop_callback_page_embeds_deep_link_for_script_redirect_and_manual_fallback() {
         // legacy scheme: this is what the no-`scheme` fallback hands an older client
-        let deep_link = "aionui://sso-callback?token=abc&userId=u1&username=sso_12345678";
+        let deep_link = "dream://sso-callback?token=abc&userId=u1&username=sso_12345678";
         let page = desktop_callback_page(deep_link);
 
         // Script-driven redirect uses the raw deep link (safe: built entirely
         // from urlencode'd segments, no HTML/JS-sensitive characters).
         assert!(page.contains(&format!("location.href = \"{deep_link}\";")));
         // Manual fallback link HTML-escapes the query-string separators.
-        assert!(page.contains("href=\"aionui://sso-callback?token=abc&amp;userId=u1&amp;username=sso_12345678\""));
+        assert!(page.contains("href=\"dream://sso-callback?token=abc&amp;userId=u1&amp;username=sso_12345678\""));
         // Friendly copy in both languages so the user knows the login already
         // succeeded even if the deep link doesn't auto-fire.
         assert!(page.contains("登录成功"));
@@ -1496,19 +1518,16 @@ mod tests {
     fn sanitize_deep_link_scheme_allows_only_the_known_schemes() {
         assert_eq!(sanitize_deep_link_scheme(Some("dream")), "dream");
         assert_eq!(sanitize_deep_link_scheme(Some("dream-dev")), "dream-dev");
-        assert_eq!(sanitize_deep_link_scheme(Some("aionui-dev")), "aionui-dev");
-        // Anything else — including no param at all — falls back to the
-        // pre-rebrand production scheme. A client that sends nothing is an old
-        // build that only registered `aionui://`, so this fallback is what keeps
-        // its callback arriving.
-        assert_eq!(sanitize_deep_link_scheme(Some("aionui")), "aionui");
-        assert_eq!(sanitize_deep_link_scheme(None), "aionui");
-        assert_eq!(sanitize_deep_link_scheme(Some("")), "aionui");
+        assert_eq!(sanitize_deep_link_scheme(Some("aionui-dev")), "dream");
+        // Retired, missing and empty schemes use the production protocol.
+        assert_eq!(sanitize_deep_link_scheme(Some("aionui")), "dream");
+        assert_eq!(sanitize_deep_link_scheme(None), "dream");
+        assert_eq!(sanitize_deep_link_scheme(Some("")), "dream");
         // Injection attempts must not pass through: this value is NOT
         // urlencoded before being interpolated into the callback HTML as a
         // JS string literal and an href attribute.
-        assert_eq!(sanitize_deep_link_scheme(Some("javascript")), "aionui");
-        assert_eq!(sanitize_deep_link_scheme(Some("aionui\"; alert(1); //")), "aionui");
+        assert_eq!(sanitize_deep_link_scheme(Some("javascript")), "dream");
+        assert_eq!(sanitize_deep_link_scheme(Some("aionui\"; alert(1); //")), "dream");
     }
 
     /// The scheme does not travel on the query string across the IdP round
@@ -1525,18 +1544,14 @@ mod tests {
     /// no network and no database.
     #[tokio::test]
     async fn deep_link_scheme_survives_the_state_round_trip_for_every_allowed_scheme() {
-        // `None` is in here on purpose: an old build sends no `scheme` param at
-        // all, and its callback must still come back on `aionui://`.
-        // The `aionui` schemes below are legacy, not residue: existing installs
-        // registered that protocol handler with the OS, so the spelling is
-        // frozen — renaming it would strand every deep link they can produce.
+        // Missing or retired input cannot revive a retired protocol.
         let cases = [
             (Some("dream"), "dream"),
             (Some("dream-dev"), "dream-dev"),
-            (Some("aionui-dev"), "aionui-dev"),
-            (Some("aionui"), "aionui"),
-            (None, "aionui"),
-            (Some("javascript"), "aionui"),
+            (Some("aionui-dev"), "dream"),
+            (Some("aionui"), "dream"),
+            (None, "dream"),
+            (Some("javascript"), "dream"),
         ];
 
         for (sent, expected) in cases {

@@ -136,10 +136,14 @@ impl ChannelMessageService {
         // emitting. `ConversationService::send_message` returns immediately
         // and builds cold agents in the background, so warm the conversation
         // explicitly for channel traffic.
-        self.conversation_svc
-            .warmup(user_id, &conversation_id, &self.task_manager)
-            .await
-            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            self.conversation_svc
+                .warmup(user_id, &conversation_id, &self.task_manager),
+        )
+        .await
+        .map_err(|_| ChannelError::MessageSendFailed("机器人启动超时，请检查模型与运行环境后重试。".into()))?
+        .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?;
 
         let stream_rx = self
             .task_manager
@@ -198,6 +202,12 @@ impl ChannelMessageService {
             .map(ToOwned::to_owned);
         let model_config = self.settings.get_model_config(owner_user_id, platform).await?;
         let agent_type = parse_agent_type(&agent_config.agent_type)?;
+        if agent_type == AgentType::DreamEngine && model_config.is_none() {
+            return Err(ChannelError::InvalidConfig(format!(
+                "请先在 {} 机器人设置中选择默认模型，然后新建会话重试。",
+                platform
+            )));
+        }
         let model = resolved_model_to_provider(model_config.as_ref());
         let mut extra = Self::build_channel_extra(if assistant_id.is_some() {
             None
@@ -439,7 +449,7 @@ fn platform_to_source(platform: PluginType) -> ConversationSource {
         PluginType::Dingtalk => ConversationSource::Dingtalk,
         PluginType::Weixin => ConversationSource::Weixin,
         // Reserved variants default to Dreamui
-        PluginType::Slack | PluginType::Discord => ConversationSource::DreamUi,
+        PluginType::Slack | PluginType::Discord | PluginType::Wecom => ConversationSource::DreamUi,
     }
 }
 
@@ -484,6 +494,7 @@ fn channel_conversation_name(
         PluginType::Telegram => "tg",
         PluginType::Lark => "lark",
         PluginType::Dingtalk => "ding",
+        PluginType::Wecom => "wecom",
         PluginType::Weixin => "wx",
         PluginType::Slack => "slack",
         PluginType::Discord => "discord",

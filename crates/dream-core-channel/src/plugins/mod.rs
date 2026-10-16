@@ -7,6 +7,9 @@ pub mod lark;
 #[cfg(feature = "dingtalk")]
 pub mod dingtalk;
 
+#[cfg(feature = "wecom")]
+pub mod wecom;
+
 #[cfg(feature = "weixin")]
 pub mod weixin;
 
@@ -32,6 +35,9 @@ pub fn create_plugin(plugin_type: PluginType) -> Option<Box<dyn ChannelPlugin>> 
 
         #[cfg(feature = "dingtalk")]
         PluginType::Dingtalk => Some(Box::new(dingtalk::DingtalkPlugin::new())),
+
+        #[cfg(feature = "wecom")]
+        PluginType::Wecom => Some(Box::new(wecom::WecomPlugin::new())),
 
         #[cfg(feature = "weixin")]
         PluginType::Weixin => Some(Box::new(weixin::WeixinPlugin::new())),
