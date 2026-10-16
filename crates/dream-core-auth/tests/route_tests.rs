@@ -61,6 +61,7 @@ async fn test_app_with_mfa_options(
     let qr_token_store = Arc::new(QrTokenStore::new());
 
     let state = AuthRouterState {
+        directory_identity: None,
         mfa: enable_mfa.then(|| {
             Arc::new(dream_core_auth::mfa::MfaService::new(
                 user_repo.clone(),
@@ -420,12 +421,24 @@ async fn t4_5_login_empty_password_hash_returns_401() {
 async fn t4_6_login_username_too_long() {
     let (app, _ctx) = test_app().await;
 
-    let long_name = "a".repeat(33);
+    let long_name = "a".repeat(65);
     let body = format!(r#"{{"username":"{long_name}","password":"test1234"}}"#);
     let req = json_post("/login", &body);
     let resp = app.oneshot(req).await.unwrap();
 
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn login_accepts_the_enterprise_admin_username_length_limit() {
+    let (app, ctx) = test_app().await;
+    let username = "a".repeat(64);
+    create_test_user(&ctx, &username, "CorrectP@ss1").await;
+    let body = serde_json::json!({"username": username, "password": "CorrectP@ss1"}).to_string();
+    let response = app.oneshot(json_post("/login", &body)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["user"]["username"], username);
 }
 
 #[tokio::test]

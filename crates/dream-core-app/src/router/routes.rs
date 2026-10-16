@@ -3261,6 +3261,7 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
             platform: one_platform_service.clone(),
         }));
     let auth_mw_state = AuthState {
+        directory_identity: None,
         jwt_service: services.jwt_service.clone(),
         user_repo: services.user_repo.clone(),
         identity_mode: auth_identity_mode(services.identity_mode),
@@ -3400,6 +3401,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let login_risk: Option<std::sync::Arc<dyn LoginRiskGate>> = None;
 
     let auth_state = AuthRouterState {
+        directory_identity: None,
         mfa: Some(mfa_service.clone()),
         jwt_service: services.jwt_service.clone(),
         user_repo: services.user_repo.clone(),
@@ -3522,6 +3524,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let api_key_gate: Option<std::sync::Arc<dyn dream_core_auth::ApiKeyGate>> = None;
 
     let auth_mw_state = AuthState {
+        directory_identity: None,
         jwt_service: services.jwt_service.clone(),
         user_repo: services.user_repo.clone(),
         identity_mode: auth_identity_mode(services.identity_mode),
@@ -3865,6 +3868,9 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let one_devops_state = one_devops_state.with_proxy_usage_recorder(std::sync::Arc::new(BillingProxyUsageRecorder(
         one_billing_service.clone(),
     )));
+    #[cfg(feature = "enterprise")]
+    let one_devops_state = super::knowledge_office::wire(one_devops_state, &auth_mw_state, &services.data_dir);
+    let office_engine_public = dream_domain_devops::office_engine_routes(one_devops_state.clone());
     let one_devops_authenticated = dream_domain_devops::one_devops_routes(one_devops_state.clone())
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
     // Not session-authenticated, for the same reason the Codex bridge is not:
@@ -3969,7 +3975,8 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     .merge(office_proxy)
     .merge(public_assets)
     .merge(codex_bridge_public)
-    .merge(model_proxy_public);
+    .merge(model_proxy_public)
+    .merge(office_engine_public);
     #[cfg(feature = "enterprise")]
     let router = router.merge(crate::router::admin_web::admin_console_router());
     let router = router.layer(middleware::from_fn(security_headers_middleware));

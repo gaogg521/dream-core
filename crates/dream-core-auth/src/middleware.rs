@@ -15,6 +15,30 @@ use dream_core_db::{IUserRepository, IWebuiDeviceRepository, UserStatus, UserTyp
 use crate::JwtService;
 use crate::extract::extract_token_from_headers;
 
+/// Optional company-directory restriction, independent of administrator-owned
+/// user status. Implemented by the composition layer without an auth→domain dependency.
+#[async_trait]
+pub trait DirectoryIdentityGate: Send + Sync {
+    async fn is_allowed(&self, user_id: &str) -> Result<bool, String>;
+}
+
+pub async fn check_directory_identity(
+    gate: Option<&dyn DirectoryIdentityGate>,
+    user_id: &str,
+) -> Result<(), ApiError> {
+    let Some(gate) = gate else { return Ok(()); };
+    match gate.is_allowed(user_id).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(ApiError::coded(StatusCode::UNAUTHORIZED,
+            "DIRECTORY_ACCOUNT_DISABLED", "Directory account is disabled.", None)),
+        Err(error) => {
+            tracing::error!(user_id, %error, "directory identity admission lookup failed");
+            Err(ApiError::coded(StatusCode::SERVICE_UNAVAILABLE,
+                "DIRECTORY_STATUS_UNAVAILABLE", "Directory identity status unavailable.", None))
+        }
+    }
+}
+
 /// Header the WebUI reverse proxy stamps on every request it forwards.
 ///
 /// The desktop's co-located backend runs with `--local`, which historically
@@ -202,6 +226,7 @@ impl CurrentUser {
 /// Shared state for the authentication middleware.
 #[derive(Clone)]
 pub struct AuthState {
+    pub directory_identity: Option<Arc<dyn DirectoryIdentityGate>>,
     pub jwt_service: Arc<JwtService>,
     pub user_repo: Arc<dyn IUserRepository>,
     /// `Local` replaces the former `local: bool` — it skips JWT verification
@@ -266,6 +291,7 @@ pub async fn auth_middleware(
             && let Ok(payload) = state.jwt_service.verify(&token)
             && let Ok(Some(user)) = state.user_repo.find_by_id(&payload.user_id).await
         {
+            check_directory_identity(state.directory_identity.as_deref(), &user.id).await?;
             request.extensions_mut().insert(CurrentUser {
                 id: user.id,
                 username: user.username.unwrap_or_else(|| "external_user".to_string()),
@@ -307,6 +333,7 @@ pub async fn auth_middleware(
             ApiError::Internal("Authentication service unavailable".into())
         })?
         .ok_or_else(|| ApiError::Unauthorized("Invalid authentication subject".into()))?;
+    check_directory_identity(state.directory_identity.as_deref(), &user.id).await?;
 
     if state.identity_mode == AuthIdentityMode::DreamPro && user.user_type != UserType::DreamPro {
         return Err(ApiError::coded(
@@ -413,6 +440,7 @@ async fn runtime_token_channel(state: &AuthState, mut request: Request, next: Ne
             ApiError::Internal("Authentication service unavailable".into())
         })?
         .ok_or_else(|| ApiError::Unauthorized("Invalid authentication subject".into()))?;
+    check_directory_identity(state.directory_identity.as_deref(), &user.id).await?;
 
     if state.identity_mode == AuthIdentityMode::DreamPro && user.user_type != UserType::DreamPro {
         return Err(ApiError::coded(
@@ -474,6 +502,7 @@ async fn api_key_channel(
             ApiError::Internal("Authentication service unavailable".into())
         })?
         .ok_or_else(|| ApiError::Unauthorized("Invalid authentication subject".into()))?;
+    check_directory_identity(state.directory_identity.as_deref(), &user.id).await?;
 
     if state.identity_mode == AuthIdentityMode::DreamPro && user.user_type != UserType::DreamPro {
         return Err(ApiError::coded(
@@ -553,6 +582,7 @@ mod tests {
 
     async fn local_auth_app(user_repo: Arc<dyn IUserRepository>, jwt_service: Arc<JwtService>) -> Router {
         let state = AuthState {
+            directory_identity: None,
             jwt_service,
             user_repo,
             identity_mode: AuthIdentityMode::Local,
@@ -780,6 +810,7 @@ mod tests {
         ip_allowlist: Option<Arc<dyn IpAllowlistGate>>,
     ) -> Router {
         let state = AuthState {
+            directory_identity: None,
             jwt_service,
             user_repo,
             identity_mode: AuthIdentityMode::UserSession,
@@ -978,6 +1009,7 @@ mod tests {
         let jwt = Arc::new(JwtService::new("test-secret".to_string()));
 
         let state = AuthState {
+            directory_identity: None,
             jwt_service: jwt,
             user_repo,
             identity_mode: AuthIdentityMode::Local,
@@ -1009,6 +1041,7 @@ mod tests {
         let token = jwt.sign(&user.id, user.username.as_deref().unwrap_or("u")).unwrap();
 
         let state = AuthState {
+            directory_identity: None,
             jwt_service: jwt,
             user_repo,
             identity_mode: AuthIdentityMode::Local,
@@ -1055,6 +1088,7 @@ mod tests {
         api_key_gate: Option<Arc<dyn ApiKeyGate>>,
     ) -> Router {
         let state = AuthState {
+            directory_identity: None,
             jwt_service,
             user_repo,
             identity_mode: AuthIdentityMode::UserSession,
@@ -1251,5 +1285,22 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+}
+
+#[cfg(test)]
+mod directory_identity_gate_tests {
+    use super::*;
+    struct Gate(Result<bool, String>);
+    #[async_trait]
+    impl DirectoryIdentityGate for Gate {
+        async fn is_allowed(&self, _: &str) -> Result<bool, String> { self.0.clone() }
+    }
+    #[tokio::test]
+    async fn directory_status_is_independent_and_fails_closed() {
+        assert!(check_directory_identity(None, "personal").await.is_ok());
+        assert!(check_directory_identity(Some(&Gate(Ok(true))), "member").await.is_ok());
+        assert!(check_directory_identity(Some(&Gate(Ok(false))), "member").await.is_err());
+        assert!(check_directory_identity(Some(&Gate(Err("database unavailable".into()))), "member").await.is_err());
     }
 }
