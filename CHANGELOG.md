@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.1.89](https://github.com/gaogg521/dream-core/compare/v0.1.88...v0.1.89) (2026-10-16)
+
+
+### Features
+
+* **channel:** save WeCom bot adapter and SSO handoff fixes ([ec0f7e5](https://github.com/gaogg521/dream-core/commit/ec0f7e569de2bdc9555bbf04fcd56b4d8f61d4d2))
+* **knowledge:** add authenticated intranet Office sessions and save callbacks ([f758692](https://github.com/gaogg521/dream-core/commit/f7586921a932cd3c458d1077748d3f4c9d90a277))
+
+
+### Bug Fixes
+
+* **knowledge:** seed the local embedding model cache without hf-hub symlinks ([835c292](https://github.com/gaogg521/dream-core/commit/835c2922f9e5ee054b132f53fe432fbfa03926ea))
+* **release:** load ONNX Runtime at run time instead of linking it ([a2c67f8](https://github.com/gaogg521/dream-core/commit/a2c67f8f46bb69ee6266fdbf0187c8a6c783aeb4))
+* **sso:** accept DingTalk dual codes and route WeCom browser QR login ([f3cc962](https://github.com/gaogg521/dream-core/commit/f3cc962306001e5c48b644bc591a4c3b45c504e6))
+* **sso:** enrich WeCom and DingTalk enterprise profiles ([2418bbe](https://github.com/gaogg521/dream-core/commit/2418bbeb0b7ab1394bc9bdb17374ad7cdb02f958))
+* **sso:** request DingTalk user profile delegated scope ([8d7666e](https://github.com/gaogg521/dream-core/commit/8d7666ea7b4beb8ee38a27f9487be575ccfaea28))
+
+
+### Documentation
+
+* **knowledge:** document Office acceptance and pending app wiring ([831ead1](https://github.com/gaogg521/dream-core/commit/831ead19da649718a86e65029707e150768d5735))
+* ONNX Runtime dynamic loading — cause, design, verification ([237eb3f](https://github.com/gaogg521/dream-core/commit/237eb3f5a0ab244dec0b09848469c9a088c15280))
+
 ## [0.1.88](https://github.com/gaogg521/dream-core/compare/v0.1.87...v0.1.88) (2026-10-15)
 
 
