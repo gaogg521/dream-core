@@ -1,7 +1,16 @@
 //! OpenAI-compatible embeddings client (D1 decision). Talks to any endpoint
 //! exposing `POST {base_url}/embeddings` with the OpenAI request/response
 //! shape — OpenAI, vLLM, Ollama, Xinference, 智谱, etc.
+//!
+//! The default configuration (`local://embedding`) runs a bundled
+//! fastembed model in-process; see [`ensure_local_model_cache`] for why the
+//! model files are fetched into the HuggingFace cache layout by this crate
+//! instead of letting fastembed download them.
 
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::error::DevopsError;
@@ -47,6 +56,260 @@ pub fn env_embedding_config() -> (Option<String>, Option<String>, Option<String>
         std::env::var(ENV_EMBEDDING_MODEL).ok(),
         std::env::var(ENV_EMBEDDING_API_KEY).ok(),
     )
+}
+
+// -- Bundled local model cache ---------------------------------------------
+//
+// fastembed resolves `EmbeddingModel::ParaphraseMLMiniLML12V2Q` to this repo
+// and pulls its files through hf-hub. On Windows hosts whose security policy
+// makes `CreateSymbolicLinkW` a silent no-op (observed: the call returns
+// `Ok` but no link is created), hf-hub 0.5.0's `symlink_or_rename` neither
+// links nor falls back to rename, and its `assert!(pointer_path.exists())`
+// then **panics** inside the download worker — a fresh install cannot
+// initialize the model at all. A pre-seeded cache short-circuits that path:
+// `ApiRepo::get` returns the snapshot file without downloading, so no
+// symlink is ever attempted.
+//
+// The layout mirrors hf-hub's exactly:
+//   <cache>/models--Qdrant--paraphrase-multilingual-MiniLM-L12-v2-onnx-Q/
+//     refs/main                      → commit sha (written last)
+//     snapshots/<sha>/<file>         → real file, not a symlink
+//
+// `refs/main` is written only after every file has landed, so an interrupted
+// seed is never mistaken for a complete one.
+
+/// fastembed's repo id for `EmbeddingModel::ParaphraseMLMiniLML12V2Q`.
+const LOCAL_MODEL_REPO: &str = "Qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q";
+
+/// Files fastembed loads for this model.
+const LOCAL_MODEL_FILES: &[&str] = &[
+    "config.json",
+    "model_optimized.onnx",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+];
+
+/// The data dir the bundled model lives under, before fastembed's own
+/// `HF_HOME` override. Kept identical to fastembed's resolution order.
+fn local_model_data_root() -> PathBuf {
+    std::env::var_os("ONE_DATA_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("OneWork")))
+        .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".cache/onework")))
+        .unwrap_or_else(|| std::env::temp_dir().join("onework"))
+}
+
+/// The HuggingFace cache directory fastembed will actually read: `HF_HOME`
+/// wins over the bundled default, exactly as `pull_from_hf` resolves it.
+fn hf_cache_dir() -> PathBuf {
+    std::env::var_os("HF_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| local_model_data_root().join("models/embedding"))
+}
+
+/// The HuggingFace endpoint fastembed will use (`HF_ENDPOINT` override).
+fn hf_endpoint() -> String {
+    std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string())
+}
+
+fn local_model_repo_dir(cache_dir: &Path) -> PathBuf {
+    cache_dir.join(format!("models--{}", LOCAL_MODEL_REPO.replace('/', "--")))
+}
+
+/// The snapshot dir of an already-seeded model, if the cache is complete.
+fn seeded_snapshot(repo_dir: &Path) -> Option<PathBuf> {
+    let commit = std::fs::read_to_string(repo_dir.join("refs/main")).ok()?;
+    let commit = commit.trim();
+    if commit.is_empty() {
+        return None;
+    }
+    let snapshot = repo_dir.join("snapshots").join(commit);
+    LOCAL_MODEL_FILES
+        .iter()
+        .all(|file| snapshot.join(file).is_file())
+        .then_some(snapshot)
+}
+
+#[derive(Deserialize)]
+struct ModelApiResponse {
+    sha: String,
+    #[serde(default)]
+    siblings: Vec<ModelApiSibling>,
+}
+
+#[derive(Deserialize)]
+struct ModelApiSibling {
+    rfilename: String,
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+/// Resolve the model's current commit sha and the expected size of each file
+/// we need, from the HuggingFace model API.
+async fn resolve_model_metadata(
+    client: &reqwest::Client,
+) -> Result<(String, Vec<(String, Option<u64>)>), DevopsError> {
+    let url = format!("{}/api/models/{}?blobs=true", hf_endpoint(), LOCAL_MODEL_REPO);
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| DevopsError::Internal(format!("model metadata request failed: {e}")))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(DevopsError::Internal(format!(
+            "model metadata endpoint {status}: {body}"
+        )));
+    }
+    let parsed: ModelApiResponse = response
+        .json()
+        .await
+        .map_err(|e| DevopsError::Internal(format!("model metadata parse failed: {e}")))?;
+    let sha = parsed.sha.trim().to_string();
+    if sha.is_empty() {
+        return Err(DevopsError::Internal("model metadata returned an empty commit".into()));
+    }
+    let sizes: Vec<(String, Option<u64>)> = LOCAL_MODEL_FILES
+        .iter()
+        .map(|file| {
+            let size = parsed
+                .siblings
+                .iter()
+                .find(|s| &s.rfilename == file)
+                .and_then(|s| s.size);
+            ((*file).to_string(), size)
+        })
+        .collect();
+    Ok((sha, sizes))
+}
+
+/// Download one file into `dir` under a pid-unique temp name, verify its size
+/// against the API metadata, then atomically rename it into place. A
+/// truncated or partial download never lands as a real snapshot file.
+async fn download_model_file(
+    client: &reqwest::Client,
+    sha: &str,
+    file: &str,
+    expected_size: Option<u64>,
+    dir: &Path,
+) -> Result<(), DevopsError> {
+    let url = format!("{}/{}/resolve/{}/{}", hf_endpoint(), LOCAL_MODEL_REPO, sha, file);
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| DevopsError::Internal(format!("model file {file} request failed: {e}")))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(DevopsError::Internal(format!(
+            "model file {file} endpoint {status}: {body}"
+        )));
+    }
+    let temp = dir.join(format!(
+        "{file}.{}-{}.tmp",
+        std::process::id(),
+        UNIQUE_TMP.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = async {
+        let mut stream = response.bytes_stream();
+        let mut file_handle = tokio::fs::File::create(&temp)
+            .await
+            .map_err(|e| DevopsError::Internal(format!("model file {file} create failed: {e}")))?;
+        let mut written: u64 = 0;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk
+                .map_err(|e| DevopsError::Internal(format!("model file {file} stream failed: {e}")))?;
+            written += chunk.len() as u64;
+            tokio::io::AsyncWriteExt::write_all(&mut file_handle, &chunk)
+                .await
+                .map_err(|e| DevopsError::Internal(format!("model file {file} write failed: {e}")))?;
+        }
+        tokio::io::AsyncWriteExt::flush(&mut file_handle)
+            .await
+            .map_err(|e| DevopsError::Internal(format!("model file {file} flush failed: {e}")))?;
+        if let Some(expected) = expected_size
+            && written != expected
+        {
+            return Err(DevopsError::Internal(format!(
+                "model file {file} size mismatch: got {written}, expected {expected}"
+            )));
+        }
+        Ok(written)
+    }
+    .await;
+    match result {
+        Ok(_) => {
+            tokio::fs::rename(&temp, dir.join(file))
+                .await
+                .map_err(|e| DevopsError::Internal(format!("model file {file} rename failed: {e}")))?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&temp).await;
+            Err(e)
+        }
+    }
+}
+
+/// Process-unique counter for temp file names.
+static UNIQUE_TMP: AtomicUsize = AtomicUsize::new(0);
+
+/// Ensure the bundled local model is present in the HuggingFace cache
+/// layout fastembed reads, downloading it ourselves when it is not.
+///
+/// Called before every local-model initialization; a complete cache costs
+/// one `refs/main` read and a handful of `is_file` checks. Seeding is
+/// concurrency-safe: every writer lands its file atomically, and `refs/main`
+/// — the completeness marker — is written only after all files are present.
+async fn ensure_local_model_cache() -> Result<PathBuf, DevopsError> {
+    let cache_dir = hf_cache_dir();
+    let repo_dir = local_model_repo_dir(&cache_dir);
+    if let Some(snapshot) = seeded_snapshot(&repo_dir) {
+        return Ok(snapshot);
+    }
+
+    let client = reqwest::Client::new();
+    let (sha, sizes) = resolve_model_metadata(&client).await?;
+    let snapshot = repo_dir.join("snapshots").join(&sha);
+    tokio::fs::create_dir_all(&snapshot)
+        .await
+        .map_err(|e| DevopsError::Internal(format!("model cache create failed: {e}")))?;
+
+    let mut missing: Vec<(&str, Option<u64>)> = Vec::new();
+    for (file, size) in &sizes {
+        if snapshot.join(file).is_file() {
+            continue;
+        }
+        missing.push((file.as_str(), *size));
+    }
+    if !missing.is_empty() {
+        tracing::info!(
+            model = LOCAL_MODEL_REPO,
+            commit = %sha,
+            files = missing.len(),
+            "downloading bundled knowledge embedding model"
+        );
+        for (file, size) in missing {
+            download_model_file(&client, &sha, file, size, &snapshot).await?;
+        }
+    }
+
+    // Written last: a seed interrupted before this point stays invisible.
+    let refs = repo_dir.join("refs");
+    tokio::fs::create_dir_all(&refs)
+        .await
+        .map_err(|e| DevopsError::Internal(format!("model cache refs create failed: {e}")))?;
+    let temp = refs.join(format!("main.{}.tmp", std::process::id()));
+    tokio::fs::write(&temp, sha.as_bytes())
+        .await
+        .map_err(|e| DevopsError::Internal(format!("model cache ref write failed: {e}")))?;
+    tokio::fs::rename(&temp, refs.join("main"))
+        .await
+        .map_err(|e| DevopsError::Internal(format!("model cache ref rename failed: {e}")))?;
+    Ok(snapshot)
 }
 
 /// Resolve the effective embedding config with a clear precedence:
@@ -116,6 +379,11 @@ pub async fn embed(config: &EmbeddingConfig, inputs: &[String]) -> Result<Vec<Ve
     }
 
     if config.base_url == "local://embedding" {
+        // Pre-seed the HuggingFace cache layout ourselves. fastembed's own
+        // download path panics on Windows hosts whose security policy turns
+        // `CreateSymbolicLinkW` into a silent no-op (see module docs), so a
+        // fresh install would otherwise never initialize the model.
+        let snapshot = ensure_local_model_cache().await?;
         let texts = inputs.to_vec();
         return tokio::task::spawn_blocking(move || {
             static ENGINE: std::sync::LazyLock<std::sync::Mutex<Option<fastembed::TextEmbedding>>> =
@@ -124,21 +392,35 @@ pub async fn embed(config: &EmbeddingConfig, inputs: &[String]) -> Result<Vec<Ve
                 .lock()
                 .map_err(|_| DevopsError::Internal("local embedding engine lock failed".into()))?;
             if engine.is_none() {
-                let root = std::env::var_os("ONE_DATA_DIR")
-                    .map(std::path::PathBuf::from)
-                    .or_else(|| std::env::var_os("LOCALAPPDATA").map(|p| std::path::PathBuf::from(p).join("OneWork")))
-                    .or_else(|| std::env::var_os("HOME").map(|p| std::path::PathBuf::from(p).join(".cache/onework")))
-                    .unwrap_or_else(|| std::env::temp_dir().join("onework"));
+                let root = local_model_data_root();
                 tracing::info!("initializing local knowledge embedding model");
-                *engine = Some(
+                // A panic inside fastembed (e.g. a partially seeded cache)
+                // must surface as a normal error so the caller records it on
+                // the document instead of the worker task dying.
+                let init = std::panic::catch_unwind(|| {
                     fastembed::TextEmbedding::try_new(
                         fastembed::TextInitOptions::new(fastembed::EmbeddingModel::ParaphraseMLMiniLML12V2Q)
                             .with_cache_dir(root.join("models/embedding"))
                             .with_show_download_progress(false)
                             .with_intra_threads(2),
                     )
-                    .map_err(|e| DevopsError::Internal(format!("local embedding model initialization failed: {e}")))?,
-                );
+                });
+                *engine = Some(match init {
+                    Ok(Ok(engine)) => engine,
+                    Ok(Err(e)) => {
+                        return Err(DevopsError::Internal(format!(
+                            "local embedding model initialization failed: {e} (cache: {})",
+                            snapshot.display()
+                        )));
+                    }
+                    Err(_) => {
+                        return Err(DevopsError::Internal(format!(
+                            "local embedding model initialization panicked; the model cache at {} may be \
+                             incomplete or corrupted — delete it and retry with network access",
+                            snapshot.display()
+                        )));
+                    }
+                });
             }
             engine
                 .as_mut()
@@ -413,9 +695,37 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept embedding request");
-            let mut request = [0_u8; 4096];
-            let size = stream.read(&mut request).expect("read request");
-            assert!(String::from_utf8_lossy(&request[..size]).contains("/v1/embeddings"));
+            // Read the whole request — head *and* declared body — before
+            // responding. reqwest may deliver them in separate segments;
+            // answering after the head alone closes the connection while the
+            // body is still in flight, which surfaces as a flaky
+            // "error sending request" instead of a dimension check.
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let size = stream.read(&mut buffer).expect("read request");
+                if size == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..size]);
+                let Some(head_end) = request.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4) else {
+                    continue;
+                };
+                let content_length: usize = String::from_utf8_lossy(&request[..head_end])
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                if request.len() >= head_end + content_length {
+                    break;
+                }
+            }
+            assert!(String::from_utf8_lossy(&request).contains("/v1/embeddings"));
             let body = r#"{"data":[{"embedding":[0.1,0.2,0.3]}]}"#;
             write!(
                 stream,
@@ -508,5 +818,232 @@ mod tests {
             "expected overlap prefix, got {:?}",
             chunks[1]
         );
+    }
+}
+
+// -- Bundled local model cache seeding --------------------------------------
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    /// Serializes the tests that mutate `HF_ENDPOINT` / `HF_HOME`, which are
+    /// process-global and read by the seeder.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Sets the two HF env vars for the seeder and restores the previous
+    /// values on drop, so the process-global state never leaks between tests.
+    struct HubEnvGuard {
+        endpoint: Option<String>,
+        home: Option<std::ffi::OsString>,
+    }
+
+    impl HubEnvGuard {
+        fn new(endpoint: &str, home: &Path) -> Self {
+            let guard = Self {
+                endpoint: std::env::var("HF_ENDPOINT").ok(),
+                home: std::env::var_os("HF_HOME"),
+            };
+            // SAFETY: ENV_LOCK serializes every test in this module, and no
+            // other test in the binary reads these two variables.
+            unsafe {
+                std::env::set_var("HF_ENDPOINT", endpoint);
+                std::env::set_var("HF_HOME", home);
+            }
+            guard
+        }
+    }
+
+    impl Drop for HubEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: see `new`.
+            unsafe {
+                match &self.endpoint {
+                    Some(value) => std::env::set_var("HF_ENDPOINT", value),
+                    None => std::env::remove_var("HF_ENDPOINT"),
+                }
+                match &self.home {
+                    Some(value) => std::env::set_var("HF_HOME", value),
+                    None => std::env::remove_var("HF_HOME"),
+                }
+            }
+        }
+    }
+
+    /// Minimal sequential HTTP server standing in for the HuggingFace hub.
+    /// The server thread exits after `max_requests` connections, so a test
+    /// never has to force-close a listening socket.
+    struct FakeHub {
+        endpoint: String,
+        requests: Arc<AtomicUsize>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl FakeHub {
+        /// `files` are served for both the metadata API and the resolve
+        /// endpoint; `truncate_to` makes oversized files return fewer bytes
+        /// than the metadata claims.
+        fn spawn(sha: &str, files: &[(String, Vec<u8>)], truncate_to: Option<usize>, max_requests: usize) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake hub");
+            let address = listener.local_addr().unwrap();
+            let requests = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&requests);
+            let sha = sha.to_string();
+            let files = files.to_vec();
+            let handle = std::thread::spawn(move || {
+                let mut served = 0_usize;
+                for stream in listener.incoming() {
+                    if served >= max_requests {
+                        break;
+                    }
+                    served += 1;
+                    let Ok(mut stream) = stream else { break };
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    let mut request = [0_u8; 8192];
+                    let size = match stream.read(&mut request) {
+                        Ok(size) => size,
+                        Err(_) => continue,
+                    };
+                    let line = String::from_utf8_lossy(&request[..size]);
+                    let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                    let (status, body, content_type) = if path.starts_with("/api/models/") {
+                        let siblings: Vec<String> = files
+                            .iter()
+                            .map(|(name, content)| {
+                                format!(
+                                    r#"{{"rfilename":{},"size":{}}}"#,
+                                    serde_json::to_string(name).unwrap(),
+                                    content.len()
+                                )
+                            })
+                            .collect();
+                        let json = format!(
+                            r#"{{"sha":{},"siblings":[{}]}}"#,
+                            serde_json::to_string(&sha).unwrap(),
+                            siblings.join(",")
+                        );
+                        ("200 OK", json.into_bytes(), "application/json")
+                    } else if path.contains("/resolve/") {
+                        let name = path.rsplit('/').next().unwrap_or("").to_string();
+                        match files.iter().find(|(n, _)| *n == name) {
+                            Some((_, content)) => {
+                                let body = match truncate_to {
+                                    Some(limit) if content.len() > limit => content[..limit].to_vec(),
+                                    _ => content.clone(),
+                                };
+                                ("200 OK", body, "application/octet-stream")
+                            }
+                            None => ("404 Not Found", b"not found".to_vec(), "text/plain"),
+                        }
+                    } else {
+                        ("404 Not Found", b"not found".to_vec(), "text/plain")
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    let _ = stream.write_all(&body);
+                }
+            });
+            Self {
+                endpoint: format!("http://{address}"),
+                requests,
+                handle: Some(handle),
+            }
+        }
+
+        fn request_count(&self) -> usize {
+            self.requests.load(Ordering::Relaxed)
+        }
+
+        /// Detaches the server thread; it exits on its own after its request
+        /// budget, and process teardown reclaims it either way.
+        fn shutdown(&mut self) {
+            self.handle.take();
+        }
+    }
+
+    fn fake_files() -> Vec<(String, Vec<u8>)> {
+        LOCAL_MODEL_FILES
+            .iter()
+            .map(|name| {
+                let content = if *name == "model_optimized.onnx" {
+                    b"not-a-real-onnx-model".to_vec()
+                } else {
+                    format!("{name} body").into_bytes()
+                };
+                ((*name).to_string(), content)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn seeds_the_model_cache_from_the_hub_and_reuses_it_without_network() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let sha = "faf4aa4225822f3bc6376869cb1164e8e3feedd0";
+        let files = fake_files();
+        let mut hub = FakeHub::spawn(sha, &files, None, 8);
+        let home = tempfile::tempdir().unwrap();
+        let _env = HubEnvGuard::new(&hub.endpoint, home.path());
+
+        let snapshot = ensure_local_model_cache().await.expect("seed must succeed");
+        let repo_dir = local_model_repo_dir(home.path());
+        assert_eq!(snapshot, repo_dir.join("snapshots").join(sha));
+        assert_eq!(
+            std::fs::read_to_string(repo_dir.join("refs/main")).unwrap(),
+            sha,
+            "refs/main records the seeded commit"
+        );
+        for (name, content) in &files {
+            assert_eq!(
+                std::fs::read(snapshot.join(name)).unwrap(),
+                *content,
+                "{name} must be a real file in the snapshot"
+            );
+        }
+        let after_seed = hub.request_count();
+
+        // A complete cache is reused without any further network traffic.
+        let reused = ensure_local_model_cache().await.expect("reuse must succeed");
+        assert_eq!(reused, snapshot);
+        assert_eq!(
+            hub.request_count(),
+            after_seed,
+            "a seeded cache must not hit the hub again"
+        );
+
+        hub.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_truncated_download_is_rejected_and_leaves_no_complete_cache() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let files = fake_files();
+        // Claim 19 bytes for the "onnx" file but serve only 5.
+        let mut hub = FakeHub::spawn(sha, &files, Some(5), 8);
+        let home = tempfile::tempdir().unwrap();
+        let _env = HubEnvGuard::new(&hub.endpoint, home.path());
+
+        let error = ensure_local_model_cache().await.expect_err("truncation must fail");
+        assert!(
+            error.to_string().contains("size mismatch"),
+            "the failure must name the size mismatch, got: {error}"
+        );
+        let repo_dir = local_model_repo_dir(home.path());
+        assert!(
+            !repo_dir.join("refs/main").exists(),
+            "refs/main must not be written when a file is missing"
+        );
+        assert!(
+            !repo_dir.join("snapshots").join(sha).join("model_optimized.onnx").is_file(),
+            "a truncated file must never land as a snapshot file"
+        );
+
+        hub.shutdown();
     }
 }
