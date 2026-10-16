@@ -48,6 +48,17 @@ struct WecomUserInfoResponse {
 pub struct WecomProvider;
 
 impl WecomProvider {
+    /// Standard-browser QR login, matching the official WwLogin SDK endpoint.
+    pub fn build_web_authorize_url(config: &WecomProviderConfig, state: &str) -> String {
+        format!(
+            "https://open.work.weixin.qq.com/wwopen/sso/qrConnect?appid={}&agentid={}&redirect_uri={}&state={}",
+            urlencode(&config.corp_id),
+            urlencode(&config.agent_id),
+            urlencode(config.redirect_uri.as_deref().unwrap_or("")),
+            urlencode(state),
+        )
+    }
+
     pub fn build_authorize_url(config: &WecomProviderConfig, state: &str) -> String {
         let redirect = config.redirect_uri.as_deref().unwrap_or("");
         format!(
@@ -171,6 +182,24 @@ mod tests {
         ] {
             assert!(WecomProvider::validate_user_info(serde_json::from_value(response).unwrap()).is_err());
         }
+    }
+
+    #[test]
+    fn browser_qr_login_uses_web_endpoint_and_encodes_callback_and_state() {
+        let cfg = WecomProviderConfig {
+            corp_id: "ww_test".into(),
+            agent_id: "1000002".into(),
+            secret: "not-in-url".into(),
+            redirect_uri: Some("https://example.com:8443/api/one/sso/wecom/callback".into()),
+        };
+        let url = WecomProvider::build_web_authorize_url(&cfg, "state&next=other");
+        assert!(url.starts_with("https://open.work.weixin.qq.com/wwopen/sso/qrConnect?"));
+        assert!(url.contains("appid=ww_test&agentid=1000002"));
+        assert!(url.contains("redirect_uri=https%3A%2F%2Fexample.com%3A8443%2Fapi%2Fone%2Fsso%2Fwecom%2Fcallback"));
+        assert!(url.contains("state=state%26next%3Dother"));
+        assert!(!url.contains("not-in-url"));
+        assert!(!url.contains("snsapi_base"));
+        assert!(WecomProvider::build_authorize_url(&cfg, "s").contains("scope=snsapi_base"));
     }
 
     #[test]

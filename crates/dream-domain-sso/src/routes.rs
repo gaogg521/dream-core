@@ -258,7 +258,7 @@ async fn authorize(
         return Ok(Redirect::to(&format!("{callback_origin}{path_and_query}")).into_response());
     }
 
-    let (goto, state_token) = build_authorize_goto(
+    let (mut goto, state_token) = build_authorize_goto(
         provider,
         &row,
         &state.service,
@@ -267,6 +267,12 @@ async fn authorize(
         deep_link_scheme,
     )
     .await?;
+
+    if provider == SsoProviderKind::Wecom && wecom_client_request(&headers) {
+        let cfg: crate::providers::wecom::WecomProviderConfig =
+            serde_json::from_str(&row.config).map_err(|e| SsoError::Internal(format!("parse wecom config: {e}")))?;
+        goto = crate::providers::wecom::WecomProvider::build_authorize_url(&cfg, &state_token);
+    }
 
     let state_cookie = Some(state_cookie_header(
         provider,
@@ -371,6 +377,13 @@ fn callback_origin_matches_host(callback_origin: &str, request_host: &str) -> bo
     request == expected
 }
 
+fn wecom_client_request(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().contains("wxwork"))
+}
+
 /// Build the provider-specific OAuth authorize URL + issue an OAuth state
 /// token. Returns `(goto_url, state)`.
 async fn build_authorize_goto(
@@ -419,7 +432,7 @@ async fn build_authorize_goto(
         SsoProviderKind::Wecom => {
             let cfg: WecomProviderConfig = serde_json::from_str(&row.config)
                 .map_err(|e| SsoError::Internal(format!("parse wecom config: {e}")))?;
-            WecomProvider::build_authorize_url(&cfg, &state_for_goto)
+            WecomProvider::build_web_authorize_url(&cfg, &state_for_goto)
         }
         SsoProviderKind::Ldap => return Err(SsoError::BadRequest("LDAP has no OAuth".into())),
     };
@@ -429,10 +442,28 @@ async fn build_authorize_goto(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CallbackQuery {
-    #[serde(default, alias = "authCode")]
+    #[serde(default)]
     code: Option<String>,
     #[serde(default)]
+    auth_code: Option<String>,
+    #[serde(default)]
     state: Option<String>,
+}
+
+impl CallbackQuery {
+    fn authorization_code(&self) -> Result<&str, SsoError> {
+        let code = self.code.as_deref().map(str::trim).filter(|v| !v.is_empty());
+        let auth_code = self.auth_code.as_deref().map(str::trim).filter(|v| !v.is_empty());
+        match (code, auth_code) {
+            // DingTalk sends both names with the same value in real callbacks.
+            // Distinct values remain ambiguous and must never reach token exchange.
+            (Some(code), Some(auth_code)) if code != auth_code => {
+                Err(SsoError::BadRequest("Conflicting authorization codes".into()))
+            }
+            (Some(code), _) | (_, Some(code)) => Ok(code),
+            _ => Err(SsoError::MissingCode),
+        }
+    }
 }
 
 async fn callback(
@@ -457,12 +488,7 @@ async fn callback_inner(
     query: CallbackQuery,
     headers: &HeaderMap,
 ) -> Result<Response, SsoError> {
-    let code = query
-        .code
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or(SsoError::MissingCode)?;
+    let code = query.authorization_code()?;
     let state_token = query
         .state
         .as_deref()
@@ -1306,13 +1332,42 @@ mod tests {
     /// Login CSRF: a callback carrying a valid server-issued state but no
     /// matching cookie (the victim never started this login) is refused.
     #[test]
+    fn only_wecom_clients_use_in_app_authorization() {
+        for (agent, expected) in [
+            ("Mozilla/5.0 Chrome/130", false),
+            ("MicroMessenger/8.0", false),
+            ("Mozilla/5.0 wxwork/4.1", true),
+            ("WXWORK/4.1", true),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::USER_AGENT, agent.parse().unwrap());
+            assert_eq!(wecom_client_request(&headers), expected);
+        }
+        assert!(!wecom_client_request(&HeaderMap::new()));
+    }
+
+    #[test]
     fn oauth_callback_accepts_dingtalk_auth_code_and_rejects_ambiguous_codes() {
-        let uri: axum::http::Uri = "/callback?authCode=ding-code&state=nonce".parse().unwrap();
-        let query = axum::extract::Query::<CallbackQuery>::try_from_uri(&uri).unwrap().0;
-        assert_eq!(query.code.as_deref(), Some("ding-code"));
-        assert_eq!(query.state.as_deref(), Some("nonce"));
+        for params in [
+            "authCode=ding-code",
+            "code=ding-code",
+            "code=ding-code&authCode=ding-code",
+        ] {
+            let uri: axum::http::Uri = format!("/callback?{params}&state=nonce").parse().unwrap();
+            let query = axum::extract::Query::<CallbackQuery>::try_from_uri(&uri).unwrap().0;
+            assert_eq!(query.authorization_code().unwrap(), "ding-code");
+            assert_eq!(query.state.as_deref(), Some("nonce"));
+        }
         let uri = "/callback?code=one&authCode=two&state=nonce".parse().unwrap();
-        assert!(axum::extract::Query::<CallbackQuery>::try_from_uri(&uri).is_err());
+        let query = axum::extract::Query::<CallbackQuery>::try_from_uri(&uri).unwrap().0;
+        assert!(query.authorization_code().is_err());
+        for params in ["code=one&code=two", "authCode=one&authCode=two"] {
+            let uri = format!("/callback?{params}&state=nonce").parse().unwrap();
+            assert!(axum::extract::Query::<CallbackQuery>::try_from_uri(&uri).is_err());
+        }
+        let uri = "/callback?code=&authCode=&state=nonce".parse().unwrap();
+        let query = axum::extract::Query::<CallbackQuery>::try_from_uri(&uri).unwrap().0;
+        assert!(query.authorization_code().is_err());
     }
 
     #[test]
