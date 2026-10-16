@@ -7,6 +7,8 @@ mod clipboard_writer;
 mod fs_monitor;
 mod health;
 mod item_revealer;
+#[cfg(feature = "enterprise")]
+mod knowledge_office;
 mod routes;
 mod runtime_team_tools;
 mod scm_monitor;
