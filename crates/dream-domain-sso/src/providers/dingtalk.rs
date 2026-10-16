@@ -65,9 +65,9 @@ impl DingtalkProvider {
     pub fn build_authorize_url(config: &DingtalkProviderConfig, state: &str) -> String {
         let redirect = config.redirect_uri.as_deref().unwrap_or("");
         let scope = if config.corp_id.as_deref().is_some_and(|id| !id.trim().is_empty()) {
-            "openid%20corpid"
+            "openid%20corpid%20Contact.User.Read"
         } else {
-            "openid"
+            "openid%20Contact.User.Read"
         };
         format!(
             "{AUTHORIZE_URL}?redirect_uri={}&response_type=code&client_id={}&scope={scope}&state={}&prompt=consent",
@@ -236,7 +236,9 @@ mod tests {
             redirect_uri: Some("https://example.com/callback".into()),
             external_id_field: "unionId".into(),
         };
-        assert!(DingtalkProvider::build_authorize_url(&cfg, "state").contains("scope=openid%20corpid"));
+        assert!(
+            DingtalkProvider::build_authorize_url(&cfg, "state").contains("scope=openid%20corpid%20Contact.User.Read")
+        );
         for org in [None, Some("other-corp"), Some("corp-1")] {
             let data = DingtalkUserTokenResponse {
                 access_token: Some("test-token".into()),
@@ -248,7 +250,7 @@ mod tests {
             );
         }
         cfg.corp_id = None;
-        assert!(DingtalkProvider::build_authorize_url(&cfg, "state").contains("scope=openid&"));
+        assert!(DingtalkProvider::build_authorize_url(&cfg, "state").contains("scope=openid%20Contact.User.Read&"));
         assert!(
             DingtalkProvider::validate_token(
                 &cfg,
@@ -273,7 +275,7 @@ mod tests {
         let url = DingtalkProvider::build_authorize_url(&cfg, "state456");
         assert!(url.contains("client_id=ding_test"));
         assert!(url.contains("state=state456"));
-        assert!(url.contains("scope=openid"));
+        assert!(url.contains("scope=openid%20Contact.User.Read&"));
     }
 
     #[test]
