@@ -47,9 +47,8 @@ pub struct ProviderUserInfo {
     pub external_id: String,
     pub preferred_username: String,
     pub org_unit_path: Option<String>,
-    /// Job title — only Feishu populates this today (via its Contact API,
-    /// see `feishu::FeishuProvider::fetch_org_profile`); other providers
-    /// leave it `None`.
+    /// Job title from the provider's Contact API when application permissions
+    /// allow access; absent when the directory does not supply it.
     pub job_title: Option<String>,
     /// Company/organization identifier from the IdP (Feishu `tenant_key`,
     /// DingTalk `corp_id`, WeCom `corpid`). Used to bind/auto-join the SSO

@@ -867,14 +867,18 @@ async fn run_provider_oauth(
             let info = DingtalkProvider::fetch_user_info(&token).await?;
             let external_id = DingtalkProvider::resolve_external_id(&info, &cfg.external_id_field)
                 .ok_or(SsoError::IdentityMissing)?;
-            Ok(DingtalkProvider::to_provider_user_info(&info, &external_id))
+            let mut profile = DingtalkProvider::to_provider_user_info(&info, &external_id);
+            DingtalkProvider::enrich_profile(&cfg, &info, &mut profile).await;
+            Ok(profile)
         }
         SsoProviderKind::Wecom => {
             let cfg: WecomProviderConfig = serde_json::from_str(&row.config)
                 .map_err(|e| SsoError::Internal(format!("parse wecom config: {e}")))?;
             let corp_token = WecomProvider::fetch_corp_access_token(&cfg.corp_id, &cfg.secret).await?;
             let user_id = WecomProvider::fetch_user_id_by_code(&corp_token, code).await?;
-            Ok(WecomProvider::to_provider_user_info(&user_id))
+            let mut profile = WecomProvider::to_provider_user_info(&user_id);
+            WecomProvider::enrich_profile(&corp_token, &mut profile).await;
+            Ok(profile)
         }
         SsoProviderKind::Oidc => {
             let cfg = parse_oidc_config(&row).ok_or_else(|| SsoError::ProviderNotConfigured("oidc".into()))?;

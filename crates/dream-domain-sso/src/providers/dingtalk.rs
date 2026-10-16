@@ -164,9 +164,8 @@ impl DingtalkProvider {
             // their colleagues, under a column claiming to be their
             // department.
             //
-            // The endpoint this profile comes from (contact "me") returns no
-            // department at all, so `None` is the honest answer — same as
-            // WeCom and OIDC.
+            // The OAuth contact "me" endpoint returns no department. The
+            // separate application directory enrichment fills it when allowed.
             org_unit_path: None,
             job_title: None,
             // DingTalk corp_id is available but not threaded through yet — the
@@ -201,6 +200,150 @@ impl DingtalkProvider {
         }
         Ok(())
     }
+
+    /// The OAuth `me` endpoint returns a nickname. Resolve its union ID in
+    /// the application's enterprise directory before requesting staff details.
+    pub async fn enrich_profile(
+        config: &DingtalkProviderConfig,
+        info: &DingtalkUserInfo,
+        profile: &mut ProviderUserInfo,
+    ) {
+        Self::enrich_profile_from("https://oapi.dingtalk.com", config, info, profile).await;
+    }
+
+    async fn enrich_profile_from(
+        base: &str,
+        config: &DingtalkProviderConfig,
+        info: &DingtalkUserInfo,
+        profile: &mut ProviderUserInfo,
+    ) {
+        let result = tokio::time::timeout(HTTP_TIMEOUT, async {
+            let union_id = info
+                .union_id
+                .as_deref()
+                .filter(|id| !id.trim().is_empty())
+                .ok_or(SsoError::IdentityMissing)?;
+            let client = http_client()?;
+            let token: serde_json::Value = client
+                .get(format!("{base}/gettoken"))
+                .query(&[
+                    ("appkey", config.app_key.as_str()),
+                    ("appsecret", config.app_secret.as_str()),
+                ])
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            validate_contact_response(&token)?;
+            let token = token["access_token"]
+                .as_str()
+                .filter(|token| !token.is_empty())
+                .ok_or_else(|| SsoError::Internal("DingTalk app token missing".into()))?;
+            let identity = contact_request(
+                &client,
+                base,
+                token,
+                "user/getbyunionid",
+                serde_json::json!({"unionid": union_id}),
+            )
+            .await?;
+            if identity["contact_type"].as_i64() != Some(0) {
+                return Err(SsoError::IdentityMissing);
+            }
+            let user_id = identity["userid"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .ok_or(SsoError::IdentityMissing)?;
+            let data = contact_request(
+                &client,
+                base,
+                token,
+                "v2/user/get",
+                serde_json::json!({"userid": user_id}),
+            )
+            .await?;
+            if data["userid"].as_str() != Some(user_id) || data["unionid"].as_str().is_some_and(|id| id != union_id) {
+                return Err(SsoError::IdentityMissing);
+            }
+            apply_contact_profile(profile, &data);
+            // Bound parent traversal and reject cycles in provider data.
+            let mut id = data["dept_id_list"]
+                .as_array()
+                .and_then(|ids| ids.first())
+                .and_then(|id| id.as_i64())
+                .unwrap_or(0);
+            let mut visited = std::collections::HashSet::new();
+            let mut names = Vec::new();
+            while id > 0 && visited.len() < 16 && visited.insert(id) {
+                let node = contact_request(
+                    &client,
+                    base,
+                    token,
+                    "v2/department/get",
+                    serde_json::json!({"dept_id": id}),
+                )
+                .await?;
+                if let Some(name) = node["name"].as_str().map(str::trim).filter(|name| !name.is_empty()) {
+                    names.push(name.to_owned());
+                }
+                id = node["parent_id"].as_i64().unwrap_or(0);
+            }
+            names.reverse();
+            if !names.is_empty() {
+                profile.org_unit_path = Some(names.join(" / "));
+            }
+            Ok::<(), SsoError>(())
+        })
+        .await;
+        if !matches!(result, Ok(Ok(()))) {
+            tracing::warn!(
+                provider = "dingtalk",
+                "SSO contact profile incomplete; check application Contact permissions and visible member scope"
+            );
+        }
+    }
+}
+
+fn validate_contact_response(data: &serde_json::Value) -> Result<(), SsoError> {
+    if data["errcode"].as_i64() != Some(0) {
+        return Err(SsoError::Internal(format!(
+            "DingTalk Contact API failed (code {:?})",
+            data["errcode"].as_i64()
+        )));
+    }
+    Ok(())
+}
+
+async fn contact_request(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    endpoint: &str,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, SsoError> {
+    let data: serde_json::Value = client
+        .post(format!("{base}/topapi/{endpoint}"))
+        .query(&[("access_token", token)])
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    validate_contact_response(&data)?;
+    Ok(data["result"].clone())
+}
+
+fn apply_contact_profile(profile: &mut ProviderUserInfo, data: &serde_json::Value) {
+    if let Some(name) = data["name"].as_str().map(str::trim).filter(|name| !name.is_empty()) {
+        profile.preferred_username = name.to_owned();
+    }
+    profile.job_title = data["title"]
+        .as_str()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(str::to_owned);
 }
 
 fn http_client() -> Result<reqwest::Client, SsoError> {
@@ -226,6 +369,109 @@ fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn contact_http_chain_and_permission_denied_fallback() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, method, path, query_param},
+        };
+        let server = MockServer::start().await;
+        let cfg = DingtalkProviderConfig {
+            app_key: "app".into(),
+            app_secret: "secret".into(),
+            corp_id: None,
+            redirect_uri: None,
+            external_id_field: "unionId".into(),
+        };
+        let info: DingtalkUserInfo =
+            serde_json::from_value(serde_json::json!({"unionId":"union-1","nick":"昵称"})).unwrap();
+        Mock::given(method("GET"))
+            .and(path("/gettoken"))
+            .and(query_param("appkey", "app"))
+            .and(query_param("appsecret", "secret"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"errcode":0,"access_token":"app-token"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/topapi/user/getbyunionid"))
+            .and(query_param("access_token", "app-token"))
+            .and(body_json(serde_json::json!({"unionid":"union-1"})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"errcode":0,"result":{"userid":"member-1","contact_type":0}})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST")).and(path("/topapi/v2/user/get"))
+            .and(query_param("access_token", "app-token")).and(body_json(serde_json::json!({"userid":"member-1"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"errcode":0,"result":{"userid":"member-1","unionid":"union-1","name":"赵高","title":"总监","dept_id_list":[2]}})))
+            .expect(1).mount(&server).await;
+        for (id, parent, name) in [(2, 1, "安全中心"), (1, 0, "公司")] {
+            Mock::given(method("POST"))
+                .and(path("/topapi/v2/department/get"))
+                .and(query_param("access_token", "app-token"))
+                .and(body_json(serde_json::json!({"dept_id":id})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({"errcode":0,"result":{"dept_id":id,"parent_id":parent,"name":name}}),
+                ))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let mut profile = DingtalkProvider::to_provider_user_info(&info, "union-1");
+        DingtalkProvider::enrich_profile_from(&server.uri(), &cfg, &info, &mut profile).await;
+        assert_eq!(profile.external_id, "union-1");
+        assert_eq!(profile.preferred_username, "赵高");
+        assert_eq!(profile.job_title.as_deref(), Some("总监"));
+        assert_eq!(profile.org_unit_path.as_deref(), Some("公司 / 安全中心"));
+        server.verify().await;
+        server.reset().await;
+        Mock::given(path("/gettoken"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"errcode":60011,"access_token":"must-not-use"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut fallback = DingtalkProvider::to_provider_user_info(&info, "union-1");
+        DingtalkProvider::enrich_profile_from(&server.uri(), &cfg, &info, &mut fallback).await;
+        assert_eq!(fallback.external_id, "union-1");
+        assert_eq!(fallback.preferred_username, "昵称");
+        assert_eq!(fallback.job_title, None);
+        assert_eq!(fallback.org_unit_path, None);
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn enterprise_profile_overrides_nickname_without_changing_identity_or_exposing_mobile() {
+        let info: DingtalkUserInfo =
+            serde_json::from_value(serde_json::json!({"unionId":"union-1","nick":"昵称","mobile":"private"})).unwrap();
+        let mut profile = DingtalkProvider::to_provider_user_info(&info, "union-1");
+        apply_contact_profile(
+            &mut profile,
+            &serde_json::json!({"name":" 赵高 ","title":" 信息安全总监 ","mobile":"private"}),
+        );
+        assert_eq!(profile.external_id, "union-1");
+        assert_eq!(profile.preferred_username, "赵高");
+        assert_eq!(profile.job_title.as_deref(), Some("信息安全总监"));
+        assert_eq!(profile.org_unit_path, None);
+        apply_contact_profile(&mut profile, &serde_json::json!({"name":" ","title":" "}));
+        assert_eq!(profile.preferred_username, "赵高");
+        assert_eq!(profile.job_title, None);
+        assert!(
+            validate_contact_response(&serde_json::json!({"errcode":60011}))
+                .unwrap_err()
+                .to_string()
+                .contains("60011")
+        );
+        assert!(validate_contact_response(&serde_json::json!({"result":{}})).is_err());
+    }
 
     #[test]
     fn configured_corp_requires_matching_verified_token_organization() {

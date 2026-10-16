@@ -132,6 +132,56 @@ impl WecomProvider {
         }
     }
 
+    /// OAuth identifies the member; the application Contact API supplies their
+    /// enterprise profile. Missing Contact permissions must not prevent login.
+    pub async fn enrich_profile(access_token: &str, profile: &mut ProviderUserInfo) {
+        Self::enrich_profile_from("https://qyapi.weixin.qq.com/cgi-bin", access_token, profile).await;
+    }
+
+    async fn enrich_profile_from(base: &str, access_token: &str, profile: &mut ProviderUserInfo) {
+        let result = tokio::time::timeout(HTTP_TIMEOUT, async {
+            let client = http_client()?;
+            let data: serde_json::Value = client
+                .get(format!("{base}/user/get"))
+                .query(&[("access_token", access_token), ("userid", profile.external_id.as_str())])
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            validate_contact_response(&data)?;
+            if data["userid"].as_str() != Some(profile.external_id.as_str()) {
+                return Err(SsoError::IdentityMissing);
+            }
+            apply_contact_profile(profile, &data);
+            if let Some(dept) = data["main_department"]
+                .as_i64()
+                .or_else(|| data["department"].as_array()?.first()?.as_i64())
+            {
+                let departments: serde_json::Value = client
+                    .get(format!("{base}/department/list"))
+                    .query(&[("access_token", access_token)])
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json()
+                    .await?;
+                validate_contact_response(&departments)?;
+                if let Some(nodes) = departments["department"].as_array() {
+                    profile.org_unit_path = department_path(nodes, dept);
+                }
+            }
+            Ok::<(), SsoError>(())
+        })
+        .await;
+        if !matches!(result, Ok(Ok(()))) {
+            tracing::warn!(
+                provider = "wecom",
+                "SSO contact profile incomplete; check application Contact permissions and visible member scope"
+            );
+        }
+    }
+
     pub async fn test_credentials(corp_id: &str, secret: &str) -> Result<(), SsoError> {
         let cid = corp_id.trim();
         let sec = secret.trim();
@@ -142,6 +192,43 @@ impl WecomProvider {
         }
         Self::fetch_corp_access_token(cid, sec).await.map(|_| ())
     }
+}
+
+fn validate_contact_response(data: &serde_json::Value) -> Result<(), SsoError> {
+    if data["errcode"].as_i64() != Some(0) {
+        return Err(SsoError::Internal(format!(
+            "WeCom Contact API failed (code {:?})",
+            data["errcode"].as_i64()
+        )));
+    }
+    Ok(())
+}
+
+fn apply_contact_profile(profile: &mut ProviderUserInfo, data: &serde_json::Value) {
+    if let Some(name) = data["name"].as_str().map(str::trim).filter(|name| !name.is_empty()) {
+        profile.preferred_username = name.to_owned();
+    }
+    profile.job_title = data["position"]
+        .as_str()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(str::to_owned);
+}
+
+fn department_path(nodes: &[serde_json::Value], mut id: i64) -> Option<String> {
+    let mut names = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    while id > 0 && visited.insert(id) {
+        let Some(node) = nodes.iter().find(|node| node["id"].as_i64() == Some(id)) else {
+            break;
+        };
+        if let Some(name) = node["name"].as_str().filter(|name| !name.trim().is_empty()) {
+            names.push(name.trim().to_owned());
+        }
+        id = node["parentid"].as_i64().unwrap_or(0);
+    }
+    names.reverse();
+    (!names.is_empty()).then(|| names.join(" / "))
 }
 
 fn http_client() -> Result<reqwest::Client, SsoError> {
@@ -167,6 +254,77 @@ fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn contact_http_chain_and_permission_denied_fallback() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path, query_param},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/get"))
+            .and(query_param("access_token", "app-token"))
+            .and(query_param("userid", "member-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"errcode":0,"userid":"member-1","name":"赵高","position":"总监","department":[2]}),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET")).and(path("/department/list"))
+            .and(query_param("access_token", "app-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"errcode":0,"department":[{"id":1,"parentid":0,"name":"公司"},{"id":2,"parentid":1,"name":"安全中心"}]})))
+            .expect(1).mount(&server).await;
+        let mut profile = WecomProvider::to_provider_user_info("member-1");
+        WecomProvider::enrich_profile_from(&server.uri(), "app-token", &mut profile).await;
+        assert_eq!(profile.external_id, "member-1");
+        assert_eq!(profile.preferred_username, "赵高");
+        assert_eq!(profile.job_title.as_deref(), Some("总监"));
+        assert_eq!(profile.org_unit_path.as_deref(), Some("公司 / 安全中心"));
+        server.verify().await;
+        server.reset().await;
+        Mock::given(path("/user/get"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"errcode":48002,"name":"must not apply"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut fallback = WecomProvider::to_provider_user_info("member-1");
+        WecomProvider::enrich_profile_from(&server.uri(), "app-token", &mut fallback).await;
+        assert_eq!(fallback.preferred_username, "wecom_member-1");
+        assert_eq!(fallback.job_title, None);
+        assert_eq!(fallback.org_unit_path, None);
+    }
+
+    #[test]
+    fn contact_profile_keeps_identity_and_maps_staff_fields_and_department_hierarchy() {
+        let mut profile = WecomProvider::to_provider_user_info("member-1");
+        apply_contact_profile(
+            &mut profile,
+            &serde_json::json!({"name":" 赵高 ","position":" 信息安全总监 ","mobile":"private"}),
+        );
+        assert_eq!(profile.external_id, "member-1");
+        assert_eq!(profile.preferred_username, "赵高");
+        assert_eq!(profile.job_title.as_deref(), Some("信息安全总监"));
+        assert_eq!(profile.org_unit_path, None);
+        let nodes = vec![
+            serde_json::json!({"id":1,"parentid":0,"name":"公司"}),
+            serde_json::json!({"id":2,"parentid":1,"name":"安全中心"}),
+        ];
+        assert_eq!(department_path(&nodes, 2).as_deref(), Some("公司 / 安全中心"));
+        assert_eq!(department_path(&nodes, 99), None);
+        let cycle = vec![serde_json::json!({"id":2,"parentid":2,"name":"安全中心"})];
+        assert_eq!(department_path(&cycle, 2).as_deref(), Some("安全中心"));
+        assert!(
+            validate_contact_response(&serde_json::json!({"errcode":48002}))
+                .unwrap_err()
+                .to_string()
+                .contains("48002")
+        );
+        assert!(validate_contact_response(&serde_json::json!({"name":"invalid"})).is_err());
+    }
 
     #[test]
     fn official_user_info_response_accepts_members_and_rejects_errors_or_visitors() {
