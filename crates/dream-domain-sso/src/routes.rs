@@ -1518,6 +1518,7 @@ mod tests {
     fn sanitize_deep_link_scheme_allows_only_the_known_schemes() {
         assert_eq!(sanitize_deep_link_scheme(Some("dream")), "dream");
         assert_eq!(sanitize_deep_link_scheme(Some("dream-dev")), "dream-dev");
+        // The legacy pre-rebrand schemes are retired and collapse onto the production protocol.
         assert_eq!(sanitize_deep_link_scheme(Some("aionui-dev")), "dream");
         // Retired, missing and empty schemes use the production protocol.
         assert_eq!(sanitize_deep_link_scheme(Some("aionui")), "dream");
@@ -1527,6 +1528,7 @@ mod tests {
         // urlencoded before being interpolated into the callback HTML as a
         // JS string literal and an href attribute.
         assert_eq!(sanitize_deep_link_scheme(Some("javascript")), "dream");
+        // A legacy scheme name carrying an injection payload is rejected the same way.
         assert_eq!(sanitize_deep_link_scheme(Some("aionui\"; alert(1); //")), "dream");
     }
 
@@ -1544,7 +1546,7 @@ mod tests {
     /// no network and no database.
     #[tokio::test]
     async fn deep_link_scheme_survives_the_state_round_trip_for_every_allowed_scheme() {
-        // Missing or retired input cannot revive a retired protocol.
+        // Missing or retired (legacy pre-rebrand) input cannot revive a retired protocol.
         let cases = [
             (Some("dream"), "dream"),
             (Some("dream-dev"), "dream-dev"),
