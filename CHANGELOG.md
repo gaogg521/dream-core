@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.90](https://github.com/gaogg521/dream-core/compare/v0.1.89...v0.1.90) (2026-10-17)
+
+
+### Features
+
+* **auth:** optional company directory identity admission gate ([d41f840](https://github.com/gaogg521/dream-core/commit/d41f840b7f06bd2c13f15b3bdd0e9a2d9e05c964))
+* **knowledge:** wire intranet Office sessions into the enterprise app ([1b9b028](https://github.com/gaogg521/dream-core/commit/1b9b028337ee8c76971b63df03db9278f731d722))
+
+
+### Bug Fixes
+
+* **billing:** meter completed SSE before clients disconnect ([71bd70f](https://github.com/gaogg521/dream-core/commit/71bd70f919c6a791985eeeff9abf302fe0625832))
+* **ci:** clear clippy, rustfmt and the channel default-model test on main ([c81e439](https://github.com/gaogg521/dream-core/commit/c81e4391a488b39eb297db63911cfc3a3ac1abf4))
+* **ci:** count the WeCom channel plugin and fold the enterprise admission check ([cbdc7c4](https://github.com/gaogg521/dream-core/commit/cbdc7c4f5cbc77d94e73b50872b2a2a4d895a1d0))
+* **ci:** mark the retired deep-link schemes in the SSO tests as legacy ([2130198](https://github.com/gaogg521/dream-core/commit/2130198fafc5e8c8756dada08ad980b0065dd1a5))
+* **container:** use One Work environment defaults and health checks ([760361d](https://github.com/gaogg521/dream-core/commit/760361df5449428460a4d4b9bf16cd75d07ac6d6))
+
 ## [0.1.89](https://github.com/gaogg521/dream-core/compare/v0.1.88...v0.1.89) (2026-10-16)
 
 
