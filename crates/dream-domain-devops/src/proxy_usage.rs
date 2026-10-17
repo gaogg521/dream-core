@@ -258,6 +258,8 @@ pub struct UsageTap {
     request_id: Option<String>,
     /// The stream errored mid-flight — never record a partial call.
     failed: bool,
+    /// A protocol terminal marker arrived; the client need not poll TCP EOF.
+    terminal: bool,
 }
 
 impl UsageTap {
@@ -298,6 +300,7 @@ impl UsageTap {
             cache_write_tokens: None,
             request_id: None,
             failed: false,
+            terminal: false,
         }
     }
 
@@ -401,11 +404,21 @@ impl UsageTap {
             }
         }
         let data = data.trim();
-        if data.is_empty() || data == "[DONE]" {
+        if data == "[DONE]" {
+            self.terminal = true;
+            return;
+        }
+        if data.is_empty() {
             return;
         }
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
             self.absorb_event(&value);
+            if matches!(
+                value.get("type").and_then(serde_json::Value::as_str),
+                Some("message_stop" | "response.completed")
+            ) {
+                self.terminal = true;
+            }
         }
     }
 
@@ -535,6 +548,11 @@ where
             Poll::Ready(Some(Ok(bytes))) => {
                 if let Some(tap) = self.tap.as_mut() {
                     tap.absorb(&bytes);
+                    // SSE clients stop at their terminal event without reading EOF.
+                    // Commit only after that marker, never on a mid-stream drop.
+                    if tap.terminal {
+                        tap.finish();
+                    }
                 }
                 Poll::Ready(Some(Ok(bytes)))
             }
@@ -944,3 +962,7 @@ mod tests {
         assert_eq!(events[0].output_tokens, Some(5));
     }
 }
+
+#[cfg(test)]
+#[path = "proxy_usage_terminal_tests.rs"]
+mod terminal_tests;
