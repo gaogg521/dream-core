@@ -86,10 +86,10 @@ RUN chmod +x ./dreamcore ./dreamcore-admin
 # network namespace, unreachable from a sibling container (the gateway) even
 # on the same Docker network. See the matching comment in
 # dream-en/deploy/docker-compose.yml.
-ENV AIONUI_HOST=0.0.0.0 \
-    AIONUI_PORT=25808 \
-    AIONUI_ADMIN_PORT=25809 \
-    AIONUI_DATA_DIR=/data
+ENV ONE_HOST=0.0.0.0 \
+    ONE_PORT=25808 \
+    ONE_ADMIN_PORT=25809 \
+    ONE_DATA_DIR=/data
 
 # SQLite database + logs + workspace files, shared between `dreamcore` and
 # `dreamcore-admin` when both run against this image (E3 shared-database
@@ -114,6 +114,6 @@ EXPOSE 25808 25809
 # is actually running: try both ports, whichever one nothing is listening on
 # just fails its own `curl` harmlessly.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -fsS "http://127.0.0.1:${AIONUI_PORT}/health" || curl -fsS "http://127.0.0.1:${AIONUI_ADMIN_PORT}/health"
+    CMD curl -fsS "http://127.0.0.1:${ONE_PORT}/health" || curl -fsS "http://127.0.0.1:${ONE_ADMIN_PORT}/health"
 
 ENTRYPOINT ["./dreamcore"]
