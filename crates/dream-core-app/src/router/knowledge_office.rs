@@ -21,14 +21,13 @@ impl OfficeAdmission for MemberAdmission {
         if user.is_none() {
             return Err(DevopsError::Forbidden("member is no longer active".into()));
         }
-        if let Some(gate) = &self.0.directory_identity {
-            if !gate
+        if let Some(gate) = &self.0.directory_identity
+            && !gate
                 .is_allowed(actor)
                 .await
                 .map_err(|_| DevopsError::Internal("directory admission unavailable".into()))?
-            {
-                return Err(DevopsError::Forbidden("directory identity is no longer active".into()));
-            }
+        {
+            return Err(DevopsError::Forbidden("directory identity is no longer active".into()));
         }
         Ok(())
     }
