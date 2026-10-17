@@ -663,14 +663,13 @@ impl OfficeService {
         if !text.trim().is_empty() {
             let service = self.clone();
             tokio::spawn(async move {
-                if service.admission.check(&lease.actor).await.is_ok() {
-                    if let Err(error) = service
+                if service.admission.check(&lease.actor).await.is_ok()
+                    && let Err(error) = service
                         .documents
                         .process_rag_document(&lease.actor, &lease.document)
                         .await
-                    {
-                        tracing::warn!(document_id=%lease.document, %error, "Office original saved but retrieval indexing failed");
-                    }
+                {
+                    tracing::warn!(document_id=%lease.document, %error, "Office original saved but retrieval indexing failed");
                 }
             });
         }

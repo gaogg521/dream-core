@@ -3854,10 +3854,9 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
             }
         });
     }
-    let one_devops_state =
-        dream_domain_devops::OneDevopsRouterState::new(one_devops_service)
-            .with_rag_source_dir(services.data_dir.join("knowledge-sources"))
-            .with_employee(one_employee_service.clone());
+    let one_devops_state = dream_domain_devops::OneDevopsRouterState::new(one_devops_service)
+        .with_rag_source_dir(services.data_dir.join("knowledge-sources"))
+        .with_employee(one_employee_service.clone());
     #[cfg(feature = "enterprise")]
     let one_devops_state = one_devops_state.with_tenant_resolver(tenant_resolver.clone());
     // P1-2 model-proxy usage metering: the proxy is mounted in every build

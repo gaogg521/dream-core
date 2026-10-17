@@ -22,19 +22,26 @@ pub trait DirectoryIdentityGate: Send + Sync {
     async fn is_allowed(&self, user_id: &str) -> Result<bool, String>;
 }
 
-pub async fn check_directory_identity(
-    gate: Option<&dyn DirectoryIdentityGate>,
-    user_id: &str,
-) -> Result<(), ApiError> {
-    let Some(gate) = gate else { return Ok(()); };
+pub async fn check_directory_identity(gate: Option<&dyn DirectoryIdentityGate>, user_id: &str) -> Result<(), ApiError> {
+    let Some(gate) = gate else {
+        return Ok(());
+    };
     match gate.is_allowed(user_id).await {
         Ok(true) => Ok(()),
-        Ok(false) => Err(ApiError::coded(StatusCode::UNAUTHORIZED,
-            "DIRECTORY_ACCOUNT_DISABLED", "Directory account is disabled.", None)),
+        Ok(false) => Err(ApiError::coded(
+            StatusCode::UNAUTHORIZED,
+            "DIRECTORY_ACCOUNT_DISABLED",
+            "Directory account is disabled.",
+            None,
+        )),
         Err(error) => {
             tracing::error!(user_id, %error, "directory identity admission lookup failed");
-            Err(ApiError::coded(StatusCode::SERVICE_UNAVAILABLE,
-                "DIRECTORY_STATUS_UNAVAILABLE", "Directory identity status unavailable.", None))
+            Err(ApiError::coded(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "DIRECTORY_STATUS_UNAVAILABLE",
+                "Directory identity status unavailable.",
+                None,
+            ))
         }
     }
 }
@@ -1294,13 +1301,23 @@ mod directory_identity_gate_tests {
     struct Gate(Result<bool, String>);
     #[async_trait]
     impl DirectoryIdentityGate for Gate {
-        async fn is_allowed(&self, _: &str) -> Result<bool, String> { self.0.clone() }
+        async fn is_allowed(&self, _: &str) -> Result<bool, String> {
+            self.0.clone()
+        }
     }
     #[tokio::test]
     async fn directory_status_is_independent_and_fails_closed() {
         assert!(check_directory_identity(None, "personal").await.is_ok());
         assert!(check_directory_identity(Some(&Gate(Ok(true))), "member").await.is_ok());
-        assert!(check_directory_identity(Some(&Gate(Ok(false))), "member").await.is_err());
-        assert!(check_directory_identity(Some(&Gate(Err("database unavailable".into()))), "member").await.is_err());
+        assert!(
+            check_directory_identity(Some(&Gate(Ok(false))), "member")
+                .await
+                .is_err()
+        );
+        assert!(
+            check_directory_identity(Some(&Gate(Err("database unavailable".into()))), "member")
+                .await
+                .is_err()
+        );
     }
 }

@@ -147,9 +147,7 @@ struct ModelApiSibling {
 
 /// Resolve the model's current commit sha and the expected size of each file
 /// we need, from the HuggingFace model API.
-async fn resolve_model_metadata(
-    client: &reqwest::Client,
-) -> Result<(String, Vec<(String, Option<u64>)>), DevopsError> {
+async fn resolve_model_metadata(client: &reqwest::Client) -> Result<(String, Vec<(String, Option<u64>)>), DevopsError> {
     let url = format!("{}/api/models/{}?blobs=true", hf_endpoint(), LOCAL_MODEL_REPO);
     let response = client
         .get(&url)
@@ -220,8 +218,7 @@ async fn download_model_file(
             .map_err(|e| DevopsError::Internal(format!("model file {file} create failed: {e}")))?;
         let mut written: u64 = 0;
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk
-                .map_err(|e| DevopsError::Internal(format!("model file {file} stream failed: {e}")))?;
+            let chunk = chunk.map_err(|e| DevopsError::Internal(format!("model file {file} stream failed: {e}")))?;
             written += chunk.len() as u64;
             tokio::io::AsyncWriteExt::write_all(&mut file_handle, &chunk)
                 .await
@@ -1044,7 +1041,11 @@ mod cache_tests {
             "refs/main must not be written when a file is missing"
         );
         assert!(
-            !repo_dir.join("snapshots").join(sha).join("model_optimized.onnx").is_file(),
+            !repo_dir
+                .join("snapshots")
+                .join(sha)
+                .join("model_optimized.onnx")
+                .is_file(),
             "a truncated file must never land as a snapshot file"
         );
 

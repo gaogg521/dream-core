@@ -1427,13 +1427,21 @@ mod tests {
             .unwrap();
 
         let pref_repo = SqliteClientPreferenceRepository::new(pool.clone());
+        // A DreamEngine channel must name a default model: without one the
+        // message service refuses to create the conversation.
         pref_repo
             .upsert_batch(
                 "system_default_user",
-                &[(
-                    "assistant.weixin.agent",
-                    r#"{"assistant_id":"bare-channel-dream-engine","name":"Weixin DreamEngine"}"#,
-                )],
+                &[
+                    (
+                        "assistant.weixin.agent",
+                        r#"{"assistant_id":"bare-channel-dream-engine","name":"Weixin DreamEngine"}"#,
+                    ),
+                    (
+                        "assistant.weixin.defaultModel",
+                        r#"{"id":"provider-channel-state","use_model":"model-channel-state"}"#,
+                    ),
+                ],
             )
             .await
             .unwrap();

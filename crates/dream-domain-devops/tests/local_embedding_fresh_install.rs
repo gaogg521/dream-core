@@ -24,7 +24,7 @@
 //! with a message that names the embedding step, because that string is what
 //! lands in `one_rag_documents.last_error` and reaches the admin.
 
-use dream_domain_devops::embedding::{cosine_similarity, embed, resolve_embedding_config, EmbeddingConfig};
+use dream_domain_devops::embedding::{EmbeddingConfig, cosine_similarity, embed, resolve_embedding_config};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -90,7 +90,9 @@ async fn fresh_install_resolves_local_model_and_retrieves_semantically() {
     // not some pre-seeded fallback.
     let model_cache = data_dir.join("models/embedding");
     assert!(
-        model_cache.join("models--Qdrant--paraphrase-multilingual-MiniLM-L12-v2-onnx-Q").exists(),
+        model_cache
+            .join("models--Qdrant--paraphrase-multilingual-MiniLM-L12-v2-onnx-Q")
+            .exists(),
         "model files must be cached under ONE_DATA_DIR/models/embedding"
     );
     let _ = std::fs::remove_dir_all(&data_dir);
