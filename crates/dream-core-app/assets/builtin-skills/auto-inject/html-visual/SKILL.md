@@ -1,6 +1,6 @@
 ---
 name: html-visual
-description: Default for making any picture whose text, numbers or dates must be right — 日历/年历/月历, 小报/手抄报/黑板报, 海报/宣传单, 信息图/知识卡片/长图, 菜单/价目表, 课程表/日程表, 邀请函/贺卡, 证书/奖状, 名片/简历. Think the request through and verify the facts first, lay it out as an HTML page, render it to PNG with render_html_to_image, deliver both. Pure artwork with no meaningful text (画一只猫) → image generation instead.
+description: Make pictures whose text and dates must be right (日历 年历 小报 海报 信息图 菜单 课程表 证书) - verify facts, lay out HTML, render PNG with render_html_to_image. Text-free art goes to image generation.
 ---
 
 # HTML Visual — text-heavy pictures that are actually correct

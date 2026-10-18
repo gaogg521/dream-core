@@ -15,7 +15,10 @@
 //! admin delete does" contract.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
 
 use tracing::warn;
 
@@ -50,7 +53,7 @@ pub struct TeamSkillPayload {
 }
 
 /// Outcome of a sync pass.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TeamSyncReport {
     /// Directory ids written or refreshed this pass.
     pub written: Vec<String>,
@@ -177,12 +180,82 @@ fn build_skill_md(payload: &TeamSkillPayload) -> String {
     format!("---\n{yaml}---\n\n{}", payload.content)
 }
 
+/// The last pass that completed, kept so an identical request can be answered
+/// without touching the disk. A team can distribute hundreds of skills (784 on
+/// the dev machine); the client re-posts the same set every few minutes and on
+/// every team switch, and each pass used to open every SKILL.md to learn that
+/// nothing changed — a second of disk work competing with the rest of the app.
+struct LastSync {
+    dir: PathBuf,
+    digest: u64,
+    dir_modified: Option<SystemTime>,
+    at: Instant,
+    report: TeamSyncReport,
+}
+
+static LAST_SYNC: Mutex<Option<LastSync>> = Mutex::new(None);
+
+/// How long an unchanged request may be answered from memory. Edits made
+/// inside a skill directory by hand are not visible in the directory's own
+/// mtime, so the full check still runs this often.
+const LAST_SYNC_TTL: Duration = Duration::from_secs(5 * 60);
+
+fn sync_digest(payloads: &[TeamSkillPayload], authoritative: bool) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    authoritative.hash(&mut hasher);
+    for p in payloads {
+        p.id.hash(&mut hasher);
+        p.name.hash(&mut hasher);
+        p.description.hash(&mut hasher);
+        p.content.hash(&mut hasher);
+        p.auto_active.hash(&mut hasher);
+        p.category.hash(&mut hasher);
+        p.tags.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+async fn dir_modified(dir: &Path) -> Option<SystemTime> {
+    tokio::fs::metadata(dir).await.ok().and_then(|m| m.modified().ok())
+}
+
 /// Materialize `payloads` under `team_skills_dir` and reconcile removals.
 ///
 /// `authoritative` MUST be `true` only when the payload set is the complete,
 /// current server view (server reachable). When `false`, no deletion happens
 /// so offline / partial-failure never wipes the local cache.
 pub async fn sync_team_skills(
+    team_skills_dir: &Path,
+    payloads: &[TeamSkillPayload],
+    authoritative: bool,
+) -> Result<TeamSyncReport, ExtensionError> {
+    let digest = sync_digest(payloads, authoritative);
+    let current_modified = dir_modified(team_skills_dir).await;
+    if let Ok(last) = LAST_SYNC.lock()
+        && let Some(last) = last.as_ref()
+        && last.dir == team_skills_dir
+        && last.digest == digest
+        && current_modified.is_some()
+        && last.dir_modified == current_modified
+        && last.at.elapsed() < LAST_SYNC_TTL
+    {
+        return Ok(last.report.clone());
+    }
+    let report = sync_team_skills_on_disk(team_skills_dir, payloads, authoritative).await?;
+    let after = dir_modified(team_skills_dir).await;
+    if let Ok(mut last) = LAST_SYNC.lock() {
+        *last = Some(LastSync {
+            dir: team_skills_dir.to_path_buf(),
+            digest,
+            dir_modified: after,
+            at: Instant::now(),
+            report: report.clone(),
+        });
+    }
+    Ok(report)
+}
+
+async fn sync_team_skills_on_disk(
     team_skills_dir: &Path,
     payloads: &[TeamSkillPayload],
     authoritative: bool,
@@ -305,6 +378,53 @@ mod tests {
             category: None,
             tags: Vec::new(),
         }
+    }
+
+    /// An identical request is answered from memory, but anything that could
+    /// make the answer wrong must still reach the disk.
+    #[tokio::test]
+    async fn repeated_identical_sync_is_answered_from_memory_but_changes_still_apply() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("team-skills");
+        let skills = vec![
+            payload("oskill_a", "alpha", "first body"),
+            payload("oskill_b", "beta", "b body"),
+        ];
+
+        let first = sync_team_skills(&dir, &skills, true).await.unwrap();
+        let again = sync_team_skills(&dir, &skills, true).await.unwrap();
+        assert_eq!(first, again);
+
+        // An edited body is not mistaken for "unchanged".
+        let mut edited = skills.clone();
+        edited[0].content = "second body".into();
+        sync_team_skills(&dir, &edited, true).await.unwrap();
+        let on_disk = std::fs::read_to_string(dir.join("oskill_a").join(SKILL_MANIFEST_FILE)).unwrap();
+        assert!(on_disk.contains("second body"));
+
+        // A skill the server stopped serving is removed on the next
+        // authoritative pass, even though the previous pass was recent.
+        sync_team_skills(&dir, &edited[..1], true).await.unwrap();
+        assert!(!dir.join("oskill_b").exists());
+
+        // Same payloads but a different authority flag is a different request.
+        let non_authoritative = sync_team_skills(&dir, &edited[..1], false).await.unwrap();
+        assert!(non_authoritative.removed.is_empty());
+    }
+
+    /// A team directory that changed shape since the last pass (a skill
+    /// directory added or removed by hand) forces the full check.
+    #[tokio::test]
+    async fn sync_recovers_a_skill_directory_deleted_behind_its_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("team-skills");
+        let skills = vec![payload("oskill_a", "alpha", "body")];
+        sync_team_skills(&dir, &skills, true).await.unwrap();
+
+        std::fs::remove_dir_all(dir.join("oskill_a")).unwrap();
+        sync_team_skills(&dir, &skills, true).await.unwrap();
+
+        assert!(dir.join("oskill_a").join(SKILL_MANIFEST_FILE).is_file());
     }
 
     #[tokio::test]

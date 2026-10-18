@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use include_dir::{Dir, include_dir};
@@ -2244,15 +2246,105 @@ async fn delete_assistant_resource(dir: &Path, assistant_id: &str) -> Result<boo
     Ok(deleted_any)
 }
 
-/// Scan a directory for subdirectories containing a SKILL.md file.
-async fn scan_skill_dirs(dir: &Path) -> Result<Vec<ScannedSkill>, ExtensionError> {
-    let mut result = Vec::new();
-    let mut skill_dirs = Vec::new();
-    collect_skill_dirs_recursive(dir, &mut skill_dirs).await?;
+/// What identifies the on-disk state a [`ScannedSkill`] was parsed from: the
+/// manifest's size and mtime, plus the skill directory's mtime (which moves when
+/// an icon is added or removed beside it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScanFingerprint {
+    manifest_len: u64,
+    manifest_modified: Option<SystemTime>,
+    dir_modified: Option<SystemTime>,
+}
 
-    for entry_path in skill_dirs {
+/// Parsed skills by directory. Reading and parsing every SKILL.md on every
+/// listing is what made `GET /api/skills`, each conversation list/get and the
+/// team sync cost a second or more: a team can distribute hundreds of skills
+/// (784 on the dev machine), and each scan opened every one of them. A stat per
+/// skill is enough to know whether the cached parse is still the file on disk.
+static SCAN_CACHE: LazyLock<Mutex<HashMap<PathBuf, (ScanFingerprint, ScannedSkill)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Scan a directory for subdirectories containing a SKILL.md file.
+///
+/// The walk runs as one blocking task with plain `std::fs`: the async version
+/// paid a thread hop and a separate stat for every probe (six per skill), which
+/// on Windows cost about 0.7 ms a skill even with everything cached. Here a
+/// skill costs two stats (its manifest and its directory). The directory's
+/// mtime is NOT taken from the parent's listing even though Windows hands it
+/// over for free: NTFS refreshes that copy lazily, so an icon dropped into a
+/// skill directory was invisible through it.
+async fn scan_skill_dirs(dir: &Path) -> Result<Vec<ScannedSkill>, ExtensionError> {
+    let dir = dir.to_path_buf();
+    tokio::task::spawn_blocking(move || scan_skill_dirs_blocking(&dir))
+        .await
+        .map_err(|e| ExtensionError::Io(io::Error::other(e)))?
+}
+
+/// A skill directory found by the walk, with what the walk already learned.
+struct FoundSkillDir {
+    path: PathBuf,
+    manifest: std::fs::Metadata,
+}
+
+fn collect_skill_dirs_blocking(dir: &Path, result: &mut Vec<FoundSkillDir>) -> Result<(), ExtensionError> {
+    if let Ok(manifest) = std::fs::metadata(dir.join(SKILL_MANIFEST_FILE)) {
+        result.push(FoundSkillDir {
+            path: dir.to_path_buf(),
+            manifest,
+        });
+        return Ok(());
+    }
+
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(ExtensionError::Io(e)),
+    };
+    let mut children = Vec::new();
+    for entry in entries.flatten() {
+        // `DirEntry::metadata` is answered from the listing on Windows, so
+        // this costs no extra syscall there.
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() || (meta.file_type().is_symlink() && entry.path().is_dir()) {
+            children.push(entry.path());
+        }
+    }
+    children.sort();
+    for path in children {
+        collect_skill_dirs_blocking(&path, result)?;
+    }
+    Ok(())
+}
+
+fn scan_skill_dirs_blocking(dir: &Path) -> Result<Vec<ScannedSkill>, ExtensionError> {
+    let mut result = Vec::new();
+    let mut found = Vec::new();
+    collect_skill_dirs_blocking(dir, &mut found)?;
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::with_capacity(found.len());
+
+    for FoundSkillDir {
+        path: entry_path,
+        manifest,
+    } in found
+    {
         let skill_file = entry_path.join(SKILL_MANIFEST_FILE);
-        match tokio::fs::read_to_string(&skill_file).await {
+        let fingerprint = ScanFingerprint {
+            manifest_len: manifest.len(),
+            manifest_modified: manifest.modified().ok(),
+            dir_modified: std::fs::metadata(&entry_path).and_then(|m| m.modified()).ok(),
+        };
+        let cached = SCAN_CACHE.lock().ok().and_then(|cache| {
+            cache
+                .get(&entry_path)
+                .filter(|(fp, _)| *fp == fingerprint)
+                .map(|(_, skill)| skill.clone())
+        });
+        if let Some(skill) = cached {
+            seen.insert(entry_path);
+            result.push(skill);
+            continue;
+        }
+        match std::fs::read_to_string(&skill_file) {
             Ok(content) => {
                 if let Some(parsed) = parse_frontmatter_fields(&content) {
                     let final_name = if parsed.name.is_empty() {
@@ -2267,7 +2359,7 @@ async fn scan_skill_dirs(dir: &Path) -> Result<Vec<ScannedSkill>, ExtensionError
                         .iter()
                         .find(|f| entry_path.join(f).is_file())
                         .map(|f| f.to_string());
-                    result.push(ScannedSkill {
+                    let skill = ScannedSkill {
                         name: final_name,
                         description: parsed.description,
                         path: entry_path.to_string_lossy().into_owned(),
@@ -2275,7 +2367,12 @@ async fn scan_skill_dirs(dir: &Path) -> Result<Vec<ScannedSkill>, ExtensionError
                         tags: parsed.tags,
                         display_name: parsed.display_name,
                         icon_file,
-                    });
+                    };
+                    if let Ok(mut cache) = SCAN_CACHE.lock() {
+                        cache.insert(entry_path.clone(), (fingerprint, skill.clone()));
+                    }
+                    seen.insert(entry_path);
+                    result.push(skill);
                 }
             }
             Err(e) => {
@@ -2286,6 +2383,12 @@ async fn scan_skill_dirs(dir: &Path) -> Result<Vec<ScannedSkill>, ExtensionError
                 );
             }
         }
+    }
+
+    // Forget skills that vanished from this root, so the cache cannot grow
+    // without bound or resurrect a deleted skill that is later recreated.
+    if let Ok(mut cache) = SCAN_CACHE.lock() {
+        cache.retain(|path, _| !path.starts_with(dir) || seen.contains(path));
     }
 
     result.sort_by(|a, b| a.name.cmp(&b.name));
@@ -4376,5 +4479,66 @@ mod tests {
         assert!(manifest.contains("name: my-skill"));
         let nested = std::fs::read_to_string(target.join("nested").join("data.txt")).unwrap();
         assert_eq!(nested, "payload");
+    }
+
+    // -----------------------------------------------------------------------
+    // Scan cache
+    // -----------------------------------------------------------------------
+
+    fn write_skill_dir(root: &Path, dir: &str, name: &str, description: &str) -> PathBuf {
+        let skill_dir = root.join(dir);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join(SKILL_MANIFEST_FILE),
+            format!(
+                "---
+name: {name}
+description: {description}
+---
+body
+"
+            ),
+        )
+        .unwrap();
+        skill_dir
+    }
+
+    /// The scan caches the parse of each SKILL.md to avoid reopening hundreds of
+    /// files per listing. The cache must never be what makes an edit invisible.
+    #[tokio::test]
+    async fn scan_sees_edits_additions_icons_and_removals_despite_the_cache() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("skills");
+        let alpha = write_skill_dir(&root, "alpha", "alpha", "first");
+        write_skill_dir(&root, "beta", "beta", "second");
+
+        let first = scan_skill_dirs(&root).await.unwrap();
+        assert_eq!(first.len(), 2);
+        // Served from the cache this time; must be identical.
+        assert_eq!(scan_skill_dirs(&root).await.unwrap(), first);
+
+        // Edit: a different length, so the fingerprint moves even on a
+        // filesystem with coarse mtimes.
+        write_skill_dir(&root, "alpha", "alpha", "first, now with a longer description");
+        let edited = scan_skill_dirs(&root).await.unwrap();
+        assert_eq!(edited[0].description, "first, now with a longer description");
+
+        // Add.
+        write_skill_dir(&root, "gamma", "gamma", "third");
+        assert_eq!(scan_skill_dirs(&root).await.unwrap().len(), 3);
+
+        // Icon appears beside an unchanged manifest.
+        assert!(edited[0].icon_file.is_none());
+        std::fs::write(alpha.join("_icon.svg"), "<svg/>").unwrap();
+        let with_icon = scan_skill_dirs(&root).await.unwrap();
+        assert_eq!(with_icon[0].icon_file.as_deref(), Some("_icon.svg"));
+
+        // Remove, then recreate under the same name with new content.
+        std::fs::remove_dir_all(root.join("beta")).unwrap();
+        let after_remove = scan_skill_dirs(&root).await.unwrap();
+        assert!(after_remove.iter().all(|s| s.name != "beta"));
+        write_skill_dir(&root, "beta", "beta", "reborn");
+        let reborn = scan_skill_dirs(&root).await.unwrap();
+        assert_eq!(reborn.iter().find(|s| s.name == "beta").unwrap().description, "reborn");
     }
 }
