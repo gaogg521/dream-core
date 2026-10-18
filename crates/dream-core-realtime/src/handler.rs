@@ -121,11 +121,18 @@ async fn send_realtime_error_and_close(mut socket: WebSocket, error: RealtimeErr
 
 /// Reads `WsOutbound` from the per-connection channel and forwards
 /// them to the WebSocket sink.
-async fn send_loop(
-    conn_id: ConnectionId,
-    mut rx: mpsc::Receiver<WsOutbound>,
-    mut sender: futures_util::stream::SplitSink<WebSocket, Message>,
-) {
+///
+/// The channel closes when the manager drops the client — most importantly
+/// when it fell behind and frames were lost. The socket itself would stay
+/// open (the receive half still holds it and the client keeps answering
+/// pings), leaving a connection that silently receives nothing. So once the
+/// queue is drained the client is told to reconnect, which is what makes it
+/// re-read the state it missed.
+async fn send_loop<S>(conn_id: ConnectionId, mut rx: mpsc::Receiver<WsOutbound>, mut sender: S)
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    let mut closed = false;
     while let Some(outbound) = rx.recv().await {
         let msg = match outbound {
             WsOutbound::Text(text) => Message::Text(text.into()),
@@ -136,7 +143,7 @@ async fn send_loop(
             WsOutbound::TextThenClose(text, code, reason) => {
                 if sender.send(Message::Text(text.into())).await.is_err() {
                     debug!(%conn_id, "send loop: socket write failed, exiting");
-                    break;
+                    return;
                 }
                 Message::Close(Some(CloseFrame {
                     code: code.as_u16(),
@@ -144,10 +151,20 @@ async fn send_loop(
                 }))
             }
         };
+        closed |= matches!(msg, Message::Close(_));
         if sender.send(msg).await.is_err() {
             debug!(%conn_id, "send loop: socket write failed, exiting");
-            break;
+            return;
         }
+    }
+    if !closed {
+        info!(%conn_id, "send loop: client dropped by manager, closing socket so it resyncs");
+        let _ = sender
+            .send(Message::Close(Some(CloseFrame {
+                code: WebSocketCloseCode::TryAgainLater.as_u16(),
+                reason: "resync".into(),
+            })))
+            .await;
     }
 }
 
@@ -276,6 +293,68 @@ mod tests {
             token_user_resolver: Arc::new(|_| Box::pin(async { Some("system_default_user".into()) })),
             token_extractor: Arc::new(|_| None),
         }
+    }
+
+    /// Collects what the send loop writes, standing in for the socket.
+    type Collected = std::sync::Arc<std::sync::Mutex<Vec<Message>>>;
+    type TestSink = std::pin::Pin<Box<dyn futures_util::Sink<Message, Error = std::convert::Infallible> + Send>>;
+
+    fn collecting_sink() -> (Collected, TestSink) {
+        let out = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_out = std::sync::Arc::clone(&out);
+        let sink = futures_util::sink::unfold((), move |(), msg: Message| {
+            let sink_out = std::sync::Arc::clone(&sink_out);
+            async move {
+                sink_out.lock().unwrap().push(msg);
+                Ok::<_, std::convert::Infallible>(())
+            }
+        });
+        (out, Box::pin(sink))
+    }
+
+    fn close_code(msg: &Message) -> Option<u16> {
+        match msg {
+            Message::Close(Some(frame)) => Some(frame.code),
+            _ => None,
+        }
+    }
+
+    /// The manager dropping a client (it fell behind) must reach the client as
+    /// a close, after everything already queued — otherwise the socket stays
+    /// open and silently receives nothing.
+    #[tokio::test]
+    async fn send_loop_closes_with_try_again_later_when_manager_drops_client() {
+        let (tx, rx) = mpsc::channel(4);
+        tx.try_send(WsOutbound::Text("a".into())).unwrap();
+        tx.try_send(WsOutbound::Text("b".into())).unwrap();
+        drop(tx);
+        let (out, sink) = collecting_sink();
+        send_loop(ConnectionId(1), rx, sink).await;
+        let out = out.lock().unwrap();
+
+        assert_eq!(out.len(), 3);
+        assert!(matches!(&out[0], Message::Text(t) if t.as_str() == "a"));
+        assert!(matches!(&out[1], Message::Text(t) if t.as_str() == "b"));
+        assert_eq!(close_code(&out[2]), Some(WebSocketCloseCode::TryAgainLater.as_u16()));
+    }
+
+    /// A connection that was already closed deliberately is not closed twice.
+    #[tokio::test]
+    async fn send_loop_does_not_add_a_second_close() {
+        let (tx, rx) = mpsc::channel(4);
+        tx.try_send(WsOutbound::TextThenClose(
+            "err".into(),
+            WebSocketCloseCode::PolicyViolation,
+            "auth".into(),
+        ))
+        .unwrap();
+        drop(tx);
+        let (out, sink) = collecting_sink();
+        send_loop(ConnectionId(1), rx, sink).await;
+        let out = out.lock().unwrap();
+
+        assert_eq!(out.len(), 2);
+        assert_eq!(close_code(&out[1]), Some(WebSocketCloseCode::PolicyViolation.as_u16()));
     }
 
     fn assert_invalid_message_error(text: &str) {

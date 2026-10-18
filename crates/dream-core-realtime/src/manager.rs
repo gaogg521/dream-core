@@ -124,10 +124,12 @@ impl WebSocketManager {
 
     /// Send a message to all connected clients.
     ///
-    /// Uses `try_send` for backpressure. A saturated channel cannot reliably
-    /// receive an additional `REALTIME_BACKPRESSURE` event on the same path, so
-    /// broadcast backpressure is logged and the connection is left alive.
-    /// Closed channels trigger client removal.
+    /// Uses `try_send` for backpressure. A saturated channel means the client
+    /// has fallen behind, and a dropped frame is gone for good — a conversation
+    /// that loses its finish event shows "processing" forever. So a full
+    /// channel removes the client like a closed one: the send loop flushes what
+    /// is queued, closes the socket, and the client reconnects and re-reads its
+    /// state (see `send_to_or_disconnect`).
     pub fn broadcast_all(&self, msg: WebSocketMessage<serde_json::Value>) {
         let text = match serde_json::to_string(&msg) {
             Ok(t) => t,
@@ -146,8 +148,9 @@ impl WebSocketManager {
                     warn!(
                         %conn_id,
                         code = RealtimeError::Backpressure.code(),
-                        "outbound channel full, broadcast message dropped"
+                        "outbound channel full, closing connection to force resync"
                     );
+                    disconnected.push(conn_id);
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
                     disconnected.push(conn_id);
@@ -161,6 +164,8 @@ impl WebSocketManager {
     }
 
     /// Send a message to all connections authenticated as `user_id`.
+    ///
+    /// Backpressure handling matches [`Self::broadcast_all`].
     pub fn broadcast_to_user(&self, user_id: &str, msg: WebSocketMessage<serde_json::Value>) {
         let text = match serde_json::to_string(&msg) {
             Ok(t) => t,
@@ -185,8 +190,9 @@ impl WebSocketManager {
                         %conn_id,
                         user_id = %user_id,
                         code = RealtimeError::Backpressure.code(),
-                        "outbound channel full, user broadcast message dropped"
+                        "outbound channel full, closing connection to force resync"
                     );
+                    disconnected.push(conn_id);
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
                     disconnected.push(conn_id);
@@ -597,19 +603,38 @@ mod tests {
         assert_eq!(mgr.client_count(), 1);
     }
 
+    /// A full channel used to drop the frame and keep the client, which left it
+    /// permanently out of sync (observed: a finish event lost, "processing"
+    /// shown until the user switched conversations). It now forces a resync.
     #[test]
-    fn broadcast_all_handles_full_channel() {
+    fn broadcast_all_closes_a_client_whose_channel_is_full() {
         let mgr = WebSocketManager::new();
         // Use a channel with capacity 1
         let (tx, _rx) = mpsc::channel(1);
         mgr.add_client("tok".into(), tx);
+        let (healthy, mut healthy_rx) = new_client_tx();
+        mgr.add_client("tok2".into(), healthy);
 
         // Fill the channel
         mgr.broadcast_all(WebSocketMessage::new("e1", json!(null)));
-        // This should warn but not remove the client
+        assert_eq!(mgr.client_count(), 2, "first frame fits");
         mgr.broadcast_all(WebSocketMessage::new("e2", json!(null)));
 
+        assert_eq!(mgr.client_count(), 1, "the lagging client is dropped");
+        assert!(healthy_rx.try_recv().is_ok());
+        assert!(healthy_rx.try_recv().is_ok(), "the healthy client got both frames");
+    }
+
+    #[test]
+    fn broadcast_to_user_closes_a_client_whose_channel_is_full() {
+        let mgr = WebSocketManager::new();
+        let (tx, _rx) = mpsc::channel(1);
+        mgr.add_client_for_user("u1".into(), "tok".into(), tx);
+
+        mgr.broadcast_to_user("u1", WebSocketMessage::new("e1", json!(null)));
         assert_eq!(mgr.client_count(), 1);
+        mgr.broadcast_to_user("u1", WebSocketMessage::new("e2", json!(null)));
+        assert_eq!(mgr.client_count(), 0);
     }
 
     #[test]

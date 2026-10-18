@@ -35,6 +35,9 @@ pub enum WebSocketCloseCode {
     NormalClosure = 1000,
     /// 1008 — policy violation (auth failure, heartbeat timeout).
     PolicyViolation = 1008,
+    /// 1013 — try again later: the client fell behind and messages were lost,
+    /// so it must reconnect and re-read its state.
+    TryAgainLater = 1013,
 }
 
 impl WebSocketCloseCode {
@@ -155,7 +158,13 @@ pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Bounded capacity of the per-connection outbound message channel.
-pub const PER_CONNECTION_BUFFER: usize = 64;
+///
+/// A fast model streams a few hundred frames a second, and the desktop client
+/// reads the socket on its UI thread, so any render hiccup longer than the
+/// buffer lasts overflows it. At 64 that happened continuously (15k dropped
+/// frames in one afternoon, including turn-finish events). Overflow now forces
+/// a reconnect rather than a silent drop, so this only has to absorb bursts.
+pub const PER_CONNECTION_BUFFER: usize = 512;
 
 #[cfg(test)]
 mod tests {
@@ -208,7 +217,7 @@ mod tests {
     fn constants() {
         assert_eq!(HEARTBEAT_INTERVAL, Duration::from_secs(30));
         assert_eq!(HEARTBEAT_TIMEOUT, Duration::from_secs(60));
-        assert_eq!(PER_CONNECTION_BUFFER, 64);
+        assert_eq!(PER_CONNECTION_BUFFER, 512);
     }
 
     #[test]
