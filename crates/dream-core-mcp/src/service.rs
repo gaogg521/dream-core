@@ -29,6 +29,35 @@ const SPLITTABLE_STDIO_LAUNCHERS: &[&str] = &["npx", "pnpx", "bunx", "uvx", "uv"
 #[derive(Clone)]
 pub struct McpConfigService {
     repo: Arc<dyn IMcpServerRepository>,
+    /// Last team sync answered per user, so an identical request that arrives
+    /// again within [`TEAM_SYNC_MEMO_TTL`] costs no database round trips.
+    recent_team_sync: Arc<std::sync::Mutex<std::collections::HashMap<String, RecentTeamSync>>>,
+}
+
+/// How long an identical team sync request is answered from memory. The
+/// client re-posts the same registry on every team switch and reload (71 times
+/// in one day on the dev machine), each costing a lookup per connector.
+const TEAM_SYNC_MEMO_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+struct RecentTeamSync {
+    digest: u64,
+    at: std::time::Instant,
+    report: TeamMcpSyncReport,
+}
+
+fn team_sync_digest(payloads: &[TeamMcpPayload], authoritative: bool) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    authoritative.hash(&mut hasher);
+    for p in payloads {
+        p.registry_id.hash(&mut hasher);
+        p.name.hash(&mut hasher);
+        p.server_type.hash(&mut hasher);
+        p.endpoint.hash(&mut hasher);
+        p.enabled.hash(&mut hasher);
+        p.secrets_json.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 struct UpsertMcpServer<'a> {
@@ -43,7 +72,10 @@ struct UpsertMcpServer<'a> {
 
 impl McpConfigService {
     pub fn new(repo: Arc<dyn IMcpServerRepository>) -> Self {
-        Self { repo }
+        Self {
+            repo,
+            recent_team_sync: Arc::default(),
+        }
     }
 
     /// List all MCP servers.
@@ -428,7 +460,7 @@ fn parse_secret_map(secrets_json: Option<&str>) -> std::collections::HashMap<Str
 }
 
 /// Outcome of a team MCP sync pass.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct TeamMcpSyncReport {
     pub written: Vec<String>,
     pub removed: Vec<String>,
@@ -475,6 +507,36 @@ impl McpConfigService {
     /// is the complete current server view (server reachable); offline calls
     /// pass false so the local cache is never wiped.
     pub async fn sync_team_servers(
+        &self,
+        user_id: &str,
+        payloads: &[TeamMcpPayload],
+        authoritative: bool,
+    ) -> Result<TeamMcpSyncReport, McpError> {
+        let digest = team_sync_digest(payloads, authoritative);
+        if let Ok(recent) = self.recent_team_sync.lock()
+            && let Some(last) = recent.get(user_id)
+            && last.digest == digest
+            && last.at.elapsed() < TEAM_SYNC_MEMO_TTL
+        {
+            return Ok(last.report.clone());
+        }
+        let report = self
+            .sync_team_servers_uncached(user_id, payloads, authoritative)
+            .await?;
+        if let Ok(mut recent) = self.recent_team_sync.lock() {
+            recent.insert(
+                user_id.to_owned(),
+                RecentTeamSync {
+                    digest,
+                    at: std::time::Instant::now(),
+                    report: report.clone(),
+                },
+            );
+        }
+        Ok(report)
+    }
+
+    async fn sync_team_servers_uncached(
         &self,
         user_id: &str,
         payloads: &[TeamMcpPayload],
@@ -1694,6 +1756,30 @@ mod team_sync_tests {
 
     fn svc() -> McpConfigService {
         McpConfigService::new(Arc::new(MockMcpServerRepo::new()))
+    }
+
+    /// Answering an identical request from memory must not hide a change of
+    /// authority: the same payloads that were kept offline are pruned once the
+    /// server is reachable again.
+    #[tokio::test]
+    async fn identical_team_sync_is_memoised_but_authority_change_still_applies() {
+        let repo = Arc::new(MockMcpServerRepo::new());
+        let svc = McpConfigService::new(repo.clone());
+        let both = [
+            payload("omcp_a", "team-search", "sse", "https://mcp.corp/sse"),
+            payload("omcp_b", "team-tools", "stdio", "npx corp-tools --serve"),
+        ];
+        svc.sync_team_servers(TEST_USER_ID, &both, true).await.unwrap();
+        let again = svc.sync_team_servers(TEST_USER_ID, &both, true).await.unwrap();
+        assert_eq!(again.written.len(), 2);
+
+        // Server now serves only one; offline pass keeps the other.
+        let one = &both[..1];
+        let offline = svc.sync_team_servers(TEST_USER_ID, one, false).await.unwrap();
+        assert!(offline.removed.is_empty());
+        // Same payloads, authoritative: the dropped connector goes.
+        let online = svc.sync_team_servers(TEST_USER_ID, one, true).await.unwrap();
+        assert_eq!(online.removed, vec!["team-tools".to_owned()]);
     }
 
     fn payload(id: &str, name: &str, ty: &str, endpoint: &str) -> TeamMcpPayload {
