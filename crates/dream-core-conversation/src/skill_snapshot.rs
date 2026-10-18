@@ -53,6 +53,13 @@ pub fn backfill_skills_if_missing(extra: &mut Value, auto_inject_now: &[String])
     needs_compute || had_legacy
 }
 
+/// Whether [`backfill_skills_if_missing`] would read `auto_inject_now` for this
+/// `extra`. The auto-inject set costs a walk of the skill catalog on disk, so
+/// callers fetch it only when a row still lacks a `skills` snapshot.
+pub fn skills_backfill_needs_catalog(extra: &Value) -> bool {
+    extra.as_object().is_some_and(|obj| !obj.contains_key("skills"))
+}
+
 fn take_string_array(obj: &mut serde_json::Map<String, Value>, key: &str) -> Vec<String> {
     obj.remove(key)
         .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
@@ -131,5 +138,27 @@ mod tests {
         let mut extra = json!(null);
         let mutated = backfill_skills_if_missing(&mut extra, &["cron".into()]);
         assert!(!mutated);
+    }
+
+    #[test]
+    fn catalog_needed_only_when_skills_missing() {
+        assert!(skills_backfill_needs_catalog(&json!({ "enabled_skills": ["pdf"] })));
+        assert!(skills_backfill_needs_catalog(&json!({})));
+        assert!(!skills_backfill_needs_catalog(&json!({ "skills": [] })));
+        assert!(!skills_backfill_needs_catalog(&json!(null)));
+    }
+
+    /// Skipping the catalog must not change the outcome for a row that already
+    /// has `skills`: the empty set passed instead is never read.
+    #[test]
+    fn rows_with_skills_backfill_the_same_without_the_catalog() {
+        let row = json!({ "skills": ["cron"], "enabled_skills": ["pdf"] });
+        let mut with_catalog = row.clone();
+        let mut without = row;
+        assert_eq!(
+            backfill_skills_if_missing(&mut with_catalog, &["auto".into()]),
+            backfill_skills_if_missing(&mut without, &[])
+        );
+        assert_eq!(with_catalog, without);
     }
 }

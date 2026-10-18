@@ -67,7 +67,7 @@ use crate::convert::{
 use crate::error::ConversationError;
 use crate::session_context::{DreamEngineRuntimePermissionSeed, SessionContextBuilder};
 use crate::skill_resolver::SkillResolver;
-use crate::skill_snapshot::{backfill_skills_if_missing, compute_initial_skills};
+use crate::skill_snapshot::{backfill_skills_if_missing, compute_initial_skills, skills_backfill_needs_catalog};
 use crate::turn_orchestrator::{ConversationTurnOrchestrator, ConversationTurnStatus, TurnStartInput};
 use std::sync::RwLock;
 
@@ -5578,7 +5578,17 @@ impl ConversationService {
     /// swallowed so a read path never 500s because of a backfill write
     /// failure.
     async fn backfill_extra_inplace(&self, user_id: &str, conversation_id: &str, extra: &mut serde_json::Value) {
-        let auto_inject = self.skill_resolver.auto_inject_names_for_user(user_id).await;
+        // The auto-inject set walks the whole skill catalog on disk (~1-2 s).
+        // Only a row still missing `skills` reads it, and that row is persisted
+        // below, so this normally costs nothing. Computing it unconditionally
+        // made `list` cost one catalog walk per row — 167 rows took ~400 s,
+        // long enough for the desktop's list refreshes to pile up and exhaust
+        // the renderer's request budget.
+        let auto_inject = if skills_backfill_needs_catalog(extra) {
+            self.skill_resolver.auto_inject_names_for_user(user_id).await
+        } else {
+            Vec::new()
+        };
         let mut mutated = backfill_skills_if_missing(extra, &auto_inject);
         mutated |= backfill_cron_job_id_alias(extra);
         if !mutated {

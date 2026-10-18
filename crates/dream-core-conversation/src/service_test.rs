@@ -9935,3 +9935,60 @@ async fn persisting_a_user_picked_workspace_keeps_its_custom_flag() {
     let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
     assert_ne!(extra["custom_workspace"], json!(false), "{extra}");
 }
+
+/// Counts how often the skill catalog is asked for the always-on set.
+struct CatalogCountingResolver {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl SkillResolver for CatalogCountingResolver {
+    async fn auto_inject_names(&self) -> Vec<String> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        vec!["cron".into()]
+    }
+
+    async fn resolve_skills(&self, _names: &[String]) -> Vec<ResolvedAgentSkill> {
+        Vec::new()
+    }
+
+    async fn link_workspace_skills(
+        &self,
+        _workspace: &Path,
+        _rel_dirs: &[&str],
+        _skills: &[ResolvedAgentSkill],
+    ) -> usize {
+        0
+    }
+}
+
+/// The always-on set costs a walk of the whole skill catalog on disk (about a
+/// second, more with imported and team skills). `list` used to ask for it once
+/// per row: 5 rows took 5.7 s, 167 rows 22 s in release, minutes in a debug
+/// build — long enough that the sidebar showed "no history" until several
+/// refreshes had landed, and every conversation switch queued behind them.
+/// A row that already carries its `skills` snapshot never needs it.
+#[tokio::test]
+async fn list_does_not_read_the_skill_catalog_for_rows_that_already_have_skills() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let resolver = Arc::new(CatalogCountingResolver { calls: calls.clone() });
+    let (svc, _broadcaster, _repo, _task_mgr) = make_service_with_resolver(resolver);
+    for _ in 0..3 {
+        let req: CreateConversationRequest = serde_json::from_value(json!({
+            "type": "aionrs",
+            "extra": {},
+        }))
+        .unwrap();
+        svc.create("user-1", req).await.unwrap();
+    }
+    calls.store(0, std::sync::atomic::Ordering::SeqCst);
+
+    let listed = svc.list("user-1", ListConversationsQuery::default()).await.unwrap();
+
+    assert_eq!(listed.items.len(), 3);
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "list must not walk the skill catalog once per row"
+    );
+}
