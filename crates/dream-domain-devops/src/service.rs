@@ -2043,16 +2043,33 @@ impl DevopsService {
                 "this document belongs to a different project group".into(),
             ));
         }
-        let updated = self
-            .db
+        let lexical = crate::retrieval::ensure_fts_table(&self.db).await.is_available();
+        let mut tx = self.db.begin().await?;
+        let updated = tx
             .execute(
-                "UPDATE one_rag_documents SET content = ?, status = 'pending', last_error = NULL WHERE id = ?",
+                "UPDATE one_rag_documents SET content = ?, status = 'pending', chunk_count = 0, last_error = NULL WHERE id = ?",
                 &db_params![content, id],
             )
             .await?;
         if updated == 0 {
             return Err(DevopsError::NotFound(format!("rag document {id}")));
         }
+        // Invalidate both derived indexes in the same transaction as the edit.
+        // In particular an empty edit has no background indexing job, and must
+        // never keep the previous revision searchable indefinitely.
+        if lexical {
+            tx.execute(
+                &format!(
+                    "DELETE FROM {} WHERE chunk_id IN (SELECT id FROM one_rag_chunks WHERE document_id = ?)",
+                    crate::retrieval::FTS_TABLE
+                ),
+                &db_params![id],
+            )
+            .await?;
+        }
+        tx.execute("DELETE FROM one_rag_chunks WHERE document_id = ?", &db_params![id])
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -2128,25 +2145,28 @@ impl DevopsService {
                 let _ = self
                     .db
                     .execute(
-                        "UPDATE one_rag_documents SET status = 'error', last_error = ? WHERE id = ?",
-                        &db_params![e.to_string(), id],
+                        "UPDATE one_rag_documents SET status = 'error', last_error = ? WHERE id = ? AND content = ?",
+                        &db_params![e.to_string(), id, &content],
                     )
                     .await;
                 return Err(e);
             }
         };
-        let current: Option<String> = self
-            .db
-            .fetch_optional_scalar("SELECT content FROM one_rag_documents WHERE id = ?", &db_params![id])
-            .await?
-            .flatten();
-        if current.as_deref() != Some(content.as_str()) {
-            return Ok(0);
-        }
         let dims = vectors.first().map(|v| v.len() as i64);
 
         let now = now_ms();
         let mut tx = self.db.begin().await?;
+        // Claim this exact revision while taking the write lock. Checking
+        // content before the transaction lets an edit land between the check
+        // and the chunk replacement, resurrecting the previous revision.
+        let count = chunks.len() as i64;
+        let updated = tx.execute(
+            "UPDATE one_rag_documents SET status = 'ready', last_error = NULL, chunk_count = ? WHERE id = ? AND content = ?",
+            &db_params![count, id, &content],
+        ).await?;
+        if updated == 0 {
+            return Ok(0);
+        }
         tx.execute("DELETE FROM one_rag_chunks WHERE document_id = ?", &db_params![id])
             .await?;
         let mut lexical_rows: Vec<(String, String)> = Vec::with_capacity(chunks.len());
@@ -2167,12 +2187,6 @@ impl DevopsService {
             .await?;
             lexical_rows.push((chunk_id, chunk.clone()));
         }
-        let count = chunks.len() as i64;
-        tx.execute(
-            "UPDATE one_rag_documents SET status = 'ready', last_error = NULL, chunk_count = ? WHERE id = ?",
-            &db_params![count, id],
-        )
-        .await?;
         tx.commit().await?;
 
         // The lexical index is derived, so it is refreshed only after the
@@ -2273,12 +2287,15 @@ impl DevopsService {
         };
 
         // Dense half. The ACL lives in the join, exactly as before.
-        let config = self.load_embedding_config().await?;
-        let query_vec = crate::embedding::embed(&config, &[query.to_owned()])
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| DevopsError::Internal("empty query embedding".into()))?;
+        let embedding = async {
+            let config = self.load_embedding_config().await?;
+            crate::embedding::embed(&config, &[query.to_owned()])
+                .await?
+                .into_iter()
+                .next()
+                .ok_or_else(|| DevopsError::Internal("empty query embedding".into()))
+        }
+        .await;
 
         const BASE: &str = "SELECT c.id, c.document_id, c.chunk_index, c.content, c.embedding, d.title                             FROM one_rag_chunks c JOIN one_rag_documents d ON d.id = c.document_id";
         let sql = match acl_predicate.as_deref() {
@@ -2290,6 +2307,48 @@ impl DevopsService {
             params.push(bind.as_str().into());
         }
         let rows: Vec<(String, String, i64, String, Vec<u8>, String)> = self.db.fetch_all_as(&sql, &params).await?;
+
+        let candidates = crate::retrieval::candidate_limit(limit);
+        let lexical_ranked: Vec<String> =
+            crate::retrieval::lexical_candidates(&self.db, query, acl_predicate.as_deref(), &acl_binds, candidates)
+                .await?
+                .into_iter()
+                .map(|hit| hit.chunk_id)
+                .collect();
+        let query_vec = match embedding {
+            Ok(vector) => vector,
+            Err(error) => {
+                tracing::warn!(
+                    matches = lexical_ranked.len(),
+                    "knowledge query embedding unavailable; using lexical retrieval"
+                );
+                if !crate::retrieval::ensure_fts_table(&self.db).await.is_available() {
+                    return Err(error);
+                }
+                let mut available: HashMap<String, RagSearchHit> = rows
+                    .into_iter()
+                    .map(|(id, document_id, chunk_index, content, _, document_title)| {
+                        (
+                            id,
+                            RagSearchHit {
+                                document_id,
+                                document_title,
+                                chunk_index,
+                                content,
+                                // A literal keyword match is useful evidence even without
+                                // a cosine. Keep it above the dispatch relevance cutoff.
+                                score: 0.5,
+                            },
+                        )
+                    })
+                    .collect();
+                return Ok(lexical_ranked
+                    .into_iter()
+                    .filter_map(|id| available.remove(&id))
+                    .take(limit)
+                    .collect());
+            }
+        };
 
         let mut by_id: HashMap<String, (RagSearchHit, f32)> = HashMap::with_capacity(rows.len());
         let mut dense: Vec<(String, f32)> = Vec::with_capacity(rows.len());
@@ -2311,18 +2370,10 @@ impl DevopsService {
             );
         }
         dense.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let candidates = crate::retrieval::candidate_limit(limit);
         let dense_ranked: Vec<String> = dense.into_iter().take(candidates).map(|(id, _)| id).collect();
 
         // Lexical half. Best-effort: with FTS5 absent or the query unparseable
         // this returns empty and the result degrades to dense-only.
-        let lexical_ranked: Vec<String> =
-            crate::retrieval::lexical_candidates(&self.db, query, acl_predicate.as_deref(), &acl_binds, candidates)
-                .await?
-                .into_iter()
-                .map(|hit| hit.chunk_id)
-                .collect();
-
         if lexical_ranked.is_empty() {
             // Nothing to fuse — keep the dense scores, which callers already
             // threshold on (e.g. the task-dispatch injection uses >= 0.35).
@@ -2842,6 +2893,8 @@ mod tests {
     use super::*;
     use crate::dlp_service::UpsertDlpRule;
     use crate::migrate::run_one_devops_migrations;
+
+    include!("rag_regression_tests.rs");
 
     async fn service() -> DevopsService {
         // max_connections(1): every new pool connection to `sqlite::memory:`
