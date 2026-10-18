@@ -36,6 +36,8 @@ use tracing::warn;
 ///   `packages/desktop/src/common/config/constants.ts`
 /// - `BUILTIN_PAGE_READER_MCP_NAME` in
 ///   `packages/desktop/src/process/utils/runBackendMigrations.ts`
+/// - `BUILTIN_HTML_RENDER_NAME` in
+///   `packages/desktop/src/process/resources/builtinMcp/constants.ts`
 ///
 /// A name that drifts out of step does not fail — it silently stops being
 /// injected, which is exactly how the browser regression documented below
@@ -79,6 +81,11 @@ const AUTO_INJECTED_BUILTIN_NAMES: &[&str] = &[
     // ships as its own server so a model reaches for text extraction instead of
     // screenshot-and-OCR. Injected on the same terms, for the same reason.
     "one-page-reader",
+    // HTML → PNG. Local, free, no key: an agent asked for a calendar or a 小报
+    // lays it out in HTML (the `html-visual` auto-inject skill) and needs this
+    // to hand back a picture. Without it the only image path is a generation
+    // model, which drew a 2027 February with 29 days.
+    "one-html-render",
 ];
 
 pub(crate) fn is_auto_injected_builtin(name: &str) -> bool {
@@ -271,6 +278,21 @@ mod tests {
         };
         let rows = load_session_mcp_rows(&repo, None, "u", "c1").await;
         assert_eq!(names(&rows), vec!["one-browser", "one-page-reader"]);
+    }
+
+    /// The HTML renderer shares the PDF exporter's script but not its gate: a
+    /// conversation asked for a calendar must be able to render one to PNG,
+    /// while the PDF exporter stays opt-in.
+    #[tokio::test]
+    async fn html_renderer_is_injected_but_pdf_exporter_is_not() {
+        let repo = FakeRepo {
+            rows: vec![
+                row("b1", "one-html-render", true, true),
+                row("b2", "one-export-pdf", true, true),
+            ],
+        };
+        let rows = load_session_mcp_rows(&repo, None, "u", "c1").await;
+        assert_eq!(names(&rows), vec!["one-html-render"]);
     }
 
     /// The pre-rebrand browser name still rides in, so an install that never
