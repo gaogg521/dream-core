@@ -14,6 +14,7 @@ pub mod employee_pack;
 pub mod error;
 pub mod migrate;
 pub mod models;
+pub mod notifications;
 pub mod routes;
 pub mod service;
 pub mod state;

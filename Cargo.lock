@@ -2582,6 +2582,7 @@ dependencies = [
 name = "dream-core-channel"
 version = "0.1.90"
 dependencies = [
+ "aes 0.8.4",
  "async-trait",
  "axum",
  "base64 0.22.1",
@@ -2596,6 +2597,7 @@ dependencies = [
  "dream-core-realtime",
  "futures-util",
  "getrandom 0.2.17",
+ "md-5 0.10.6",
  "prost",
  "regex",
  "reqwest",
@@ -3179,6 +3181,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "url",
  "uuid",
  "zip 2.4.2",
 ]

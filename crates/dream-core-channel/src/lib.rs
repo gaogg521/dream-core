@@ -4,6 +4,8 @@
 pub mod action;
 pub mod channel_settings;
 pub mod constants;
+#[cfg(test)]
+mod delivery_test;
 pub mod error;
 pub mod formatter;
 pub mod manager;
@@ -12,7 +14,7 @@ pub mod orchestrator;
 pub mod pairing;
 pub mod plugin;
 pub mod plugins;
-mod push_targets;
+pub mod push_targets;
 pub mod routes;
 pub mod session;
 pub mod stream_relay;

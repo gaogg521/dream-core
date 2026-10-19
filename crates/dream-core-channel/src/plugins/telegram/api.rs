@@ -20,6 +20,36 @@ pub(crate) struct TelegramApi {
 }
 
 impl TelegramApi {
+    pub async fn send_document(&self, chat: &str, path: &str, name: &str) -> Result<String, ChannelError> {
+        let bytes = tokio::fs::read(path)
+            .await
+            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?;
+        let form = reqwest::multipart::Form::new().text("chat_id", chat.to_owned()).part(
+            "document",
+            reqwest::multipart::Part::bytes(bytes).file_name(name.to_owned()),
+        );
+        let response: TgResponse<TgMessage> = self
+            .client
+            .post(format!("{}/sendDocument", self.base_url))
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?;
+        if !response.ok {
+            return Err(ChannelError::MessageSendFailed(
+                response.description.unwrap_or_default(),
+            ));
+        }
+        response
+            .result
+            .map(|message| message.message_id.to_string())
+            .ok_or_else(|| ChannelError::MessageSendFailed("Telegram returned no document receipt".into()))
+    }
     /// Create a new API client for the given bot token.
     pub fn new(client: Client, token: &str) -> Self {
         Self {
@@ -164,6 +194,40 @@ impl TelegramApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn file_upload_sends_original_bytes_and_requires_success_receipt() {
+        let (url, requests, server) = crate::delivery_test::server(vec![
+            serde_json::json!({"ok":true,"result":{"message_id":77,"chat":{"id":42,"type":"private"},"date":0}}),
+            serde_json::json!({"ok":false,"description":"recipient denied"}),
+        ])
+        .await;
+        let api = TelegramApi {
+            client: Client::new(),
+            base_url: url,
+        };
+        let path = crate::delivery_test::file().await;
+        assert_eq!(
+            api.send_document("42", path.to_str().unwrap(), "report.csv")
+                .await
+                .unwrap(),
+            "77"
+        );
+        let captured = requests.lock().await;
+        let request = &captured[0];
+        assert_eq!(request.0, "/sendDocument");
+        assert!(String::from_utf8_lossy(&request.1).contains("notification-proof,42"));
+        drop(captured);
+        assert!(
+            api.send_document("42", path.to_str().unwrap(), "report.csv")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("recipient denied")
+        );
+        tokio::fs::remove_file(path).await.unwrap();
+        server.abort();
+    }
 
     #[test]
     fn api_constructs_correct_base_url() {

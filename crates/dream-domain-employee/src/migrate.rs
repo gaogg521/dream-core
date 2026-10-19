@@ -51,6 +51,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "employee_010_schedule_task",
         include_str!("../migrations/010_schedule_task.sql"),
     ),
+    (
+        "employee_011_result_notifications",
+        include_str!("../migrations/011_result_notifications.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -90,6 +94,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "employee_010_schedule_task",
         include_str!("../migrations_mysql/010_schedule_task.sql"),
+    ),
+    (
+        "employee_011_result_notifications",
+        include_str!("../migrations_mysql/011_result_notifications.sql"),
     ),
 ];
 

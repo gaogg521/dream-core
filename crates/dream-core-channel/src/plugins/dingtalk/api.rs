@@ -42,9 +42,38 @@ pub(crate) struct DingtalkApi {
     client_id: String,
     client_secret: String,
     token_cache: Arc<RwLock<Option<TokenCache>>>,
+    api_base: String,
+    upload_url: String,
 }
 
 impl DingtalkApi {
+    pub async fn upload_file(&self, path: &str, name: &str) -> Result<String, ChannelError> {
+        let token = self.get_token().await?;
+        let bytes = tokio::fs::read(path)
+            .await
+            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?;
+        let form = reqwest::multipart::Form::new().part(
+            "media",
+            reqwest::multipart::Part::bytes(bytes).file_name(name.to_owned()),
+        );
+        let result: serde_json::Value = self
+            .client
+            .post(&self.upload_url)
+            .query(&[("access_token", token.as_str()), ("type", "file")])
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?;
+        result["media_id"]
+            .as_str()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| ChannelError::MessageSendFailed("DingTalk attachment upload rejected".into()))
+    }
     /// Create a new DingTalk API client.
     pub fn new(client: Client, client_id: &str, client_secret: &str) -> Self {
         Self {
@@ -52,6 +81,8 @@ impl DingtalkApi {
             client_id: client_id.to_string(),
             client_secret: client_secret.to_string(),
             token_cache: Arc::new(RwLock::new(None)),
+            api_base: DINGTALK_API_BASE.into(),
+            upload_url: "https://oapi.dingtalk.com/media/upload".into(),
         }
     }
 
@@ -296,9 +327,9 @@ impl DingtalkApi {
         let token = self.get_token().await?;
 
         let url = if request.open_conversation_id.is_some() {
-            format!("{DINGTALK_API_BASE}/v1.0/robot/groupMessages/send")
+            format!("{}/v1.0/robot/groupMessages/send", self.api_base)
         } else {
-            format!("{DINGTALK_API_BASE}/v1.0/robot/oToMessages/batchSend")
+            format!("{}/v1.0/robot/oToMessages/batchSend", self.api_base)
         };
 
         let resp: SendRobotMessageResponse = self
@@ -309,6 +340,8 @@ impl DingtalkApi {
             .send()
             .await
             .map_err(|e| ChannelError::MessageSendFailed(format!("DingTalk robot message send failed: {e}")))?
+            .error_for_status()
+            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?
             .json()
             .await
             .map_err(|e| ChannelError::MessageSendFailed(format!("DingTalk robot message parse failed: {e}")))?;
@@ -325,6 +358,40 @@ impl DingtalkApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn attachment_upload_preserves_bytes_and_rejects_platform_errors() {
+        let (url, requests, server) = crate::delivery_test::server(vec![
+            serde_json::json!({"errcode":0,"media_id":"media-test"}),
+            serde_json::json!({"errcode":40001}),
+        ])
+        .await;
+        let mut api = DingtalkApi::new(Client::new(), "qa-app", "qa-secret");
+        api.upload_url = format!("{url}/media/upload");
+        *api.token_cache.write().await = Some(TokenCache {
+            token: "qa-token".into(),
+            acquired_at: Instant::now(),
+            expires_in: Duration::from_secs(7200),
+        });
+        let file = crate::delivery_test::file().await;
+        assert_eq!(
+            api.upload_file(file.to_str().unwrap(), "report.csv").await.unwrap(),
+            "media-test"
+        );
+        let captured = requests.lock().await;
+        assert!(captured[0].0.contains("type=file"));
+        assert!(String::from_utf8_lossy(&captured[0].1).contains("notification-proof,42"));
+        drop(captured);
+        assert!(
+            api.upload_file(file.to_str().unwrap(), "report.csv")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("DingTalk attachment upload rejected")
+        );
+        tokio::fs::remove_file(file).await.unwrap();
+        server.abort();
+    }
 
     #[test]
     fn api_stores_credentials() {

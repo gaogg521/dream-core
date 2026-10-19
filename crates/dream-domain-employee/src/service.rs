@@ -61,6 +61,7 @@ const TEAM_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3
 const TEAM_POLL_MAX: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 pub struct EmployeeService {
+    pub(crate) notifications: crate::notifications::EmployeeNotifications,
     db: DbPool,
     conversation_service: Arc<ConversationService>,
     conversation_repo: Arc<dyn IConversationRepository>,
@@ -1012,6 +1013,31 @@ async fn list_runs_for_user(
 }
 
 impl EmployeeService {
+    pub fn set_result_notifier(&self, notifier: Arc<dyn crate::notifications::EmployeeResultNotifier>) {
+        self.notifications.bind(notifier);
+    }
+
+    pub async fn notification_settings(
+        &self,
+        user: &str,
+        tenant: &str,
+        agent: &str,
+    ) -> Result<dream_core_api_types::EmployeeNotificationSettings, EmployeeError> {
+        self.resolve_agent_for_use(user, tenant, agent).await?;
+        self.notifications.get(user, agent).await
+    }
+
+    pub async fn save_notification_settings(
+        &self,
+        user: &str,
+        tenant: &str,
+        agent: &str,
+        settings: dream_core_api_types::EmployeeNotificationSettings,
+    ) -> Result<(), EmployeeError> {
+        self.resolve_agent_for_use(user, tenant, agent).await?;
+        self.notifications.set(user, agent, settings).await
+    }
+
     pub fn new(
         db: DbPool,
         conversation_service: Arc<ConversationService>,
@@ -1020,6 +1046,12 @@ impl EmployeeService {
         work_dir: PathBuf,
     ) -> Self {
         Self {
+            notifications: crate::notifications::EmployeeNotifications::new(
+                db.clone(),
+                conversation_service.clone(),
+                work_dir.clone(),
+                conversation_repo.clone(),
+            ),
             db,
             conversation_service,
             conversation_repo,
@@ -2190,7 +2222,17 @@ impl EmployeeService {
         trigger_source: &str,
         task_context: Option<String>,
     ) {
-        let prompt = append_task_context(run_prompt_for(agent, trigger_source), task_context.as_deref());
+        let mut prompt = append_task_context(run_prompt_for(agent, trigger_source), task_context.as_deref());
+        if self
+            .notifications
+            .get(owner_user_id, &agent.id)
+            .await
+            .ok()
+            .and_then(|settings| settings.target)
+            .is_some()
+        {
+            prompt.push_str("\n\nYour final result and linked workspace files are delivered automatically to the user's selected bot. Do not send messages or use messaging tools yourself. Include Markdown links to any report files you produce inside the workspace.");
+        }
         let turn_req = ConversationAgentTurnRequest {
             user_id: owner_user_id.to_owned(),
             conversation_id: conversation_id.to_owned(),
@@ -2291,6 +2333,8 @@ impl EmployeeService {
             .await;
         if let Err(e) = result {
             tracing::error!(run_id, error = %e, "one-employee failed to persist run outcome");
+        } else {
+            self.notifications.deliver(run_id).await;
         }
     }
 

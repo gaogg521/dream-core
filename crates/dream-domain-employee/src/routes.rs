@@ -31,6 +31,10 @@ pub fn one_employee_routes(state: OneEmployeeRouterState) -> Router {
         .route("/api/one/employee/agents/{agent_id}/chat", post(start_chat))
         .route("/api/one/employee/agents/{agent_id}/run-team", post(run_agent_team))
         .route("/api/one/employee/agents/{agent_id}/schedule", put(set_schedule))
+        .route(
+            "/api/one/employee/agents/{agent_id}/notification",
+            get(get_notification).put(set_notification),
+        )
         .route("/api/one/employee/agents/{agent_id}/visibility", put(set_visibility))
         .route("/api/one/employee/agents/{agent_id}/runs", get(list_runs))
         .route("/api/one/employee/runs/{run_id}", get(get_run))
@@ -100,6 +104,32 @@ async fn require_registry_admin(state: &OneEmployeeRouterState, user_id: &str) -
             "the digital-employee registry and its authorization matrix are admin-only".into(),
         ))
     }
+}
+
+async fn get_notification(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(agent): Path<String>,
+) -> Result<Json<ApiResponse<dream_core_api_types::EmployeeNotificationSettings>>, EmployeeError> {
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(
+        state.service.notification_settings(&user.id, &tenant, &agent).await?,
+    )))
+}
+
+async fn set_notification(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(agent): Path<String>,
+    body: Result<Json<dream_core_api_types::EmployeeNotificationSettings>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<ApiResponse<()>>, EmployeeError> {
+    let Json(settings) = body.map_err(|_| EmployeeError::BadRequest("Invalid notification settings".into()))?;
+    let tenant = state.tenant_of(&user.id).await;
+    state
+        .service
+        .save_notification_settings(&user.id, &tenant, &agent, settings)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
 }
 
 /// Pure role→decision mapping of the registry-admin gate, split out from

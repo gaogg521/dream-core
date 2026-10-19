@@ -37,6 +37,7 @@ impl TokenCache {
 /// Manages tenant access token lifecycle (auto-refresh) and provides
 /// typed methods for bot info, WebSocket endpoint, send/edit messages.
 pub(crate) struct LarkApi {
+    base_url: String,
     client: Client,
     app_id: String,
     app_secret: String,
@@ -44,9 +45,58 @@ pub(crate) struct LarkApi {
 }
 
 impl LarkApi {
+    pub async fn send_file(&self, chat: &str, path: &str, name: &str) -> Result<String, ChannelError> {
+        let token = self.get_token().await?;
+        let bytes = tokio::fs::read(path)
+            .await
+            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?;
+        let form = reqwest::multipart::Form::new()
+            .text("file_type", "stream")
+            .text("file_name", name.to_owned())
+            .part(
+                "file",
+                reqwest::multipart::Part::bytes(bytes).file_name(name.to_owned()),
+            );
+        let uploaded: serde_json::Value = self
+            .client
+            .post(format!("{}/im/v1/files", self.base_url))
+            .bearer_auth(&token)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?;
+        if uploaded["code"].as_i64() != Some(0) {
+            return Err(ChannelError::MessageSendFailed(
+                "Lark attachment upload rejected".into(),
+            ));
+        }
+        let key = uploaded["data"]["file_key"]
+            .as_str()
+            .ok_or_else(|| ChannelError::MessageSendFailed("Lark returned no file key".into()))?;
+        let result: SendMessageResponse = self.client.post(format!("{}/im/v1/messages?receive_id_type=chat_id", self.base_url)).bearer_auth(token)
+            .json(&serde_json::json!({"receive_id":chat,"msg_type":"file","content":serde_json::json!({"file_key":key}).to_string()})).send().await
+            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?.error_for_status().map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?
+            .json().await.map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?;
+        if result.code != 0 {
+            return Err(ChannelError::MessageSendFailed(format!(
+                "Lark attachment send rejected: {}",
+                result.code
+            )));
+        }
+        result
+            .data
+            .map(|data| data.message_id)
+            .ok_or_else(|| ChannelError::MessageSendFailed("Lark returned no file receipt".into()))
+    }
     /// Create a new Lark API client.
     pub fn new(client: Client, app_id: &str, app_secret: &str) -> Self {
         Self {
+            base_url: LARK_OPEN_API_BASE.to_owned(),
             client,
             app_id: app_id.to_string(),
             app_secret: app_secret.to_string(),
@@ -72,7 +122,7 @@ impl LarkApi {
 
     /// Request a new tenant access token from Lark.
     async fn refresh_token(&self) -> Result<String, ChannelError> {
-        let url = format!("{LARK_OPEN_API_BASE}/auth/v3/tenant_access_token/internal");
+        let url = format!("{}/auth/v3/tenant_access_token/internal", self.base_url);
         let body = TenantAccessTokenRequest {
             app_id: self.app_id.clone(),
             app_secret: self.app_secret.clone(),
@@ -261,6 +311,41 @@ impl LarkApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn file_upload_and_send_use_file_key_and_reject_failed_upload() {
+        let (url, requests, server) = crate::delivery_test::server(vec![
+            serde_json::json!({"code":0,"msg":"ok","tenant_access_token":"test","expire":7200}),
+            serde_json::json!({"code":0,"data":{"file_key":"file_test"}}),
+            serde_json::json!({"code":0,"msg":"ok","data":{"message_id":"msg_test"}}),
+            serde_json::json!({"code":999,"msg":"denied"}),
+        ])
+        .await;
+        let mut api = LarkApi::new(Client::new(), "test", "test");
+        api.base_url = url;
+        let path = crate::delivery_test::file().await;
+        assert_eq!(
+            api.send_file("chat_test", path.to_str().unwrap(), "report.csv")
+                .await
+                .unwrap(),
+            "msg_test"
+        );
+        let captured = requests.lock().await;
+        assert!(String::from_utf8_lossy(&captured[1].1).contains("notification-proof,42"));
+        let sent: serde_json::Value = serde_json::from_slice(&captured[2].1).unwrap();
+        assert_eq!(sent["msg_type"], "file");
+        assert!(sent["content"].as_str().unwrap().contains("file_test"));
+        drop(captured);
+        assert!(
+            api.send_file("chat_test", path.to_str().unwrap(), "report.csv")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("Lark attachment upload rejected")
+        );
+        tokio::fs::remove_file(path).await.unwrap();
+        server.abort();
+    }
 
     #[test]
     fn api_stores_credentials() {

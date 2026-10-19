@@ -205,6 +205,15 @@ impl ChannelPlugin for LarkPlugin {
             .as_ref()
             .ok_or_else(|| ChannelError::PlatformApi("Plugin not initialized".into()))?;
 
+        if message.message_type == crate::types::OutgoingMessageType::File {
+            let path = message
+                .file_url
+                .as_deref()
+                .ok_or_else(|| ChannelError::InvalidConfig("Missing attachment path".into()))?;
+            return api
+                .send_file(chat_id, path, message.file_name.as_deref().unwrap_or("result.md"))
+                .await;
+        }
         let text = truncate_message(message.text.as_deref().unwrap_or(""), LARK_MESSAGE_LIMIT);
 
         let card_content = build_interactive_card(&text, message.buttons.as_deref());

@@ -168,6 +168,15 @@ impl ChannelPlugin for TelegramPlugin {
             .as_ref()
             .ok_or_else(|| ChannelError::PlatformApi("Plugin not initialized".into()))?;
 
+        if message.message_type == crate::types::OutgoingMessageType::File {
+            let path = message
+                .file_url
+                .as_deref()
+                .ok_or_else(|| ChannelError::InvalidConfig("Missing attachment path".into()))?;
+            return api
+                .send_document(chat_id, path, message.file_name.as_deref().unwrap_or("result.md"))
+                .await;
+        }
         let chat_id_num = parse_chat_id(chat_id)?;
         let text = truncate_message(message.text.as_deref().unwrap_or(""), TELEGRAM_MESSAGE_LIMIT);
 

@@ -24,12 +24,80 @@ pub(crate) struct WeixinApi {
 }
 
 impl WeixinApi {
+    pub async fn send_file(&self, to: &str, path: &str, name: &str, context: Option<&str>) -> Result<(), ChannelError> {
+        use aes::cipher::{BlockEncrypt, KeyInit};
+        use md5::{Digest, Md5};
+        let raw = tokio::fs::read(path)
+            .await
+            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?;
+        if raw.is_empty() || raw.len() > 20 * 1024 * 1024 {
+            return Err(ChannelError::InvalidConfig(
+                "Attachment must be between 1 byte and 20 MiB".into(),
+            ));
+        }
+        let mut key = [0u8; 16];
+        getrandom::getrandom(&mut key)
+            .map_err(|_| ChannelError::MessageSendFailed("Cannot generate attachment key".into()))?;
+        let hex_key = key.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let file_key = Uuid::new_v4().simple().to_string();
+        let pad = 16 - raw.len() % 16;
+        let mut encrypted = raw.clone();
+        encrypted.resize(raw.len() + pad, pad as u8);
+        let cipher = aes::Aes128::new_from_slice(&key)
+            .map_err(|_| ChannelError::MessageSendFailed("Invalid attachment key".into()))?;
+        for chunk in encrypted.chunks_exact_mut(16) {
+            cipher.encrypt_block(chunk.into());
+        }
+        let upload: serde_json::Value = self.authenticated_post("ilink/bot/getuploadurl", &serde_json::json!({"filekey":file_key,"media_type":3,"to_user_id":to,"rawsize":raw.len(),"rawfilemd5":format!("{:x}", Md5::digest(&raw)),"filesize":encrypted.len(),"no_need_thumb":true,"aeskey":hex_key,"base_info":{}}), WEIXIN_API_TIMEOUT).await?;
+        check_send_result(&upload)?;
+        let url = if let Some(url) = upload["upload_full_url"].as_str().filter(|value| !value.is_empty()) {
+            reqwest::Url::parse(url).map_err(|_| ChannelError::MessageSendFailed("Invalid WeChat upload URL".into()))?
+        } else {
+            let param = upload["upload_param"]
+                .as_str()
+                .ok_or_else(|| ChannelError::MessageSendFailed("WeChat returned no upload parameters".into()))?;
+            let mut url = reqwest::Url::parse("https://novac2c.cdn.weixin.qq.com/c2c/upload").expect("constant URL");
+            url.query_pairs_mut()
+                .append_pair("encrypted_query_param", param)
+                .append_pair("filekey", &file_key);
+            url
+        };
+        if url.scheme() != "https" {
+            return Err(ChannelError::MessageSendFailed(
+                "WeChat attachment upload requires HTTPS".into(),
+            ));
+        }
+        let response = self
+            .client
+            .post(url)
+            .header("Content-Type", "application/octet-stream")
+            .timeout(WEIXIN_API_TIMEOUT)
+            .body(encrypted)
+            .send()
+            .await
+            .map_err(|_| ChannelError::MessageSendFailed("WeChat attachment upload failed".into()))?
+            .error_for_status()
+            .map_err(|_| ChannelError::MessageSendFailed("WeChat attachment upload rejected".into()))?;
+        let download = response
+            .headers()
+            .get("x-encrypted-param")
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ChannelError::MessageSendFailed("WeChat returned no attachment receipt".into()))?;
+        let body = serde_json::json!({"msg":{"to_user_id":to,"client_id":Uuid::new_v4().to_string(),"message_type":2,"message_state":2,"context_token":context,"item_list":[{"type":4,"file_item":{"media":{"encrypt_query_param":download,"aes_key":base64::engine::general_purpose::STANDARD.encode(hex_key.as_bytes()),"encrypt_type":1},"file_name":name,"len":raw.len().to_string()}}]},"base_info":{}});
+        let sent: serde_json::Value = self
+            .authenticated_post("ilink/bot/sendmessage", &body, WEIXIN_API_TIMEOUT)
+            .await?;
+        check_send_result(&sent)
+    }
     pub fn new(client: Client, base_url: &str, bot_token: &str) -> Self {
         let base = base_url.trim_end_matches('/');
 
         let mut uin_bytes = [0u8; 4];
         getrandom::getrandom(&mut uin_bytes).expect("RNG failure");
-        let wechat_uin = base64::engine::general_purpose::STANDARD.encode(uin_bytes);
+        // The official connector encodes decimal uint32 text, not the raw bytes.
+        let uin_decimal = u32::from_be_bytes(uin_bytes).to_string();
+        let wechat_uin = base64::engine::general_purpose::STANDARD.encode(uin_decimal.as_bytes());
 
         Self {
             client,
@@ -203,7 +271,7 @@ impl WeixinApi {
             base_info: serde_json::json!({}),
         };
 
-        let _resp: serde_json::Value = self
+        let response: serde_json::Value = self
             .authenticated_post("ilink/bot/sendmessage", &body, WEIXIN_API_TIMEOUT)
             .await
             .map_err(|e| {
@@ -211,8 +279,23 @@ impl WeixinApi {
                 ChannelError::MessageSendFailed(format!("sendmessage failed: {e}"))
             })?;
 
-        Ok(())
+        check_send_result(&response)
     }
+}
+
+fn check_send_result(value: &serde_json::Value) -> Result<(), ChannelError> {
+    if value["ret"].as_i64().is_some_and(|code| code != 0) || value["errcode"].as_i64().is_some_and(|code| code != 0) {
+        tracing::warn!(
+            ret = value["ret"].as_i64(),
+            errcode = value["errcode"].as_i64(),
+            "WeChat rejected outgoing message"
+        );
+        return Err(ChannelError::MessageSendFailed(format!(
+            "WeChat message rejected (ret={}, errcode={})",
+            value["ret"], value["errcode"]
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -228,6 +311,23 @@ mod tests {
     }
 
     #[test]
+    fn delivery_rejects_platform_errors_even_with_http_success() {
+        assert!(check_send_result(&serde_json::json!({"ret":0})).is_ok());
+        assert!(
+            check_send_result(&serde_json::json!({"ret":-14}))
+                .unwrap_err()
+                .to_string()
+                .contains("-14")
+        );
+        assert!(
+            check_send_result(&serde_json::json!({"ret":0,"errcode":40001}))
+                .unwrap_err()
+                .to_string()
+                .contains("40001")
+        );
+    }
+
+    #[test]
     fn api_normalizes_trailing_slash() {
         let client = Client::new();
         let api = WeixinApi::new(client, "https://ilinkai.weixin.qq.com///", "tok");
@@ -235,15 +335,15 @@ mod tests {
     }
 
     #[test]
-    fn api_generates_wechat_uin() {
+    fn api_generates_base64_decimal_uint32_header() {
         let client = Client::new();
         let api = WeixinApi::new(client, "https://example.com", "tok");
-        // base64 of 4 bytes should be 8 chars (with padding)
-        assert_eq!(api.wechat_uin().len(), 8);
-        // Should be valid base64
-        let decoded = base64::engine::general_purpose::STANDARD.decode(api.wechat_uin());
-        assert!(decoded.is_ok());
-        assert_eq!(decoded.unwrap().len(), 4);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(api.wechat_uin())
+            .unwrap();
+        let decimal = std::str::from_utf8(&decoded).unwrap();
+        assert!(decimal.bytes().all(|byte| byte.is_ascii_digit()));
+        assert!(decimal.parse::<u32>().is_ok(), "UIN must be decimal uint32 text");
     }
 
     #[test]

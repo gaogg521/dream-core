@@ -41,7 +41,7 @@ pub(crate) async fn get_push_targets(
 
 /// Enabled bots, each with the distinct chats of the users authorized on that
 /// platform. Pure so the matching rules are testable without a database.
-pub(crate) fn build_push_targets(
+pub fn build_push_targets(
     plugins: Vec<PluginStatusResponse>,
     users: &[AssistantUserRow],
     sessions: &[AssistantSessionRow],

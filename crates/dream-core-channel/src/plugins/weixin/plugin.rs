@@ -161,6 +161,21 @@ impl ChannelPlugin for WeixinPlugin {
         let text = message.text.as_deref().unwrap_or("").to_string();
         let context_token = self.context_tokens.get(chat_id).map(|v| v.clone());
 
+        if message.message_type == crate::types::OutgoingMessageType::File {
+            let path = message
+                .file_url
+                .as_deref()
+                .ok_or_else(|| ChannelError::InvalidConfig("Missing attachment path".into()))?;
+            api.send_file(
+                chat_id,
+                path,
+                message.file_name.as_deref().unwrap_or("result.md"),
+                context_token.as_deref(),
+            )
+            .await?;
+            return Ok(String::new());
+        }
+
         api.send_message(chat_id, &text, context_token.as_deref()).await?;
         Ok(String::new())
     }

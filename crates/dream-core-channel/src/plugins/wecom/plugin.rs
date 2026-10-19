@@ -25,7 +25,7 @@ const TEXT_BYTES: usize = 4096;
 
 struct Outbound {
     frame: Value,
-    done: oneshot::Sender<Result<(), String>>,
+    done: oneshot::Sender<Result<Value, String>>,
 }
 
 pub struct WecomPlugin {
@@ -68,6 +68,57 @@ impl Drop for WecomPlugin {
 }
 
 impl WecomPlugin {
+    async fn request(&self, cmd: &str, body: Value) -> Result<Value, ChannelError> {
+        let sender = self
+            .outbound
+            .as_ref()
+            .ok_or_else(|| ChannelError::ConnectionFailed("WeCom bot is stopped".into()))?;
+        let (done, rx) = oneshot::channel();
+        let frame = json!({"cmd":cmd,"headers":{"req_id":request_id()},"body":body});
+        tokio::time::timeout(REQUEST_TIMEOUT, sender.send(Outbound { frame, done }))
+            .await
+            .map_err(|_| ChannelError::MessageSendFailed("WeCom send queue timed out".into()))?
+            .map_err(|_| ChannelError::ConnectionFailed("WeCom connection closed".into()))?;
+        tokio::time::timeout(REQUEST_TIMEOUT, rx)
+            .await
+            .map_err(|_| ChannelError::MessageSendFailed("WeCom acknowledgement timed out".into()))?
+            .map_err(|_| ChannelError::ConnectionFailed("WeCom connection closed".into()))?
+            .map_err(ChannelError::MessageSendFailed)
+    }
+
+    async fn send_file(&self, chat: &str, path: &str, name: &str) -> Result<String, ChannelError> {
+        use base64::Engine;
+        use md5::{Digest, Md5};
+        let bytes = tokio::fs::read(path)
+            .await
+            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?;
+        if bytes.is_empty() || bytes.len() > 20 * 1024 * 1024 {
+            return Err(ChannelError::InvalidConfig(
+                "Attachment must be between 1 byte and 20 MiB".into(),
+            ));
+        }
+        let _guard = self.send_lock.lock().await;
+        let chunk_size = 512 * 1024;
+        let init = self.request("aibot_upload_media_init", json!({"type":"file","filename":name,"total_size":bytes.len(),"total_chunks":bytes.len().div_ceil(chunk_size),"md5":format!("{:x}", Md5::digest(&bytes))})).await?;
+        let upload = init["body"]["upload_id"]
+            .as_str()
+            .ok_or_else(|| ChannelError::MessageSendFailed("WeCom returned no upload id".into()))?;
+        for (index, chunk) in bytes.chunks(chunk_size).enumerate() {
+            self.request("aibot_upload_media_chunk", json!({"upload_id":upload,"chunk_index":index,"base64_data":base64::engine::general_purpose::STANDARD.encode(chunk)})).await?;
+        }
+        let finished = self
+            .request("aibot_upload_media_finish", json!({"upload_id":upload}))
+            .await?;
+        let media = finished["body"]["media_id"]
+            .as_str()
+            .ok_or_else(|| ChannelError::MessageSendFailed("WeCom returned no media id".into()))?;
+        self.request(
+            "aibot_send_msg",
+            json!({"chatid":chat,"msgtype":"file","file":{"media_id":media}}),
+        )
+        .await?;
+        Ok(media.to_owned())
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -196,6 +247,15 @@ impl ChannelPlugin for WecomPlugin {
     }
 
     async fn send_message(&self, chat_id: &str, message: UnifiedOutgoingMessage) -> Result<String, ChannelError> {
+        if message.message_type == crate::types::OutgoingMessageType::File {
+            let path = message
+                .file_url
+                .as_deref()
+                .ok_or_else(|| ChannelError::InvalidConfig("Missing attachment path".into()))?;
+            return self
+                .send_file(chat_id, path, message.file_name.as_deref().unwrap_or("result.md"))
+                .await;
+        }
         self.send_text(chat_id, message.text.as_deref().unwrap_or("")).await
     }
 
@@ -344,7 +404,7 @@ async fn listen(
     stop: &mut watch::Receiver<bool>,
     seen: &mut HashMap<String, Instant>,
 ) -> EndReason {
-    let mut pending: HashMap<String, (Instant, oneshot::Sender<Result<(), String>>)> = HashMap::new();
+    let mut pending: HashMap<String, (Instant, oneshot::Sender<Result<Value, String>>)> = HashMap::new();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
     heartbeat.tick().await;
     let mut ping_id = String::new();
@@ -373,7 +433,7 @@ async fn listen(
                         let req = data["headers"]["req_id"].as_str().unwrap_or("");
                         if req == ping_id && data["errcode"].as_i64() == Some(0) { missed = 0; continue; }
                         if let Some((_, done)) = pending.remove(req) {
-                            let result = if data["errcode"].as_i64() == Some(0) { Ok(()) } else { Err(format!("WeCom delivery rejected (code {})", data["errcode"].as_i64().unwrap_or(-1))) };
+                            let result = if data["errcode"].as_i64() == Some(0) { Ok(data.clone()) } else { Err(format!("WeCom delivery rejected (code {})", data["errcode"].as_i64().unwrap_or(-1))) };
                             let _ = done.send(result); continue;
                         }
                         if data["cmd"] == "aibot_event_callback" && data["body"]["event"]["eventtype"] == "disconnected_event" { return EndReason::Replaced; }
@@ -475,6 +535,43 @@ fn split_utf8(text: &str, max: usize) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn attachment_upload_waits_for_each_receipt_and_preserves_bytes() {
+        use base64::Engine;
+        let path = crate::delivery_test::file().await;
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let mut plugin = WecomPlugin::new();
+        plugin.outbound = Some(tx);
+        let worker = tokio::spawn(async move {
+            let init = rx.recv().await.unwrap();
+            assert_eq!(init.frame["cmd"], "aibot_upload_media_init");
+            init.done.send(Ok(json!({"body":{"upload_id":"upload-test"}}))).unwrap();
+            let chunk = rx.recv().await.unwrap();
+            assert_eq!(chunk.frame["cmd"], "aibot_upload_media_chunk");
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(chunk.frame["body"]["base64_data"].as_str().unwrap())
+                .unwrap();
+            assert_eq!(bytes, b"name,value\nnotification-proof,42\n");
+            chunk.done.send(Ok(json!({}))).unwrap();
+            let finish = rx.recv().await.unwrap();
+            assert_eq!(finish.frame["cmd"], "aibot_upload_media_finish");
+            finish.done.send(Ok(json!({"body":{"media_id":"media-test"}}))).unwrap();
+            let send = rx.recv().await.unwrap();
+            assert_eq!(send.frame["body"]["chatid"], "chosen-chat");
+            assert_eq!(send.frame["body"]["file"]["media_id"], "media-test");
+            send.done.send(Err("denied".into())).unwrap();
+        });
+        assert!(
+            plugin
+                .send_file("chosen-chat", path.to_str().unwrap(), "report.csv")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("denied")
+        );
+        worker.await.unwrap();
+        tokio::fs::remove_file(path).await.unwrap();
+    }
     #[test]
     fn normalize_private_and_group_messages_without_retaining_raw_secrets() {
         let mut b = json!({"msgid":"m1","chattype":"single","from":{"userid":"u1"},"msgtype":"text","text":{"content":"hello"},"response_url":"sensitive"});

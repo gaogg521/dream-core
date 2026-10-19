@@ -4,6 +4,7 @@
 mod admin_web;
 mod antigravity_hook;
 mod clipboard_writer;
+mod employee_notifications;
 mod fs_monitor;
 mod health;
 mod item_revealer;

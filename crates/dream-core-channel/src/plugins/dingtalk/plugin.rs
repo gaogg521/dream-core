@@ -170,6 +170,21 @@ impl ChannelPlugin for DingtalkPlugin {
             .as_ref()
             .ok_or_else(|| ChannelError::PlatformApi("Plugin not initialized".into()))?;
 
+        if message.message_type == crate::types::OutgoingMessageType::File {
+            let path = message
+                .file_url
+                .as_deref()
+                .ok_or_else(|| ChannelError::InvalidConfig("Missing attachment path".into()))?;
+            let name = message.file_name.as_deref().unwrap_or("result.md");
+            let media = api.upload_file(path, name).await?;
+            let (group, id) = decode_chat_id(chat_id);
+            let request = SendRobotMessageRequest { msg_key: "sampleFile".into(), msg_param: serde_json::json!({"mediaId":media,"fileName":name,"fileType":std::path::Path::new(name).extension().and_then(|v|v.to_str()).unwrap_or("md")}).to_string(), robot_code: api.client_id().to_owned(), open_conversation_id: group.then(|| id.to_owned()), user_ids: (!group).then(|| vec![id.to_owned()]) };
+            return api
+                .send_robot_message(&request)
+                .await?
+                .process_query_key
+                .ok_or_else(|| ChannelError::MessageSendFailed("DingTalk returned no file receipt".into()));
+        }
         let text = truncate_message(message.text.as_deref().unwrap_or(""), DINGTALK_MESSAGE_LIMIT);
 
         // Only use AI Card for streaming (messages without buttons).
@@ -337,10 +352,9 @@ async fn send_via_open_api(api: &Arc<DingtalkApi>, chat_id: &str, text: &str) ->
     };
 
     let resp = api.send_robot_message(&req).await?;
-    let msg_id = resp
-        .process_query_key
-        .unwrap_or_else(|| format!("dt_msg_{}", chrono_now()));
-    Ok(msg_id)
+    resp.process_query_key
+        .filter(|receipt| !receipt.is_empty())
+        .ok_or_else(|| ChannelError::MessageSendFailed("DingTalk returned no message receipt".into()))
 }
 
 /// Build the card_param_map for finalizing an AI Card (status = FINISHED).

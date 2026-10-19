@@ -3724,7 +3724,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let weixin_login_authenticated = weixin_login_route(states.channel.clone())
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
     let channel_authenticated =
-        channel_routes(states.channel).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+        channel_routes(states.channel.clone()).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // Team routes protected by auth middleware. Clone the team session
     // service out before moving the state into team_routes — one-employee
@@ -3827,6 +3827,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     services
         .employee_runtime
         .bind(one_employee_service.clone(), one_devops_service.clone());
+    super::employee_notifications::bind(&one_employee_service, &states.channel);
     one_employee_service.spawn_scheduler();
     let one_employee_state = dream_domain_employee::OneEmployeeRouterState::new(one_employee_service.clone());
     #[cfg(feature = "enterprise")]
