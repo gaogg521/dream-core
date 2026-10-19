@@ -113,6 +113,7 @@ const APP_SETTINGS_TABLES: &[&str] = &[
     "assistant_overlays",
     "assistant_preferences",
     "assistant_plugins",
+    "assistant_plugin_state",
     "assistant_sessions",
     "assistant_users",
     "assistant_marketplace_personas",
@@ -962,6 +963,8 @@ enum EncryptedColumnFormat {
 /// the target machine's: merging the rows verbatim hands the target ciphertext
 /// it has no key for. See [`rekey_restored_secrets`].
 const ENCRYPTED_COLUMNS: &[(&str, &str, EncryptedColumnFormat)] = &[
+    ("assistant_plugins", "config", EncryptedColumnFormat::Raw),
+    ("assistant_plugin_state", "encrypted_value", EncryptedColumnFormat::Raw),
     ("providers", "api_key_encrypted", EncryptedColumnFormat::Raw),
     ("mcp_servers", "transport_config", EncryptedColumnFormat::Field),
     ("oauth_tokens", "access_token", EncryptedColumnFormat::Field),

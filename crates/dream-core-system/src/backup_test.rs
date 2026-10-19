@@ -854,6 +854,87 @@ async fn restored_credentials_are_re_keyed_and_local_ones_survive() {
     assert_eq!(secret, TARGET_SECRET);
 }
 
+#[tokio::test]
+async fn bot_context_and_credentials_survive_cross_machine_settings_restore() {
+    const OWNER: &str = "system_default_user";
+    const SOURCE_SECRET: &str = "source-bot-data-secret";
+    const TARGET_SECRET: &str = "target-bot-data-secret";
+    let source = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let source_db = dream_core_db::init_database(&source.path().join("one-backend.db"))
+        .await
+        .unwrap();
+    let target_db = dream_core_db::init_database(&target.path().join("one-backend.db"))
+        .await
+        .unwrap();
+    for (db, secret, plugin, account) in [
+        (&source_db, SOURCE_SECRET, "weixin", "source-account"),
+        (&target_db, TARGET_SECRET, "telegram", "local-account"),
+    ] {
+        sqlx::query("UPDATE users SET data_secret = ?")
+            .bind(secret)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let key = dream_core_app_key(secret);
+        let config = dream_core_common::encrypt_string(&format!("{plugin}-private-config"), &key).unwrap();
+        let context = dream_core_common::encrypt_string(&format!("{plugin}-private-context-and-cursor"), &key).unwrap();
+        sqlx::query("INSERT INTO assistant_plugins (owner_user_id,id,type,name,enabled,config,created_at,updated_at) VALUES (?,?,?,?,1,?,0,0)")
+            .bind(OWNER).bind(plugin).bind(plugin).bind(plugin).bind(config).execute(db.pool()).await.unwrap();
+        sqlx::query("INSERT INTO assistant_plugin_state (owner_user_id,plugin_id,state_key,encrypted_value,updated_at) VALUES (?,?,?,?,0)")
+            .bind(OWNER).bind(plugin).bind(account).bind(context).execute(db.pool()).await.unwrap();
+    }
+    let local_state: String =
+        sqlx::query_scalar("SELECT encrypted_value FROM assistant_plugin_state WHERE plugin_id='telegram'")
+            .fetch_one(target_db.pool())
+            .await
+            .unwrap();
+    let scope = BackupScope {
+        app_settings: true,
+        ..empty_scope()
+    };
+    let archive = source.path().join("bot-settings.zip");
+    service(source.path())
+        .export(&DbPool::Sqlite(source_db.pool().clone()), &archive, scope, PASSPHRASE)
+        .await
+        .unwrap();
+    service(target.path())
+        .restore(&DbPool::Sqlite(target_db.pool().clone()), &archive, scope, PASSPHRASE)
+        .await
+        .unwrap();
+    let target_key = dream_core_app_key(TARGET_SECRET);
+    for (plugin, account) in [("weixin", "source-account"), ("telegram", "local-account")] {
+        let config: String = sqlx::query_scalar("SELECT config FROM assistant_plugins WHERE owner_user_id=? AND id=?")
+            .bind(OWNER)
+            .bind(plugin)
+            .fetch_one(target_db.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            dream_core_common::decrypt_string(&config, &target_key).unwrap(),
+            format!("{plugin}-private-config")
+        );
+        let context: String = sqlx::query_scalar(
+            "SELECT encrypted_value FROM assistant_plugin_state WHERE owner_user_id=? AND plugin_id=? AND state_key=?",
+        )
+        .bind(OWNER)
+        .bind(plugin)
+        .bind(account)
+        .fetch_one(target_db.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            dream_core_common::decrypt_string(&context, &target_key).unwrap(),
+            format!("{plugin}-private-context-and-cursor")
+        );
+        if plugin == "telegram" {
+            assert_eq!(context, local_state, "the destination's own state must stay unchanged");
+        }
+    }
+    source_db.close().await;
+    target_db.close().await;
+}
+
 /// Same failure mode as `restored_credentials_are_re_keyed_and_local_ones_survive`,
 /// for the two columns that used to be plaintext and are now sealed with the
 /// `encv1:` envelope (`encrypt_field`/`decrypt_field`) rather than the raw

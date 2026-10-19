@@ -5,12 +5,33 @@ use crate::models::{AssistantSessionRow, AssistantUserRow, ChannelPluginRow, Pai
 
 /// Data access abstraction for channel integration tables.
 ///
-/// Covers four tables: `assistant_plugins`, `assistant_users`,
-/// `assistant_sessions`, and `assistant_pairing_codes`.
+/// Covers plugins, encrypted private state, incoming delivery receipts,
+/// authorized users, sessions and pairing codes.
 ///
 /// Object-safe via `async_trait` to support `Arc<dyn IChannelRepository>`.
 #[async_trait::async_trait]
 pub trait IChannelRepository: Send + Sync {
+    /// Load encrypted private runtime state, isolated from public plugin configuration.
+    async fn get_plugin_state(&self, _owner: &str, _plugin: &str, _key: &str) -> Result<Option<String>, DbError> {
+        Err(DbError::Init(
+            "Persistent plugin state is not supported by this repository".into(),
+        ))
+    }
+
+    /// Persist private runtime state before acknowledging incoming platform updates.
+    async fn set_plugin_state(
+        &self,
+        _owner: &str,
+        _plugin: &str,
+        _key: &str,
+        _encrypted: &str,
+        _now: i64,
+    ) -> Result<(), DbError> {
+        Err(DbError::Init(
+            "Persistent plugin state is not supported by this repository".into(),
+        ))
+    }
+
     /// Atomically claim an incoming delivery across reconnects and process restarts.
     async fn claim_delivery(
         &self,

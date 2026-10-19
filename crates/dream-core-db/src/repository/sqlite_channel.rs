@@ -18,6 +18,24 @@ impl SqliteChannelRepository {
 
 #[async_trait::async_trait]
 impl IChannelRepository for SqliteChannelRepository {
+    async fn get_plugin_state(&self, owner: &str, plugin: &str, key: &str) -> Result<Option<String>, DbError> {
+        Ok(sqlx::query_scalar("SELECT encrypted_value FROM assistant_plugin_state WHERE owner_user_id = ? AND plugin_id = ? AND state_key = ?")
+            .bind(owner).bind(plugin).bind(key).fetch_optional(&self.pool).await?)
+    }
+
+    async fn set_plugin_state(
+        &self,
+        owner: &str,
+        plugin: &str,
+        key: &str,
+        encrypted: &str,
+        now: i64,
+    ) -> Result<(), DbError> {
+        sqlx::query("INSERT INTO assistant_plugin_state (owner_user_id, plugin_id, state_key, encrypted_value, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(owner_user_id, plugin_id, state_key) DO UPDATE SET encrypted_value = excluded.encrypted_value, updated_at = excluded.updated_at")
+            .bind(owner).bind(plugin).bind(key).bind(encrypted).bind(now).execute(&self.pool).await?;
+        Ok(())
+    }
+
     async fn claim_delivery(&self, owner: &str, platform: &str, delivery_id: &str, now: i64) -> Result<bool, DbError> {
         // Seven days exceeds the observed multi-hour provider retry window.
         sqlx::query("DELETE FROM assistant_delivery_receipts WHERE received_at < ?")

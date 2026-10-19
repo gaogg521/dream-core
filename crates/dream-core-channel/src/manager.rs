@@ -11,6 +11,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::error::ChannelError;
 use crate::plugin::{ChannelPlugin, PluginCallbacks};
+use crate::plugin_state::EncryptedPluginStateStore;
 use crate::types::{PluginConfig, PluginStatus, PluginType, UnifiedIncomingMessage};
 
 /// Manages the lifecycle of channel plugins.
@@ -164,6 +165,12 @@ impl ChannelManager {
         let mut plugin = factory(plugin_type)
             .ok_or_else(|| ChannelError::InvalidPluginType(format!("No implementation for {plugin_type}")))?;
 
+        plugin.set_state_store(Arc::new(EncryptedPluginStateStore::new(
+            self.repo.clone(),
+            owner_user_id,
+            plugin_id,
+            self.encryption_key,
+        )));
         let callbacks = self.callbacks_for_owner(owner_user_id);
 
         if let Err(e) = plugin.initialize(config, callbacks).await {
@@ -526,6 +533,12 @@ impl ChannelManager {
         let mut plugin = factory(plugin_type)
             .ok_or_else(|| ChannelError::InvalidPluginType(format!("No implementation for {plugin_type}")))?;
 
+        plugin.set_state_store(Arc::new(EncryptedPluginStateStore::new(
+            self.repo.clone(),
+            owner_user_id,
+            &row.id,
+            self.encryption_key,
+        )));
         let callbacks = self.callbacks_for_owner(owner_user_id);
 
         plugin.initialize(config, callbacks).await?;

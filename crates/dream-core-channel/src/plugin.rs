@@ -33,6 +33,9 @@ pub struct PluginCallbacks {
 /// Any method may transition to `Error` on failure.
 #[async_trait::async_trait]
 pub trait ChannelPlugin: Send + Sync {
+    /// Bind the encrypted runtime state store before initializing a managed plugin.
+    fn set_state_store(&mut self, _store: std::sync::Arc<dyn crate::plugin_state::PluginStateStore>) {}
+
     /// Initialize the plugin with configuration and callback channels.
     ///
     /// Should validate credentials format (but not test the connection).

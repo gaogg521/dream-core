@@ -10,12 +10,14 @@ use tracing::{debug, info, warn};
 use crate::constants::{WEIXIN_MAX_BACKOFF, WEIXIN_POLL_TIMEOUT};
 use crate::error::ChannelError;
 use crate::plugin::{ChannelPlugin, PluginCallbacks};
+use crate::plugin_state::PluginStateStore;
 use crate::types::{
     BotInfo, MessageContentType, PluginConfig, PluginStatus, PluginType, UnifiedIncomingMessage, UnifiedMessageContent,
     UnifiedOutgoingMessage, UnifiedUser,
 };
 
 use super::api::WeixinApi;
+use super::state::WeixinState;
 use super::types::{ITEM_TYPE_TEXT, ITEM_TYPE_VOICE, WeixinRawItem, WeixinRawMessage};
 
 /// Default base URL for the iLink Bot API.
@@ -34,6 +36,7 @@ pub struct WeixinPlugin {
     poll_handle: Option<JoinHandle<()>>,
     shutdown_tx: Option<watch::Sender<bool>>,
     context_tokens: Arc<DashMap<String, String>>,
+    state_store: Option<Arc<dyn PluginStateStore>>,
 }
 
 impl Default for WeixinPlugin {
@@ -46,6 +49,7 @@ impl Default for WeixinPlugin {
             poll_handle: None,
             shutdown_tx: None,
             context_tokens: Arc::new(DashMap::new()),
+            state_store: None,
         }
     }
 }
@@ -58,6 +62,10 @@ impl WeixinPlugin {
 
 #[async_trait::async_trait]
 impl ChannelPlugin for WeixinPlugin {
+    fn set_state_store(&mut self, store: Arc<dyn PluginStateStore>) {
+        self.state_store = Some(store);
+    }
+
     async fn initialize(&mut self, config: PluginConfig, callbacks: PluginCallbacks) -> Result<(), ChannelError> {
         self.status = PluginStatus::Initializing;
 
@@ -100,6 +108,15 @@ impl ChannelPlugin for WeixinPlugin {
             })?;
 
         let api = Arc::new(WeixinApi::new(http_client, base_url, bot_token));
+        let restored = WeixinState::restore(self.state_store.as_deref(), account_id).await?;
+        self.context_tokens.clear();
+        for (chat, token) in &restored.context_tokens {
+            self.context_tokens.insert(chat.clone(), token.clone());
+        }
+        info!(
+            context_count = restored.context_tokens.len(),
+            "WeChat conversation state restored"
+        );
 
         self.bot_info = Some(BotInfo {
             id: account_id.to_string(),
@@ -121,6 +138,9 @@ impl ChannelPlugin for WeixinPlugin {
             callbacks.message_tx,
             shutdown_rx,
             context_tokens,
+            self.state_store.clone(),
+            account_id.to_owned(),
+            restored,
         )));
 
         self.status = PluginStatus::Ready;
@@ -141,8 +161,11 @@ impl ChannelPlugin for WeixinPlugin {
             let _ = tx.send(true);
         }
 
-        if let Some(handle) = self.poll_handle.take() {
-            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        if let Some(mut handle) = self.poll_handle.take()
+            && tokio::time::timeout(Duration::from_secs(5), &mut handle).await.is_err()
+        {
+            handle.abort();
+            let _ = handle.await;
         }
 
         self.api = None;
@@ -221,8 +244,10 @@ async fn poll_loop(
     message_tx: tokio::sync::mpsc::Sender<UnifiedIncomingMessage>,
     mut shutdown_rx: watch::Receiver<bool>,
     context_tokens: Arc<DashMap<String, String>>,
+    state_store: Option<Arc<dyn PluginStateStore>>,
+    account_id: String,
+    mut state: WeixinState,
 ) {
-    let mut buf = String::new();
     let mut consecutive_failures: u32 = 0;
 
     loop {
@@ -234,7 +259,11 @@ async fn poll_loop(
         // Reduce each round to success or a failure reason. On success we also
         // advance the buffer and dispatch messages; on API error / transport
         // error we only record the reason.
-        let outcome: Result<(), String> = match api.get_updates(&buf).await {
+        let response = tokio::select! {
+            response = api.get_updates(&state.cursor) => response,
+            _ = shutdown_rx.changed() => break,
+        };
+        let outcome: Result<(), String> = match response {
             Ok(resp) => {
                 let is_api_error = resp.ret.unwrap_or(0) != 0 || resp.errcode.unwrap_or(0) != 0;
                 if is_api_error {
@@ -243,13 +272,38 @@ async fn poll_loop(
                         resp.ret, resp.errcode
                     ))
                 } else {
-                    if let Some(new_buf) = resp.get_updates_buf {
-                        buf = new_buf;
+                    let messages = resp.msgs.unwrap_or_default();
+                    match state
+                        .advance(state_store.as_deref(), &account_id, None, &messages)
+                        .await
+                    {
+                        Ok(()) => {
+                            let mut dispatched = true;
+                            for msg in messages {
+                                if !handle_message(&msg, &message_tx, &context_tokens).await {
+                                    dispatched = false;
+                                    break;
+                                }
+                            }
+                            if dispatched {
+                                state
+                                    .advance(
+                                        state_store.as_deref(),
+                                        &account_id,
+                                        resp.get_updates_buf.as_deref(),
+                                        &[],
+                                    )
+                                    .await
+                                    .map_err(|_| "WeChat poll cursor persistence failed".into())
+                            } else {
+                                Err("WeChat incoming message receiver closed".into())
+                            }
+                        }
+                        Err(_) => {
+                            warn!("WeChat conversation state could not be persisted; retaining previous poll cursor");
+                            Err("WeChat conversation state persistence failed".into())
+                        }
                     }
-                    for msg in resp.msgs.unwrap_or_default() {
-                        handle_message(&msg, &message_tx, &context_tokens).await;
-                    }
-                    Ok(())
                 }
             }
             Err(e) => Err(e.to_string()),
@@ -337,10 +391,10 @@ async fn handle_message(
     msg: &WeixinRawMessage,
     message_tx: &tokio::sync::mpsc::Sender<UnifiedIncomingMessage>,
     context_tokens: &DashMap<String, String>,
-) {
+) -> bool {
     let from_user_id = match &msg.from_user_id {
         Some(id) if !id.is_empty() => id.clone(),
-        _ => return,
+        _ => return true,
     };
 
     // Store context_token for reply use
@@ -354,7 +408,7 @@ async fn handle_message(
     let (content_type, text, _has_media) = extract_content(items);
 
     if text.is_empty() {
-        return;
+        return true;
     }
 
     let display_name = if from_user_id.len() > 6 {
@@ -385,7 +439,7 @@ async fn handle_message(
         raw: None,
     };
 
-    let _ = message_tx.send(unified).await;
+    message_tx.send(unified).await.is_ok()
 }
 
 /// Extract text content from item_list.

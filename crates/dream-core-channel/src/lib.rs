@@ -13,6 +13,7 @@ pub mod message_service;
 pub mod orchestrator;
 pub mod pairing;
 pub mod plugin;
+pub mod plugin_state;
 pub mod plugins;
 pub mod push_targets;
 pub mod routes;
