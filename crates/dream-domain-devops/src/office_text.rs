@@ -60,14 +60,19 @@ pub(crate) fn extract(bytes: &[u8], extension: &str) -> Result<String, DevopsErr
             return Err(invalid());
         }
     }
+    let entry_names: Vec<String> = archive
+        .file_names()
+        .map(|name| name.map(|name| name.into_owned()))
+        .collect::<Result<_, _>>()
+        .map_err(|_| invalid())?;
     let mut text = String::new();
     if extension == "xlsx" {
         // Sparse cells can describe an enormous rectangular allocation even
         // when the compressed archive and XML are small.
-        let sheets: Vec<String> = archive
-            .file_names()
+        let sheets: Vec<String> = entry_names
+            .iter()
             .filter(|name| name.starts_with("xl/worksheets/") && name.ends_with(".xml"))
-            .map(str::to_owned)
+            .cloned()
             .collect();
         for name in sheets {
             let mut xml = String::new();
@@ -96,13 +101,13 @@ pub(crate) fn extract(bytes: &[u8], extension: &str) -> Result<String, DevopsErr
             }
         }
     } else {
-        let mut names: Vec<String> = archive
-            .file_names()
+        let mut names: Vec<String> = entry_names
+            .iter()
             .filter(|name| {
-                (extension == "docx" && *name == "word/document.xml")
+                (extension == "docx" && name.as_str() == "word/document.xml")
                     || (extension == "pptx" && name.starts_with("ppt/slides/slide") && name.ends_with(".xml"))
             })
-            .map(str::to_owned)
+            .cloned()
             .collect();
         names.sort_by_key(|name| {
             name.strip_prefix("ppt/slides/slide")

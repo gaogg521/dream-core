@@ -62,7 +62,10 @@ pub fn parse_employee_zip(bytes: &[u8]) -> Result<EmployeePack, EmployeeError> {
         if entry.is_dir() {
             continue;
         }
-        let path = safe_zip_path(entry.name())?;
+        let entry_name = entry
+            .name()
+            .map_err(|e| EmployeeError::BadRequest(format!("zip entry: {e}")))?;
+        let path = safe_zip_path(&entry_name)?;
         let rel = path.to_string_lossy().replace('\\', "/");
         let mut buf = Vec::new();
         entry
@@ -153,7 +156,10 @@ fn parse_nested_skill_zip(filename: &str, bytes: &[u8]) -> Result<NestedSkillPac
         if entry.is_dir() {
             continue;
         }
-        let name = entry.name().replace('\\', "/");
+        let name = entry
+            .name()
+            .map_err(|e| EmployeeError::BadRequest(format!("skill.zip entry: {e}")))?
+            .replace('\\', "/");
         let base = name.rsplit('/').next().unwrap_or(name.as_str());
         let mut buf = Vec::new();
         entry

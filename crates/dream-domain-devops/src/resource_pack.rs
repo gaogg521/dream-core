@@ -136,15 +136,15 @@ fn ingest_zip_with_root(bytes: &[u8], roots: &[&str]) -> Result<SkillPack, Devop
         if entry.is_dir() {
             continue;
         }
+        let entry_name = entry
+            .name()
+            .map_err(|e| DevopsError::BadRequest(format!("zip entry: {e}")))?;
         if let Some(mode) = entry.unix_mode()
             && mode & 0o170000 == 0o120000
         {
-            return Err(DevopsError::BadRequest(format!(
-                "zip symlink refused: {}",
-                entry.name()
-            )));
+            return Err(DevopsError::BadRequest(format!("zip symlink refused: {}", entry_name)));
         }
-        let path = safe_zip_path(entry.name())?;
+        let path = safe_zip_path(&entry_name)?;
         if path.as_os_str().is_empty() {
             continue;
         }

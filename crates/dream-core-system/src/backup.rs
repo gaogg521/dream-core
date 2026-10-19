@@ -1293,7 +1293,7 @@ fn write_archive(
     let file = std::fs::File::create(destination)
         .map_err(|error| SystemError::Internal(format!("Could not create the backup file: {error}")))?;
     let mut writer = zip::ZipWriter::new(file);
-    let options: zip::write::FileOptions<'_, ()> =
+    let options: zip::write::SimpleFileOptions =
         zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     let manifest_json = serde_json::to_vec_pretty(manifest)

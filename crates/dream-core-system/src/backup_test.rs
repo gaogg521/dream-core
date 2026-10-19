@@ -1276,7 +1276,7 @@ fn an_archive_with_a_traversal_path_is_refused() {
     {
         let file = std::fs::File::create(&archive).unwrap();
         let mut writer = zip::ZipWriter::new(file);
-        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         writer.start_file("../../escaped.txt", options).unwrap();
         std::io::Write::write_all(&mut writer, b"owned").unwrap();
         writer.finish().unwrap();
@@ -1316,7 +1316,7 @@ fn a_scope_covers_the_categories_it_declares_and_no_others() {
 fn write_manifest_only(archive: &Path, manifest: &BackupManifest) {
     let file = std::fs::File::create(archive).unwrap();
     let mut writer = zip::ZipWriter::new(file);
-    let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+    let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
     writer.start_file(MANIFEST_NAME, options).unwrap();
     std::io::Write::write_all(&mut writer, &serde_json::to_vec(manifest).unwrap()).unwrap();
     writer.finish().unwrap();
