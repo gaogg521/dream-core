@@ -778,6 +778,29 @@ impl DevopsService {
         if self.user_org_role(actor_user_id).await?.is_none() {
             return Ok(true);
         }
+        // Company administrators manage resources across their company's
+        // project groups. Group administrators retain the active-group fence.
+        let company: Option<String> = match self
+            .db
+            .fetch_optional_scalar(
+                "SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ? AND role = 'admin'",
+                &db_params![actor_user_id],
+            )
+            .await
+        {
+            Ok(value) => value,
+            Err(sqlx::Error::Database(e)) if dream_core_db::message_indicates_missing_table(e.message()) => None,
+            Err(e) => return Err(e.into()),
+        };
+        if let Some(company) = company {
+            let same_company: Option<String> = self.db.fetch_optional_scalar(
+                "SELECT uo.tenant_id FROM one_user_org uo JOIN one_enterprise_members em ON em.user_id = uo.user_id WHERE uo.tenant_id = ? AND em.enterprise_id = ? LIMIT 1",
+                &db_params![team_id, company],
+            ).await?;
+            if same_company.is_some() {
+                return Ok(true);
+            }
+        }
         Ok(self.active_tenant_id(actor_user_id).await?.as_deref() == Some(team_id))
     }
 
@@ -4526,6 +4549,19 @@ mod tests {
     /// document just by knowing its id — `require_registry_admin` (routes.rs)
     /// only confirms "admin of *some* group", not "admin of *this* group's
     /// resource", and the write path used to stop there.
+    #[tokio::test]
+    async fn company_admin_can_manage_same_company_groups_but_not_another_company() {
+        let svc = service().await;
+        seed_two_group_enterprise(&svc).await;
+        sqlx::raw_sql("CREATE TABLE one_enterprise_members (user_id TEXT PRIMARY KEY, enterprise_id TEXT, role TEXT);
+            INSERT INTO one_enterprise_members VALUES ('admin1','companyA','member'),('admin2','companyA','admin'),('other','companyB','admin');
+            INSERT INTO one_user_org (user_id,tenant_id,role,created_at,updated_at) VALUES ('other','tC','org_admin',0,0);")
+            .execute(svc.db.sqlite()).await.unwrap();
+        assert!(svc.actor_can_touch_team("admin2", Some("tA")).await.unwrap());
+        assert!(!svc.actor_can_touch_team("admin1", Some("tB")).await.unwrap());
+        assert!(!svc.actor_can_touch_team("admin2", Some("tC")).await.unwrap());
+    }
+
     #[tokio::test]
     async fn registry_write_is_rejected_across_project_groups() {
         let svc = service().await;

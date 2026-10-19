@@ -63,6 +63,8 @@ pub struct LdapAuthSuccess {
     pub external_id: String,
     pub user_dn: String,
     pub org_unit_path: Option<String>,
+    pub display_name: Option<String>,
+    pub job_title: Option<String>,
 }
 
 pub struct LdapProvider;
@@ -98,6 +100,9 @@ impl LdapProvider {
             "department".into(),
             "company".into(),
             "userPrincipalName".into(),
+            "displayName".into(),
+            "cn".into(),
+            "title".into(),
         ];
         let external_attr = config.external_id_attribute.trim();
         if !external_attr.is_empty() {
@@ -115,10 +120,11 @@ impl LdapProvider {
                 .map_err(|e| SsoError::Internal(format!("ldap service bind: {e}")))?;
             if result.rc != 0 {
                 let _ = service_conn.unbind().await;
-                return Err(SsoError::Internal(format!(
-                    "ldap service bind rejected (rc={}): check bindDN/bindAccount and bind password",
-                    result.rc
-                )));
+                tracing::warn!(
+                    ldap_rc = result.rc,
+                    "LDAP directory service bind rejected; verify the service account status and credentials"
+                );
+                return Err(SsoError::ProviderUnavailable);
             }
         }
 
@@ -127,6 +133,16 @@ impl LdapProvider {
             .search(base_dn, Scope::Subtree, &filter, attr_refs)
             .await
             .map_err(|e| SsoError::Internal(format!("ldap search: {e}")))?;
+        // AD can answer noSuchObject for a nonexistent login search. Keep
+        // directory names and topology out of the public login response.
+        if search.1.rc == 32 {
+            let _ = service_conn.unbind().await;
+            tracing::warn!(
+                ldap_rc = 32,
+                "LDAP login search returned noSuchObject; verify the configured base DN"
+            );
+            return Err(SsoError::InvalidCredentials);
+        }
         let (entries, _res) = search
             .success()
             .map_err(|e| SsoError::Internal(format!("ldap search failed: {e}")))?;
@@ -183,13 +199,15 @@ impl LdapProvider {
 
         Ok(LdapAuthSuccess {
             org_unit_path: resolve_org_unit_path(&user_dn, &record),
+            display_name: resolve_display_name(&record),
+            job_title: pick_attr(&record, "title"),
             external_id,
             user_dn,
         })
     }
 }
 
-async fn connect(config: &LdapProviderConfig) -> Result<ldap3::Ldap, SsoError> {
+pub(crate) async fn connect(config: &LdapProviderConfig) -> Result<ldap3::Ldap, SsoError> {
     let timeout = Duration::from_millis(config.timeout_ms.filter(|ms| *ms > 0).unwrap_or(10_000));
     let mut settings = LdapConnSettings::new().set_conn_timeout(timeout);
     if config.url.trim().starts_with("ldaps://") && !config.tls_reject_unauthorized {
@@ -317,6 +335,10 @@ fn pick_attr(record: &HashMap<String, Vec<String>>, key: &str) -> Option<String>
         .filter(|value| !value.is_empty())
 }
 
+fn resolve_display_name(record: &HashMap<String, Vec<String>>) -> Option<String> {
+    pick_attr(record, "displayName").or_else(|| pick_attr(record, "cn"))
+}
+
 /// Parse OU segments from a DN (leaf-to-root) and return root-to-leaf labels.
 pub fn parse_ou_chain_from_dn(dn: &str) -> Vec<String> {
     let mut ous: Vec<String> = dn
@@ -367,6 +389,21 @@ mod tests {
     #[test]
     fn escape_filter_value_escapes_special_chars() {
         assert_eq!(escape_filter_value(r"a*b(c)d\e"), r"a\2ab\28c\29d\5ce");
+    }
+
+    #[test]
+    fn directory_real_name_prefers_display_name_then_cn_without_using_login_id() {
+        let record = lowercase_attr_map(&HashMap::from([
+            ("displayName".into(), vec!["  张三  ".into()]),
+            ("cn".into(), vec!["备用姓名".into()]),
+            ("sAMAccountName".into(), vec!["zhang.san".into()]),
+        ]));
+        assert_eq!(resolve_display_name(&record).as_deref(), Some("张三"));
+        let mut record = record;
+        record.insert("displayname".into(), vec![" ".into()]);
+        assert_eq!(resolve_display_name(&record).as_deref(), Some("备用姓名"));
+        record.remove("cn");
+        assert_eq!(resolve_display_name(&record), None);
     }
 
     #[test]

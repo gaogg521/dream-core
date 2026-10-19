@@ -7,7 +7,7 @@
 //! - user creation → upstream `IUserRepository::create_user` (no password;
 //!   SSO users get a random password they'll never know)
 //! - password hashing → `dream_core_auth::hash_password`
-//! - session issue → `JwtService::sign` + `CookieConfig::build_session_cookie`
+//! - session issue → generation-aware JWT + `CookieConfig::build_session_cookie`
 //!
 //! State (OAuth `state` param) is kept in-memory — same approach as the TS
 //! reference's `oauthLoginState.ts`. A single-process deployment is fine;
@@ -105,7 +105,7 @@ impl Default for OAuthStateStore {
 }
 
 pub struct SsoService {
-    db: DbPool,
+    pub(crate) db: DbPool,
     user_repo: Arc<dyn IUserRepository>,
     jwt_service: Arc<JwtService>,
     cookie_config: Arc<CookieConfig>,
@@ -423,6 +423,7 @@ impl SsoService {
                 .map_err(|e| SsoError::Internal(format!("find user: {e}")))?
                 .ok_or_else(|| SsoError::Internal("identity points to missing user".into()))?;
             self.touch_identity(provider, external_id, &profile).await;
+            self.mark_sso_only(&user.id, provider).await?;
             return Ok((
                 user.id,
                 user.username.unwrap_or_else(|| "external_user".to_owned()),
@@ -440,6 +441,7 @@ impl SsoService {
             .await
             .map_err(|e| SsoError::Internal(format!("create_user: {e}")))?;
         self.bind_identity(provider, external_id, &user.id, &profile).await?;
+        self.mark_sso_only(&user.id, provider).await?;
         Ok((
             user.id,
             user.username.unwrap_or_else(|| "external_user".to_owned()),
@@ -447,18 +449,54 @@ impl SsoService {
         ))
     }
 
+    async fn mark_sso_only(&self, user_id: &str, provider: &str) -> Result<(), SsoError> {
+        self.db
+            .execute(
+                "UPDATE users SET sso_only = 1, sso_provider = ? WHERE id = ?",
+                &db_params![provider, user_id],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn record_login_context(
+        &self,
+        user_id: &str,
+        method: &str,
+        client: &str,
+        ip: Option<&str>,
+        user_agent: Option<&str>,
+    ) -> Result<(), SsoError> {
+        self.user_repo
+            .record_login_context(user_id, method, client, ip, user_agent)
+            .await
+            .map_err(|error| {
+                tracing::error!(user_id, method, %error, "SSO login audit write failed");
+                SsoError::Internal("无法写入登录审计，请稍后重新登录".into())
+            })
+    }
+
     /// Sign a JWT + build the session cookie. Mirrors the upstream
     /// `login_handler` shape so CSRF/QR-login inheritance stays intact.
-    pub fn issue_session(
+    pub async fn issue_session(
         &self,
         user_id: &str,
         username: &str,
         redirect_target: Option<String>,
         desktop: bool,
     ) -> Result<SsoSession, SsoError> {
+        if !crate::ldap_directory::identity_allowed(&self.db, user_id).await? {
+            return Err(SsoError::Unauthorized);
+        }
+        let user = self
+            .user_repo
+            .find_active_by_id(user_id)
+            .await
+            .map_err(|e| SsoError::Internal(format!("session subject lookup: {e}")))?
+            .ok_or(SsoError::Unauthorized)?;
         let token = self
             .jwt_service
-            .sign(user_id, username)
+            .sign_with_session_generation(user_id, username, user.session_generation)
             .map_err(|e| SsoError::Internal(format!("token sign: {e}")))?;
         let cookie = self.cookie_config.build_session_cookie(&token);
         Ok(SsoSession {
@@ -1043,6 +1081,37 @@ mod tests {
         assert!(parse_feishu_config(&row).is_none());
     }
 
+    #[tokio::test]
+    async fn restored_sso_session_uses_current_revocation_generation() {
+        let (service, sqlite) = service_with_memory_db().await;
+        let user = service
+            .user_repo
+            .create_user("restored-sso", "unused-hash")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE users SET session_generation = 3 WHERE id = ?")
+            .bind(&user.id)
+            .execute(&sqlite)
+            .await
+            .unwrap();
+        let session = service
+            .issue_session(&user.id, "restored-sso", None, false)
+            .await
+            .unwrap();
+        let payload = service.jwt_service.verify(&session.token).unwrap();
+        assert_eq!(payload.session_generation, 3);
+        assert_eq!(payload.user_id, user.id);
+    }
+
+    #[tokio::test]
+    async fn sso_session_rejects_missing_subject() {
+        let (service, _) = service_with_memory_db().await;
+        assert!(matches!(
+            service.issue_session("missing", "missing", None, false).await,
+            Err(SsoError::Unauthorized)
+        ));
+    }
+
     async fn service_with_memory_db() -> (SsoService, sqlx::SqlitePool) {
         let db = dream_core_db::init_database_memory().await.unwrap();
         // one-sso doesn't own one_user_org (one-org does); recreate the
@@ -1349,6 +1418,68 @@ mod tests {
         assert_eq!(display_name.as_deref(), Some("张三丰"));
         assert_eq!(org_unit_path.as_deref(), Some("产品中心"));
         assert_eq!(job_title.as_deref(), Some("高级工程师"));
+    }
+
+    #[tokio::test]
+    async fn sso_provisioning_marks_external_credentials_and_success_records_request_context() {
+        let (service, sqlite) = service_with_memory_db().await;
+        for provider in [
+            SsoProviderKind::Wecom,
+            SsoProviderKind::Dingtalk,
+            SsoProviderKind::Feishu,
+            SsoProviderKind::Ldap,
+        ] {
+            let profile = ProviderUserInfo {
+                external_id: provider.as_str().into(),
+                preferred_username: "真实姓名".into(),
+                org_unit_path: None,
+                job_title: None,
+                org_external_id: None,
+            };
+            let (id, username, _) = service.resolve_or_provision_user(provider, profile).await.unwrap();
+            let (sso, source, last_login): (bool, Option<String>, Option<i64>) =
+                sqlx::query_as("SELECT sso_only, sso_provider, last_login FROM users WHERE id = ?")
+                    .bind(&id)
+                    .fetch_one(&sqlite)
+                    .await
+                    .unwrap();
+            assert!(sso);
+            assert_eq!(source.as_deref(), Some(provider.as_str()));
+            assert!(last_login.is_none(), "first factor is not a completed login");
+            service.issue_session(&id, &username, None, false).await.unwrap();
+            service
+                .record_login_context(
+                    &id,
+                    provider.as_str(),
+                    "web",
+                    Some("192.0.2.9"),
+                    Some("Chrome / Windows"),
+                )
+                .await
+                .unwrap();
+            let (time, method, ip): (i64, String, String) =
+                sqlx::query_as("SELECT last_login, last_login_method, last_login_ip FROM users WHERE id = ?")
+                    .bind(&id)
+                    .fetch_one(&sqlite)
+                    .await
+                    .unwrap();
+            assert!(time > 0);
+            assert_eq!(method, provider.as_str());
+            assert_eq!(ip, "192.0.2.9");
+            sqlx::query("UPDATE users SET sso_only = 0, sso_provider = NULL WHERE id = ?")
+                .bind(&id)
+                .execute(&sqlite)
+                .await
+                .unwrap();
+            sqlx::raw_sql(include_str!("../migrations/007_sso_only_accounts.sql"))
+                .execute(&sqlite)
+                .await
+                .unwrap();
+            assert!(
+                service.user_repo.is_sso_only(&id).await.unwrap(),
+                "upgrade must protect existing SSO members"
+            );
+        }
     }
 
     #[tokio::test]

@@ -10,6 +10,7 @@
 pub mod directory;
 pub mod enterprise;
 pub mod error;
+pub mod ldap_directory;
 pub mod migrate;
 pub mod models;
 pub mod org_hooks;

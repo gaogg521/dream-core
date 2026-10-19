@@ -92,5 +92,5 @@ pub use sqlite_team::SqliteTeamRepository;
 pub use sqlite_user::SqliteUserRepository;
 pub use sqlite_webui_device::SqliteWebuiDeviceRepository;
 pub use team::{ActivityCursor, ITeamRepository, PageDirection};
-pub use user::IUserRepository;
+pub use user::{IUserRepository, UserLoginEvent};
 pub use webui_device::{IWebuiDeviceRepository, WebuiDeviceSession};

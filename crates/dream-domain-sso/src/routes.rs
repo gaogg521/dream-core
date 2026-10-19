@@ -36,12 +36,22 @@ pub fn one_sso_admin_routes(state: OneSsoRouterState) -> Router {
         .route("/api/one/admin/sso/{provider}", put(upsert_provider))
         .route("/api/one/admin/scim/token", put(crate::scim::admin_put_scim_token))
         .route("/api/one/admin/sso/directory/sync", post(run_directory_sync_now))
+        .route("/api/one/admin/sso/ldap/status-sync", post(run_ldap_status_sync))
         .route("/api/one/admin/mfa/policy", get(mfa_policy_get).put(mfa_policy_put))
         .route("/api/one/admin/mfa/users", get(mfa_users_overview))
         .route("/api/one/admin/mfa/users/{id}/reset", post(mfa_user_reset))
         .route("/api/one/admin/mfa/users/{id}/flags", put(mfa_user_flags))
         .route("/api/one/admin/mfa/audit", get(mfa_audit_list))
         .with_state(state)
+}
+
+async fn run_ldap_status_sync(
+    State(state): State<OneSsoRouterState>,
+    _admin: RequireSsoAdmin,
+) -> Result<Json<ApiResponse<crate::ldap_directory::LdapStatusReport>>, SsoError> {
+    let revoker = state.ldap_lifecycle.as_ref().ok_or(SsoError::ProviderUnavailable)?;
+    let report = crate::ldap_directory::sync_bound_identities(&state.service, revoker.as_ref()).await?;
+    Ok(Json(ApiResponse::ok(report)))
 }
 
 /// Outcome of an admin-triggered directory sync.
@@ -592,6 +602,7 @@ async fn callback_inner(
                 Some(entry.deep_link_scheme),
             )
             .await?;
+        mfa.set_login_source(&mfa_token, provider.as_str()).await?;
         let login_path = mfa_login_path(
             &mfa_token,
             purpose.as_str(),
@@ -604,7 +615,9 @@ async fn callback_inner(
 
     let session = state
         .service
-        .issue_session(&user_id, &username, entry.redirect_target.clone(), entry.desktop)?;
+        .issue_session(&user_id, &username, entry.redirect_target.clone(), entry.desktop)
+        .await?;
+    record_successful_login(&state, &user_id, provider, headers, entry.desktop).await?;
 
     if entry.desktop {
         // Desktop deep-link: pass token via OS protocol handler.
@@ -699,7 +712,7 @@ async fn saml_callback(
     }
     let profile =
         crate::providers::saml::SamlProvider::complete(state_token, &form.saml_response, form.relay_state.as_deref())?;
-    let mut response = finish_external_login(&state, entry, SsoProviderKind::Saml, profile).await?;
+    let mut response = finish_external_login(&state, entry, SsoProviderKind::Saml, profile, &headers).await?;
     if let Ok(cookie) = clear_state_cookie_header(SsoProviderKind::Saml, state.service.cookie_secure()).parse() {
         response.headers_mut().append(header::SET_COOKIE, cookie);
     }
@@ -740,6 +753,7 @@ async fn finish_external_login(
     entry: crate::service::OAuthStateEntry,
     provider: SsoProviderKind,
     profile: crate::providers::ProviderUserInfo,
+    headers: &HeaderMap,
 ) -> Result<Response, SsoError> {
     let display_name = profile.preferred_username.clone();
     let org_external_id = profile.org_external_id.clone();
@@ -780,6 +794,7 @@ async fn finish_external_login(
                 Some(entry.deep_link_scheme),
             )
             .await?;
+        mfa.set_login_source(&mfa_token, provider.as_str()).await?;
         let login_path = mfa_login_path(
             &mfa_token,
             purpose.as_str(),
@@ -792,7 +807,9 @@ async fn finish_external_login(
 
     let session = state
         .service
-        .issue_session(&user_id, &username, entry.redirect_target.clone(), entry.desktop)?;
+        .issue_session(&user_id, &username, entry.redirect_target.clone(), entry.desktop)
+        .await?;
+    record_successful_login(state, &user_id, provider, headers, entry.desktop).await?;
     if entry.desktop {
         let params = format!(
             "token={}&userId={}&username={}&name={}",
@@ -931,6 +948,7 @@ struct LdapLoginDto {
 /// desktop remote-mode clients can go straight to Bearer auth.
 async fn ldap_login(
     State(state): State<OneSsoRouterState>,
+    headers: HeaderMap,
     Json(body): Json<LdapLoginBody>,
 ) -> Result<Response, SsoError> {
     let provider = SsoProviderKind::Ldap;
@@ -953,9 +971,9 @@ async fn ldap_login(
     let auth = crate::providers::LdapProvider::authenticate(&cfg, &body.username, &body.password).await?;
     let profile = crate::providers::ProviderUserInfo {
         external_id: auth.external_id,
-        preferred_username: body.username.trim().to_owned(),
+        preferred_username: auth.display_name.unwrap_or_else(|| body.username.trim().to_owned()),
         org_unit_path: auth.org_unit_path,
-        job_title: None,
+        job_title: auth.job_title,
         // LDAP/local password login carries no SSO company identifier.
         org_external_id: None,
     };
@@ -963,6 +981,7 @@ async fn ldap_login(
     // below — the same pair the OAuth path runs in `complete_login`.
     let personal_external_id = profile.external_id.clone();
     let org_unit_path = profile.org_unit_path.clone();
+    let job_title = profile.job_title.clone();
     let display_name = profile.preferred_username.clone();
     let (user_id, username, _created) = state.service.resolve_or_provision_user(provider, profile).await?;
 
@@ -984,7 +1003,7 @@ async fn ldap_login(
             &personal_external_id,
             Some(display_name.as_str()),
             org_unit_path.as_deref(),
-            None,
+            job_title.as_deref(),
         )
         .await;
     }
@@ -1014,6 +1033,7 @@ async fn ldap_login(
                 None,
             )
             .await?;
+        mfa.set_login_source(&mfa_token, provider.as_str()).await?;
         return Ok(Json(ApiResponse::ok(serde_json::json!({
             "mfaRequired": true,
             "mfaToken": mfa_token,
@@ -1025,7 +1045,9 @@ async fn ldap_login(
 
     let session = state
         .service
-        .issue_session(&user_id, &username, redirect_target, false)?;
+        .issue_session(&user_id, &username, redirect_target, false)
+        .await?;
+    record_successful_login(&state, &user_id, provider, &headers, false).await?;
 
     Ok((
         [(header::SET_COOKIE, session.cookie.clone())],
@@ -1041,6 +1063,26 @@ async fn ldap_login(
 // ---------------------------------------------------------------------------
 // 登录二次认证（MFA）· 管理端点（RequireSsoAdmin 已由路由分层守卫）
 // ---------------------------------------------------------------------------
+
+async fn record_successful_login(
+    state: &OneSsoRouterState,
+    user_id: &str,
+    provider: SsoProviderKind,
+    headers: &HeaderMap,
+    desktop: bool,
+) -> Result<(), SsoError> {
+    let (ip, user_agent) = dream_core_auth::login_request_metadata(headers);
+    state
+        .service
+        .record_login_context(
+            user_id,
+            provider.as_str(),
+            if desktop { "desktop" } else { "web" },
+            ip.as_deref(),
+            user_agent.as_deref(),
+        )
+        .await
+}
 
 /// MFA 未接线（单机/测试组装）时的统一占位响应。
 fn mfa_unavailable<T>(body: T) -> (axum::http::StatusCode, Json<T>) {
@@ -1296,6 +1338,7 @@ mod tests {
             org_auto_join: None,
             directory_sink: None,
             scim_lifecycle: None,
+            ldap_lifecycle: None,
             mfa: None,
         };
         let response = saml_callback(

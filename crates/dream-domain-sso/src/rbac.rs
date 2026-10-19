@@ -177,6 +177,7 @@ mod tests {
             org_auto_join: None,
             directory_sink: None,
             scim_lifecycle: None,
+            ldap_lifecycle: None,
             mfa: None,
         }
     }

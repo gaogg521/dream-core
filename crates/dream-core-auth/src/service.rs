@@ -135,6 +135,7 @@ impl AuthProvisionService {
                     id: user.id,
                     username,
                     must_change_password: user.must_change_password,
+                    can_change_password: true,
                 },
                 session_generation: user.session_generation,
             },

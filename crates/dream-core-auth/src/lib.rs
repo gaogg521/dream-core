@@ -6,6 +6,8 @@ mod csrf;
 mod error;
 mod extract;
 mod jwt;
+mod login_context;
+pub use login_context::{login_audit_event, login_request_metadata};
 pub mod mfa;
 pub use dream_core_db::MfaMode;
 pub use mfa::{MfaDecision, MfaService};

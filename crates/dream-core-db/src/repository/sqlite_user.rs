@@ -451,6 +451,43 @@ impl IUserRepository for SqliteUserRepository {
         Ok(())
     }
 
+    async fn is_sso_only(&self, user_id: &str) -> Result<bool, DbError> {
+        Ok(sqlx::query_scalar::<_, bool>("SELECT sso_only FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .unwrap_or(false))
+    }
+
+    async fn list_login_events(&self, user_id: &str, limit: i64) -> Result<Vec<crate::UserLoginEvent>, DbError> {
+        Ok(sqlx::query_as("SELECT id, user_id, method, client, ip, user_agent, created_at FROM user_login_events WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
+            .bind(user_id).bind(limit.clamp(1, 100)).fetch_all(&self.pool).await?)
+    }
+
+    async fn record_login_context(
+        &self,
+        user_id: &str,
+        method: &str,
+        client: &str,
+        ip: Option<&str>,
+        user_agent: Option<&str>,
+    ) -> Result<(), DbError> {
+        let now = dream_core_common::now_ms();
+        let mut tx = self.pool.begin().await?;
+        let result = sqlx::query("UPDATE users SET last_login = ?, updated_at = ?, last_login_method = ?, last_login_client = ?, last_login_ip = ?, last_login_user_agent = ? WHERE id = ?")
+            .bind(now).bind(now).bind(method).bind(client).bind(ip).bind(user_agent).bind(user_id)
+            .execute(&mut *tx).await?;
+        if result.rows_affected() == 0 {
+            return Err(DbError::NotFound(format!("User '{user_id}' not found")));
+        }
+        sqlx::query("INSERT INTO user_login_events (id, user_id, method, client, ip, user_agent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .bind(dream_core_common::generate_prefixed_id("login"))
+            .bind(user_id).bind(method).bind(client).bind(ip).bind(user_agent).bind(now)
+            .execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn update_jwt_secret(&self, user_id: &str, jwt_secret: &str) -> Result<(), DbError> {
         let now = dream_core_common::now_ms();
         let result = sqlx::query("UPDATE users SET jwt_secret = ?, updated_at = ? WHERE id = ?")
@@ -769,6 +806,47 @@ mod tests {
         let updated = repo.find_by_id(&user.id).await.unwrap().unwrap();
         assert!(updated.last_login.is_some());
         assert!(updated.last_login.unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn successful_login_context_and_sso_policy_are_persisted_independently() {
+        let (repo, db) = setup().await;
+        let user = repo.create_user("context-user", "h").await.unwrap();
+        assert!(!repo.is_sso_only(&user.id).await.unwrap());
+        sqlx::query("UPDATE users SET sso_only = 1, sso_provider = 'wecom' WHERE id = ?")
+            .bind(&user.id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        assert!(repo.is_sso_only(&user.id).await.unwrap());
+        repo.record_login_context(&user.id, "wecom", "web", Some("192.0.2.1"), Some("Chrome test"))
+            .await
+            .unwrap();
+        let (time, method, client, ip, agent): (i64, String, String, String, String) = sqlx::query_as(
+            "SELECT last_login, last_login_method, last_login_client, last_login_ip, last_login_user_agent FROM users WHERE id = ?"
+        ).bind(&user.id).fetch_one(db.pool()).await.unwrap();
+        assert!(time > 0);
+        assert_eq!(
+            (method.as_str(), client.as_str(), ip.as_str(), agent.as_str()),
+            ("wecom", "web", "192.0.2.1", "Chrome test")
+        );
+        repo.record_login_context(
+            &user.id,
+            "dingtalk",
+            "desktop",
+            Some("192.0.2.2"),
+            Some("Chrome desktop"),
+        )
+        .await
+        .unwrap();
+        let events = repo.list_login_events(&user.id, 100).await.unwrap();
+        assert_eq!(events.len(), 2, "audit history must append rather than overwrite");
+        assert!(events.iter().all(|event| event.user_id == user.id));
+        assert_eq!(repo.list_login_events("another-user", 100).await.unwrap().len(), 0);
+        assert!(matches!(
+            repo.record_login_context("missing", "wecom", "web", None, None).await,
+            Err(DbError::NotFound(_))
+        ));
     }
 
     #[tokio::test]

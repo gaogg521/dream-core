@@ -260,6 +260,23 @@ async fn handle_proxy(
         }
     };
 
+    // Identity admission covers GET discovery, polling and artifact reads too.
+    if let Err(error) =
+        dream_core_auth::middleware::check_directory_identity(state.directory_identity.as_deref(), &channel.user_id)
+            .await
+    {
+        return error.into_response();
+    }
+
+    // Desktop calls bypass the enterprise conversation SendGate. Enforce
+    // seat and spend policy before contacting any vendor, including Bedrock.
+    if method == Method::POST
+        && let Some(gate) = &state.proxy_request_gate
+        && let Err(response) = gate.check(&channel.user_id, None).await
+    {
+        return response;
+    }
+
     // Bedrock channels re-sign server-side, which requires the whole body —
     // branch off before the streaming pass-through.
     if channel.platform == "bedrock" {
@@ -302,6 +319,13 @@ async fn handle_proxy(
             None,
         )
     };
+    if is_post
+        && request_model.is_some()
+        && let Some(gate) = &state.proxy_request_gate
+        && let Err(response) = gate.check(&channel.user_id, request_model.as_deref()).await
+    {
+        return response;
+    }
     // The channel's model list is an access decision, enforced here.
     //
     // It used to be metadata only: the console let an administrator pick which
@@ -502,7 +526,38 @@ fn region_from_bedrock_host(base_url: &str) -> Option<String> {
 /// forwards by. The query used to be dropped here (axum's `Path` extractor
 /// never sees it), which only mattered once a protocol actually used one.
 fn build_upstream_url(base_url: &str, path: &str, query: Option<&str>) -> String {
-    let mut url = format!("{}/{}", base_url.trim_end_matches('/'), path.trim_start_matches('/'));
+    let mut base = base_url.trim_end_matches('/');
+    let mut path = path.trim_start_matches('/');
+    // Clients normalize the opaque enterprise proxy root to /v1, even when
+    // the configured vendor root already ends in /api/v3 (Ark) or /v1beta.
+    // The configured upstream version is authoritative; keep its entire
+    // prefix and drop only that synthetic client /v1 segment.
+    let versioned_base = base
+        .rsplit('/')
+        .next()
+        .and_then(|part| part.strip_prefix('v'))
+        .map(|version| version.strip_suffix("beta").unwrap_or(version))
+        .is_some_and(|version| !version.is_empty() && version.bytes().all(|c| c.is_ascii_digit()));
+    if versioned_base && path.starts_with("v1/") {
+        path = &path[3..];
+    }
+    // Agnes task polling is a root endpoint, outside its compat /v1 prefix.
+    // Restrict this exception to the vendor hosts; other gateways retain the
+    // exact path-preserving behavior their configuration requested.
+    if path == "agnesapi" && base.ends_with("/v1") {
+        let agnes_host = reqwest::Url::parse(base)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_owned))
+            .is_some_and(|host| {
+                ["agnes-ai.com", "agnes-ai.cn"]
+                    .iter()
+                    .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
+            });
+        if agnes_host {
+            base = &base[..base.len() - 3];
+        }
+    }
+    let mut url = format!("{base}/{path}");
     if let Some(query) = query
         && !query.is_empty()
     {
@@ -860,6 +915,46 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("re-save"));
+    }
+
+    #[test]
+    fn native_media_paths_do_not_duplicate_compat_prefixes() {
+        assert_eq!(
+            build_upstream_url("https://apihub.agnes-ai.com/v1", "v1/videos", None),
+            "https://apihub.agnes-ai.com/v1/videos"
+        );
+        assert_eq!(
+            build_upstream_url("https://api.agnes-ai.cn/v1", "agnesapi", Some("video_id=task-1")),
+            "https://api.agnes-ai.cn/agnesapi?video_id=task-1"
+        );
+        assert_eq!(
+            build_upstream_url("https://relay.test/v1", "agnesapi", None),
+            "https://relay.test/v1/agnesapi"
+        );
+        assert_eq!(
+            build_upstream_url("https://agnes-ai.com.relay.test/v1", "agnesapi", None),
+            "https://agnes-ai.com.relay.test/v1/agnesapi"
+        );
+        assert_eq!(
+            build_upstream_url("https://apihub.agnes-ai.com/v1", "chat/completions", None),
+            "https://apihub.agnes-ai.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn client_version_does_not_override_configured_vendor_version() {
+        assert_eq!(
+            build_upstream_url("https://ark.test/api/v3", "v1/contents/generations/tasks", None),
+            "https://ark.test/api/v3/contents/generations/tasks"
+        );
+        assert_eq!(
+            build_upstream_url("https://gateway.test/custom/v1beta", "v1/messages", Some("mode=test")),
+            "https://gateway.test/custom/v1beta/messages?mode=test"
+        );
+        assert_eq!(
+            build_upstream_url("https://gateway.test/proxy", "v1/responses", None),
+            "https://gateway.test/proxy/v1/responses"
+        );
     }
 
     #[test]

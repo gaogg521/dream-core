@@ -254,6 +254,12 @@ pub struct AdminUserDto {
     /// SSO-synced `org_unit_path` above.
     pub department_id: Option<String>,
     pub last_login: Option<i64>,
+    pub auth_provider: Option<String>,
+    pub can_reset_password: bool,
+    pub last_login_method: Option<String>,
+    pub last_login_client: Option<String>,
+    pub last_login_ip: Option<String>,
+    pub last_login_user_agent: Option<String>,
     pub created_at: i64,
 }
 

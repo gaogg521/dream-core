@@ -8,6 +8,7 @@ use crate::service::SsoService;
 
 #[derive(Clone)]
 pub struct OneSsoRouterState {
+    pub ldap_lifecycle: Option<Arc<dyn crate::ldap_directory::LdapSessionRevoker>>,
     pub service: Arc<SsoService>,
     /// Syncs the SSO user's company + membership into the enterprise-org domain
     /// (one-enterprise), when the app layer wires one in. `None` — personal
@@ -35,8 +36,14 @@ pub struct OneSsoRouterState {
 }
 
 impl OneSsoRouterState {
+    pub fn with_ldap_lifecycle(mut self, revoker: Arc<dyn crate::ldap_directory::LdapSessionRevoker>) -> Self {
+        self.ldap_lifecycle = Some(revoker);
+        self
+    }
+
     pub fn new(service: Arc<SsoService>) -> Self {
         Self {
+            ldap_lifecycle: None,
             service,
             enterprise_sync: None,
             company_admin_check: None,

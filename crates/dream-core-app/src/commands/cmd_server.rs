@@ -352,6 +352,12 @@ pub(crate) async fn run_server(
         shutdown_tx.subscribe(),
         None,
     );
+    #[cfg(feature = "enterprise")]
+    let ldap_identity_handle = dream_domain_sso::ldap_directory::start_scheduler(
+        router_runtime.sso_service.clone(),
+        router_runtime.ldap_lifecycle.clone(),
+        shutdown_tx.subscribe(),
+    );
     let conversation_runtime_state = services.conversation_runtime_state.clone();
     let worker_task_manager = services.worker_task_manager.clone();
     let client_pref_service = router_runtime.client_pref_service.clone();
@@ -512,6 +518,11 @@ pub(crate) async fn run_server(
             error = %e,
             "directory sync scheduler join failed"
         );
+    }
+
+    #[cfg(feature = "enterprise")]
+    if let Err(error) = ldap_identity_handle.await {
+        warn!(%error, "LDAP identity-state scheduler join failed");
     }
 
     // `sqlx::Pool::close()` waits for all checked-out connections to be

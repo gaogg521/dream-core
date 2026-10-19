@@ -26,6 +26,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/004_identity_org_external_id.sql"),
     ),
     ("sso_005_scim", include_str!("../migrations/005_scim.sql")),
+    (
+        "sso_006_ldap_identity_state",
+        include_str!("../migrations/006_ldap_identity_state.sql"),
+    ),
+    (
+        "sso_007_sso_only_accounts",
+        include_str!("../migrations/007_sso_only_accounts.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -43,6 +51,14 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
         include_str!("../migrations_mysql/004_identity_org_external_id.sql"),
     ),
     ("sso_005_scim", include_str!("../migrations_mysql/005_scim.sql")),
+    (
+        "sso_006_ldap_identity_state",
+        include_str!("../migrations_mysql/006_ldap_identity_state.sql"),
+    ),
+    (
+        "sso_007_sso_only_accounts",
+        include_str!("../migrations_mysql/007_sso_only_accounts.sql"),
+    ),
 ];
 
 /// Run all pending one-sso migrations on the pool's backend. Idempotent.
@@ -73,7 +89,12 @@ mod tests {
             .await
             .unwrap();
 
-        for table in ["one_sso_providers", "one_sso_identities", "one_scim_users"] {
+        for table in [
+            "one_sso_providers",
+            "one_sso_identities",
+            "one_scim_users",
+            "one_sso_directory_identity_state",
+        ] {
             let exists: bool =
                 sqlx::query_scalar("SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?")
                     .bind(table)
@@ -96,7 +117,12 @@ mod tests {
         run_one_sso_migrations(&db.pool).await.unwrap();
         run_one_sso_migrations(&db.pool).await.unwrap();
 
-        for table in ["one_sso_providers", "one_sso_identities", "one_scim_users"] {
+        for table in [
+            "one_sso_providers",
+            "one_sso_identities",
+            "one_scim_users",
+            "one_sso_directory_identity_state",
+        ] {
             let exists: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?",
             )

@@ -113,10 +113,10 @@ pub enum PreparedBody {
 /// The rewrite is deliberately narrow: only a body that already speaks OpenAI
 /// chat completions (`"stream": true` + a `messages` array, and no
 /// `stream_options` of its own) is touched. Anthropic rejects the field
-/// outright and Bedrock takes its own buffered path, so both skip the probe
-/// by platform before ever reading a byte.
+/// outright, so its body is inspected for the model but never rewritten.
+/// Bedrock takes its own buffered path and skips this probe.
 pub async fn prepare_forward_body(body: Body, platform: &str, content_type: &str) -> (PreparedBody, Option<String>) {
-    if platform == "anthropic" || platform == "bedrock" || !content_type.contains("json") {
+    if platform == "bedrock" || !content_type.contains("json") {
         return (
             PreparedBody::Stream(Box::pin(
                 body.into_data_stream()
@@ -168,7 +168,7 @@ pub async fn prepare_forward_body(body: Body, platform: &str, content_type: &str
                 .and_then(|m| m.as_str())
                 .filter(|m| !m.is_empty())
                 .map(str::to_owned);
-            if inject_stream_options(&mut value) {
+            if platform != "anthropic" && inject_stream_options(&mut value) {
                 serde_json::to_vec(&value)
                     .map(Bytes::from)
                     .unwrap_or_else(|_| Bytes::from(prefix))
@@ -895,16 +895,15 @@ mod tests {
         let raw: &[u8] = br#"{"model":"claude-sonnet-4","stream":true,"max_tokens":64,"messages":[]}"#;
         let body = Body::from(Bytes::from_static(raw));
         let (prepared, model) = prepare_forward_body(body, "anthropic", "application/json").await;
-        let PreparedBody::Stream(stream) = prepared else {
-            panic!("an unprobed platform must stream through");
+        let PreparedBody::Bytes(bytes) = prepared else {
+            panic!("small Anthropic JSON must be inspected for model authorization");
         };
-        let mut collected = Vec::new();
-        let mut stream = stream;
-        while let Some(chunk) = stream.next().await {
-            collected.extend_from_slice(&chunk.unwrap());
-        }
-        assert_eq!(collected, raw, "byte-for-byte pass-through");
-        assert!(model.is_none(), "unprobed platforms report no request model");
+        assert_eq!(
+            &bytes[..],
+            raw,
+            "byte-for-byte pass-through without OpenAI stream_options"
+        );
+        assert_eq!(model.as_deref(), Some("claude-sonnet-4"));
     }
 
     #[tokio::test]

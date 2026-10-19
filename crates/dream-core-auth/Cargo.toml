@@ -26,5 +26,6 @@ hmac = "0.12"
 subtle = "2"
 
 [dev-dependencies]
+sqlx.workspace = true
 serde_json.workspace = true
 http-body-util.workspace = true

@@ -55,6 +55,11 @@ fn main() -> ExitCode {
     // reads them, while this process is still single-threaded.
     unsafe { dream_core_common::adopt_legacy_env() };
 
+    // The governance process handles LDAPS too. Select the same provider as
+    // dreamcore before any worker can build a Rustls ClientConfig; both ring
+    // and aws-lc are reachable and automatic selection would panic.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let cli = Cli::parse();
     init_tracing(cli.log_level.as_deref());
 

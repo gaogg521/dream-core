@@ -7,10 +7,17 @@ use dream_domain_employee::{DEFAULT_TENANT, EmployeeService, TenantResolver};
 use crate::proxy_usage::ProxyUsageRecorder;
 use crate::service::DevopsService;
 
+/// Synchronous admission decision, separate from fire-and-forget metering.
+#[async_trait::async_trait]
+pub trait ProxyRequestGate: Send + Sync {
+    async fn check(&self, user_id: &str, model: Option<&str>) -> Result<(), axum::response::Response>;
+}
+
 #[derive(Clone)]
 pub struct OneDevopsRouterState {
     pub office: Option<Arc<crate::office_service::OfficeService>>,
     pub rag_source_dir: Option<std::path::PathBuf>,
+    pub directory_identity: Option<Arc<dyn dream_core_auth::middleware::DirectoryIdentityGate>>,
     pub service: Arc<DevopsService>,
     /// Optional so unit tests can build state without the employee runtime.
     /// The dispatch endpoint returns a clear error when it is absent.
@@ -24,6 +31,7 @@ pub struct OneDevopsRouterState {
     /// `None` in personal builds — the tap stays a pure pass-through, matching
     /// the rest of the accounting plane.
     pub usage_recorder: Option<Arc<dyn ProxyUsageRecorder>>,
+    pub proxy_request_gate: Option<Arc<dyn ProxyRequestGate>>,
 }
 
 impl OneDevopsRouterState {
@@ -31,10 +39,12 @@ impl OneDevopsRouterState {
         Self {
             office: None,
             rag_source_dir: None,
+            directory_identity: None,
             service,
             employee: None,
             tenant_resolver: None,
             usage_recorder: None,
+            proxy_request_gate: None,
         }
     }
 
@@ -66,6 +76,19 @@ impl OneDevopsRouterState {
     /// (P1-2). Called by the app router under the `enterprise` feature only.
     pub fn with_proxy_usage_recorder(mut self, recorder: Arc<dyn ProxyUsageRecorder>) -> Self {
         self.usage_recorder = Some(recorder);
+        self
+    }
+
+    pub fn with_proxy_request_gate(mut self, gate: Arc<dyn ProxyRequestGate>) -> Self {
+        self.proxy_request_gate = Some(gate);
+        self
+    }
+
+    pub fn with_directory_identity(
+        mut self,
+        gate: Option<Arc<dyn dream_core_auth::middleware::DirectoryIdentityGate>>,
+    ) -> Self {
+        self.directory_identity = gate;
         self
     }
 

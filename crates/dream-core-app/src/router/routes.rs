@@ -155,6 +155,72 @@ impl dream_domain_sso::OrgAutoJoin for OrgAutoJoinAdapter {
 /// outlive JWT rotation, so removing a member has to close them explicitly —
 /// otherwise the leaver keeps a working key to the company's models, which is
 /// the whole thing channel provisioning exists to prevent.
+fn directory_identity_gate(
+    services: &AppServices,
+) -> Option<Arc<dyn dream_core_auth::middleware::DirectoryIdentityGate>> {
+    #[cfg(feature = "enterprise")]
+    {
+        Some(Arc::new(dream_domain_sso::SsoService::new(
+            services.db.clone(),
+            services.user_repo.clone(),
+            services.jwt_service.clone(),
+            services.cookie_config.clone(),
+        )))
+    }
+    #[cfg(not(feature = "enterprise"))]
+    {
+        let _ = services;
+        None
+    }
+}
+
+#[cfg(feature = "enterprise")]
+struct LdapIdentityRevoker {
+    org: Arc<dream_domain_org::OrgService>,
+    devops: Arc<dream_domain_devops::DevopsService>,
+    platform: Arc<dream_domain_platform::PlatformService>,
+}
+
+#[cfg(feature = "enterprise")]
+#[async_trait::async_trait]
+impl dream_domain_sso::ldap_directory::LdapSessionRevoker for LdapIdentityRevoker {
+    async fn revoke(&self, user_id: &str) -> Result<(), String> {
+        self.org
+            .invalidate_user_tokens(user_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        // Verify these operations explicitly: the general removal revoker logs
+        // errors without propagating them, whereas LDAP keeps failed work pending.
+        self.devops
+            .revoke_channel_tokens_for_user(user_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.platform
+            .revoke_api_keys_for_user(user_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "enterprise")]
+fn ldap_identity_revoker(services: &AppServices) -> Arc<dyn dream_domain_sso::ldap_directory::LdapSessionRevoker> {
+    let key = crate::config::derive_encryption_key(&services.data_secret_raw);
+    Arc::new(LdapIdentityRevoker {
+        org: Arc::new(dream_domain_org::OrgService::new(
+            services.db.clone(),
+            services.user_repo.clone(),
+            Arc::new(dream_core_db::SqliteConversationRepository::new(
+                services.database.pool().clone(),
+            )),
+            services.data_dir.clone(),
+            key,
+        )),
+        devops: Arc::new(dream_domain_devops::DevopsService::new(services.db.clone()).with_encryption_key(key)),
+        platform: Arc::new(dream_domain_platform::PlatformService::new(services.db.clone(), key)),
+    })
+}
+
 #[cfg(feature = "enterprise")]
 struct ModelChannelRevoker(std::sync::Arc<dream_domain_devops::DevopsService>);
 
@@ -769,6 +835,20 @@ impl dream_core_conversation::UsageRecorder for BillingUsageRecorder {
 struct BillingProxyUsageRecorder(std::sync::Arc<dream_domain_billing::BillingService>);
 
 #[cfg(feature = "enterprise")]
+struct BillingProxyRequestGate(std::sync::Arc<dream_domain_billing::BillingService>);
+
+#[cfg(feature = "enterprise")]
+#[async_trait::async_trait]
+impl dream_domain_devops::state::ProxyRequestGate for BillingProxyRequestGate {
+    async fn check(&self, user_id: &str, model: Option<&str>) -> Result<(), axum::response::Response> {
+        self.0
+            .check_send_allowed(user_id, model)
+            .await
+            .map_err(axum::response::IntoResponse::into_response)
+    }
+}
+
+#[cfg(feature = "enterprise")]
 impl dream_domain_devops::ProxyUsageRecorder for BillingProxyUsageRecorder {
     fn record_proxy_usage(&self, event: dream_domain_devops::ProxyUsageEvent) {
         let service = self.0.clone();
@@ -837,6 +917,7 @@ impl dream_domain_devops::ProxyUsageRecorder for BillingProxyUsageRecorder {
 /// its spend budget / off-allowlist; personal users always pass.
 #[cfg(feature = "enterprise")]
 struct BillingSendGate {
+    directory_identity: Option<Arc<dyn dream_core_auth::middleware::DirectoryIdentityGate>>,
     billing: std::sync::Arc<dream_domain_billing::BillingService>,
     grace: std::sync::Arc<PolicyGrace>,
 }
@@ -1004,10 +1085,20 @@ impl dream_core_conversation::SendGate for BillingSendGate {
         user_id: &str,
         model: Option<&str>,
     ) -> Result<(), dream_core_conversation::PolicyDenial> {
+        dream_core_auth::middleware::check_directory_identity(self.directory_identity.as_deref(), user_id)
+            .await
+            .map_err(|error| {
+                dream_core_conversation::PolicyDenial::new("DIRECTORY_ACCOUNT_DISABLED", error.to_string())
+            })?;
         self.settle(self.billing.check_send_allowed(user_id, model).await)
     }
 
     async fn check_model(&self, user_id: &str, model: &str) -> Result<(), dream_core_conversation::PolicyDenial> {
+        dream_core_auth::middleware::check_directory_identity(self.directory_identity.as_deref(), user_id)
+            .await
+            .map_err(|error| {
+                dream_core_conversation::PolicyDenial::new("DIRECTORY_ACCOUNT_DISABLED", error.to_string())
+            })?;
         self.settle(self.billing.check_model_allowed(user_id, model).await)
     }
 }
@@ -1156,6 +1247,7 @@ impl SecurityPolicySendRateGate {
 /// one `SendGate` slot, so they compose here rather than each claiming it.
 #[cfg(feature = "enterprise")]
 struct EnterpriseSendGate {
+    directory_identity: Option<Arc<dyn dream_core_auth::middleware::DirectoryIdentityGate>>,
     employee_runtime: std::sync::Arc<crate::employee_runtime::EmployeeRuntime>,
     billing: BillingSendGate,
     rate: SecurityPolicySendRateGate,
@@ -1169,6 +1261,11 @@ impl dream_core_conversation::SendGate for EnterpriseSendGate {
         user_id: &str,
         conversation_id: &str,
     ) -> Result<(), dream_core_conversation::PolicyDenial> {
+        dream_core_auth::middleware::check_directory_identity(self.directory_identity.as_deref(), user_id)
+            .await
+            .map_err(|error| {
+                dream_core_conversation::PolicyDenial::new("DIRECTORY_ACCOUNT_DISABLED", error.to_string())
+            })?;
         self.employee_runtime
             .check_conversation(user_id, conversation_id)
             .await
@@ -1180,11 +1277,21 @@ impl dream_core_conversation::SendGate for EnterpriseSendGate {
         user_id: &str,
         model: Option<&str>,
     ) -> Result<(), dream_core_conversation::PolicyDenial> {
+        dream_core_auth::middleware::check_directory_identity(self.directory_identity.as_deref(), user_id)
+            .await
+            .map_err(|error| {
+                dream_core_conversation::PolicyDenial::new("DIRECTORY_ACCOUNT_DISABLED", error.to_string())
+            })?;
         self.billing.check_send(user_id, model).await?;
         self.rate.check(user_id).await
     }
 
     async fn check_model(&self, user_id: &str, model: &str) -> Result<(), dream_core_conversation::PolicyDenial> {
+        dream_core_auth::middleware::check_directory_identity(self.directory_identity.as_deref(), user_id)
+            .await
+            .map_err(|error| {
+                dream_core_conversation::PolicyDenial::new("DIRECTORY_ACCOUNT_DISABLED", error.to_string())
+            })?;
         // Model-switch allowlisting only — the send-rate limit governs
         // sends, not config changes, same as billing's own budget check.
         self.billing.check_model(user_id, model).await
@@ -2138,6 +2245,8 @@ pub struct RouterRuntime {
     pub sso_service: Arc<dream_domain_sso::SsoService>,
     #[cfg(feature = "enterprise")]
     pub directory_sink: Arc<dyn dream_domain_sso::DirectorySink>,
+    #[cfg(feature = "enterprise")]
+    pub ldap_lifecycle: Arc<dyn dream_domain_sso::ldap_directory::LdapSessionRevoker>,
 }
 
 async fn forward_event_bus_to_websocket(
@@ -2402,6 +2511,8 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
             sso_service: directory_sso_service,
             #[cfg(feature = "enterprise")]
             directory_sink,
+            #[cfg(feature = "enterprise")]
+            ldap_lifecycle: ldap_identity_revoker(services),
         },
     ))
 }
@@ -2956,6 +3067,11 @@ pub(crate) fn build_governance_plane(
         org: one_org_service.clone(),
         devops: one_devops_service.clone(),
         enterprise: one_enterprise_service.clone(),
+    }))
+    .with_ldap_lifecycle(Arc::new(LdapIdentityRevoker {
+        org: one_org_service.clone(),
+        devops: one_devops_service.clone(),
+        platform: one_platform_service.clone(),
     }));
     let one_sso_public = dream_domain_sso::one_sso_public_routes(one_sso_state.clone())
         .merge(dream_domain_sso::scim_routes(one_sso_state.clone()));
@@ -3261,7 +3377,7 @@ pub async fn create_admin_router(services: &AppServices) -> Result<Router, Route
             platform: one_platform_service.clone(),
         }));
     let auth_mw_state = AuthState {
-        directory_identity: None,
+        directory_identity: directory_identity_gate(services),
         jwt_service: services.jwt_service.clone(),
         user_repo: services.user_repo.clone(),
         identity_mode: auth_identity_mode(services.identity_mode),
@@ -3401,7 +3517,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let login_risk: Option<std::sync::Arc<dyn LoginRiskGate>> = None;
 
     let auth_state = AuthRouterState {
-        directory_identity: None,
+        directory_identity: directory_identity_gate(services),
         mfa: Some(mfa_service.clone()),
         jwt_service: services.jwt_service.clone(),
         user_repo: services.user_repo.clone(),
@@ -3524,7 +3640,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let api_key_gate: Option<std::sync::Arc<dyn dream_core_auth::ApiKeyGate>> = None;
 
     let auth_mw_state = AuthState {
-        directory_identity: None,
+        directory_identity: directory_identity_gate(services),
         jwt_service: services.jwt_service.clone(),
         user_repo: services.user_repo.clone(),
         identity_mode: auth_identity_mode(services.identity_mode),
@@ -3623,8 +3739,10 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .conversation
         .service
         .with_send_gate(std::sync::Arc::new(EnterpriseSendGate {
+            directory_identity: directory_identity_gate(services),
             employee_runtime: services.employee_runtime.clone(),
             billing: BillingSendGate {
+                directory_identity: directory_identity_gate(services),
                 billing: one_billing_service.clone(),
                 grace: policy_grace.clone(),
             },
@@ -3671,6 +3789,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     }));
     #[cfg(feature = "enterprise")]
     let conversation_ops_state = conversation_ops_state.with_send_gate(std::sync::Arc::new(BillingSendGate {
+        directory_identity: directory_identity_gate(services),
         billing: one_billing_service.clone(),
         grace: policy_grace.clone(),
     }));
@@ -3865,9 +3984,14 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // into. Personal builds leave the slot empty and the proxy's tap stays a
     // pure pass-through.
     #[cfg(feature = "enterprise")]
-    let one_devops_state = one_devops_state.with_proxy_usage_recorder(std::sync::Arc::new(BillingProxyUsageRecorder(
-        one_billing_service.clone(),
-    )));
+    let one_devops_state = one_devops_state
+        .with_directory_identity(directory_identity_gate(services))
+        .with_proxy_usage_recorder(std::sync::Arc::new(BillingProxyUsageRecorder(
+            one_billing_service.clone(),
+        )))
+        .with_proxy_request_gate(std::sync::Arc::new(BillingProxyRequestGate(
+            one_billing_service.clone(),
+        )));
     #[cfg(feature = "enterprise")]
     let one_devops_state = super::knowledge_office::wire(one_devops_state, &auth_mw_state, &services.data_dir);
     let office_engine_public = dream_domain_devops::office_engine_routes(one_devops_state.clone());

@@ -13,12 +13,14 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, Request, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use dream_domain_devops::{DevopsService, OneDevopsRouterState, model_proxy_routes, run_one_devops_migrations};
 use tower::ServiceExt;
 
 const KEY: [u8; 32] = [9u8; 32];
 const COMPANY_SECRET: &str = "sk-company-credential";
+const TOOL_STREAM: &str = "event: content_block_delta\ndata: {\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\\\"上海\\\"}\"}\n\nevent: message_stop\ndata: {}\n\n";
 
 /// What the upstream saw, so a test can assert on it after the fact.
 #[derive(Default, Clone)]
@@ -26,6 +28,7 @@ struct Seen {
     path: String,
     authorization: String,
     x_api_key: String,
+    anthropic_version: String,
     body: String,
     custom_header: String,
     /// Whether any `x-dream-*` internal header reached the upstream (C1-4:
@@ -40,7 +43,7 @@ async fn spawn_upstream(seen: Arc<Mutex<Seen>>) -> SocketAddr {
         Path(path): Path<String>,
         headers: HeaderMap,
         body: String,
-    ) -> String {
+    ) -> Response {
         let mut slot = seen.lock().unwrap();
         slot.path = path;
         slot.authorization = headers
@@ -58,12 +61,21 @@ async fn spawn_upstream(seen: Arc<Mutex<Seen>>) -> SocketAddr {
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default()
             .to_owned();
+        slot.anthropic_version = headers
+            .get("anthropic-version")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
         slot.saw_x_dream_header = headers.contains_key("x-dream-conversation-id")
             || headers
                 .keys()
                 .any(|k| k.as_str().to_ascii_lowercase().starts_with("x-dream-"));
+        let stream = body.contains("\"stream\":true");
         slot.body = body;
-        "{\"ok\":true}".to_owned()
+        if stream {
+            return ([("content-type", "text/event-stream")], TOOL_STREAM).into_response();
+        }
+        "{\"ok\":true}".to_owned().into_response()
     }
 
     let app = Router::new().route("/{*path}", any(record)).with_state(seen);
@@ -108,6 +120,10 @@ async fn fixture() -> Fixture {
 }
 
 async fn fixture_with_platform(platform: &str) -> Fixture {
+    fixture_with_platform_and_base_path(platform, "").await
+}
+
+async fn fixture_with_platform_and_base_path(platform: &str, base_path: &str) -> Fixture {
     let seen = Arc::new(Mutex::new(Seen::default()));
     let addr = spawn_upstream(seen.clone()).await;
     let svc = service().await;
@@ -116,9 +132,9 @@ async fn fixture_with_platform(platform: &str) -> Fixture {
             None,
             "corp-gateway",
             platform,
-            &format!("http://{addr}"),
+            &format!("http://{addr}{base_path}"),
             Some(COMPANY_SECRET),
-            r#"["gpt-image-2"]"#,
+            r#"["gpt-image-2","claude"]"#,
             None,
             None,
             true,
@@ -139,6 +155,67 @@ async fn fixture_with_platform(platform: &str) -> Fixture {
         channel_id: channel.id,
         token,
     }
+}
+
+#[tokio::test]
+async fn anthropic_gateway_rejects_a_model_outside_its_channel_allowlist() {
+    let f = fixture_with_platform("anthropic").await;
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/one/model-proxy/{}/v1/messages", f.channel_id))
+        .header("x-api-key", &f.token)
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"model":"not-granted-claude","messages":[]}"#))
+        .unwrap();
+    let response = f.app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(f.seen.lock().unwrap().body.is_empty());
+}
+
+#[tokio::test]
+async fn custom_anthropic_gateway_preserves_streamed_tool_json_and_content_type() {
+    let f = fixture_with_platform_and_base_path("anthropic", "/tenant-api/v1").await;
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/one/model-proxy/{}/v1/messages", f.channel_id))
+        .header("x-api-key", &f.token)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"model":"gpt-image-2","stream":true,"tools":[{"name":"weather","input_schema":{"type":"object"}}]}"#,
+        ))
+        .unwrap();
+    let response = f.app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+    assert_eq!(&bytes[..], TOOL_STREAM.as_bytes());
+    let seen = f.seen.lock().unwrap();
+    assert_eq!(seen.path, "tenant-api/v1/messages");
+    assert!(seen.body.contains("input_schema"));
+    assert_eq!(seen.x_api_key, COMPANY_SECRET);
+    assert_eq!(seen.anthropic_version, "2023-06-01");
+    assert!(seen.authorization.is_empty());
+}
+
+#[tokio::test]
+async fn versioned_custom_gateway_routes_media_tasks_without_an_extra_v1() {
+    let f = fixture_with_platform_and_base_path("custom", "/api/v3").await;
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/one/model-proxy/{}/v1/contents/generations/tasks",
+            f.channel_id
+        ))
+        .header("authorization", format!("Bearer {}", f.token))
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"model":"gpt-image-2","content":[]}"#))
+        .unwrap();
+    let response = f.app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let seen = f.seen.lock().unwrap();
+    assert_eq!(seen.path, "api/v3/contents/generations/tasks");
+    assert_eq!(seen.authorization, format!("Bearer {COMPANY_SECRET}"));
 }
 
 /// The core bet: whatever path the caller appends to the proxy base URL arrives
@@ -369,4 +446,42 @@ async fn a_channel_with_no_model_list_still_forwards_anything() {
 
     assert_eq!(response.status(), 200);
     assert_eq!(seen.lock().unwrap().body, r#"{"model":"anything-at-all"}"#);
+}
+
+struct DisabledDirectoryIdentity;
+#[async_trait::async_trait]
+impl dream_core_auth::middleware::DirectoryIdentityGate for DisabledDirectoryIdentity {
+    async fn is_allowed(&self, _: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+}
+
+#[tokio::test]
+async fn disabled_directory_blocks_model_discovery_and_inference_with_valid_channel_key() {
+    let f = fixture_with_platform("custom").await;
+    let app = model_proxy_routes(
+        OneDevopsRouterState::new(f.svc.clone()).with_directory_identity(Some(Arc::new(DisabledDirectoryIdentity))),
+    );
+    for (method, path) in [("GET", "v1/models"), ("POST", "v1/chat/completions")] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(format!("/api/one/model-proxy/{}/{path}", f.channel_id))
+                    .header("Authorization", format!("Bearer {}", f.token))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"gpt-image-2","messages":[]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{method} {path}");
+        let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("DIRECTORY_ACCOUNT_DISABLED"));
+    }
+    assert!(
+        f.seen.lock().unwrap().path.is_empty(),
+        "disabled identity must never reach upstream"
+    );
 }

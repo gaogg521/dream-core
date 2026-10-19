@@ -14,6 +14,9 @@ pub enum SsoError {
     #[error("SSO provider disabled: {0}")]
     ProviderDisabled(String),
 
+    #[error("Identity provider temporarily unavailable; contact your administrator")]
+    ProviderUnavailable,
+
     #[error("Invalid OAuth state")]
     InvalidState,
 
@@ -53,6 +56,7 @@ impl SsoError {
         match self {
             Self::ProviderNotConfigured(_) => "SSO_PROVIDER_NOT_CONFIGURED",
             Self::ProviderDisabled(_) => "SSO_PROVIDER_DISABLED",
+            Self::ProviderUnavailable => "SSO_PROVIDER_UNAVAILABLE",
             Self::InvalidState => "SSO_INVALID_STATE",
             Self::MissingCode => "SSO_MISSING_CODE",
             Self::IdentityMissing => "SSO_IDENTITY_MISSING",
@@ -77,6 +81,7 @@ impl SsoError {
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::MfaSelfNotEnrolled(_) => StatusCode::CONFLICT,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::ProviderUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
 }
@@ -122,5 +127,21 @@ impl From<dream_core_auth::AuthError> for SsoError {
 impl From<reqwest::Error> for SsoError {
     fn from(e: reqwest::Error) -> Self {
         Self::Internal(format!("http error: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod provider_error_tests {
+    use super::*;
+
+    #[test]
+    fn directory_service_failure_is_distinct_from_invalid_user_credentials() {
+        let service = SsoError::ProviderUnavailable;
+        assert_eq!(service.code(), "SSO_PROVIDER_UNAVAILABLE");
+        assert_eq!(service.into_response().status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            SsoError::InvalidCredentials.into_response().status(),
+            StatusCode::UNAUTHORIZED
+        );
     }
 }

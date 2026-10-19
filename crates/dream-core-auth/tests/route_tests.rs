@@ -175,6 +175,48 @@ fn json_post_with_token(uri: &str, body: &str, token: &str) -> Request<Body> {
         .unwrap()
 }
 
+#[tokio::test]
+async fn sso_only_account_rejects_local_password_login_and_change() {
+    let (app, ctx) = test_app().await;
+    create_test_user(&ctx, "sso-only", "OriginalPass!2026").await;
+    let user = ctx.user_repo.find_by_username("sso-only").await.unwrap().unwrap();
+    sqlx::query("UPDATE users SET sso_only = 1, sso_provider = 'wecom' WHERE id = ?")
+        .bind(&user.id)
+        .execute(ctx._db.pool())
+        .await
+        .unwrap();
+    let response = app
+        .clone()
+        .oneshot(json_post(
+            "/login",
+            r#"{"username":"sso-only","password":"OriginalPass!2026"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let token = ctx
+        .jwt_service
+        .sign_with_session_generation(&user.id, "sso-only", user.session_generation)
+        .unwrap();
+    let response = app
+        .clone()
+        .oneshot(json_post_with_token(
+            "/api/auth/change-password",
+            r#"{"current_password":"OriginalPass!2026","new_password":"DifferentPass!2026"}"#,
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = app.oneshot(get_with_token("/api/auth/user", &token)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["user"]["canChangePassword"], false);
+    let after = ctx.user_repo.find_by_id(&user.id).await.unwrap().unwrap();
+    assert_eq!(after.password_hash, user.password_hash);
+    assert_eq!(after.last_login, None);
+}
+
 /// Helper: perform a GET request with auth token.
 fn get_with_token(uri: &str, token: &str) -> Request<Body> {
     Request::builder()
@@ -183,6 +225,124 @@ fn get_with_token(uri: &str, token: &str) -> Request<Body> {
         .header("authorization", format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap()
+}
+
+#[tokio::test]
+async fn every_authenticated_user_can_read_only_their_own_login_history() {
+    let (app, ctx) = test_app().await;
+    create_test_user(&ctx, "audit-self", "OriginalPass!2026").await;
+    create_test_user(&ctx, "audit-other", "OriginalPass!2026").await;
+    let own = ctx.user_repo.find_by_username("audit-self").await.unwrap().unwrap();
+    let other = ctx.user_repo.find_by_username("audit-other").await.unwrap().unwrap();
+    ctx.user_repo
+        .record_login_context(&own.id, "wecom", "web", Some("192.0.2.1"), Some("Chrome"))
+        .await
+        .unwrap();
+    ctx.user_repo
+        .record_login_context(&other.id, "dingtalk", "desktop", Some("192.0.2.2"), Some("Edge"))
+        .await
+        .unwrap();
+    let token = ctx
+        .jwt_service
+        .sign_with_session_generation(&own.id, "audit-self", own.session_generation)
+        .unwrap();
+    let response = app
+        .clone()
+        .oneshot(get_with_token(
+            &format!("/api/auth/login-history?userId={}", other.id),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let rows = json["data"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["userId"], own.id);
+    assert_eq!(rows[0]["ip"], "192.0.2.1");
+    let response = app.oneshot(get_anonymous("/api/auth/login-history")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn login_cannot_report_success_without_a_persisted_audit_event() {
+    let (app, ctx) = test_app().await;
+    create_test_user(&ctx, "audit-failure", "OriginalPass!2026").await;
+    let user = ctx.user_repo.find_by_username("audit-failure").await.unwrap().unwrap();
+    sqlx::query("CREATE TRIGGER reject_login_event BEFORE INSERT ON user_login_events BEGIN SELECT RAISE(ABORT, 'test audit unavailable'); END")
+        .execute(ctx._db.pool()).await.unwrap();
+    let response = app
+        .oneshot(json_post(
+            "/login",
+            r#"{"username":"audit-failure","password":"OriginalPass!2026"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(response.headers().get(header::SET_COOKIE).is_none());
+    assert!(
+        ctx.user_repo
+            .find_by_id(&user.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .last_login
+            .is_none()
+    );
+    assert!(ctx.user_repo.list_login_events(&user.id, 100).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn sso_mfa_completion_keeps_provider_and_desktop_source_in_audit() {
+    let (app, ctx) = test_app_with_mfa_options(false, None, false, None, true).await;
+    create_test_user(&ctx, "mfa-sso-member", "OriginalPass!2026").await;
+    let user = ctx.user_repo.find_by_username("mfa-sso-member").await.unwrap().unwrap();
+    sqlx::query("UPDATE users SET sso_only = 1, sso_provider = 'wecom' WHERE id = ?")
+        .bind(&user.id)
+        .execute(ctx._db.pool())
+        .await
+        .unwrap();
+    let mfa = dream_core_auth::mfa::MfaService::new(
+        ctx.user_repo.clone(),
+        Arc::new(dream_core_db::SqliteMfaStore::new(ctx._db.pool().clone())),
+        [9u8; 32],
+    );
+    let (token, _, _) = mfa
+        .create_challenge_for_user(
+            &user.id,
+            "mfa-sso-member",
+            dream_core_db::MfaChallengePurpose::Enroll,
+            None,
+            None,
+            true,
+            Some("dream-dev"),
+        )
+        .await
+        .unwrap();
+    mfa.set_login_source(&token, "wecom").await.unwrap();
+    assert!(ctx.user_repo.list_login_events(&user.id, 100).await.unwrap().is_empty());
+    let info = body_json(
+        app.clone()
+            .oneshot(get_anonymous(&format!("/api/auth/mfa/enroll-info?mfa_token={token}")))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let code = dream_core_auth::totp::totp_code(info["secret"].as_str().unwrap(), dream_core_common::now_ms()).unwrap();
+    let response = app
+        .oneshot(json_post(
+            "/api/auth/mfa/verify",
+            &serde_json::json!({"mfa_token":token, "code":code}).to_string(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["user"]["canChangePassword"], false);
+    let events = ctx.user_repo.list_login_events(&user.id, 100).await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].method, "wecom");
+    assert_eq!(events[0].client, "desktop");
 }
 
 /// Helper: perform a GET request without auth.
@@ -218,6 +378,15 @@ async fn mfa_http_enrollment_issues_session_once_and_preserves_password_change_f
     assert!(response.headers().get(header::SET_COOKIE).is_none());
     let challenge = body_json(response).await;
     assert_eq!(challenge["purpose"], "enroll");
+    assert!(
+        ctx.user_repo
+            .find_by_id(&user.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .last_login
+            .is_none()
+    );
     assert!(challenge.get("token").is_none());
     let token = challenge["mfa_token"].as_str().unwrap();
     let response = app
@@ -238,6 +407,14 @@ async fn mfa_http_enrollment_issues_session_once_and_preserves_password_change_f
     assert!(response.headers().get(header::SET_COOKIE).is_some());
     let login = body_json(response).await;
     assert_eq!(login["user"]["mustChangePassword"], true);
+    let (time, method): (Option<i64>, Option<String>) =
+        sqlx::query_as("SELECT last_login, last_login_method FROM users WHERE id = ?")
+            .bind(&user.id)
+            .fetch_one(ctx._db.pool())
+            .await
+            .unwrap();
+    assert!(time.is_some());
+    assert_eq!(method.as_deref(), Some("password"));
     let response = app
         .clone()
         .oneshot(json_post("/api/auth/mfa/verify", &payload))

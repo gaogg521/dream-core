@@ -49,6 +49,7 @@ fn login_response_serialization_matches_spec() {
             id: "auth_1712345678_abc".into(),
             username: "admin".into(),
             must_change_password: false,
+            can_change_password: true,
         },
         "eyJhbGciOiJIUzI1NiJ9".into(),
     );

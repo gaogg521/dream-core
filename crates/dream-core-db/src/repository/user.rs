@@ -1,6 +1,17 @@
 use crate::error::DbError;
 use crate::models::{ExternalUserProjection, User, UserStatus, UserType};
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct UserLoginEvent {
+    pub id: String,
+    pub user_id: String,
+    pub method: String,
+    pub client: String,
+    pub ip: Option<String>,
+    pub user_agent: Option<String>,
+    pub created_at: i64,
+}
+
 /// User data access abstraction.
 ///
 /// All methods return `Result<_, DbError>` so callers can map database
@@ -117,6 +128,28 @@ pub trait IUserRepository: Send + Sync {
 
     /// Updates a user's last login timestamp to the current time.
     async fn update_last_login(&self, user_id: &str) -> Result<(), DbError>;
+
+    /// True when authentication is managed by an external identity provider.
+    async fn is_sso_only(&self, _user_id: &str) -> Result<bool, DbError> {
+        Ok(false)
+    }
+
+    async fn list_login_events(&self, _user_id: &str, _limit: i64) -> Result<Vec<UserLoginEvent>, DbError> {
+        Ok(Vec::new())
+    }
+
+    /// Called only after all authentication factors succeed. Standalone mock
+    /// repositories retain timestamp-only behaviour by default.
+    async fn record_login_context(
+        &self,
+        user_id: &str,
+        _method: &str,
+        _client: &str,
+        _ip: Option<&str>,
+        _user_agent: Option<&str>,
+    ) -> Result<(), DbError> {
+        self.update_last_login(user_id).await
+    }
 
     /// Updates a user's JWT secret.
     async fn update_jwt_secret(&self, user_id: &str, jwt_secret: &str) -> Result<(), DbError>;

@@ -77,7 +77,7 @@ pub use repository::{
     SqliteCodexBridgeConfigRepository, SqliteConversationRepository, SqliteCronRepository,
     SqliteFeedbackDiagnosticsRepository, SqliteMcpServerRepository, SqliteOAuthTokenRepository, SqliteProjectStore,
     SqliteProviderRepository, SqliteRemoteAgentRepository, SqliteSettingsRepository, SqliteSkillRepository,
-    SqliteTeamRepository, SqliteUserRepository, SqliteWebuiDeviceRepository, WebuiDeviceSession,
+    SqliteTeamRepository, SqliteUserRepository, SqliteWebuiDeviceRepository, UserLoginEvent, WebuiDeviceSession,
 };
 
 // Re-export sqlx pool type for downstream crates

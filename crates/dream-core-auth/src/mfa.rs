@@ -97,6 +97,26 @@ impl From<DbError> for MfaError {
 }
 
 impl MfaService {
+    pub async fn set_login_source(&self, token: &str, method: &str) -> Result<(), MfaError> {
+        self.store
+            .challenge_set_auth_method(&sha256_hex(token.as_bytes()), method)
+            .await?;
+        Ok(())
+    }
+    pub async fn login_source(&self, token: &str) -> Result<(String, bool), MfaError> {
+        let hash = sha256_hex(token.as_bytes());
+        let desktop = self
+            .store
+            .challenge_get(&hash)
+            .await?
+            .is_some_and(|challenge| challenge.desktop);
+        let method = self
+            .store
+            .challenge_auth_method(&hash)
+            .await?
+            .unwrap_or_else(|| "mfa".into());
+        Ok((method, desktop))
+    }
     pub fn new(user_repo: Arc<dyn IUserRepository>, store: Arc<dyn MfaStore>, encryption_key: [u8; 32]) -> Self {
         Self {
             user_repo,

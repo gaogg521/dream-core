@@ -13,6 +13,26 @@ pub struct PublicUser {
     /// field). The client should route to a mandatory change-password screen
     /// while this is true instead of the normal app shell.
     pub must_change_password: bool,
+    /// False for accounts whose credentials are managed by an SSO provider.
+    #[serde(default = "password_change_allowed")]
+    pub can_change_password: bool,
+}
+
+fn password_change_allowed() -> bool {
+    true
+}
+
+/// A completed authentication event; never includes credentials or tokens.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginAuditEvent {
+    pub id: String,
+    pub user_id: String,
+    pub method: String,
+    pub client: String,
+    pub ip: Option<String>,
+    pub user_agent: Option<String>,
+    pub created_at: i64,
 }
 
 /// Login request body for `POST /login`.
@@ -226,6 +246,7 @@ mod tests {
             id: "auth_1712345678_abc".into(),
             username: "admin".into(),
             must_change_password: false,
+            can_change_password: true,
         };
         let json = serde_json::to_value(&user).unwrap();
         assert_eq!(json["id"], "auth_1712345678_abc");
@@ -254,6 +275,7 @@ mod tests {
             id: "user_1".into(),
             username: "admin".into(),
             must_change_password: false,
+            can_change_password: true,
         };
         let resp = LoginResponse::new(user.clone(), "jwt_token".into());
         assert!(resp.success);
@@ -269,6 +291,7 @@ mod tests {
                 id: "auth_123".into(),
                 username: "admin".into(),
                 must_change_password: false,
+                can_change_password: true,
             },
             "eyJhbGciOi".into(),
         );

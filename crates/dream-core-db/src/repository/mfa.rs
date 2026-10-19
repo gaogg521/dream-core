@@ -117,6 +117,12 @@ pub trait MfaStore: Send + Sync {
 
     /// Returns the challenge if it exists and has not been consumed.
     async fn challenge_get(&self, token_hash: &str) -> Result<Option<MfaChallengeRow>, DbError>;
+    async fn challenge_set_auth_method(&self, _token_hash: &str, _method: &str) -> Result<(), DbError> {
+        Ok(())
+    }
+    async fn challenge_auth_method(&self, _token_hash: &str) -> Result<Option<String>, DbError> {
+        Ok(None)
+    }
 
     /// Bumps the failure counter; flips `used` once the limit is reached.
     async fn challenge_fail(&self, token_hash: &str) -> Result<AttemptBump, DbError>;
@@ -237,6 +243,24 @@ impl MfaStore for SqliteMfaStore {
         .execute(&self.pool)
         .await?;
         Ok(now + ttl_ms)
+    }
+
+    async fn challenge_set_auth_method(&self, token_hash: &str, method: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE mfa_challenges SET auth_method = ? WHERE token_hash = ? AND used = 0")
+            .bind(method)
+            .bind(token_hash)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+    async fn challenge_auth_method(&self, token_hash: &str) -> Result<Option<String>, DbError> {
+        Ok(
+            sqlx::query_scalar::<_, Option<String>>("SELECT auth_method FROM mfa_challenges WHERE token_hash = ?")
+                .bind(token_hash)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten(),
+        )
     }
 
     async fn challenge_get(&self, token_hash: &str) -> Result<Option<MfaChallengeRow>, DbError> {

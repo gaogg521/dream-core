@@ -336,8 +336,8 @@ impl OrgService {
         Ok(row)
     }
 
-    /// Invalidate the user's sessions by rotating their per-user JWT secret.
-    /// Rotating the secret kills every session. It does **not** touch
+    /// Invalidate sessions by advancing the generation checked by auth middleware
+    /// and rotating the legacy per-user JWT secret. This does **not** touch
     /// credentials that are meant to outlive a session, so those are revoked
     /// here too — otherwise a removed member would keep a working key to the
     /// company's models, which is exactly what channel provisioning exists to
@@ -347,6 +347,22 @@ impl OrgService {
     /// must cut off the same credentials; one-enterprise reaches this through
     /// its own `SessionRevoker` trait, wired in dream-app.
     pub async fn invalidate_user_tokens(&self, user_id: &str) -> Result<(), OrgError> {
+        let secret = generate_random_secret_string();
+        let changed = self.db.execute(
+            "UPDATE users SET jwt_secret = ?, session_generation = session_generation + 1, updated_at = ? WHERE id = ?",
+            &db_params![&secret, now_ms() as i64, user_id],
+        ).await?;
+        if changed == 0 {
+            return Err(OrgError::BadRequest("成员账号不存在".into()));
+        }
+        self.credential_revoker.revoke_for_user(user_id).await;
+        tracing::info!(user_id, "enterprise user sessions and channel credentials invalidated");
+        Ok(())
+    }
+
+    /// Adding membership changes channel permissions but must not log out the
+    /// caller: join/create endpoints do not issue a replacement session token.
+    async fn refresh_membership_credentials(&self, user_id: &str) -> Result<(), OrgError> {
         let secret = generate_random_secret_string();
         self.user_repo.update_jwt_secret(user_id, &secret).await?;
         self.credential_revoker.revoke_for_user(user_id).await;
@@ -598,7 +614,7 @@ impl OrgService {
             .await?;
         tx.commit().await?;
 
-        self.invalidate_user_tokens(user_id).await?;
+        self.refresh_membership_credentials(user_id).await?;
         let username = self.lookup_username(user_id).await;
         self.audit(
             &invite.tenant_id,
@@ -730,7 +746,7 @@ impl OrgService {
             .await?;
         tx.commit().await?;
 
-        self.invalidate_user_tokens(user_id).await?;
+        self.refresh_membership_credentials(user_id).await?;
         let username = self.lookup_username(user_id).await;
         self.audit(
             &tenant_id,
@@ -890,7 +906,7 @@ impl OrgService {
 
         // The session was minted before this row existed, so its cached
         // membership is now stale — same reason `auto_join_by_email` does it.
-        self.invalidate_user_tokens(user_id).await?;
+        self.refresh_membership_credentials(user_id).await?;
         let username = self.lookup_username(user_id).await;
         self.audit(
             &tenant_id,
@@ -927,6 +943,7 @@ impl OrgService {
     /// only when — the directory places them inside the tenant they already
     /// belong to.
     ///
+    /// Missing/unmapped directory information preserves the local assignment.
     /// A directory that now maps them into a *different* tenant is deliberately
     /// ignored: acting on it would be the re-filing this hook promises never to
     /// do. Their department is cleared in that case rather than left pointing
@@ -953,6 +970,9 @@ impl OrgService {
             Some(dept) => self.resolve_mapped_department(dept, all_departments).await?,
             None => None,
         };
+        // A profile-only login (WeCom/DingTalk/LDAP, or unavailable directory
+        // data) is not evidence that an admin's department assignment changed.
+        let has_department_mapping = placement.is_some();
         let department_id = match placement {
             Some((tenant_id, department_id)) if tenant_id == current_tenant => Some(department_id),
             _ => None,
@@ -971,8 +991,9 @@ impl OrgService {
         let now = now_ms() as i64;
         self.db
             .execute(
-                "UPDATE one_user_org SET department_id = ?, display_name = COALESCE(?, display_name),                  org_unit_path = COALESCE(?, org_unit_path), job_title = COALESCE(?, job_title),                  org_profile_source = COALESCE(?, org_profile_source), org_profile_synced_at = ?, updated_at = ?                  WHERE user_id = ? AND tenant_id = ?",
+                "UPDATE one_user_org SET department_id = CASE WHEN ? THEN ? ELSE department_id END, display_name = COALESCE(?, display_name),                  org_unit_path = COALESCE(?, org_unit_path), job_title = COALESCE(?, job_title),                  org_profile_source = COALESCE(?, org_profile_source), org_profile_synced_at = ?, updated_at = ?                  WHERE user_id = ? AND tenant_id = ?",
                 &db_params![
+                    has_department_mapping,
                     department_id.as_deref(),
                     display_name.as_deref(),
                     org_unit_path.as_deref(),
@@ -1448,7 +1469,7 @@ impl OrgService {
             .await?;
         tx.commit().await?;
 
-        self.invalidate_user_tokens(user_id).await?;
+        self.refresh_membership_credentials(user_id).await?;
         let username = self.lookup_username(user_id).await;
         self.audit(
             &tenant_id,
@@ -2473,7 +2494,9 @@ impl OrgService {
             .db
             .fetch_all_as::<AdminUserDto>(
                 "SELECT uo.user_id, u.username, uo.tenant_id, uo.role, uo.display_name, uo.org_unit_path, \
-                    uo.job_title, uo.department_id, u.last_login, uo.created_at \
+                    uo.job_title, uo.department_id, u.last_login, uo.created_at, \
+                    COALESCE(u.sso_provider, CASE WHEN u.user_type = 'local' AND u.sso_only = 0 THEN 'password' ELSE 'external' END) AS auth_provider, (u.user_type = 'local' AND u.sso_only = 0) AS can_reset_password, \
+                    u.last_login_method, u.last_login_client, u.last_login_ip, u.last_login_user_agent \
              FROM one_user_org uo \
              JOIN users u ON u.id = uo.user_id \
              WHERE uo.tenant_id = ? \
@@ -2481,6 +2504,44 @@ impl OrgService {
                 &db_params![tenant_id],
             )
             .await?;
+        Ok(rows)
+    }
+
+    pub async fn member_login_history(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+    ) -> Result<Vec<dream_core_api_types::LoginAuditEvent>, OrgError> {
+        let exists: i64 = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_user_org WHERE tenant_id = ? AND user_id = ?",
+                &db_params![tenant_id, user_id],
+            )
+            .await?;
+        if exists == 0 {
+            return Err(OrgError::BadRequest("成员不存在或不属于当前项目组".into()));
+        }
+        Ok(self
+            .user_repo
+            .list_login_events(user_id, 100)
+            .await?
+            .into_iter()
+            .map(dream_core_auth::login_audit_event)
+            .collect())
+    }
+
+    /// Member-facing roster excludes other users' login diagnostics. A member
+    /// can always inspect their own history through /api/auth/login-history.
+    pub async fn list_members(&self, tenant_id: &str) -> Result<Vec<AdminUserDto>, OrgError> {
+        let mut rows = self.list_users(tenant_id).await?;
+        for row in &mut rows {
+            row.can_reset_password = false;
+            row.last_login_ip = None;
+            row.last_login_user_agent = None;
+            row.last_login_client = None;
+            row.last_login_method = None;
+        }
         Ok(rows)
     }
 
@@ -2581,6 +2642,12 @@ impl OrgService {
             job_title: None,
             department_id: None,
             last_login: None,
+            auth_provider: None,
+            can_reset_password: true,
+            last_login_method: None,
+            last_login_client: None,
+            last_login_ip: None,
+            last_login_user_agent: None,
             created_at: now,
         })
     }
@@ -2649,18 +2716,18 @@ impl OrgService {
             ));
         }
 
-        let target: Option<(String, String)> = self
+        let target: Option<(String, String, bool)> = self
             .db
             .fetch_optional_as(
-                "SELECT uo.role, u.user_type FROM one_user_org uo JOIN users u ON u.id = uo.user_id \
+                "SELECT uo.role, u.user_type, u.sso_only FROM one_user_org uo JOIN users u ON u.id = uo.user_id \
                  WHERE uo.tenant_id = ? AND uo.user_id = ?",
                 &db_params![tenant_id, target_user_id],
             )
             .await?;
-        let Some((_target_role, user_type)) = target else {
+        let Some((_target_role, user_type, sso_only)) = target else {
             return Err(OrgError::BadRequest("成员不存在或不属于当前项目组".into()));
         };
-        if user_type != "local" {
+        if user_type != "local" || sso_only {
             return Err(OrgError::BadRequest(
                 "该成员使用企业身份登录，请在身份提供方重置密码".into(),
             ));
@@ -3526,6 +3593,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invalidating_membership_sessions_advances_the_auth_generation() {
+        let (_db, service, repo) = setup().await;
+        let user_id = create_user(&repo, "revoke-generation").await;
+        let before = repo.find_by_id(&user_id).await.unwrap().unwrap();
+        service.invalidate_user_tokens(&user_id).await.unwrap();
+        let after = repo.find_by_id(&user_id).await.unwrap().unwrap();
+        assert_eq!(after.session_generation, before.session_generation + 1);
+        assert_ne!(after.jwt_secret, before.jwt_secret);
+    }
+
+    #[tokio::test]
+    async fn creating_a_project_group_preserves_the_callers_session_generation() {
+        let (db, service, repo) = setup().await;
+        let user_id = create_user(&repo, "join-generation").await;
+        sqlx::query(
+            "INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) VALUES (?, ?, ?, 0, 0)",
+        )
+        .bind(&user_id)
+        .bind(DEFAULT_TENANT_ID)
+        .bind(ROLE_SYSTEM_ADMIN)
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let before = repo.find_by_id(&user_id).await.unwrap().unwrap();
+        service.create_tenant(&user_id, "New group").await.unwrap();
+        let after = repo.find_by_id(&user_id).await.unwrap().unwrap();
+        assert_eq!(after.session_generation, before.session_generation);
+    }
+
+    #[tokio::test]
     async fn auditor_http_reads_are_tenant_scoped_and_do_not_grant_admin_access() {
         use axum::{
             Extension,
@@ -3720,6 +3817,73 @@ mod tests {
             .expect("password reset audit entry");
         assert_eq!(reset.user_id.as_deref(), Some(SYSTEM_DEFAULT_USER_ID));
         assert_eq!(reset.resource.as_deref(), Some(member.user_id.as_str()));
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn sso_member_password_reset_is_rejected_without_changing_credentials() {
+        let (db, service, user_repo) = setup().await;
+        let (tenant, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Company").await.unwrap();
+        let member = service
+            .admin_create_member(&tenant, "sso-member", "OriginalPass!2026", Some("姓名"))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE users SET sso_only = 1, sso_provider = 'wecom' WHERE id = ?")
+            .bind(&member.user_id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let before = user_repo.find_by_id(&member.user_id).await.unwrap().unwrap();
+        let error = service
+            .admin_reset_user_password(
+                &tenant,
+                SYSTEM_DEFAULT_USER_ID,
+                "admin",
+                ROLE_SYSTEM_ADMIN,
+                &member.user_id,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "BAD_REQUEST");
+        assert!(error.to_string().contains("身份提供方"));
+        let after = user_repo.find_by_id(&member.user_id).await.unwrap().unwrap();
+        assert_eq!(after.password_hash, before.password_hash);
+        assert_eq!(after.session_generation, before.session_generation);
+        let row = service
+            .list_users(&tenant)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.user_id == member.user_id)
+            .unwrap();
+        assert!(!row.can_reset_password);
+        assert_eq!(row.auth_provider.as_deref(), Some("wecom"));
+        user_repo
+            .record_login_context(&member.user_id, "wecom", "web", Some("192.0.2.4"), Some("Chrome"))
+            .await
+            .unwrap();
+        let public_row = service
+            .list_members(&tenant)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.user_id == member.user_id)
+            .unwrap();
+        assert_eq!(public_row.last_login_ip, None);
+        assert_eq!(public_row.last_login_user_agent, None);
+        assert_eq!(public_row.last_login_client, None);
+        assert!(!public_row.can_reset_password);
+        let history = service.member_login_history(&tenant, &member.user_id).await.unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].ip.as_deref(), Some("192.0.2.4"));
+        assert_eq!(
+            service
+                .member_login_history("unrelated-tenant", &member.user_id)
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
         db.close().await;
     }
 
@@ -4938,6 +5102,43 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn profile_only_sso_login_preserves_local_department_for_all_providers() {
+        let (db, service, user_repo) = setup().await;
+        let (tenant, _, invite) = service
+            .create_tenant_for_enterprise("ent_profile", "Company", SYSTEM_DEFAULT_USER_ID, None)
+            .await
+            .unwrap();
+        let dept = service
+            .create_department(&tenant, "Manual department", None)
+            .await
+            .unwrap();
+        for provider in ["wecom", "dingtalk", "feishu", "ldap"] {
+            let user = create_user(&user_repo, provider).await;
+            service.join_with_invite(&user, &invite).await.unwrap();
+            service
+                .assign_member_department(&tenant, &user, Some(&dept.id))
+                .await
+                .unwrap();
+            seed_sso_identity(db.pool(), &user, "真实姓名", "Remote department", "Director").await;
+            sqlx::query("UPDATE one_sso_identities SET provider = ? WHERE user_id = ?")
+                .bind(provider)
+                .bind(&user)
+                .execute(db.pool())
+                .await
+                .unwrap();
+            for external in [None, Some("unmapped-department")] {
+                service.auto_join_after_sso(&user, external, &[]).await.unwrap();
+                let (department, name, title): (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+                    "SELECT department_id, display_name, job_title FROM one_user_org WHERE user_id = ? AND tenant_id = ?"
+                ).bind(&user).bind(&tenant).fetch_one(db.pool()).await.unwrap();
+                assert_eq!(department.as_deref(), Some(dept.id.as_str()), "{provider}");
+                assert_eq!(name.as_deref(), Some("真实姓名"));
+                assert_eq!(title.as_deref(), Some("Director"));
+            }
+        }
     }
 
     /// Personal edition (no membership row) reports everything empty — the

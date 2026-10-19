@@ -461,6 +461,7 @@ pub fn auth_routes(state: AuthRouterState) -> Router {
     let authenticated = Router::new()
         .route("/logout", post(logout_handler))
         .route("/api/auth/user", get(user_handler))
+        .route("/api/auth/login-history", get(login_history_handler))
         .route("/api/auth/devices", get(list_devices_handler))
         .route("/api/auth/devices/{device_id}/revoke", post(revoke_device_handler))
         .route("/api/auth/change-password", post(change_password_handler))
@@ -671,6 +672,18 @@ async fn login_handler(
         .await
         .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?;
 
+    let user = match user {
+        Some(user)
+            if state
+                .user_repo
+                .is_sso_only(&user.id)
+                .await
+                .map_err(db_error_to_api_error)? =>
+        {
+            None
+        }
+        other => other,
+    };
     let (found_user, password_valid) = match user {
         Some(u) if u.password_hash.as_deref().unwrap_or_default().trim().is_empty() => {
             // Seeded user with no password yet (first-run local mode).
@@ -717,6 +730,9 @@ async fn login_handler(
                 .create_challenge(&user, purpose, Some(ip.as_str()), None, false, None)
                 .await
                 .map_err(|e| ApiError::BadRequest(e.message()))?;
+            mfa.set_login_source(&mfa_token, "password")
+                .await
+                .map_err(|e| ApiError::Internal(e.message()))?;
             return Ok(Json(MfaChallengeResponse {
                 success: true,
                 mfa_required: true,
@@ -738,16 +754,14 @@ async fn login_handler(
     )
     .await?;
 
-    // Update last login (best-effort)
-    if let Err(e) = state.user_repo.update_last_login(&user.id).await {
-        tracing::warn!("Failed to update last login for {}: {e}", user.id);
-    }
+    record_completed_login(&state, &user.id, "password", "web", &headers).await?;
 
     let resp = LoginResponse::new(
         PublicUser {
             id: user.id,
             username: user.username.unwrap_or_else(|| "external_user".to_string()),
             must_change_password: user.must_change_password,
+            can_change_password: true,
         },
         token,
     );
@@ -812,6 +826,24 @@ fn client_ip(headers: &HeaderMap) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+async fn record_completed_login(
+    state: &AuthRouterState,
+    user_id: &str,
+    method: &str,
+    client: &str,
+    headers: &HeaderMap,
+) -> Result<(), ApiError> {
+    let (ip, user_agent) = crate::login_request_metadata(headers);
+    state
+        .user_repo
+        .record_login_context(user_id, method, client, ip.as_deref(), user_agent.as_deref())
+        .await
+        .map_err(|error| {
+            tracing::error!(user_id, method, %error, "login audit write failed");
+            ApiError::Internal("无法写入登录审计，请稍后重新登录".into())
+        })
+}
+
 async fn mfa_verify_handler(
     State(state): State<AuthRouterState>,
     headers: HeaderMap,
@@ -822,6 +854,10 @@ async fn mfa_verify_handler(
     };
     let Json(req) = body.map_err(ApiError::from)?;
     let ip = client_ip(&headers);
+    let (login_method, desktop) = mfa
+        .login_source(&req.mfa_token)
+        .await
+        .map_err(|e| ApiError::Internal(e.message()))?;
     let user = match mfa.verify(&req.mfa_token, &req.code, Some(ip.as_str())).await {
         Ok(Ok((user_id, username, _enrolled, generation))) => (user_id, username, generation),
         Ok(Err((message, attempts_left))) => {
@@ -864,11 +900,25 @@ async fn mfa_verify_handler(
         Some("MFA 浏览器登录".to_string()),
     )
     .await?;
+    record_completed_login(
+        &state,
+        &user.0,
+        &login_method,
+        if desktop { "desktop" } else { "web" },
+        &headers,
+    )
+    .await?;
+    let can_change_password = !state
+        .user_repo
+        .is_sso_only(&user.0)
+        .await
+        .map_err(db_error_to_api_error)?;
     let resp = LoginResponse::new(
         PublicUser {
             id: user.0,
             username: user.1,
-            must_change_password: current.must_change_password,
+            must_change_password: current.must_change_password && can_change_password,
+            can_change_password,
         },
         token,
     );
@@ -1147,6 +1197,20 @@ async fn update_user_last_login_handler(
 // GET /api/auth/user
 // ---------------------------------------------------------------------------
 
+async fn login_history_handler(
+    State(state): State<AuthRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<dream_core_api_types::LoginAuditEvent>>>, ApiError> {
+    let rows = state
+        .user_repo
+        .list_login_events(&user.id, 100)
+        .await
+        .map_err(db_error_to_api_error)?;
+    Ok(Json(ApiResponse::ok(
+        rows.into_iter().map(crate::login_audit_event).collect(),
+    )))
+}
+
 async fn user_handler(
     State(state): State<AuthRouterState>,
     Extension(current_user): Extension<CurrentUser>,
@@ -1164,12 +1228,18 @@ async fn user_handler(
         .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("User not found".into()))?;
 
+    let can_change_password = !state
+        .user_repo
+        .is_sso_only(&current_user.id)
+        .await
+        .map_err(db_error_to_api_error)?;
     Ok(Json(UserInfoResponse {
         success: true,
         user: PublicUser {
             id: user.id,
             username: user.username.unwrap_or_else(|| "external_user".to_string()),
-            must_change_password: user.must_change_password,
+            must_change_password: user.must_change_password && can_change_password,
+            can_change_password,
         },
     }))
 }
@@ -1185,6 +1255,16 @@ async fn change_password_handler(
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
 
+    if state
+        .user_repo
+        .is_sso_only(&current_user.id)
+        .await
+        .map_err(db_error_to_api_error)?
+    {
+        return Err(ApiError::Forbidden(
+            "该账号通过企业身份登录，请在身份提供方管理密码".into(),
+        ));
+    }
     // Validate new password strength
     validate_password(&req.new_password)?;
 
@@ -1420,6 +1500,7 @@ async fn qr_login_handler(
             id: user.id,
             username: user.username.unwrap_or_else(|| "external_user".to_string()),
             must_change_password: user.must_change_password,
+            can_change_password: true,
         },
         token,
     );

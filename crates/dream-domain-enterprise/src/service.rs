@@ -995,7 +995,7 @@ impl EnterpriseService {
                 &db_params![user_id],
             )
             .await?;
-        Ok(row.map(
+        let mut identity = row.map(
             |(provider, company_id, company_name, display_name, department, job_title, role)| EnterpriseIdentityDto {
                 provider,
                 company_id,
@@ -1005,7 +1005,36 @@ impl EnterpriseService {
                 job_title,
                 role,
             },
-        ))
+        );
+        if let Some(identity) = identity.as_mut() {
+            // Company provisioning origin is not the member's authentication source.
+            // SSO is optional in standalone service fixtures and older deployments.
+            let table_query = match self.db.backend() {
+                DbBackend::Sqlite => {
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'one_sso_identities'"
+                }
+                DbBackend::MySql => {
+                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'one_sso_identities'"
+                }
+            };
+            let (exists,): (i64,) = self.db.fetch_one_as(table_query, &[]).await?;
+            if exists > 0
+                && let Some((provider, display_name, department, job_title)) = self.db.fetch_optional_as::<(String, Option<String>, Option<String>, Option<String>)>(
+                    "SELECT provider, display_name, org_unit_path, job_title FROM one_sso_identities WHERE user_id = ? ORDER BY last_seen_at DESC, provider ASC LIMIT 1",
+                    &db_params![user_id],
+                ).await? {
+                    identity.provider = provider;
+                    // Authentication profiles are refreshed on every login, including
+                    // providers without a company id. Keep company membership and
+                    // permissions intact while presenting the caller's latest name.
+                    if let Some(name) = display_name.filter(|name| !name.trim().is_empty()) {
+                        identity.display_name = Some(name);
+                    }
+                    identity.department = department.or(identity.department.take());
+                    identity.job_title = job_title.or(identity.job_title.take());
+                }
+        }
+        Ok(identity)
     }
 }
 
@@ -1049,6 +1078,55 @@ mod tests {
         assert_eq!(id.department.as_deref(), Some("研发中心"));
         assert_eq!(id.job_title.as_deref(), Some("工程师"));
         assert_eq!(id.role, "member");
+    }
+
+    #[tokio::test]
+    async fn identity_authentication_source_is_not_company_bootstrap_origin() {
+        let (svc, sqlite) = service().await;
+        svc.ensure_deployment_company("admin", "Test company").await.unwrap();
+        svc.sync_member("sso-user", "feishu", "company", "", Some("SSO name"), None, None)
+            .await
+            .unwrap();
+        sqlx::raw_sql("CREATE TABLE one_sso_identities (user_id TEXT NOT NULL, provider TEXT NOT NULL, last_seen_at INTEGER NOT NULL, display_name TEXT, org_unit_path TEXT, job_title TEXT); INSERT INTO one_sso_identities (user_id, provider, last_seen_at) VALUES ('sso-user', 'feishu', 1);")
+            .execute(&sqlite).await.unwrap();
+        assert_eq!(svc.identity_of("sso-user").await.unwrap().unwrap().provider, "feishu");
+        assert_eq!(svc.identity_of("admin").await.unwrap().unwrap().provider, "bootstrap");
+        sqlx::query("INSERT INTO one_sso_identities (user_id, provider, last_seen_at) VALUES ('sso-user', 'ldap', 2)")
+            .execute(&sqlite)
+            .await
+            .unwrap();
+        assert_eq!(svc.identity_of("sso-user").await.unwrap().unwrap().provider, "ldap");
+    }
+
+    #[tokio::test]
+    async fn identity_presents_latest_real_name_for_every_sso_provider_without_changing_role() {
+        let (svc, sqlite) = service().await;
+        sqlx::raw_sql("CREATE TABLE one_sso_identities (user_id TEXT NOT NULL, provider TEXT NOT NULL, last_seen_at INTEGER NOT NULL, display_name TEXT, org_unit_path TEXT, job_title TEXT)")
+            .execute(&sqlite).await.unwrap();
+        for provider in ["wecom", "feishu", "dingtalk", "ldap"] {
+            svc.sync_member(provider, provider, "company", "", None, None, None)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO one_sso_identities VALUES (?, ?, 1, '真实姓名', '研发部', '工程师')")
+                .bind(provider)
+                .bind(provider)
+                .execute(&sqlite)
+                .await
+                .unwrap();
+            let identity = svc.identity_of(provider).await.unwrap().unwrap();
+            assert_eq!(identity.display_name.as_deref(), Some("真实姓名"));
+            assert_eq!(identity.department.as_deref(), Some("研发部"));
+            assert_eq!(identity.job_title.as_deref(), Some("工程师"));
+            assert_eq!(identity.provider, provider);
+            assert_eq!(identity.role, "member");
+            sqlx::query("UPDATE one_sso_identities SET display_name = '  ' WHERE user_id = ?")
+                .bind(provider)
+                .execute(&sqlite)
+                .await
+                .unwrap();
+            assert_eq!(svc.identity_of(provider).await.unwrap().unwrap().display_name, None);
+        }
+        assert!(svc.identity_of("another-user").await.unwrap().is_none());
     }
 
     #[tokio::test]

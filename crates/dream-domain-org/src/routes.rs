@@ -65,6 +65,7 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
         .route("/api/one/admin/users", get(admin_list_users).post(admin_create_member))
         .route("/api/one/admin/users/{user_id}", delete(admin_remove_user))
         .route("/api/one/admin/users/{user_id}/role", put(admin_set_user_role))
+        .route("/api/one/admin/users/{user_id}/login-history", get(admin_login_history))
         .route(
             "/api/one/admin/users/{user_id}/password-reset",
             post(admin_reset_user_password),
@@ -417,7 +418,7 @@ async fn org_members(
     if !is_enterprise_tenant_id(&actor.tenant_id) {
         return Err(OrgError::NotInEnterprise);
     }
-    let users = state.service.list_users(&actor.tenant_id).await?;
+    let users = state.service.list_members(&actor.tenant_id).await?;
     Ok(Json(ApiResponse::ok(users)))
 }
 
@@ -933,6 +934,16 @@ async fn admin_clear_exit_password(
 }
 
 // --- M2e: admin users / audit / runtime nodes ---
+
+async fn admin_login_history(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Path(user_id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<dream_core_api_types::LoginAuditEvent>>>, OrgError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.member_login_history(&actor.tenant_id, &user_id).await?,
+    )))
+}
 
 async fn admin_list_users(
     State(state): State<OneOrgRouterState>,
