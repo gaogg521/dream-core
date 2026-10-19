@@ -314,6 +314,12 @@ pub async fn setup_and_login(
     username: &str,
     password: &str,
 ) -> (String, String) {
+    // Custom test routers bypass create_router_with_runtime, which normally
+    // runs SSO migrations before wiring the directory admission gate.
+    #[cfg(feature = "enterprise")]
+    dream_domain_sso::run_one_sso_migrations(&services.db)
+        .await
+        .expect("initialize enterprise authentication schema");
     let hash = dream_core_auth::hash_password(password).unwrap();
     if username == "admin" {
         services
