@@ -39,7 +39,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.90"
+version = "0.1.91"
 edition = "2024"
 license = "LicenseRef-All-Rights-Reserved"
 

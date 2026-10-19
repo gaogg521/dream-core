@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.1.91](https://github.com/gaogg521/dream-core/compare/v0.1.90...v0.1.91) (2026-10-19)
+
+
+### Features
+
+* **agent:** auto-inject the HTML renderer and the html-visual skill ([a42faea](https://github.com/gaogg521/dream-core/commit/a42faea3f35ec5243f3c4f8cc559fe225f0c14ef))
+* **employee:** deliver run results through connected bots ([3d05a56](https://github.com/gaogg521/dream-core/commit/3d05a56fa36ab18410ad84ed37fb8e918fec195a))
+
+
+### Bug Fixes
+
+* **conversation:** stop listing conversations from walking the skill catalog per row ([b31a89e](https://github.com/gaogg521/dream-core/commit/b31a89e57ad7da8bb2b616b6ec2c852518577f7b))
+* **knowledge:** invalidate edited chunks and fall back to lexical search ([88e00d8](https://github.com/gaogg521/dream-core/commit/88e00d857004f559346826dcad98bd09243b6fbb))
+* **realtime:** resync a lagging client instead of silently dropping frames ([48cc780](https://github.com/gaogg521/dream-core/commit/48cc780abdcc11fb97611587ab1b03bbad9b5a5b))
+* **security:** update vulnerable TLS and archive dependencies ([4c3653b](https://github.com/gaogg521/dream-core/commit/4c3653b61a8a33535855c82f65614b6fcd5ae93e))
+* **weixin:** persist encrypted conversation context across restarts ([8d53d54](https://github.com/gaogg521/dream-core/commit/8d53d54450a548e2656c75a68008d0c76904b79c))
+
+
+### Performance Improvements
+
+* **mcp:** answer an identical team sync request from memory for a minute ([9174e13](https://github.com/gaogg521/dream-core/commit/9174e138e5ecbedecc885413e7111f9c33cc3c20))
+* **skills:** make listing and team sync cheap when nothing changed ([a38eb7b](https://github.com/gaogg521/dream-core/commit/a38eb7b1ed432fcd1207c2061521e3620be5d906))
+
 ## [0.1.90](https://github.com/gaogg521/dream-core/compare/v0.1.89...v0.1.90) (2026-10-17)
 
 
