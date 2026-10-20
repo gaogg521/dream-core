@@ -223,6 +223,42 @@ impl DevopsService {
         }))
     }
 
+    /// Resolve an embedding channel on each use so credential rotation and
+    /// disabling take effect immediately. The secret never reaches the browser.
+    pub(crate) async fn channel_embedding_config(
+        &self,
+        channel_id: &str,
+        model: &str,
+    ) -> Result<crate::embedding::EmbeddingConfig, DevopsError> {
+        let row = self.db.fetch_optional_as::<(String, String, String, String)>(
+            "SELECT platform, upstream_base_url, api_key_encrypted, models FROM one_provider_registry WHERE id = ? AND enabled = 1 AND scope = 'org' AND visibility = 'all'",
+            &db_params![channel_id],
+        ).await?.ok_or_else(|| DevopsError::BadRequest("Embedding channel is unavailable; choose an enabled organization channel".into()))?;
+        let (platform, base_url, encrypted, models_json) = row;
+        if !matches!(platform.as_str(), "openai" | "custom" | "new-api") {
+            return Err(DevopsError::BadRequest(
+                "Embedding requires an OpenAI-compatible channel".into(),
+            ));
+        }
+        let models: Vec<String> = serde_json::from_str(&models_json).unwrap_or_default();
+        if !models.iter().any(|m| m == model) {
+            return Err(DevopsError::BadRequest(
+                "Select a model configured on the embedding channel".into(),
+            ));
+        }
+        let api_key = if encrypted.is_empty() {
+            String::new()
+        } else {
+            decrypt_string(&encrypted, self.encryption_key()?)
+                .map_err(|_| DevopsError::Internal("Could not decrypt embedding channel credential".into()))?
+        };
+        Ok(crate::embedding::EmbeddingConfig {
+            base_url,
+            api_key,
+            model: model.to_owned(),
+        })
+    }
+
     /// Admin health check for a saved channel: list the upstream's models with
     /// the STORED credential. The console cannot do this itself — the key is
     /// write-only and never returned — so a client-side probe could only ever
@@ -703,6 +739,114 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn embedding_channel_quick_setup_probes_and_tracks_rotated_credentials() {
+        use axum::{
+            Json, Router,
+            http::{HeaderMap, StatusCode},
+            routing::post,
+        };
+        let svc = service().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/v1/embeddings",
+                    post(|headers: HeaderMap, Json(body): Json<serde_json::Value>| async move {
+                        let auth = headers.get("authorization").unwrap().to_str().unwrap();
+                        assert!(auth == "Bearer sk-real-company-credential" || auth == "Bearer rotated-key");
+                        if body["model"] != "test-embedding" {
+                            return Err(StatusCode::BAD_REQUEST);
+                        }
+                        Ok(Json(serde_json::json!({"data": [{"embedding": [1.0, 0.0]}]})))
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let channel = make_channel(&svc, "Embedding").await;
+        svc.db
+            .execute(
+                "UPDATE one_provider_registry SET upstream_base_url = ?, models = ? WHERE id = ?",
+                &db_params![&url, r#"["test-embedding", "chat-only"]"#, &channel.id],
+            )
+            .await
+            .unwrap();
+        svc.set_rag_config("https://previous.example/v1", "previous-model", Some("old-key"))
+            .await
+            .unwrap();
+        // An upstream rejecting a chat model must not replace the working config.
+        assert!(svc.quick_configure_rag(Some(&channel.id), "chat-only").await.is_err());
+        assert_eq!(svc.get_rag_config().await.unwrap().model, "previous-model");
+        assert!(
+            svc.quick_configure_rag(Some(&channel.id), "not-in-channel")
+                .await
+                .is_err()
+        );
+        svc.db
+            .execute("UPDATE one_rag_config SET dimensions = 3 WHERE id = 'default'", &[])
+            .await
+            .unwrap();
+        assert!(
+            svc.quick_configure_rag(Some(&channel.id), "test-embedding")
+                .await
+                .is_err()
+        );
+        assert_eq!(svc.get_rag_config().await.unwrap().model, "previous-model");
+        svc.db
+            .execute("UPDATE one_rag_config SET dimensions = NULL WHERE id = 'default'", &[])
+            .await
+            .unwrap();
+        let dto = svc
+            .quick_configure_rag(Some(&channel.id), "test-embedding")
+            .await
+            .unwrap();
+        assert_eq!(dto.channel_id.as_deref(), Some(channel.id.as_str()));
+        assert!(dto.has_key);
+        assert_eq!(dto.dimensions, Some(2));
+        assert!(!serde_json::to_string(&dto).unwrap().contains(SECRET));
+        let stored: String = svc
+            .db
+            .fetch_optional_scalar("SELECT api_key FROM one_rag_config WHERE id = 'default'", &[])
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(stored.is_empty());
+        let rotated = encrypt_string("rotated-key", &KEY).unwrap();
+        svc.db
+            .execute(
+                "UPDATE one_provider_registry SET api_key_encrypted = ? WHERE id = ?",
+                &db_params![rotated, &channel.id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            svc.channel_embedding_config(&channel.id, "test-embedding")
+                .await
+                .unwrap()
+                .api_key,
+            "rotated-key"
+        );
+        assert!(svc.check_rag_health().await.unwrap().ok);
+        svc.db
+            .execute(
+                "UPDATE one_provider_registry SET enabled = 0 WHERE id = ?",
+                &db_params![&channel.id],
+            )
+            .await
+            .unwrap();
+        assert!(svc.check_rag_health().await.is_err());
+        // Configuration remains readable so administrators can repair a disabled channel.
+        assert_eq!(
+            svc.get_rag_config().await.unwrap().channel_id.as_deref(),
+            Some(channel.id.as_str())
+        );
+        server.abort();
     }
 
     #[test]

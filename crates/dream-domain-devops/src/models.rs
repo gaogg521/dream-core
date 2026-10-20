@@ -323,6 +323,7 @@ pub struct PipelineRunDto {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RagConfigDto {
+    pub channel_id: Option<String>,
     pub base_url: String,
     pub model: String,
     pub has_key: bool,

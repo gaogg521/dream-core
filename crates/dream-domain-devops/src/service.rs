@@ -1922,7 +1922,19 @@ impl DevopsService {
             && !base_url.trim().is_empty()
             && !model.trim().is_empty()
         {
+            if let Some(channel_id) = base_url.strip_prefix("channel://") {
+                let cfg = self.channel_embedding_config(channel_id, model).await.ok();
+                return Ok(RagConfigDto {
+                    channel_id: Some(channel_id.to_owned()),
+                    base_url: cfg.as_ref().map(|c| c.base_url.clone()).unwrap_or_default(),
+                    model: model.clone(),
+                    has_key: cfg.as_ref().is_some_and(|c| !c.api_key.is_empty()),
+                    dimensions: *dimensions,
+                    updated_at: *updated_at,
+                });
+            }
             return Ok(RagConfigDto {
+                channel_id: None,
                 base_url: base_url.clone(),
                 model: model.clone(),
                 has_key: !api_key.trim().is_empty(),
@@ -1937,6 +1949,7 @@ impl DevopsService {
         Ok(
             match crate::embedding::resolve_embedding_config(None, env_base, env_model, env_key) {
                 Some(cfg) => RagConfigDto {
+                    channel_id: None,
                     base_url: cfg.base_url,
                     model: cfg.model,
                     has_key: !cfg.api_key.trim().is_empty(),
@@ -1944,6 +1957,7 @@ impl DevopsService {
                     updated_at: 0,
                 },
                 None => RagConfigDto {
+                    channel_id: None,
                     base_url: String::new(),
                     model: String::new(),
                     has_key: false,
@@ -1987,6 +2001,68 @@ impl DevopsService {
         self.get_rag_config().await
     }
 
+    pub async fn quick_configure_rag(
+        &self,
+        channel_id: Option<&str>,
+        model: &str,
+    ) -> Result<RagConfigDto, DevopsError> {
+        let cfg = if let Some(id) = channel_id {
+            self.channel_embedding_config(id, model).await?
+        } else {
+            let (base, model, key) = crate::embedding::env_embedding_config();
+            crate::embedding::resolve_embedding_config(None, base, model, key)
+                .ok_or_else(|| DevopsError::BadRequest("Deployment embedding default is incomplete".into()))?
+        };
+        let vectors = crate::embedding::embed(&cfg, &["configuration check".to_owned()]).await?;
+        let dims = vectors
+            .first()
+            .map(|v| v.len() as i64)
+            .filter(|d| *d > 0)
+            .ok_or_else(|| DevopsError::BadRequest("Embedding endpoint returned no vector".into()))?;
+        let chunk_count: i64 = self
+            .db
+            .fetch_optional_scalar("SELECT COUNT(*) FROM one_rag_chunks", &[])
+            .await?
+            .unwrap_or(0);
+        if chunk_count > 0 && self.get_rag_config().await?.model != cfg.model {
+            return Err(DevopsError::BadRequest(
+                "已有文档索引正在使用其他向量模型。快速配置会保留现有配置，请先安排索引迁移再更换模型。".into(),
+            ));
+        }
+        let existing: Option<i64> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT dimensions FROM one_rag_config WHERE id = 'default' AND dimensions IS NOT NULL",
+                &[],
+            )
+            .await?;
+        let existing = match existing {
+            Some(dims) => Some(dims),
+            None => self
+                .db
+                .fetch_optional_scalar::<i64>("SELECT LENGTH(embedding) FROM one_rag_chunks LIMIT 1", &[])
+                .await?
+                .map(|bytes| bytes / 4),
+        };
+        if existing.is_some_and(|d| d != dims) {
+            return Err(DevopsError::BadRequest(
+                "Embedding dimensions differ from existing indexes; keep the current model until indexes are rebuilt"
+                    .into(),
+            ));
+        }
+        let base = channel_id.map(|id| format!("channel://{id}")).unwrap_or(cfg.base_url);
+        let key = if channel_id.is_some() { "" } else { cfg.api_key.as_str() };
+        let mut dto = self.set_rag_config(&base, &cfg.model, Some(key)).await?;
+        self.db
+            .execute(
+                "UPDATE one_rag_config SET dimensions = ? WHERE id = 'default'",
+                &db_params![dims],
+            )
+            .await?;
+        dto.dimensions = Some(dims);
+        Ok(dto)
+    }
+
     async fn load_embedding_config(&self) -> Result<EmbeddingConfig, DevopsError> {
         let row: Option<(String, String, String)> = self
             .db
@@ -1995,6 +2071,11 @@ impl DevopsService {
                 &[],
             )
             .await?;
+        if let Some((base_url, _, model)) = &row
+            && let Some(channel_id) = base_url.strip_prefix("channel://")
+        {
+            return self.channel_embedding_config(channel_id, model).await;
+        }
         let (env_base, env_model, env_key) = crate::embedding::env_embedding_config();
         crate::embedding::resolve_embedding_config(row, env_base, env_model, env_key)
             .ok_or_else(|| DevopsError::BadRequest("RAG embedding endpoint not configured".into()))
@@ -2004,7 +2085,10 @@ impl DevopsService {
         let config = self.load_embedding_config().await?;
         let configured_dimensions: Option<i64> = self
             .db
-            .fetch_optional_scalar("SELECT dimensions FROM one_rag_config WHERE id = 'default'", &[])
+            .fetch_optional_scalar(
+                "SELECT dimensions FROM one_rag_config WHERE id = 'default' AND dimensions IS NOT NULL",
+                &[],
+            )
             .await?;
         let started = now_ms();
         match crate::embedding::embed(&config, &[String::from("health check")]).await {

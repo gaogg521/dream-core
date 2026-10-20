@@ -178,6 +178,10 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
             axum::routing::post(process_rag),
         )
         .route("/api/one/devops/rag/config", get(get_rag_config).put(set_rag_config))
+        .route(
+            "/api/one/devops/rag/quick-config",
+            axum::routing::post(quick_configure_rag),
+        )
         .route("/api/one/devops/rag/health", get(rag_health))
         .route("/api/one/devops/rag/rebuild", axum::routing::post(rag_rebuild))
         .route("/api/one/devops/rag/search", axum::routing::post(search_rag))
@@ -2085,6 +2089,27 @@ async fn set_rag_config(
     Ok(Json(ApiResponse::ok(dto)))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QuickRagConfigBody {
+    channel_id: Option<String>,
+    #[serde(default)]
+    model: String,
+}
+
+async fn quick_configure_rag(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<QuickRagConfigBody>,
+) -> Result<Json<ApiResponse<RagConfigDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    let dto = state
+        .service
+        .quick_configure_rag(body.channel_id.as_deref(), &body.model)
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
 async fn rag_health(
     State(state): State<OneDevopsRouterState>,
     Extension(user): Extension<CurrentUser>,
@@ -2617,6 +2642,21 @@ mod tests {
         let mut u = CurrentUser::local_default();
         u.id = id.to_owned();
         u
+    }
+
+    #[tokio::test]
+    async fn rag_quick_config_requires_admin_before_resolving_channels() {
+        let app = router().await;
+        for (actor, expected) in [("memberA", StatusCode::FORBIDDEN), ("admin1", StatusCode::BAD_REQUEST)] {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/one/devops/rag/quick-config")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"channelId":"missing","model":"embedding"}"#))
+                .unwrap();
+            request.extensions_mut().insert(user(actor));
+            assert_eq!(app.clone().oneshot(request).await.unwrap().status(), expected);
+        }
     }
 
     #[tokio::test]
