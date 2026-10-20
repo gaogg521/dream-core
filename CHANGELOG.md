@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.92](https://github.com/gaogg521/dream-core/compare/v0.1.91...v0.1.92) (2026-10-20)
+
+
+### Features
+
+* **rag:** reuse model channels and validate quick embedding setup ([58fa2b2](https://github.com/gaogg521/dream-core/commit/58fa2b2b043cf0b3ba5164c124c30daa6f012796))
+
+
+### Bug Fixes
+
+* **db:** name the cause of a 500 and report a damaged database file as such ([887f80e](https://github.com/gaogg521/dream-core/commit/887f80ea768e8d2bfae1eb414946840aad04ba38))
+* **enterprise:** preserve SSO placement and audit every successful login ([d0f2ba7](https://github.com/gaogg521/dream-core/commit/d0f2ba7ee3a38861b8b132840346cc4dd3a381e0))
+
 ## [0.1.91](https://github.com/gaogg521/dream-core/compare/v0.1.90...v0.1.91) (2026-10-19)
 
 
