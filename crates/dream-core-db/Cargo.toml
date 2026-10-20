@@ -17,6 +17,8 @@ serde_json.workspace = true
 # what sqlx stores in `_sqlx_migrations`.
 sha2.workspace = true
 thiserror.workspace = true
+# Runs the post-startup integrity check off the startup path.
+tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

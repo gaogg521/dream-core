@@ -78,6 +78,17 @@ impl From<ConversationError> for ApiError {
                     "requested": requested,
                 })),
             ),
+            ConversationError::DatabaseCorrupted { reason } => {
+                // The reason names SQLite internals: it goes to the server log only,
+                // and the response carries just the stable code.
+                tracing::error!(%reason, "local database file is damaged");
+                ApiError::coded(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "DATABASE_CORRUPT",
+                    "The local database file is damaged. Back it up and restore or rebuild it.",
+                    None,
+                )
+            }
             ConversationError::RuntimeRestarting { conversation_id } => ApiError::coded(
                 StatusCode::CONFLICT,
                 "runtime_restarting",

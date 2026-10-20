@@ -4244,6 +4244,7 @@ async fn normalize_boundary_error_response(request: Request, next: Next) -> Resp
     normalized.extensions_mut().insert(ApiErrorLogContext {
         code,
         message: error.to_owned(),
+        cause: None,
     });
     for (name, value) in original_headers.iter() {
         if *name != header::CONTENT_TYPE && *name != header::CONTENT_LENGTH {

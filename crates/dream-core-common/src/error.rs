@@ -97,9 +97,25 @@ struct ErrorBody {
 pub struct ApiErrorLogContext {
     pub code: &'static str,
     pub message: String,
+    /// The private reason behind a generic public message (`Internal server
+    /// error.`), kept out of the response body but written to the server-side
+    /// access log so a 500 can be traced to its cause.
+    pub cause: Option<String>,
 }
 
+/// Longest cause written to a log line.
+const MAX_LOGGED_CAUSE_CHARS: usize = 400;
+
 impl ApiError {
+    /// The private reason for variants whose public message is deliberately generic.
+    fn log_cause(&self) -> Option<String> {
+        let reason = match self {
+            Self::Internal(reason) | Self::BadGateway(reason) | Self::Timeout(reason) => reason,
+            _ => return None,
+        };
+        Some(reason.chars().take(MAX_LOGGED_CAUSE_CHARS).collect())
+    }
+
     pub fn coded(
         status: StatusCode,
         code: &'static str,
@@ -293,6 +309,7 @@ impl IntoResponse for ApiError {
         let code = self.error_code();
         let message = self.public_message();
         let details = self.error_details();
+        let cause = self.log_cause();
         let body = ErrorBody {
             success: false,
             error: message.clone(),
@@ -300,7 +317,9 @@ impl IntoResponse for ApiError {
             details,
         };
         let mut response = (status, axum::Json(body)).into_response();
-        response.extensions_mut().insert(ApiErrorLogContext { code, message });
+        response
+            .extensions_mut()
+            .insert(ApiErrorLogContext { code, message, cause });
         response
     }
 }
@@ -510,6 +529,29 @@ mod tests {
             assert!(!public_error.contains("password"));
             assert!(!public_error.contains("Asset path"));
         }
+    }
+
+    #[test]
+    fn internal_cause_is_logged_but_not_in_the_body() {
+        let resp = ApiError::Internal("database disk image is malformed".into()).into_response();
+        let context = resp.extensions().get::<ApiErrorLogContext>().unwrap();
+        assert_eq!(context.message, "Internal server error.");
+        assert_eq!(context.cause.as_deref(), Some("database disk image is malformed"));
+
+        // Variants whose public message already says everything carry no cause.
+        let resp = ApiError::BadRequest("bad".into()).into_response();
+        assert_eq!(resp.extensions().get::<ApiErrorLogContext>().unwrap().cause, None);
+
+        // A runaway reason is cut so one failure cannot flood the log.
+        let resp = ApiError::Internal("x".repeat(MAX_LOGGED_CAUSE_CHARS * 3)).into_response();
+        let cause = resp
+            .extensions()
+            .get::<ApiErrorLogContext>()
+            .unwrap()
+            .cause
+            .clone()
+            .unwrap();
+        assert_eq!(cause.chars().count(), MAX_LOGGED_CAUSE_CHARS);
     }
 
     #[tokio::test]

@@ -20,6 +20,23 @@ pub enum DbError {
     Crypto(String),
 }
 
+impl DbError {
+    /// Whether SQLite reported damage to the database file itself (as opposed to a bad
+    /// query or a missing row). A damaged file stays damaged: retrying cannot help.
+    pub fn is_corruption(&self) -> bool {
+        let message = self.to_string().to_ascii_lowercase();
+        [
+            "sqlite_corrupt",
+            "database disk image is malformed",
+            "file is not a database",
+            "sqlite_notadb",
+            "malformed database schema",
+        ]
+        .iter()
+        .any(|needle| message.contains(needle))
+    }
+}
+
 impl From<dream_core_common::CryptoError> for DbError {
     fn from(e: dream_core_common::CryptoError) -> Self {
         DbError::Crypto(e.to_string())
@@ -137,6 +154,20 @@ mod tests {
         let mismatch = DbError::Migration(sqlx::migrate::MigrateError::VersionMismatch(7));
         assert_eq!(mismatch.missing_migration_version(), None);
         assert_eq!(DbError::Init("boom".into()).missing_migration_version(), None);
+    }
+
+    #[test]
+    fn corruption_is_recognised_by_sqlite_wording_only() {
+        for message in [
+            "database disk image is malformed",
+            "file is not a database",
+            "Malformed database schema (conversations)",
+        ] {
+            assert!(DbError::Init(message.into()).is_corruption(), "{message}");
+        }
+        for message in ["database is locked", "no such column: foo", "UNIQUE constraint failed"] {
+            assert!(!DbError::Init(message.into()).is_corruption(), "{message}");
+        }
     }
 
     #[test]

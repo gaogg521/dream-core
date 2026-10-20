@@ -45,6 +45,8 @@ async fn access_log(request: Request, next: Next) -> Response {
         (None, Some((code, message))) => (code.as_str(), message.as_str()),
         (None, None) => ("", ""),
     };
+    // The private reason behind a generic 5xx message; absent for everything else.
+    let error_cause = error_context.and_then(|context| context.cause.as_deref()).unwrap_or("");
 
     if status >= 500 {
         tracing::error!(
@@ -56,6 +58,7 @@ async fn access_log(request: Request, next: Next) -> Response {
             latency_ms,
             error_code,
             error_message,
+            error_cause,
             "http response"
         );
     } else if status >= 400 {

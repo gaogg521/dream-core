@@ -8,7 +8,7 @@ use sqlx::migrate::Migrator;
 use sqlx::pool::PoolOptions;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
 use sqlx::{Sqlite, SqlitePool};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::error::DbError;
 
@@ -322,7 +322,46 @@ async fn try_init_file_staged(path: &Path) -> Result<Database, DatabaseInitError
     }
 
     info!("Database initialized at {}", path.display());
+    spawn_quick_check(&pool, path);
     Ok(Database { pool })
+}
+
+/// Check the file's page structure in the background and shout if it is damaged.
+///
+/// SQLite only notices a damaged page when a query happens to read it, so a file can
+/// start up fine and then fail one list query with a bare 500 while everything else
+/// works. Startup recovery cannot see that, so this runs once per start (off the
+/// startup path: `quick_check` reads every page) and leaves a log line that names the
+/// file, instead of the damage surfacing as an inexplicably empty history.
+fn spawn_quick_check(pool: &SqlitePool, path: &Path) {
+    let pool = pool.clone();
+    let path = path.to_path_buf();
+    tokio::spawn(async move {
+        match sqlx::query_scalar::<_, String>("PRAGMA quick_check(1)")
+            .fetch_one(&pool)
+            .await
+        {
+            Ok(verdict) if verdict.eq_ignore_ascii_case("ok") => {}
+            Ok(verdict) => error!(
+                code = "DATABASE_FILE_DAMAGED",
+                path = %path.display(),
+                verdict,
+                "Database quick_check found damage; reads of the affected tables will fail"
+            ),
+            Err(e) => {
+                let e = DbError::Query(e);
+                if e.is_corruption() {
+                    error!(
+                        code = "DATABASE_FILE_DAMAGED",
+                        path = %path.display(),
+                        "Database quick_check could not read the file: it is damaged"
+                    );
+                } else {
+                    warn!(path = %path.display(), "Database quick_check did not complete: {e}");
+                }
+            }
+        }
+    });
 }
 
 /// Path of the cross-process advisory lock file used to serialize concurrent
@@ -899,17 +938,7 @@ fn should_attempt_recovery(err: &DbError) -> bool {
 }
 
 fn is_corruption_like_error(err: &DbError) -> bool {
-    let message = err.to_string().to_ascii_lowercase();
-
-    [
-        "sqlite_corrupt",
-        "database disk image is malformed",
-        "file is not a database",
-        "sqlite_notadb",
-        "malformed database schema",
-    ]
-    .iter()
-    .any(|needle| message.contains(needle))
+    err.is_corruption()
 }
 
 #[cfg(test)]

@@ -89,6 +89,12 @@ pub enum ConversationError {
     #[error("Internal error: {reason}")]
     Internal { reason: String },
 
+    /// SQLite reported damage to the database file itself. Kept apart from `Internal`
+    /// so the client can say "your local data file is damaged" instead of showing an
+    /// empty history, and so the log names the real cause.
+    #[error("Database file is damaged: {reason}")]
+    DatabaseCorrupted { reason: String },
+
     #[error("Workspace path is unavailable: {path}")]
     WorkspacePathUnavailable { path: String },
 
@@ -144,6 +150,7 @@ impl ConversationError {
             }
             Self::Unprocessable { reason } => AgentError::bad_request(reason.clone()),
             Self::Internal { reason } => AgentError::internal(reason.clone()),
+            Self::DatabaseCorrupted { reason } => AgentError::internal(format!("Database file is damaged: {reason}")),
             Self::WorkspacePathUnavailable { path } => {
                 AgentError::bad_request(format!("Workspace path is unavailable: {path}"))
             }
@@ -178,6 +185,7 @@ impl ConversationError {
             Self::TeamRuntimeRequired { .. } => "TEAM_RUNTIME_REQUIRED",
             Self::Unprocessable { .. } => "UNPROCESSABLE_ENTITY",
             Self::Archived { .. } => "CONVERSATION_ARCHIVED",
+            Self::DatabaseCorrupted { .. } => "DATABASE_CORRUPT",
             Self::WorkspacePathUnavailable { .. } => "WORKSPACE_PATH_UNAVAILABLE",
             Self::WorkspacePathRuntimeUnavailable { .. } => "WORKSPACE_PATH_RUNTIME_UNAVAILABLE",
             Self::ProviderNotFound { .. } => "PROVIDER_NOT_FOUND",
@@ -214,6 +222,11 @@ impl From<AgentError> for ConversationError {
 
 impl From<DbError> for ConversationError {
     fn from(error: DbError) -> Self {
+        if error.is_corruption() {
+            return Self::DatabaseCorrupted {
+                reason: error.to_string(),
+            };
+        }
         match error {
             DbError::NotFound(reason) => Self::NotFoundReason { reason },
             DbError::Conflict(reason) => Self::Busy { reason },
@@ -244,6 +257,15 @@ mod tests {
     fn assert_from_agent<T: From<AgentError>>() {}
 
     fn assert_from_db<T: From<DbError>>() {}
+
+    #[test]
+    fn a_damaged_database_file_is_not_reported_as_a_generic_internal_error() {
+        let damaged = ConversationError::from(DbError::Init("database disk image is malformed".into()));
+        assert!(matches!(damaged, ConversationError::DatabaseCorrupted { .. }));
+
+        let other = ConversationError::from(DbError::Init("something else".into()));
+        assert!(matches!(other, ConversationError::Internal { .. }));
+    }
 
     #[test]
     fn conversation_error_is_error_contract() {
