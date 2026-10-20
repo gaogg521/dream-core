@@ -271,3 +271,15 @@ incremental = false
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
 incremental = false
+
+# Third-party crates get no debuginfo in dev/test. On MSVC every test binary
+# links the whole dependency tree and writes its own .pdb (~100 MB each, one
+# per hash per integration test), which grew target/debug to 500+ GB. Measured
+# on a regex-using test: pdb 9.5 MB -> 4.7 MB. Workspace crates keep line
+# tables, so panic backtraces still show function names and file:line for our
+# own code. (`strip = "debuginfo"` does not suppress the PDB on MSVC; tried.)
+[profile.dev.package."*"]
+debug = false
+
+[profile.test.package."*"]
+debug = false
