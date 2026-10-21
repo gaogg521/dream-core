@@ -13,7 +13,7 @@ not call raw backend paths, and do not depend on tools outside the bundled
 
 1. Use only `"$ONE_HELPER_BIN" config ...`.
 2. Never pass, inline, export, echo, or set any `ONE_...` environment variable.
-3. Put all command input in stdin JSON.
+3. Put all command input in stdin JSON. On Windows PowerShell a pipe turns non-ASCII text (Chinese, etc.) into `?`; there, write the JSON to a UTF-8 file with `[System.IO.File]::WriteAllText($path, $json, (New-Object System.Text.UTF8Encoding $false))` and pass `--input-file $path` instead (the CLI also rejects a piped payload whose text was replaced by question marks).
 4. Do not use flags for business fields.
 5. Use `"$ONE_HELPER_BIN" config capabilities` when unsure which config command or stdin fields are supported.
 6. Read context before changing the current assistant.

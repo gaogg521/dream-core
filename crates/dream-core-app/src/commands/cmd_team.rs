@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::process::ExitCode;
 
 use dream_core_api_types::{
@@ -9,6 +9,7 @@ use dream_core_api_types::{
 use serde_json::{Value, json};
 
 use crate::cli::{TeamArgs, TeamCommand, TeamTaskCommand};
+use crate::commands::payload_input;
 use crate::commands::team_capabilities;
 
 const ENV_BASE_URL: &str = "ONE_BASE_URL";
@@ -131,8 +132,7 @@ fn required_env(command: &str, name: &'static str) -> Result<String, ExitCode> {
 }
 
 fn read_stdin_json_object(command: &str, tool: TeamToolName) -> Result<Value, ExitCode> {
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input).map_err(|error| {
+    let (input, _source) = payload_input::read_payload_text().map_err(|error| {
         print_failure(
             command,
             "TEAM_CLI_STDIN_READ_FAILED",

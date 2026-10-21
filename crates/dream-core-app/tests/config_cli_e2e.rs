@@ -1112,3 +1112,90 @@ fn builtin_config_skills_use_config_cli_not_python_or_cron_helper() {
     assert!(cron.contains("\"$ONE_HELPER_BIN\" config cron current list"));
     assert!(cron.contains("\"job_id\""));
 }
+
+/// Run `config conversation rename` with `stdin_bytes` on stdin (or none) and extra args, against the probe
+/// server. Returns the process output and what the server captured.
+async fn run_rename(stdin_bytes: Option<&[u8]>, extra_args: &[&str]) -> (std::process::Output, Option<Capture>) {
+    let capture = Arc::new(Mutex::new(None));
+    let (base_url, handle) = spawn_config_probe_server(capture.clone()).await;
+    let mut command = config_command();
+    command
+        .args(["conversation", "rename"])
+        .args(extra_args)
+        .env("ONE_BASE_URL", &base_url)
+        .env("ONE_CONVERSATION_ID", "conv-current")
+        .env("ONE_USER_ID", "user-rename")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    if let Some(bytes) = stdin_bytes {
+        child.stdin.as_mut().unwrap().write_all(bytes).await.unwrap();
+    }
+    drop(child.stdin.take());
+    let output = child.wait_with_output().await.unwrap();
+    handle.abort();
+    let captured = capture.lock().unwrap().take();
+    (output, captured)
+}
+
+fn captured_name(captured: Option<Capture>) -> Option<String> {
+    captured?
+        .payload?
+        .get("name")
+        .and_then(|value| value.as_str())
+        .map(str::to_owned)
+}
+
+#[tokio::test]
+async fn config_payload_accepts_utf8_bom_and_utf16_on_stdin() {
+    let json = r#"{ "conversation_id": "conv-target", "name": "上海天气预报" }"#;
+
+    let mut with_bom = vec![0xEF, 0xBB, 0xBF];
+    with_bom.extend_from_slice(json.as_bytes());
+    let (output, captured) = run_rename(Some(&with_bom), &[]).await;
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(captured_name(captured).as_deref(), Some("上海天气预报"));
+
+    let mut utf16 = vec![0xFF, 0xFE];
+    utf16.extend(json.encode_utf16().flat_map(|unit| unit.to_le_bytes()));
+    let (output, captured) = run_rename(Some(&utf16), &[]).await;
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(captured_name(captured).as_deref(), Some("上海天气预报"));
+}
+
+#[tokio::test]
+async fn config_payload_refuses_text_hollowed_out_into_question_marks() {
+    // What a Windows PowerShell 5.1 pipe delivers for a Chinese name: ASCII, with `?` for every character.
+    let hollow = br#"{ "conversation_id": "conv-target", "name": "????????" }"#;
+    let (output, captured) = run_rename(Some(hollow), &[]).await;
+
+    assert!(!output.status.success());
+    assert!(
+        captured.is_none(),
+        "nothing may be saved from a payload that lost its text"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("CONFIG_PAYLOAD_INVALID"), "{stderr}");
+    assert!(stderr.contains("--input-file"), "{stderr}");
+    assert!(stderr.contains("field=\"name\""), "{stderr}");
+}
+
+#[tokio::test]
+async fn config_input_file_bypasses_the_pipe() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("payload.json");
+    std::fs::write(&path, r#"{ "conversation_id": "conv-target", "name": "上海天气预报" }"#).unwrap();
+    let path = path.to_string_lossy().into_owned();
+
+    // The flag works before or after the subcommand, and stdin is not consulted at all.
+    let (output, captured) = run_rename(None, &["--input-file", &path]).await;
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(captured_name(captured).as_deref(), Some("上海天气预报"));
+
+    // A file is trusted: a value that really is mostly question marks goes through.
+    std::fs::write(&path, r#"{ "conversation_id": "conv-target", "name": "????" }"#).unwrap();
+    let (output, captured) = run_rename(None, &["--input-file", &path]).await;
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(captured_name(captured).as_deref(), Some("????"));
+}

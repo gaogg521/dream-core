@@ -1,7 +1,7 @@
 //! `dreamcore config` subcommand: agent-facing automation CLI for One Work config.
 
 use std::collections::BTreeMap;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::process::ExitCode;
 
 use reqwest::Method;
@@ -17,6 +17,7 @@ use crate::cli::{
     ConfigSkillsCommand, ConfigSkillsExternalPathsCommand, ConfigSkillsMarketCommand,
 };
 use crate::commands::config_capabilities;
+use crate::commands::payload_input::{self, PayloadSource};
 
 const ENV_BASE_URL: &str = "ONE_BASE_URL";
 const ENV_CONVERSATION_ID: &str = "ONE_CONVERSATION_ID";
@@ -1503,12 +1504,11 @@ fn extract_api_data(value: Value, command: &str) -> Result<Value, ConfigError> {
 }
 
 fn read_stdin_payload(command: &str) -> Result<Value, ConfigError> {
-    let mut raw = String::new();
-    io::stdin().read_to_string(&mut raw).map_err(|_| {
+    let (raw, source) = payload_input::read_payload_text().map_err(|_| {
         ConfigError::new(
             ConfigErrorCode::PayloadInvalid,
             command,
-            "failed to read JSON payload from stdin",
+            "failed to read JSON payload (it must be UTF-8 or UTF-16 text)",
         )
         .field("field", "stdin")
     })?;
@@ -1520,14 +1520,25 @@ fn read_stdin_payload(command: &str) -> Result<Value, ConfigError> {
         )
         .field("field", "stdin"));
     }
-    serde_json::from_str(&raw).map_err(|_| {
+    let value: Value = serde_json::from_str(&raw).map_err(|_| {
         ConfigError::new(
             ConfigErrorCode::PayloadInvalid,
             command,
             "invalid JSON payload on stdin",
         )
         .field("field", "stdin")
-    })
+    })?;
+    if source == PayloadSource::Stdin
+        && let Some(path) = payload_input::suspected_encoding_loss(&value)
+    {
+        return Err(ConfigError::new(
+            ConfigErrorCode::PayloadInvalid,
+            command,
+            payload_input::ENCODING_LOSS_MESSAGE,
+        )
+        .field("field", path));
+    }
+    Ok(value)
 }
 
 fn print_envelope(data: Value, meta: Value, command: &str) -> Result<(), ConfigError> {

@@ -53,6 +53,7 @@ fn main() -> ExitCode {
 
 fn run_main() -> Result<ExitCode, MainError> {
     let cli = Cli::parse();
+    commands::payload_input::set_input_file(cli.input_file.clone());
 
     // mcp-* subcommands route into short-lived stdio helpers that live entirely
     // outside the main HTTP server. They share the global flags so clap can

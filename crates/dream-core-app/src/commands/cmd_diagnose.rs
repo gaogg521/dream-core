@@ -1,7 +1,7 @@
 //! `dreamcore diagnose` subcommand: agent-facing read-only troubleshooting CLI.
 
 use std::collections::BTreeMap;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -13,6 +13,7 @@ use crate::cli::{
     DiagnoseProvidersArgs, DiagnoseSummaryCommand, DiagnoseTeamsArgs,
 };
 use crate::commands::diagnose_capabilities;
+use crate::commands::payload_input;
 
 const ENV_BASE_URL: &str = "ONE_BASE_URL";
 const ENV_CONVERSATION_ID: &str = "ONE_CONVERSATION_ID";
@@ -388,12 +389,11 @@ fn read_stdin_payload(command: &str) -> Result<Value, DiagnoseError> {
 }
 
 fn read_optional_stdin_payload(command: &str) -> Result<Value, DiagnoseError> {
-    let mut raw = String::new();
-    io::stdin().read_to_string(&mut raw).map_err(|_| {
+    let (raw, _source) = payload_input::read_payload_text().map_err(|_| {
         DiagnoseError::new(
             DiagnoseErrorCode::PayloadInvalid,
             command,
-            "failed to read JSON payload from stdin",
+            "failed to read JSON payload (it must be UTF-8 or UTF-16 text)",
         )
         .field("field", "stdin")
     })?;

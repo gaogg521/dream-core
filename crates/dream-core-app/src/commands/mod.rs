@@ -19,6 +19,7 @@ pub(crate) mod cmd_team_stdio;
 pub(crate) mod config_capabilities;
 pub(crate) mod diagnose_capabilities;
 pub(crate) mod error;
+pub(crate) mod payload_input;
 pub(crate) mod session_capabilities;
 pub(crate) mod team_capabilities;
 

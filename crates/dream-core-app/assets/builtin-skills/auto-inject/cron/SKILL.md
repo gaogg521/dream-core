@@ -15,7 +15,7 @@ agent-facing config CLI.
 3. Do not ask for extra confirmation after the user has already requested the scheduling change.
 4. Never pass, inline, export, echo, or set any `ONE_...` environment variable.
 5. Commands must directly call `"$ONE_HELPER_BIN" config cron current ...`.
-6. Pass create and update payloads through stdin heredocs attached to the command. Do not write payload JSON files to disk.
+6. Pass create and update payloads through stdin heredocs attached to the command. On macOS and Linux do not write payload JSON files to disk. On Windows (PowerShell) follow the "Windows" section below instead: a pipe loses non-ASCII text there.
 7. Put `job_id` in the update JSON payload, not in a command flag.
 8. After a successful create or update, send one short final confirmation that a normal user can understand. Include the task name and schedule description. Do not show internal ids such as `cron_...`.
 9. If the CLI fails, report the failure from stderr/stdout in normal prose and do not claim the task was created.
@@ -98,6 +98,24 @@ Multiline message example:
   "message": "First paragraph.\nSecond paragraph.\nThird paragraph."
 }
 ```
+
+## Windows (PowerShell)
+
+PowerShell has no heredoc, and Windows PowerShell 5.1 encodes everything it pipes to a
+program as ASCII, so a Chinese task name or message arrives as `????` and is saved that
+way. Do not pipe the payload. Write it to a UTF-8 file and pass the file:
+
+```powershell
+$payload = '{"name":"每日天气","schedule":"0 8 * * *","schedule_description":"每天 8:00","message":"查询今天上海的天气并简要播报。"}'
+$path = Join-Path $env:TEMP 'one-cron-payload.json'
+[System.IO.File]::WriteAllText($path, $payload, (New-Object System.Text.UTF8Encoding $false))
+& $env:ONE_HELPER_BIN config cron current create --input-file $path
+Remove-Item $path
+```
+
+The same works for `update`. The CLI also refuses a piped payload whose text turned into
+question marks and tells you so; when you see that error, switch to the file form. After
+creating, run `list` once and check that the name reads correctly.
 
 ## Cron Expression
 

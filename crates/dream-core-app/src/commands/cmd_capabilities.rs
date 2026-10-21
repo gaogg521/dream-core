@@ -52,6 +52,7 @@ fn data() -> Value {
         },
         "input": {
             "default_mode": "stdin_json",
+            "file_mode": "--input-file <path> reads the same JSON from a UTF-8 file instead of stdin; use it on Windows PowerShell, whose pipe turns non-ASCII text into '?'",
             "business_flags": false,
             "domain_contracts": "Use each domain's capabilities command for exact stdin fields and safety metadata."
         },

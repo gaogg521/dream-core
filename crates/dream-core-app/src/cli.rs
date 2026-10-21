@@ -73,6 +73,12 @@ pub(crate) struct Cli {
     #[arg(long, value_enum, default_value_t = ManagedResourcesModeArg::Download)]
     pub managed_resources_mode: ManagedResourcesModeArg,
 
+    /// Read the JSON payload of the agent-facing commands (`config`, `diagnose`, `team`) from this
+    /// file instead of stdin. Use it on Windows, where a PowerShell pipe encodes non-ASCII text
+    /// as ASCII and turns it into `?`.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub input_file: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
