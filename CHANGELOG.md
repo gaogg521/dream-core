@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.93](https://github.com/gaogg521/dream-core/compare/v0.1.92...v0.1.93) (2026-10-21)
+
+
+### Bug Fixes
+
+* **cli:** stop Windows pipes from silently turning CJK payloads into '?' ([144d3af](https://github.com/gaogg521/dream-core/commit/144d3af2e1c2fc4f699d03f87905b6a7c18167fc))
+* **modules:** bound knowledge indexing and preserve team task boundaries ([945eb5a](https://github.com/gaogg521/dream-core/commit/945eb5a2a2275596b52619e2fd29bfb5bf7f9227))
+* **modules:** secure employee distribution and knowledge editing ([43f6a31](https://github.com/gaogg521/dream-core/commit/43f6a31d75c5b087c9682d4512cbacc6a1707c5c))
+* register authorized employee skills and secure release dependencies ([73ef14d](https://github.com/gaogg521/dream-core/commit/73ef14dae567f84f23c3e0f7c7a748f8fbfd9c10))
+
 ## [0.1.92](https://github.com/gaogg521/dream-core/compare/v0.1.91...v0.1.92) (2026-10-20)
 
 
