@@ -94,7 +94,7 @@ pub(crate) async fn upload(
     transaction
         .execute(
             "UPDATE one_rag_documents SET file_path = ?, file_size = ?, mime_type = ?, \
-             content = '', status = 'ready', chunk_count = 0, last_error = NULL WHERE id = ?",
+             content = '', content_revision = content_revision + 1, status = 'ready', chunk_count = 0, last_error = NULL WHERE id = ?",
             &db_params![format!("{PREFIX}{key}"), data.len() as i64, mime(&name), &id],
         )
         .await?;

@@ -174,6 +174,10 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
                 .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
         )
         .route(
+            "/api/one/devops/rag/documents/{id}/content-state",
+            get(get_rag_content_state),
+        )
+        .route(
             "/api/one/devops/rag/documents/{id}/process",
             axum::routing::post(process_rag),
         )
@@ -2001,11 +2005,6 @@ async fn delete_rag(
     Ok(Json(ApiResponse::ok(())))
 }
 
-#[derive(Deserialize)]
-struct SetRagContentBody {
-    content: String,
-}
-
 async fn get_rag_content(
     State(state): State<OneDevopsRouterState>,
     Extension(user): Extension<CurrentUser>,
@@ -2019,10 +2018,13 @@ async fn set_rag_content(
     State(state): State<OneDevopsRouterState>,
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
-    Json(body): Json<SetRagContentBody>,
-) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    Json(body): Json<dream_core_api_types::knowledge::SetRagContentRequest>,
+) -> Result<Json<ApiResponse<i64>>, DevopsError> {
     state.service.assert_rag_writable(&user.id, &id).await?;
-    state.service.set_document_content(&user.id, &id, &body.content).await?;
+    let revision = state
+        .service
+        .set_document_content_if_revision(&user.id, &id, &body.content, body.expected_revision)
+        .await?;
     if !body.content.trim().is_empty() {
         let service = state.service.clone();
         let actor = user.id.clone();
@@ -2041,7 +2043,17 @@ async fn set_rag_content(
         });
     }
 
-    Ok(Json(ApiResponse::ok(())))
+    Ok(Json(ApiResponse::ok(revision)))
+}
+
+async fn get_rag_content_state(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<dream_core_api_types::knowledge::RagContentState>>, DevopsError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.read_rag_content_state(&user.id, &id).await?,
+    )))
 }
 
 #[derive(serde::Serialize)]

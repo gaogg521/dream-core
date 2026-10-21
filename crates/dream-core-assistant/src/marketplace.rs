@@ -23,6 +23,14 @@ use crate::error::AssistantError;
 /// `crates/dream-app/assets/marketplace-personas/`.
 static MARKETPLACE_ASSETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../dream-core-app/assets/marketplace-personas");
 
+/// Recover a missing installed catalog rule from public build assets, never another user's files.
+pub(crate) fn marketplace_rule_content(id: &str) -> Option<String> {
+    MARKETPLACE_ASSETS
+        .get_file(format!("rules/{id}.md"))
+        .and_then(|file| file.contents_utf8())
+        .map(str::to_owned)
+}
+
 #[derive(Debug, Deserialize)]
 struct MarketplaceManifest {
     #[serde(default)]

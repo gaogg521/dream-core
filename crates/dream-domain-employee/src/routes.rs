@@ -44,7 +44,11 @@ pub fn one_employee_routes(state: OneEmployeeRouterState) -> Router {
         // /api/mcp/team-sync. Mounted in every build on purpose — the crate
         // is deliberately not enterprise-gated (see dream-core-app's
         // Cargo.toml); personal deployments just never receive the call.
-        .route("/api/one/employee/team-sync", post(team_sync))
+        .route(
+            "/api/one/employee/team-sync",
+            post(team_sync).layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
+        )
+        .route("/api/one/employee/team-sync-bundle", get(team_sync_bundle))
         // Admin registry + resource-authorization matrix (align-openocta §3,
         // delivery-gaps T4 step 2). Same admin gate devops uses for its own
         // registry writes (`require_registry_admin`) — direct SQL against
@@ -150,13 +154,21 @@ async fn list_agents(
     Extension(user): Extension<CurrentUser>,
     headers: HeaderMap,
 ) -> Result<Json<ApiResponse<Vec<PersonalAgentDto>>>, EmployeeError> {
+    Ok(Json(ApiResponse::ok(visible_agents(&state, &user, &headers).await?)))
+}
+
+async fn visible_agents(
+    state: &OneEmployeeRouterState,
+    user: &CurrentUser,
+    headers: &HeaderMap,
+) -> Result<Vec<PersonalAgentDto>, EmployeeError> {
     // Own employees plus any shared within the caller's tenant (A1 L3).
     let tenant = state.tenant_of(&user.id).await;
     // C1-2 fix: a blocked machine must stop receiving team-distributed
     // employees. The client self-reports its machine id; no header (older
     // client) means the check is skipped, same fail-open posture as every
     // other machine-agnostic check here.
-    let caller_machine = match classify_governance_caller(&headers) {
+    let caller_machine = match classify_governance_caller(headers) {
         GovernanceCaller::Identified(id) => Some(Some(id)),
         GovernanceCaller::UnidentifiedRemoteClient => Some(None),
         // The console never sends a machine id; see `governance_caller`.
@@ -169,9 +181,56 @@ async fn list_agents(
             "this machine has been blocked by an administrator".into(),
         ));
     }
-    Ok(Json(ApiResponse::ok(
-        state.service.list_available(&user.id, &tenant).await?,
-    )))
+    state.service.list_available(&user.id, &tenant).await
+}
+
+#[derive(Serialize)]
+struct TeamSyncBundle {
+    agents: Vec<PersonalAgentDto>,
+    assistants: Vec<dream_core_api_types::employee_sync::TeamAssistantSnapshot>,
+}
+
+async fn team_sync_bundle(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    headers: HeaderMap,
+) -> Result<Json<ApiResponse<TeamSyncBundle>>, EmployeeError> {
+    // Authorization and machine policy run before reading any owner's rules.
+    let mut agents = visible_agents(&state, &user, &headers).await?;
+    let mut references = HashMap::new();
+    for agent in &mut agents {
+        let id = agent
+            .assistant_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .or(agent.custom_agent_id.as_deref().filter(|id| !id.trim().is_empty()));
+        if let Some(id) = id {
+            let key = serde_json::to_string(&(&agent.owner_user_id, id, agent.agent_id_override.as_deref()))
+                .map_err(|e| EmployeeError::Internal(e.to_string()))?;
+            references.entry(key.clone()).or_insert_with(|| {
+                (
+                    agent.owner_user_id.clone(),
+                    id.to_owned(),
+                    agent.agent_id_override.clone(),
+                )
+            });
+            agent.assistant_id = Some(key);
+            agent.custom_agent_id = None;
+            agent.agent_id_override = None;
+        }
+    }
+    let assistants = if references.is_empty() {
+        Vec::new()
+    } else {
+        let port = state
+            .assistant_dependencies
+            .as_ref()
+            .ok_or_else(|| EmployeeError::BadRequest("Expert dependency distribution is unavailable".into()))?;
+        port.export_batch(&references.into_values().collect::<Vec<_>>())
+            .await
+            .map_err(EmployeeError::BadRequest)?
+    };
+    Ok(Json(ApiResponse::ok(TeamSyncBundle { agents, assistants })))
 }
 
 #[derive(Deserialize)]
@@ -296,6 +355,8 @@ struct TeamSyncAgentBody {
 struct TeamSyncBody {
     #[serde(default)]
     agents: Vec<TeamSyncAgentBody>,
+    assistants: Option<Vec<dream_core_api_types::employee_sync::TeamAssistantSnapshot>>,
+    source_scope: Option<String>,
     /// True only when `agents` is the complete current server view (server
     /// reachable). A non-authoritative pass writes without reconciling
     /// removals, so an offline flush can never wipe the local cache.
@@ -309,7 +370,7 @@ async fn team_sync(
     Json(body): Json<TeamSyncBody>,
 ) -> Result<Json<ApiResponse<TeamAgentSyncReport>>, EmployeeError> {
     let tenant = state.tenant_of(&user.id).await;
-    let payloads: Vec<TeamAgentPayload> = body
+    let mut payloads: Vec<TeamAgentPayload> = body
         .agents
         .into_iter()
         .map(|agent| TeamAgentPayload {
@@ -326,12 +387,86 @@ async fn team_sync(
             automation_config: agent.automation_config,
         })
         .collect();
-    Ok(Json(ApiResponse::ok(
-        state
-            .service
-            .sync_team_agents(&user.id, &tenant, &payloads, body.authoritative)
-            .await?,
-    )))
+    let mut retained_assistants = Vec::new();
+    if let Some(snapshots) = &body.assistants {
+        let scope = body
+            .source_scope
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| EmployeeError::BadRequest("Enterprise source scope is required".into()))?;
+        let referenced: std::collections::HashSet<&str> = payloads
+            .iter()
+            .filter_map(|agent| agent.assistant_id.as_deref().or(agent.custom_agent_id.as_deref()))
+            .collect();
+        if snapshots
+            .iter()
+            .any(|snapshot| !referenced.contains(snapshot.key.as_str()))
+            || referenced
+                .iter()
+                .any(|key| !snapshots.iter().any(|snapshot| snapshot.key == *key))
+        {
+            return Err(EmployeeError::BadRequest(
+                "Employee expert dependencies are incomplete".into(),
+            ));
+        }
+        let port = state
+            .assistant_dependencies
+            .as_ref()
+            .ok_or_else(|| EmployeeError::BadRequest("Expert dependency distribution is unavailable".into()))?;
+        let local_ids = port
+            .materialize(&user.id, scope, snapshots)
+            .await
+            .map_err(EmployeeError::BadRequest)?;
+        for payload in &mut payloads {
+            if let Some(key) = payload.assistant_id.as_ref().or(payload.custom_agent_id.as_ref()) {
+                let local_id = local_ids.get(key).ok_or_else(|| {
+                    EmployeeError::BadRequest("Employee expert dependency was not materialized".into())
+                })?;
+                retained_assistants.push(local_id.clone());
+                if let Some(snapshot) = snapshots.iter().find(|snapshot| snapshot.key == *key) {
+                    let config = payload.automation_config.get_or_insert_with(|| serde_json::json!({}));
+                    if !config.is_object() {
+                        *config = serde_json::json!({});
+                    }
+                    config["teamExpertName"] = serde_json::json!(snapshot.profile.name);
+                    config["teamExpertNameI18n"] = serde_json::json!(snapshot.profile.name_i18n);
+                }
+                payload.assistant_id = Some(local_id.clone());
+                payload.custom_agent_id = None;
+                payload.agent_id_override = None;
+            }
+        }
+    }
+    let report = state
+        .service
+        .sync_team_agents(&user.id, &tenant, &payloads, body.authoritative)
+        .await?;
+    tracing::info!(
+        employee_count = report.kept,
+        expert_count = retained_assistants
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        conflict_count = report.conflicts.len(),
+        "Materialized employee dependency bundle"
+    );
+    if body.authoritative && body.assistants.is_some() && report.conflicts.is_empty() {
+        // Prune only after employee reconciliation succeeded. A partial or
+        // conflicting sync must not delete the previous executable copies.
+        if let Some(port) = &state.assistant_dependencies {
+            port.prune(&user.id, "", &retained_assistants)
+                .await
+                .map_err(EmployeeError::BadRequest)?;
+        }
+    }
+    if body.authoritative
+        && payloads.is_empty()
+        && body.assistants.is_none()
+        && let Some(port) = &state.assistant_dependencies
+    {
+        port.prune(&user.id, "", &[]).await.map_err(EmployeeError::BadRequest)?;
+    }
+    Ok(Json(ApiResponse::ok(report)))
 }
 
 /// Share/unshare an employee within the owner's tenant. Owner-only.

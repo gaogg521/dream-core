@@ -15,6 +15,150 @@ use common::{body_json, build_app, get_with_token, json_with_token, setup_and_lo
 
 const AGENT_ID: &str = "pa_team_chat";
 
+#[tokio::test]
+async fn a_removed_employee_cannot_send_in_its_existing_conversation() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "revoked_member", "pw12345678").await;
+    sync_team_employee(&app, &token, &csrf).await;
+    let response = app
+        .clone()
+        .oneshot(json_with_token(
+            "POST",
+            &format!("/api/one/employee/agents/{AGENT_ID}/chat"),
+            json!({}),
+            &token,
+            &csrf,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let chat = body_json(response).await;
+    let conversation = chat["data"]["conversationId"].as_str().unwrap();
+    let response = app
+        .clone()
+        .oneshot(json_with_token(
+            "POST",
+            "/api/one/employee/team-sync",
+            json!({"agents":[],"authoritative":true}),
+            &token,
+            &csrf,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = app
+        .oneshot(json_with_token(
+            "POST",
+            &format!("/api/conversations/{conversation}/messages"),
+            json!({"content":"Must be refused before a cached runtime can execute."}),
+            &token,
+            &csrf,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(
+        body_json(response)
+            .await
+            .to_string()
+            .contains("EMPLOYEE_RESOURCE_DENIED")
+    );
+}
+
+#[tokio::test]
+async fn distributed_expert_bundle_is_authorized_complete_and_executable() {
+    let root = tempfile::tempdir().unwrap();
+    let db = dream_core_db::init_database_memory().await.unwrap();
+    let config = dream_core_app::AppConfig {
+        data_dir: root.path().to_path_buf(),
+        work_dir: root.path().to_path_buf(),
+        ..Default::default()
+    };
+    let services = dream_core_app::AppServices::from_config(db, &config).await.unwrap();
+    let mut app = dream_core_app::create_router(&services).await.unwrap();
+    let (token, csrf) = setup_and_login(&mut app, &services, "expert_owner", "pw12345678").await;
+    for id in ["bound-expert", "unrelated-private-expert"] {
+        let response = app
+            .clone()
+            .oneshot(json_with_token(
+                "POST",
+                "/api/assistants",
+                json!({"id": id,"name": id,"agent_id":"dream"}),
+                &token,
+                &csrf,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED, "{}", body_json(response).await);
+    }
+    let response = app
+        .clone()
+        .oneshot(json_with_token(
+            "POST",
+            "/api/skills/assistant-rule/write",
+            json!({"assistant_id":"bound-expert","content":"Expert identity must travel with the employee."}),
+            &token,
+            &csrf,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = app.clone().oneshot(json_with_token("POST", "/api/one/employee/team-sync", json!({"agents":[{"id":AGENT_ID,"name":"Expert employee","agentType":"dream","assistantId":"bound-expert"}],"authoritative":true}), &token, &csrf)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "{}", body_json(response).await);
+    let response = app
+        .clone()
+        .oneshot(get_with_token("/api/one/employee/team-sync-bundle", &token))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bundle = body_json(response).await;
+    assert_eq!(bundle["data"]["assistants"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        bundle["data"]["assistants"][0]["rules"],
+        "Expert identity must travel with the employee."
+    );
+    assert!(!bundle.to_string().contains("unrelated-private-expert"));
+    let (other_token, _) = setup_and_login(&mut app, &services, "unentitled_member", "pw12345678").await;
+    let response = app
+        .clone()
+        .oneshot(get_with_token("/api/one/employee/team-sync-bundle", &other_token))
+        .await
+        .unwrap();
+    let other = body_json(response).await;
+    assert!(other["data"]["agents"].as_array().unwrap().is_empty());
+    assert!(other["data"]["assistants"].as_array().unwrap().is_empty());
+    let response = app
+        .clone()
+        .oneshot(json_with_token(
+            "POST",
+            "/api/one/employee/team-sync",
+            json!({"agents":bundle["data"]["agents"],"assistants":[],"sourceScope":"qa-company","authoritative":true}),
+            &token,
+            &csrf,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "missing dependencies must not silently replace a usable employee"
+    );
+    let response = app.clone().oneshot(json_with_token("POST", "/api/one/employee/team-sync", json!({"agents":bundle["data"]["agents"],"assistants":bundle["data"]["assistants"],"sourceScope":"qa-company","authoritative":true}), &token, &csrf)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "{}", body_json(response).await);
+    let response = app
+        .clone()
+        .oneshot(json_with_token(
+            "POST",
+            &format!("/api/one/employee/agents/{AGENT_ID}/chat"),
+            json!({}),
+            &token,
+            &csrf,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "{}", body_json(response).await);
+}
+
 async fn sync_team_employee(app: &axum::Router, token: &str, csrf: &str) {
     let resp = app
         .clone()

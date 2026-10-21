@@ -33,6 +33,9 @@ use crate::builtin::BuiltinAssistant;
 use crate::builtin::{AvatarAsset, BuiltinAssistantRegistry};
 use crate::error::AssistantError;
 
+#[path = "team_dependencies.rs"]
+mod team_dependencies;
+
 /// Max attempts (initial + retries) and per-retry backoff for a bootstrap step
 /// contended by a concurrent startup (Sentry 135525166 Option B).
 const BOOTSTRAP_RETRY_MAX_ATTEMPTS: u32 = 5;
@@ -902,6 +905,16 @@ impl AssistantService {
         let mut result = Vec::new();
 
         for definition in &definitions {
+            // Employee dependencies are executable snapshots, not standalone
+            // personal experts: launching them directly loses employee bindings.
+            if definition.source == "imported"
+                && definition
+                    .source_ref
+                    .as_deref()
+                    .is_some_and(|source| source.starts_with("team:"))
+            {
+                continue;
+            }
             if generated_definition_is_uninstalled(definition, &projections) {
                 continue;
             }
@@ -938,7 +951,15 @@ impl AssistantService {
     /// deliberately not `get()`, which does avatar/projection resolution
     /// this check doesn't need.
     pub async fn exists(&self, id: &str) -> Result<bool, AssistantError> {
-        Ok(self.definition_repo.get_by_assistant_id(id).await?.is_some())
+        self.exists_for_user(DEFAULT_USER_ID, id).await
+    }
+
+    pub async fn exists_for_user(&self, user_id: &str, id: &str) -> Result<bool, AssistantError> {
+        Ok(self
+            .definition_repo
+            .get_by_assistant_id_for_user(user_id, id)
+            .await?
+            .is_some())
     }
 
     pub async fn get(&self, id: &str) -> Result<AssistantResponse, AssistantError> {
@@ -972,15 +993,25 @@ impl AssistantService {
         locale: Option<&str>,
     ) -> Result<AssistantDetailResponse, AssistantError> {
         let projections = self.reconcile_generated_assistants_for_user(user_id).await?;
+        self.detail_with_projections(user_id, id, locale, &projections).await
+    }
+
+    async fn detail_with_projections(
+        &self,
+        user_id: &str,
+        id: &str,
+        locale: Option<&str>,
+        projections: &[AgentManagementRow],
+    ) -> Result<AssistantDetailResponse, AssistantError> {
         if let Some(definition) = self.definition_repo.get_by_assistant_id_for_user(user_id, id).await? {
-            if generated_definition_is_uninstalled(&definition, &projections) {
+            if generated_definition_is_uninstalled(&definition, projections) {
                 return Err(AssistantError::NotFound(format!("assistant '{id}' not found")));
             }
             let state = self.state_repo.get_for_user(user_id, &definition.id).await?;
             let preference = self.preference_repo.get_for_user(user_id, &definition.id).await?;
             let rules_content = self.read_rule_for_user(user_id, id, locale).await?;
             let projection = self
-                .project_definition(user_id, &definition, state.as_ref(), &projections)
+                .project_definition(user_id, &definition, state.as_ref(), projections)
                 .await?;
             return self.definition_to_detail_response(
                 user_id,
@@ -2117,7 +2148,7 @@ impl AssistantService {
             }
 
             if let Some(rule_content) = entry.rule_content.as_deref()
-                && let Err(e) = self.write_rule(&id, None, rule_content).await
+                && let Err(e) = self.write_rule_for_user(user_id, &id, None, rule_content).await
             {
                 result.failed += 1;
                 result.errors.push(ImportError {
@@ -2151,7 +2182,25 @@ impl AssistantService {
     ) -> Result<String, AssistantError> {
         match self.classify_source_for_user(user_id, id).await {
             AssistantSource::Builtin => Ok(self.read_builtin_rule_with_fallback(id, locale)),
-            AssistantSource::Generated | AssistantSource::User | AssistantSource::Imported => {
+            AssistantSource::Imported => {
+                let content = self.read_user_rule_with_fallback(user_id, id, locale);
+                let encoded = encode_filename_component(id);
+                let has_file = std::fs::read_dir(self.user_rules_dir_for_user(user_id))
+                    .ok()
+                    .is_some_and(|entries| {
+                        entries.flatten().any(|entry| {
+                            let name = entry.file_name();
+                            let name = name.to_string_lossy();
+                            name.ends_with(".md")
+                                && (name.starts_with(&format!("{encoded}.")) || name.starts_with(&format!("{id}.")))
+                        })
+                    });
+                if content.is_empty() && !has_file {
+                    return Ok(crate::marketplace::marketplace_rule_content(id).unwrap_or_default());
+                }
+                Ok(content)
+            }
+            AssistantSource::Generated | AssistantSource::User => {
                 Ok(self.read_user_rule_with_fallback(user_id, id, locale))
             }
         }
@@ -6803,6 +6852,207 @@ mod tests {
         assert_eq!(res.failed, 1);
         assert_eq!(res.errors.len(), 1);
         assert_eq!(res.errors[0].id, "u1");
+    }
+
+    #[tokio::test]
+    async fn imported_rules_and_installed_flags_are_owner_scoped() {
+        let fx = fixture().await;
+        let user_a = create_test_user(&fx._db, "market_a").await;
+        let user_b = create_test_user(&fx._db, "market_b").await;
+        for (owner, rule) in [(user_a.as_str(), "rule A"), (user_b.as_str(), "rule B")] {
+            let result = fx
+                .service
+                .import_personas(
+                    owner,
+                    ImportAssistantsRequest {
+                        assistants: vec![CreateAssistantRequest {
+                            id: Some("scoped-market-expert".into()),
+                            name: "Expert".into(),
+                            rule_content: Some(rule.into()),
+                            ..req_default()
+                        }],
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.imported, 1, "{:?}", result.errors);
+            assert_eq!(
+                fx.service
+                    .read_rule_for_user(owner, "scoped-market-expert", None)
+                    .await
+                    .unwrap(),
+                rule
+            );
+        }
+        assert!(
+            fx.service
+                .exists_for_user(&user_a, "scoped-market-expert")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !fx.service
+                .exists_for_user(DEFAULT_USER_ID, "scoped-market-expert")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !fx.service
+                .exists_for_user("user-c", "scoped-market-expert")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_imported_catalog_rules_recover_without_reading_other_users_files() {
+        let fx = fixture().await;
+        let user = create_test_user(&fx._db, "missing_market_rule").await;
+        let id = "ApiTestingExpert";
+        let result = fx
+            .service
+            .import_personas(
+                &user,
+                ImportAssistantsRequest {
+                    assistants: vec![CreateAssistantRequest {
+                        id: Some(id.into()),
+                        name: "Expert".into(),
+                        rule_content: Some("old rule".into()),
+                        ..req_default()
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.imported, 1);
+        std::fs::remove_file(fx.service.user_rule_path_for_user(&user, id, None)).unwrap();
+        assert_eq!(
+            fx.service.read_rule_for_user(&user, id, None).await.unwrap(),
+            crate::marketplace::marketplace_rule_content(id).unwrap()
+        );
+        fx.service.write_rule_for_user(&user, id, None, "").await.unwrap();
+        assert!(fx.service.read_rule_for_user(&user, id, None).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn team_expert_dependencies_keep_rules_isolated_and_reconcile_only_their_source() {
+        let fx = fixture().await;
+        let owner = create_test_user(&fx._db, "team_expert_owner").await;
+        let member = create_test_user(&fx._db, "team_expert_member").await;
+        for user in [&owner, &member] {
+            let result = fx
+                .service
+                .import_personas(
+                    user,
+                    ImportAssistantsRequest {
+                        assistants: vec![CreateAssistantRequest {
+                            id: Some("same-expert".into()),
+                            name: format!("Expert {user}"),
+                            ..req_default()
+                        }],
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.imported, 1);
+        }
+        fx.service
+            .write_rule_for_user(&owner, "same-expert", None, "Central expert standing rules")
+            .await
+            .unwrap();
+        fx.service
+            .write_rule_for_user(&member, "same-expert", None, "Personal rules must survive")
+            .await
+            .unwrap();
+        let mut snapshot = fx
+            .service
+            .export_team_assistant(&owner, "same-expert", None)
+            .await
+            .unwrap();
+        let ids = fx
+            .service
+            .materialize_team_assistants(&member, "server-a", &[snapshot.clone()])
+            .await
+            .unwrap();
+        let local = ids.get(&snapshot.key).unwrap().clone();
+        assert_ne!(local, "same-expert");
+        let visible = fx.service.list_for_user(&member).await.unwrap();
+        assert!(!visible.iter().any(|assistant| assistant.id == local));
+        assert!(visible.iter().any(|assistant| assistant.id == "same-expert"));
+        let detail = fx.service.get_detail_for_user(&member, &local, None).await.unwrap();
+        assert_eq!(detail.rules.content, "Central expert standing rules");
+        assert_eq!(detail.defaults.mcps.mode, "fixed");
+        assert!(detail.defaults.mcps.value.is_empty());
+        assert!(fx.service.get_detail_for_user(&owner, &local, None).await.is_err());
+        snapshot.rules = "Updated central rules".into();
+        let ids2 = fx
+            .service
+            .materialize_team_assistants(&member, "server-a", &[snapshot.clone()])
+            .await
+            .unwrap();
+        assert_eq!(ids, ids2);
+        assert_eq!(
+            fx.service.read_rule_for_user(&member, &local, None).await.unwrap(),
+            "Updated central rules"
+        );
+        fx.service
+            .prune_team_assistants(&member, "server-b", &[])
+            .await
+            .unwrap();
+        assert!(fx.service.get_detail_for_user(&member, &local, None).await.is_ok());
+        fx.service
+            .prune_team_assistants(&member, "server-a", &[local.clone()])
+            .await
+            .unwrap();
+        assert!(fx.service.get_detail_for_user(&member, &local, None).await.is_ok());
+        fx.service
+            .prune_team_assistants(&member, "server-a", &[])
+            .await
+            .unwrap();
+        assert!(fx.service.get_detail_for_user(&member, &local, None).await.is_err());
+        assert_eq!(
+            fx.service
+                .read_rule_for_user(&member, "same-expert", None)
+                .await
+                .unwrap(),
+            "Personal rules must survive"
+        );
+    }
+
+    #[tokio::test]
+    async fn team_expert_materialization_refuses_a_personal_namespace_collision() {
+        use sha2::{Digest, Sha256};
+        let fx = fixture().await;
+        fx.service
+            .create(CreateAssistantRequest {
+                id: Some("central-expert".into()),
+                name: "Central".into(),
+                ..req_default()
+            })
+            .await
+            .unwrap();
+        let snapshot = fx
+            .service
+            .export_team_assistant(DEFAULT_USER_ID, "central-expert", None)
+            .await
+            .unwrap();
+        let source_ref = format!("team:\"server-a\":{}", snapshot.key);
+        let local = format!("team_{:x}", Sha256::digest(source_ref.as_bytes()));
+        fx.service
+            .create(CreateAssistantRequest {
+                id: Some(local.clone()),
+                name: "Personal collision".into(),
+                ..req_default()
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            fx.service
+                .materialize_team_assistants(DEFAULT_USER_ID, "server-a", &[snapshot])
+                .await,
+            Err(AssistantError::Conflict(_))
+        ));
+        assert_eq!(fx.service.get(&local).await.unwrap().name, "Personal collision");
     }
 
     #[tokio::test]

@@ -99,7 +99,8 @@ pub(crate) fn is_auto_injected_builtin(name: &str) -> bool {
 /// - an explicit snapshot (`selected_ids`) defines the session's servers, and
 ///   they are injected regardless of the current global `enabled` flag — a
 ///   conversation keeps what it was created with;
-/// - without a snapshot, every enabled row applies;
+/// - without a snapshot, enabled personal rows apply; distributed company
+///   connectors require explicit selection or an employee's bound snapshot;
 /// - built-ins are excluded either way, **except** the auto-injected ones,
 ///   which follow their own `enabled` flag under both branches. That exception
 ///   is the whole point of this function: it is what makes media generation
@@ -142,7 +143,14 @@ pub(crate) async fn load_session_mcp_rows(
             }
             selected_ids
                 .map(|ids| ids.iter().any(|id| id == &row.id))
-                .unwrap_or(row.enabled)
+                .unwrap_or_else(|| {
+                    let distributed = row
+                        .original_json
+                        .as_deref()
+                        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                        .is_some_and(|value| value.get("teamRegistryId").is_some_and(|id| id.is_string()));
+                    row.enabled && !distributed
+                })
         })
         .collect()
 }
@@ -225,6 +233,26 @@ mod tests {
 
     fn names(rows: &[McpServerRow]) -> Vec<&str> {
         rows.iter().map(|r| r.name.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn a_large_company_catalog_is_available_but_never_implicitly_connected() {
+        let mut rows = vec![row("personal", "personal", true, false)];
+        for index in 0..500 {
+            let id = format!("team-{index}");
+            let mut server = row(&id, &id, true, false);
+            server.original_json = Some(format!(r#"{{"teamRegistryId":"registry-{index}"}}"#));
+            rows.push(server);
+        }
+        let repo = FakeRepo { rows };
+        assert_eq!(
+            names(&load_session_mcp_rows(&repo, None, "u", "c").await),
+            vec!["personal"]
+        );
+        assert_eq!(
+            names(&load_session_mcp_rows(&repo, Some(&["team-499".into()]), "u", "c").await),
+            vec!["team-499"]
+        );
     }
 
     /// Web search has to reach a conversation the same way media does.

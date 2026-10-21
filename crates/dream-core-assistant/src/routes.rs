@@ -145,6 +145,7 @@ async fn import_personas(
 /// caller's own assistant list.
 async fn marketplace_list(
     State(state): State<AssistantRouterState>,
+    Extension(user): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<Vec<MarketplacePersonaResponse>>>, ApiError> {
     let entries = state
         .marketplace_repo
@@ -154,7 +155,7 @@ async fn marketplace_list(
 
     let mut result = Vec::with_capacity(entries.len());
     for entry in entries {
-        let installed = state.service.exists(&entry.id).await?;
+        let installed = state.service.exists_for_user(&user.id, &entry.id).await?;
         let avatar = entry
             .has_avatar
             .then(|| format!("/api/assistants/marketplace/{}/avatar", entry.id));

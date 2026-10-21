@@ -9,7 +9,6 @@ use dream_core_mcp::types::McpServerTransport;
 use dream_domain_devops::DevopsService;
 use dream_domain_employee::{EmployeeService, TEAM_ORIGIN, TRIGGER_CHAT};
 use serde_json::Value;
-#[cfg(feature = "enterprise")]
 use sha2::{Digest, Sha256};
 
 #[derive(Default)]
@@ -18,7 +17,6 @@ pub(crate) struct EmployeeRuntime {
     /// Local team copies — consulted only for employees the company
     /// distributed (`origin = 'team'`).
     team: Option<TeamResourceSource>,
-    #[cfg(feature = "enterprise")]
     revisions: tokio::sync::Mutex<HashMap<String, [u8; 32]>>,
 }
 
@@ -46,7 +44,6 @@ impl EmployeeRuntime {
         })
     }
 
-    #[cfg(feature = "enterprise")]
     pub(crate) async fn check_conversation(&self, actor: &str, conversation: &str) -> Result<(), AgentError> {
         let Some((employee, devops)) = self.services.get() else {
             return Ok(());
@@ -54,7 +51,7 @@ impl EmployeeRuntime {
         let Some(agent) = employee
             .runtime_agent_for_conversation(actor, conversation)
             .await
-            .map_err(|e| AgentError::internal(e.to_string()))?
+            .map_err(|e| AgentError::internal(format!("Employee is unavailable or no longer authorized: {e}")))?
         else {
             return Ok(());
         };
@@ -64,6 +61,33 @@ impl EmployeeRuntime {
         revision.update(agent.automation_config.as_bytes());
         revision.update(agent.updated_at.to_le_bytes());
         let skills = binding_ids(&config, "boundSkillIds")?;
+        if agent.origin == TEAM_ORIGIN {
+            let team = self
+                .team
+                .as_ref()
+                .ok_or_else(|| AgentError::internal("Team resources are unavailable"))?;
+            for id in &skills {
+                let (_, content) = dream_core_extension::team_sync::read_team_skill(&team.skills_dir, id)
+                    .await
+                    .ok_or_else(unavailable_skill)?;
+                revision.update(id.as_bytes());
+                revision.update(content.as_bytes());
+            }
+            for id in binding_ids(&config, "boundMcpIds")? {
+                let (_, transport) = team
+                    .mcp
+                    .team_server_transport(actor, &id)
+                    .await
+                    .map_err(|e| AgentError::internal(e.to_string()))?
+                    .ok_or_else(unavailable_mcp)?;
+                revision.update(id.as_bytes());
+                let mut transport = serde_json::to_value(session_transport(transport))
+                    .map_err(|e| AgentError::internal(e.to_string()))?;
+                transport.sort_all_objects();
+                revision.update(serde_json::to_vec(&transport).map_err(|e| AgentError::internal(e.to_string()))?);
+            }
+            return self.check_revision(conversation, revision.finalize().into()).await;
+        }
         if !skills.is_empty() {
             let available = devops
                 .runtime_skills(actor)
@@ -104,6 +128,10 @@ impl EmployeeRuntime {
             }
         }
         let revision: [u8; 32] = revision.finalize().into();
+        self.check_revision(conversation, revision).await
+    }
+
+    async fn check_revision(&self, conversation: &str, revision: [u8; 32]) -> Result<(), AgentError> {
         let mut revisions = self.revisions.lock().await;
         let initial = revisions.entry(conversation.to_owned()).or_insert(revision);
         if *initial != revision {
@@ -130,6 +158,15 @@ impl EmployeeRuntime {
             .map_err(|_| AgentError::internal("Invalid employee automation configuration"))?;
         let skill_ids = binding_ids(&config, "boundSkillIds")?;
         let mcp_ids = binding_ids(&config, "boundMcpIds")?;
+        // An employee carries an explicit resource scope. Inheriting `None`
+        // here would connect every enabled enterprise connector, even when
+        // this employee binds only one (or none).
+        let selected_local = match &mut options.context.kind {
+            AgentSessionKind::DreamEngine(context) => employee_mcp_selection(&mut context.config.mcp_server_ids),
+            AgentSessionKind::Acp(context) => employee_mcp_selection(&mut context.config.mcp_server_ids),
+            AgentSessionKind::Antigravity(_) => Vec::new(),
+        };
+        tracing::info!(employee_id = %agent.id, bound_mcp_count = mcp_ids.len(), selected_mcp_count = selected_local.len(), "Resolved employee MCP scope");
         let persona = employee_persona(&config, &trigger, &agent.origin);
         if skill_ids.is_empty() && mcp_ids.is_empty() && persona.trim().is_empty() {
             return Ok(());
@@ -170,13 +207,6 @@ impl EmployeeRuntime {
             }
         }
 
-        // Local user servers this session loads anyway: an explicit snapshot,
-        // or — with none — every enabled one (see `load_session_mcp_rows`).
-        let selected_local = match &options.context.kind {
-            AgentSessionKind::DreamEngine(context) => context.config.mcp_server_ids.clone(),
-            AgentSessionKind::Acp(context) => context.config.mcp_server_ids.clone(),
-            AgentSessionKind::Antigravity(_) => None,
-        };
         let mut servers = Vec::with_capacity(mcp_ids.len());
         if !mcp_ids.is_empty() {
             let registry = match team {
@@ -201,7 +231,7 @@ impl EmployeeRuntime {
                         // process and makes every one of its tools collide with
                         // itself; the engine then renames them after the
                         // server — a company name the provider API rejects.
-                        if already_loaded(selected_local.as_deref(), &local_id) {
+                        if already_loaded(Some(&selected_local), &local_id) {
                             continue;
                         }
                         session_transport(transport)
@@ -286,6 +316,10 @@ fn already_loaded(selected_local: Option<&[String]>, local_id: &str) -> bool {
     selected_local.is_none_or(|ids| ids.iter().any(|id| id == local_id))
 }
 
+fn employee_mcp_selection(selected: &mut Option<Vec<String>>) -> Vec<String> {
+    selected.get_or_insert_default().clone()
+}
+
 fn unavailable_skill() -> AgentError {
     AgentError::internal("Bound skill is unavailable or not authorized for this member")
 }
@@ -347,6 +381,25 @@ fn binding_ids(config: &Value, key: &str) -> Result<Vec<String>, AgentError> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn an_existing_employee_session_rejects_changed_dependencies() {
+        let runtime = EmployeeRuntime::default();
+        assert!(runtime.check_revision("conversation", [1; 32]).await.is_ok());
+        assert!(runtime.check_revision("conversation", [1; 32]).await.is_ok());
+        assert!(runtime.check_revision("conversation", [2; 32]).await.is_err());
+    }
+
+    #[test]
+    fn employee_without_a_snapshot_never_inherits_global_connectors() {
+        let mut selected = None;
+        assert!(employee_mcp_selection(&mut selected).is_empty());
+        assert_eq!(selected, Some(Vec::new()));
+        assert!(!already_loaded(selected.as_deref(), "unrelated_enabled_server"));
+        let mut explicit = Some(vec!["selected_personal_server".to_owned()]);
+        assert_eq!(employee_mcp_selection(&mut explicit), vec!["selected_personal_server"]);
+        assert_eq!(explicit, Some(vec!["selected_personal_server".to_owned()]));
+    }
 
     #[test]
     fn explicit_persona_wins_for_every_trigger() {

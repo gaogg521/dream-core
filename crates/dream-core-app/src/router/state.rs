@@ -6,6 +6,53 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+pub(super) fn employee_assistant_dependencies(
+    service: Arc<AssistantService>,
+) -> Arc<dyn dream_domain_employee::state::EmployeeAssistantDependencies> {
+    struct Adapter(Arc<AssistantService>);
+    #[async_trait::async_trait]
+    impl dream_domain_employee::state::EmployeeAssistantDependencies for Adapter {
+        async fn export_batch(
+            &self,
+            references: &[(String, String, Option<String>)],
+        ) -> Result<Vec<dream_core_api_types::employee_sync::TeamAssistantSnapshot>, String> {
+            self.0
+                .export_team_assistants(references)
+                .await
+                .map_err(|error| error.to_string())
+        }
+        async fn export(
+            &self,
+            owner: &str,
+            id: &str,
+            agent_override: Option<&str>,
+        ) -> Result<dream_core_api_types::employee_sync::TeamAssistantSnapshot, String> {
+            self.0
+                .export_team_assistant(owner, id, agent_override)
+                .await
+                .map_err(|error| error.to_string())
+        }
+        async fn materialize(
+            &self,
+            user: &str,
+            scope: &str,
+            snapshots: &[dream_core_api_types::employee_sync::TeamAssistantSnapshot],
+        ) -> Result<std::collections::HashMap<String, String>, String> {
+            self.0
+                .materialize_team_assistants(user, scope, snapshots)
+                .await
+                .map_err(|error| error.to_string())
+        }
+        async fn prune(&self, user: &str, scope: &str, retained: &[String]) -> Result<(), String> {
+            self.0
+                .prune_team_assistants(user, scope, retained)
+                .await
+                .map_err(|error| error.to_string())
+        }
+    }
+    Arc::new(Adapter(service))
+}
+
 use dream_core_ai_agent::{AgentRouterState, AgentService, RemoteAgentRouterState, RemoteAgentService};
 use dream_core_assistant::{
     AssistantAgentCatalogPort, AssistantError, AssistantRouterState, AssistantService, BuiltinAssistantRegistry,

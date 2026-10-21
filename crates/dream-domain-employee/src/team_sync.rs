@@ -109,7 +109,7 @@ pub async fn sync_team_agents(
             )
             .await?;
         if let Some(existing) = &existing
-            && existing.origin != TEAM_ORIGIN
+            && (existing.origin != TEAM_ORIGIN || existing.owner_user_id != owner_user_id)
         {
             report.conflicts.push(payload.name.clone());
             continue;
@@ -121,6 +121,23 @@ pub async fn sync_team_agents(
             .unwrap_or_else(|| serde_json::json!({}))
             .to_string();
         let model = serialize_model(payload.model.as_ref())?;
+        if existing.as_ref().is_some_and(|row| {
+            row.owner_user_id == owner_user_id
+                && row.tenant_id == tenant_id
+                && row.name == payload.name
+                && row.description == payload.description
+                && row.agent_type == payload.agent_type
+                && row.custom_agent_id == payload.custom_agent_id
+                && row.cli_path == payload.cli_path
+                && row.assistant_id == payload.assistant_id
+                && row.agent_id_override == payload.agent_id_override
+                && row.model_id == payload.model_id
+                && row.model == model
+                && row.automation_config == automation_config
+        }) {
+            wanted.insert(payload.id.clone());
+            continue;
+        }
         let now = now_ms() as i64;
 
         if existing.is_some() {
@@ -300,6 +317,31 @@ mod tests {
         assert!(report.written.is_empty() && report.removed.is_empty());
         assert!(get_row(&pool, "pa-1").await.is_some());
         assert!(get_row(&pool, "pa-2").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn unchanged_team_sync_preserves_timestamp_and_cannot_steal_another_users_copy() {
+        let pool = test_pool().await;
+        sync_team_agents(&pool, "member-1", "t1", &[payload("pa-stable", "Stable")], true)
+            .await
+            .unwrap();
+        pool.execute(
+            "UPDATE one_personal_agents SET updated_at = 12345 WHERE id = 'pa-stable'",
+            &[],
+        )
+        .await
+        .unwrap();
+        let report = sync_team_agents(&pool, "member-1", "t1", &[payload("pa-stable", "Stable")], true)
+            .await
+            .unwrap();
+        assert!(report.written.is_empty());
+        assert_eq!(report.kept, 1);
+        assert_eq!(get_row(&pool, "pa-stable").await.unwrap().updated_at, 12345);
+        let report = sync_team_agents(&pool, "member-2", "t2", &[payload("pa-stable", "Stolen")], true)
+            .await
+            .unwrap();
+        assert_eq!(report.conflicts, ["Stolen"]);
+        assert_eq!(get_row(&pool, "pa-stable").await.unwrap().owner_user_id, "member-1");
     }
 
     #[tokio::test]

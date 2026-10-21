@@ -61,6 +61,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "020_knowledge_directories",
         include_str!("../migrations/020_knowledge_directories.sql"),
     ),
+    (
+        "021_knowledge_content_revision",
+        include_str!("../migrations/021_knowledge_content_revision.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -122,6 +126,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "020_knowledge_directories",
         include_str!("../migrations_mysql/020_knowledge_directories.sql"),
+    ),
+    (
+        "021_knowledge_content_revision",
+        include_str!("../migrations_mysql/021_knowledge_content_revision.sql"),
     ),
 ];
 

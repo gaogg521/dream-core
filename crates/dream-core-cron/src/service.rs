@@ -465,12 +465,13 @@ impl CronService {
     }
 
     pub async fn remove_job(&self, user_id: &str, job_id: &str) -> Result<(), CronError> {
+        // The owner-scoped delete must succeed before any scheduler or file side effect.
+        self.repo.delete_for_user(user_id, job_id).await?;
         self.scheduler.cancel_job(job_id);
         if let Err(err) = delete_skill_file(&self.data_dir, job_id).await {
             warn!(job_id, error = %err, "Failed to delete cron skill file during job removal");
         }
         self.delete_skill_row_for_job(user_id, job_id).await;
-        self.repo.delete_for_user(user_id, job_id).await?;
         self.emitter.emit_job_removed(user_id, job_id);
         info!(job_id, "Cron job removed");
         Ok(())

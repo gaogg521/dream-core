@@ -2227,6 +2227,35 @@ async fn cj11_delete_job() {
     assert_eq!(events[0].name, "cron.job-removed");
 }
 
+#[tokio::test]
+async fn rejected_cross_user_delete_preserves_owner_skill_and_job() {
+    let (svc, skill_repo) = setup_with_skill_repo().await;
+    let job = svc
+        .add_job("u1", make_create_req("Owner job", every_60s()))
+        .await
+        .unwrap();
+    svc.save_skill(
+        "u1",
+        &job.id,
+        SaveCronSkillRequest {
+            content: "---\nname: owner\ndescription: preserved\n---\nOwner skill".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(svc.remove_job("u2", &job.id).await.is_err());
+    assert!(svc.get_job("u1", &job.id).await.unwrap().enabled);
+    assert!(svc.has_skill("u1", &job.id).await.unwrap().has_skill);
+    assert!(
+        skill_repo
+            .find_by_name_for_user("u1", &format!("cron-{}", job.id))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    svc.remove_job("u1", &job.id).await.unwrap();
+}
+
 // ── CJ-12: Delete nonexistent ─────────────────────────────────────
 
 #[tokio::test]

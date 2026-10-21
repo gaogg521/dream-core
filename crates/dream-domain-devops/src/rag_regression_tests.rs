@@ -1,5 +1,41 @@
 // Included in service::tests so these exercise the actual service and its ACL fixtures.
 
+#[tokio::test]
+async fn rag_versioned_save_rejects_stale_drafts_and_clears_empty_pending() {
+    let svc = service().await;
+    let doc = svc
+        .register_rag_document("versioned", None, None, None, "org", None, "all", "admin1", None)
+        .await
+        .unwrap();
+    let a = svc.read_rag_content_state("admin1", &doc.id).await.unwrap();
+    let b = svc.read_rag_content_state("admin1", &doc.id).await.unwrap();
+    let revision = svc
+        .set_document_content_if_revision("admin1", &doc.id, "A must survive", a.revision)
+        .await
+        .unwrap();
+    assert!(revision > a.revision);
+    assert!(matches!(
+        svc.set_document_content_if_revision("admin1", &doc.id, "B stale draft", b.revision)
+            .await,
+        Err(DevopsError::ContentConflict)
+    ));
+    let state = svc.read_rag_content_state("admin1", &doc.id).await.unwrap();
+    assert_eq!(state.content, "A must survive");
+    assert_eq!(state.revision, revision);
+    svc.set_document_content_if_revision("admin1", &doc.id, "", revision)
+        .await
+        .unwrap();
+    let row = svc
+        .list_rag_documents("admin1")
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|row| row.id == doc.id)
+        .unwrap();
+    assert_eq!(row.status, "ready");
+    assert_eq!(row.chunk_count, 0);
+}
+
 async fn rag_failed_embedding_endpoint(svc: &DevopsService) -> tokio::task::JoinHandle<()> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());

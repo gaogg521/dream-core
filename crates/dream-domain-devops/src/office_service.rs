@@ -636,7 +636,7 @@ impl OfficeService {
         lease.pending_source = Some(key.clone());
         self.write_lease(&lease).await?;
         let mut transaction = self.documents.db.begin().await?;
-        let updated = transaction.execute("UPDATE one_rag_documents SET file_path = ?, file_size = ?, content = ?, status = ?, chunk_count = 0, last_error = ? WHERE id = ? AND file_path = ?",
+        let updated = transaction.execute("UPDATE one_rag_documents SET file_path = ?, file_size = ?, content = ?, content_revision = content_revision + 1, status = ?, chunk_count = 0, last_error = ? WHERE id = ? AND file_path = ?",
             &db_params![format!("rag-source:{key}"), bytes.len() as i64, &text, if text.trim().is_empty() {"ready"} else {"pending"}, extraction_error, &lease.document, format!("rag-source:{}",lease.current_source)]).await?;
         if updated != 1 {
             return Err(DevopsError::BadRequest(

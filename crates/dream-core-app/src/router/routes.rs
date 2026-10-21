@@ -1738,16 +1738,29 @@ impl dream_core_ai_agent::TurnMemoryRecall for LocalTeamMemoryRecall {
 /// budget shared across a licence cannot be enforced from one machine's view
 /// of it.
 ///
-/// Never fails closed: an install that has not synced holds an empty policy
-/// and allows everything, which is what `None` used to do here.
+/// An install that has not synced holds an empty policy and allows ordinary
+/// personal sends. Employee conversations independently revalidate their
+/// current authorization and dependencies before using a cached runtime.
 #[cfg(not(feature = "enterprise"))]
 struct LocalSendGate {
     policy: std::sync::Arc<dream_core_system::SendPolicyService>,
+    employee_runtime: std::sync::Arc<crate::employee_runtime::EmployeeRuntime>,
 }
 
 #[cfg(not(feature = "enterprise"))]
 #[async_trait::async_trait]
 impl dream_core_conversation::SendGate for LocalSendGate {
+    async fn check_conversation(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+    ) -> Result<(), dream_core_conversation::PolicyDenial> {
+        self.employee_runtime
+            .check_conversation(user_id, conversation_id)
+            .await
+            .map_err(|error| dream_core_conversation::PolicyDenial::new("EMPLOYEE_RESOURCE_DENIED", error.to_string()))
+    }
+
     async fn check_send(
         &self,
         user_id: &str,
@@ -3733,6 +3746,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .service
         .with_send_gate(std::sync::Arc::new(LocalSendGate {
             policy: services.send_policy.clone(),
+            employee_runtime: services.employee_runtime.clone(),
         }));
     #[cfg(feature = "enterprise")]
     states
@@ -3786,6 +3800,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     #[cfg(not(feature = "enterprise"))]
     let conversation_ops_state = conversation_ops_state.with_send_gate(std::sync::Arc::new(LocalSendGate {
         policy: services.send_policy.clone(),
+        employee_runtime: services.employee_runtime.clone(),
     }));
     #[cfg(feature = "enterprise")]
     let conversation_ops_state = conversation_ops_state.with_send_gate(std::sync::Arc::new(BillingSendGate {
@@ -3866,6 +3881,8 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
 
     // Assistant routes protected by auth middleware (T1a skeleton: all
     // handlers return 500 "not implemented"; T1b wires real service)
+    let employee_assistant_dependencies =
+        super::state::employee_assistant_dependencies(states.assistant.service.clone());
     let assistant_authenticated =
         assistant_routes(states.assistant).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -3948,7 +3965,8 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .bind(one_employee_service.clone(), one_devops_service.clone());
     super::employee_notifications::bind(&one_employee_service, &states.channel);
     one_employee_service.spawn_scheduler();
-    let one_employee_state = dream_domain_employee::OneEmployeeRouterState::new(one_employee_service.clone());
+    let one_employee_state = dream_domain_employee::OneEmployeeRouterState::new(one_employee_service.clone())
+        .with_assistant_dependencies(employee_assistant_dependencies);
     #[cfg(feature = "enterprise")]
     let one_employee_state = one_employee_state.with_tenant_resolver(tenant_resolver.clone());
     let one_employee_authenticated = dream_domain_employee::one_employee_routes(one_employee_state)

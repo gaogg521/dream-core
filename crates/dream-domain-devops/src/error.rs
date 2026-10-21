@@ -14,6 +14,9 @@ pub enum DevopsError {
     #[error("Bad request: {0}")]
     BadRequest(String),
 
+    #[error("Document changed in another editor; reopen it before saving")]
+    ContentConflict,
+
     #[error("Forbidden: {0}")]
     Forbidden(String),
 
@@ -34,6 +37,7 @@ impl DevopsError {
         match self {
             Self::NotFound(_) => "NOT_FOUND",
             Self::BadRequest(_) => "BAD_REQUEST",
+            Self::ContentConflict => "KNOWLEDGE_CONTENT_CONFLICT",
             Self::Forbidden(_) => "FORBIDDEN",
             Self::MachineBlocked(_) => "MACHINE_BLOCKED",
             Self::Internal(_) => "INTERNAL_ERROR",
@@ -44,6 +48,7 @@ impl DevopsError {
         match self {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::ContentConflict => StatusCode::CONFLICT,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::MachineBlocked(_) => StatusCode::FORBIDDEN,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,

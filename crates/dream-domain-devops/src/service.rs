@@ -2140,6 +2140,29 @@ impl DevopsService {
 
     /// Set a document's inline content (the text to embed on process).
     pub async fn set_document_content(&self, actor_user_id: &str, id: &str, content: &str) -> Result<(), DevopsError> {
+        self.save_document_content(actor_user_id, id, content, None)
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn set_document_content_if_revision(
+        &self,
+        actor_user_id: &str,
+        id: &str,
+        content: &str,
+        expected_revision: i64,
+    ) -> Result<i64, DevopsError> {
+        self.save_document_content(actor_user_id, id, content, Some(expected_revision))
+            .await
+    }
+
+    async fn save_document_content(
+        &self,
+        actor_user_id: &str,
+        id: &str,
+        content: &str,
+        expected_revision: Option<i64>,
+    ) -> Result<i64, DevopsError> {
         let team_id: Option<String> = self
             .db
             .fetch_optional_scalar("SELECT team_id FROM one_rag_documents WHERE id = ?", &db_params![id])
@@ -2154,12 +2177,19 @@ impl DevopsService {
         let mut tx = self.db.begin().await?;
         let updated = tx
             .execute(
-                "UPDATE one_rag_documents SET content = ?, status = 'pending', chunk_count = 0, last_error = NULL WHERE id = ?",
-                &db_params![content, id],
+                "UPDATE one_rag_documents SET content = ?, status = ?, content_revision = content_revision + 1, \
+                 chunk_count = 0, last_error = NULL WHERE id = ? AND (? IS NULL OR content_revision = ?)",
+                &db_params![
+                    content,
+                    if content.trim().is_empty() { "ready" } else { "pending" },
+                    id,
+                    expected_revision,
+                    expected_revision
+                ],
             )
             .await?;
         if updated == 0 {
-            return Err(DevopsError::NotFound(format!("rag document {id}")));
+            return Err(DevopsError::ContentConflict);
         }
         // Invalidate both derived indexes in the same transaction as the edit.
         // In particular an empty edit has no background indexing job, and must
@@ -2176,8 +2206,41 @@ impl DevopsService {
         }
         tx.execute("DELETE FROM one_rag_chunks WHERE document_id = ?", &db_params![id])
             .await?;
+        let revision: i64 = tx
+            .fetch_one_scalar(
+                "SELECT content_revision FROM one_rag_documents WHERE id = ?",
+                &db_params![id],
+            )
+            .await?;
         tx.commit().await?;
-        Ok(())
+        Ok(revision)
+    }
+
+    pub async fn read_rag_content_state(
+        &self,
+        viewer: &str,
+        id: &str,
+    ) -> Result<dream_core_api_types::knowledge::RagContentState, DevopsError> {
+        if !self
+            .list_rag_documents(viewer)
+            .await?
+            .iter()
+            .any(|document| document.id == id)
+        {
+            return Err(DevopsError::Forbidden("document is not visible to this member".into()));
+        }
+        let (content, revision): (Option<String>, i64) = self
+            .db
+            .fetch_optional_as(
+                "SELECT content, content_revision FROM one_rag_documents WHERE id = ?",
+                &db_params![id],
+            )
+            .await?
+            .ok_or_else(|| DevopsError::NotFound(format!("rag document {id}")))?;
+        Ok(dream_core_api_types::knowledge::RagContentState {
+            content: content.unwrap_or_default(),
+            revision,
+        })
     }
 
     /// Read using the library visibility policy, including grants and private ownership.

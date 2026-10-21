@@ -26,7 +26,7 @@ use dream_core_api_types::{
 };
 use dream_core_common::{AgentType, ProviderWithModel, now_ms};
 use dream_core_conversation::{ConversationAgentTurnRequest, ConversationAgentTurnStatus, ConversationService};
-use dream_core_cron::scheduler::compute_next_run;
+use dream_core_cron::scheduler::{compute_next_run, validate_schedule};
 use dream_core_cron::types::schedule_from_dto;
 use dream_core_db::{
     ConversationRowUpdate, DbBackend, DbPool, IConversationRepository, IProviderRepository, MessagePageDirection,
@@ -108,6 +108,12 @@ pub struct ScheduleInput {
     /// The task scheduled runs perform. Written wholesale with the schedule:
     /// `None` (or blank) clears it.
     pub task: Option<String>,
+}
+
+fn validated_employee_next_run(dto: &CronScheduleDto, now: i64) -> Result<i64, EmployeeError> {
+    let schedule = schedule_from_dto(dto);
+    validate_schedule(&schedule).map_err(|error| EmployeeError::BadRequest(error.to_string()))?;
+    compute_next_run(&schedule, now).ok_or_else(|| EmployeeError::BadRequest("schedule has no next occurrence".into()))
 }
 
 fn short_id(prefix: &str) -> String {
@@ -1806,11 +1812,13 @@ impl EmployeeService {
             .map(|v| v.to_string());
 
         let enabled = input.enabled.unwrap_or_else(|| schedule_json.is_some());
+        if enabled && input.schedule.is_none() {
+            return Err(EmployeeError::BadRequest(
+                "an enabled schedule requires a schedule".into(),
+            ));
+        }
         let next_run_at: Option<i64> = match &input.schedule {
-            Some(dto) if enabled => {
-                let schedule = schedule_from_dto(dto);
-                compute_next_run(&schedule, now_ms())
-            }
+            Some(dto) if enabled => Some(validated_employee_next_run(dto, now_ms())?),
             _ => None,
         };
 
@@ -2270,7 +2278,7 @@ impl EmployeeService {
         self.persist_run_outcome(run_id, status, turn_id.as_deref(), summary.as_deref(), error.as_deref())
             .await;
         if trigger_source == TRIGGER_CRON {
-            self.recompute_next_run(&agent.id).await;
+            self.recompute_next_run(&agent.id, true).await;
         }
     }
 
@@ -2341,11 +2349,11 @@ impl EmployeeService {
     /// Recompute `next_run_at` for the given agent after a cron-triggered
     /// run lands. Uses upstream `compute_next_run` so semantics match the
     /// cron driver exactly.
-    async fn recompute_next_run(&self, agent_id: &str) {
+    async fn recompute_next_run(&self, agent_id: &str, occurrence_completed: bool) {
         let row: Result<(Option<String>,), sqlx::Error> = self
             .db
             .fetch_one_as(
-                "SELECT schedule FROM one_personal_agents WHERE id = ?",
+                "SELECT schedule FROM one_personal_agents WHERE id = ? AND schedule_enabled = 1",
                 &db_params![agent_id],
             )
             .await;
@@ -2355,12 +2363,18 @@ impl EmployeeService {
             return;
         };
         let schedule = schedule_from_dto(&dto);
-        let next = compute_next_run(&schedule, now_ms());
+        let finished_once = occurrence_completed && matches!(dto, CronScheduleDto::At { .. });
+        let next = if finished_once {
+            None
+        } else {
+            compute_next_run(&schedule, now_ms())
+        };
         let _ = self
             .db
             .execute(
-                "UPDATE one_personal_agents SET next_run_at = ? WHERE id = ?",
-                &db_params![next, agent_id],
+                "UPDATE one_personal_agents SET next_run_at = ?, schedule_enabled = ? \
+                 WHERE id = ? AND schedule_enabled = 1 AND next_run_at IS NULL AND schedule = ?",
+                &db_params![next, if finished_once { 0 } else { 1 }, agent_id, schedule_json],
             )
             .await;
     }
@@ -2499,7 +2513,7 @@ impl EmployeeService {
             {
                 tracing::error!(agent_id, error = %e, "one-employee scanner: start_personal_run failed");
                 // Restore next_run_at so we retry on the next tick.
-                let _ = self.recompute_next_run(&agent_id).await;
+                self.recompute_next_run(&agent_id, false).await;
             }
         }
         Ok(fired)
@@ -2508,6 +2522,47 @@ impl EmployeeService {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn enabled_employee_schedules_reject_invalid_or_unschedulable_inputs() {
+        for dto in [
+            CronScheduleDto::Every {
+                every_ms: 0,
+                description: None,
+            },
+            CronScheduleDto::Cron {
+                expr: "nonsense".into(),
+                tz: None,
+                description: None,
+            },
+            CronScheduleDto::Cron {
+                expr: "".into(),
+                tz: None,
+                description: None,
+            },
+            CronScheduleDto::Cron {
+                expr: "0 9 * * *".into(),
+                tz: Some("Invalid/Zone".into()),
+                description: None,
+            },
+        ] {
+            assert!(matches!(
+                validated_employee_next_run(&dto, 1_790_000_000_000),
+                Err(EmployeeError::BadRequest(_))
+            ));
+        }
+        assert_eq!(
+            validated_employee_next_run(
+                &CronScheduleDto::Every {
+                    every_ms: 60_000,
+                    description: None
+                },
+                1000
+            )
+            .unwrap(),
+            61_000
+        );
+    }
 
     /// A company channel binding is checked against the channel registry,
     /// not the provider table: unknown, disabled and off-list models are

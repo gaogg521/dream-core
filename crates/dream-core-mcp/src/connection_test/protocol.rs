@@ -371,15 +371,20 @@ pub(super) fn build_tools_list_request(id: u64) -> JsonRpcRequest {
 /// dropped) so the UI can name them; the injection layer is what excludes
 /// them from the request.
 pub(super) fn success_result(tools_value: Option<serde_json::Value>) -> McpConnectionTestResult {
-    let tools: Vec<McpToolResponse> = tools_value
-        .and_then(|v| serde_json::from_value::<ToolsListResult>(v).ok())
-        .map(|r| {
-            r.tools
-                .into_iter()
-                .map(|t| McpToolResponse::new(t.name, t.description, t.input_schema))
-                .collect()
-        })
-        .unwrap_or_default();
+    let parsed = tools_value.and_then(|value| serde_json::from_value::<ToolsListResult>(value).ok());
+    let Some(parsed) = parsed else {
+        tracing::warn!("mcp: invalid tools/list response");
+        return error_result(
+            McpConnectionTestErrorCode::ProtocolError,
+            "Invalid tools/list response: expected an object with a tools array".into(),
+            Some(serde_json::json!({ "stage": "tools/list" })),
+        );
+    };
+    let tools: Vec<McpToolResponse> = parsed
+        .tools
+        .into_iter()
+        .map(|tool| McpToolResponse::new(tool.name, tool.description, tool.input_schema))
+        .collect();
 
     let incompatible: Vec<&McpToolResponse> = tools.iter().filter(|t| !t.is_compatible()).collect();
     if !incompatible.is_empty() {
@@ -739,17 +744,23 @@ mod tests {
     }
 
     #[test]
-    fn success_result_none_gives_empty_tools() {
+    fn success_result_rejects_missing_tools_result() {
         let result = success_result(None);
-        assert!(result.success);
-        assert!(result.tools.unwrap().is_empty());
+        assert!(!result.success);
+        assert_eq!(result.code, Some(McpConnectionTestErrorCode::ProtocolError));
     }
 
     #[test]
-    fn success_result_malformed_gives_empty_tools() {
-        let result = success_result(Some(serde_json::json!("not an object")));
-        assert!(result.success);
-        assert!(result.tools.unwrap().is_empty());
+    fn success_result_rejects_malformed_tools_results() {
+        for value in [
+            serde_json::json!("not an object"),
+            serde_json::json!({}),
+            serde_json::json!({"tools": {}}),
+        ] {
+            let result = success_result(Some(value));
+            assert!(!result.success);
+            assert_eq!(result.code, Some(McpConnectionTestErrorCode::ProtocolError));
+        }
     }
 
     #[test]
