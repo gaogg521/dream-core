@@ -72,8 +72,16 @@ pub struct AntigravitySessionBuildContext {
 #[derive(Debug, Clone)]
 pub struct DreamEngineSessionBuildContext {
     pub config: DreamEngineBuildExtra,
+    /// Authorized execution-time content; never decoded from conversation.extra.
+    pub runtime_skills: Vec<RuntimeSkill>,
     pub team: Option<TeamSessionBinding>,
     pub belongs_to_team: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeSkill {
+    pub name: String,
+    pub content: String,
 }
 
 impl AgentSessionContext {

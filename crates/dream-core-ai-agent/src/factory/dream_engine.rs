@@ -13,6 +13,8 @@ use dream_core_mcp::media_workspace::{media_conversation_env, media_workspace_en
 use dream_core_realtime::EventBroadcaster;
 use dream_core_runtime::ensure_runtime_command_with_reporter;
 use dream_engine_agent::session::{ForkBoundary, Session, SessionManager};
+use dream_engine_agent::skills::frontmatter::{parse_frontmatter, parse_skill_fields};
+use dream_engine_agent::skills::types::{LoadedFrom, SkillSource};
 use dream_engine_config::compat::OpenAiApiMode;
 use dream_engine_config::config::{McpServerConfig, TransportType};
 use dream_engine_protocol::ToolCallGuard;
@@ -45,10 +47,6 @@ pub(super) async fn build(
     // Merge preset assistant rules into system_prompt (used as custom_prompt
     // in dream's build_system_prompt). Mirrors the old architecture's
     // `init_history` injection of `[Assistant System Rules]`.
-    // DreamEngineBuildExtra parses `skills` so Team preset snapshots preserve the
-    // target contract. Native skill materialization for DreamEngine is tracked as a
-    // separate follow-up because this factory currently has no stable DreamEngine
-    // skill-loading path.
     if let Some(rules) = overrides.preset_rules.take() {
         overrides.system_prompt = Some(match overrides.system_prompt.take() {
             Some(existing) => format!("{existing}\n\n{rules}"),
@@ -200,6 +198,29 @@ pub(super) async fn build(
         overrides.fork.as_ref(),
     )?;
 
+    let mut host_skills = deps
+        .skill_manager
+        .engine_skills_for_user(&ctx.user_id, &resolved_skills)
+        .await?;
+    for runtime_skill in build_context.runtime_skills {
+        let existing = host_skills.iter().position(|skill| skill.name == runtime_skill.name);
+        let root = existing.and_then(|index| host_skills[index].skill_root.clone());
+        let parsed = parse_frontmatter(&runtime_skill.content);
+        let skill = parse_skill_fields(
+            &parsed.frontmatter,
+            &parsed.content,
+            &runtime_skill.name,
+            SkillSource::Managed,
+            LoadedFrom::Managed,
+            root.as_deref(),
+        );
+        if let Some(index) = existing {
+            host_skills[index] = skill;
+        } else {
+            host_skills.push(skill);
+        }
+    }
+    debug!(conversation_id = %ctx.conversation_id, skill_count = host_skills.len(), "Resolved host skills for engine session");
     let config = DreamEngineResolvedConfig {
         provider,
         api_key,
@@ -218,6 +239,7 @@ pub(super) async fn build(
         session_directory,
         session_mode: overrides.session_mode,
         skills: resolved_skills,
+        host_skills,
         extra_mcp_servers,
         bedrock_config,
         runtime_env: with_managed_node_on_path(ctx.runtime_env),

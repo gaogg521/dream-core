@@ -450,6 +450,7 @@ impl DreamEngineAgentManager {
         let provider_label = config.provider_label.clone();
 
         let mut bootstrap = AgentBootstrap::new(config, &workspace, sink)
+            .host_skills(config_extra.host_skills)
             .runtime_env(runtime_env)
             .vision_unavailable_reason(vision_unavailable_reason);
         if let Some(session) = resume_session {

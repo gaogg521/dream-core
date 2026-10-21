@@ -129,6 +129,7 @@ fn make_dream_engine_options(
         team: None,
         kind: AgentSessionKind::DreamEngine(Box::new(DreamEngineSessionBuildContext {
             config,
+            runtime_skills: Vec::new(),
             team: None,
             belongs_to_team: false,
         })),

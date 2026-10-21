@@ -1369,6 +1369,7 @@ mod tests {
         let mut de = base(AgentSessionKind::DreamEngine(Box::new(
             DreamEngineSessionBuildContext {
                 config: Default::default(),
+                runtime_skills: Vec::new(),
                 team: None,
                 belongs_to_team: false,
             },

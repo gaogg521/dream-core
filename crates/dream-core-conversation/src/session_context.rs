@@ -510,6 +510,7 @@ fn build_engine_context(
     }
     DreamEngineSessionBuildContext {
         config,
+        runtime_skills: Vec::new(),
         team,
         belongs_to_team,
     }

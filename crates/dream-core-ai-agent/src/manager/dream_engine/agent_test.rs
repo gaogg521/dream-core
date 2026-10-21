@@ -43,6 +43,7 @@ fn make_test_config() -> DreamEngineResolvedConfig {
         session_directory: env::temp_dir().join("dream-engine-test-sessions"),
         session_mode: None,
         skills: Vec::new(),
+        host_skills: Vec::new(),
         extra_mcp_servers: HashMap::new(),
         bedrock_config: None,
         runtime_env: Vec::new(),

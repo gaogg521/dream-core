@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
+use dream_core_ai_agent::session_context::RuntimeSkill;
 use dream_core_ai_agent::{AgentError, AgentSessionKind, task_manager::AgentFactory, types::BuildTaskOptions};
 use dream_core_api_types::{SessionMcpServer, SessionMcpTransport};
 use dream_core_mcp::types::McpServerTransport;
@@ -184,6 +185,7 @@ impl EmployeeRuntime {
         };
 
         let mut instructions = vec![persona.to_owned()];
+        let mut runtime_skills = Vec::new();
         if !skill_ids.is_empty() {
             match team {
                 Some(team) => {
@@ -192,6 +194,7 @@ impl EmployeeRuntime {
                             .await
                             .ok_or_else(unavailable_skill)?;
                         instructions.push(format!("[Bound skill: {name}]\n{content}"));
+                        runtime_skills.push(RuntimeSkill { name, content });
                     }
                 }
                 None => {
@@ -202,11 +205,23 @@ impl EmployeeRuntime {
                     for id in &skill_ids {
                         let skill = registry.iter().find(|s| &s.id == id).ok_or_else(unavailable_skill)?;
                         instructions.push(format!("[Bound skill: {}]\n{}", skill.name, skill.content));
+                        runtime_skills.push(RuntimeSkill {
+                            name: skill.name.clone(),
+                            content: skill.content.clone(),
+                        });
                     }
                 }
             }
         }
 
+        if let AgentSessionKind::DreamEngine(context) = &mut options.context.kind {
+            for skill in &runtime_skills {
+                if !context.config.skills.contains(&skill.name) {
+                    context.config.skills.push(skill.name.clone());
+                }
+            }
+            context.runtime_skills.extend(runtime_skills);
+        }
         let mut servers = Vec::with_capacity(mcp_ids.len());
         if !mcp_ids.is_empty() {
             let registry = match team {

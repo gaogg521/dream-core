@@ -202,6 +202,8 @@ pub struct DreamEngineResolvedConfig {
     pub session_mode: Option<String>,
     /// Resolved skill names from the conversation snapshot.
     pub skills: Vec<String>,
+    /// User-scoped skill definitions consumed by the engine's actual Skill tool.
+    pub host_skills: Vec<dream_engine_agent::skills::types::SkillMetadata>,
     /// Extra MCP servers to inject (team coordination or guide).
     pub extra_mcp_servers: HashMap<String, dream_engine_config::config::McpServerConfig>,
     /// AWS Bedrock credentials (region + access key or profile).

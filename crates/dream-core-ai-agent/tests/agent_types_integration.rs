@@ -107,6 +107,7 @@ fn make_engine_config() -> DreamEngineResolvedConfig {
         session_directory: std::env::temp_dir().join("dream-engine-test-sessions"),
         session_mode: None,
         skills: Vec::new(),
+        host_skills: Vec::new(),
         extra_headers: None,
         extra_mcp_servers: Default::default(),
         bedrock_config: None,
@@ -200,6 +201,7 @@ async fn collect_idle_ignores_dream_engine_agent_type() {
             })),
             AgentType::DreamEngine => AgentSessionKind::DreamEngine(Box::new(DreamEngineSessionBuildContext {
                 config: Default::default(),
+                runtime_skills: Vec::new(),
                 team: None,
                 belongs_to_team: false,
             })),

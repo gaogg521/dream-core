@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
 use dream_core_db::ISkillRepository;
+mod engine;
 use regex::Regex;
 use tokio::sync::RwLock;
 use tracing::{debug, warn};

@@ -192,13 +192,18 @@ async fn au2_unauthenticated_all_endpoints() {
 }
 
 #[test]
-fn cron_skill_does_not_instruct_agents_to_write_payload_files() {
+fn cron_skill_uses_heredocs_on_unix_and_utf8_files_on_windows() {
     let skill = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/builtin-skills/auto-inject/cron/SKILL.md"),
     )
     .unwrap();
 
-    assert!(!skill.contains("--input"));
+    let (unix, windows) = skill.split_once("## Windows (PowerShell)").unwrap();
+    assert!(!unix.contains("--input-file"));
+    assert!(unix.contains("create <<'JSON'"));
+    assert!(windows.contains("UTF8Encoding"));
+    assert!(windows.contains("create --input-file $path"));
+    assert!(windows.contains("Remove-Item $path"));
     assert!(!skill.contains("cat >"));
     assert!(!skill.contains("/tmp/one-cron"));
     assert!(!skill.contains("python3"));

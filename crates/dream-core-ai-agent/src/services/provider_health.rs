@@ -108,6 +108,7 @@ impl ProviderHealthCheckService {
             session_directory: self.data_dir.join("dream-engine-health-check-sessions"),
             session_mode: None,
             skills: Vec::new(),
+            host_skills: Vec::new(),
             extra_mcp_servers: HashMap::new(),
             bedrock_config,
             runtime_env: Vec::new(),
