@@ -119,7 +119,11 @@ impl Fixture {
         // Bounded wait: the reply is asynchronous, and a fixed sleep would either
         // be slow or flaky. Match on session too, so a reply meant for another
         // connection cannot be mistaken for this one's.
-        for _ in 0..200 {
+        // A freshly initialized Git repository can take several seconds under
+        // Windows full-workspace load. Bound elapsed time rather than polling
+        // iterations; the correlated reply and its contents remain mandatory.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        while tokio::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             let sent = self.push.sent.lock().expect("sink");
             if let Some((_, frame)) = sent
@@ -147,7 +151,8 @@ impl Fixture {
     /// Wait for a server-initiated notification (no `id`) with `method`, delivered
     /// to `session`, appearing after index `before`. Returns its `params`.
     async fn wait_for_notification(&self, session: &str, method: &str, before: usize) -> Value {
-        for _ in 0..200 {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        while tokio::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             let sent = self.push.sent.lock().expect("sink");
             if let Some((_, frame)) = sent

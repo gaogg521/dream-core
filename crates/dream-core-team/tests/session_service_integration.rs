@@ -2503,7 +2503,7 @@ async fn teammate_first_wake_uses_canonical_prompt_at_service_boundary() {
     let first_message = &worker_request.content;
     assert!(first_message.contains("## Team Governance"));
     assert!(first_message.contains("You MUST use the `team_*` MCP tools for ALL team coordination."));
-    assert!(first_message.contains("Use team_send_message to report results to the leader"));
+    assert!(first_message.contains("Use team_send_message with `to: \"leader\"` to report results once"));
     assert!(first_message.contains("STOP GENERATING"));
     assert!(!first_message.contains(
         "You execute tasks assigned by the Lead Agent. Focus on completing your assigned work thoroughly and reporting back."
