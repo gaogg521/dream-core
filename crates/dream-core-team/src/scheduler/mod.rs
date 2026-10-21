@@ -114,6 +114,7 @@ pub(crate) struct AgentSlot {
 
 pub struct TeammateManager {
     pub(crate) team_id: String,
+    pub(crate) task_notification_lock: Mutex<()>,
     pub(crate) slots: Mutex<HashMap<String, AgentSlot>>,
     pub(crate) mailbox: Arc<Mailbox>,
     pub(crate) task_board: Arc<TaskBoard>,
@@ -151,6 +152,7 @@ impl TeammateManager {
         let events = TeamEventEmitter::new(team_id.clone(), user_id, broadcaster);
         Self {
             team_id,
+            task_notification_lock: Mutex::new(()),
             slots: Mutex::new(slots),
             mailbox,
             task_board,

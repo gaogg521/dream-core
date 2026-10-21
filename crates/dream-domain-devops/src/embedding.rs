@@ -432,7 +432,14 @@ pub async fn embed(config: &EmbeddingConfig, inputs: &[String]) -> Result<Vec<Ve
         .await
         .map_err(|e| DevopsError::Internal(format!("local embedding worker failed: {e}")))?;
     }
-    let client = reqwest::Client::new();
+    static CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("embedding HTTP client configuration is valid")
+    });
+    let client = &*CLIENT;
     let mut req = client.post(config.endpoint()).json(&EmbeddingRequest {
         model: config.model.trim(),
         input: inputs,

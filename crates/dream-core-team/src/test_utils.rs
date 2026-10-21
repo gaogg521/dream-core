@@ -450,6 +450,10 @@ pub(crate) mod workspace_harness {
             self.set_extra_flag(id, "runtime_attach_failed");
         }
 
+        pub(crate) fn mark_capability_lookup_failed(&self, id: &str) {
+            self.set_extra_flag(id, "capability_lookup_failed");
+        }
+
         fn set_extra_flag(&self, id: &str, key: &str) {
             let mut conversations = self.conversations.lock().unwrap();
             let conversation = conversations
@@ -1199,6 +1203,13 @@ pub(crate) mod workspace_harness {
         }
 
         async fn supports_context_reset(&self, user_id: &str, conversation_id: &str) -> Result<bool, TeamError> {
+            if self
+                .repo
+                .get_extra(conversation_id)
+                .is_some_and(|extra| extra["capability_lookup_failed"] == true)
+            {
+                return Err(TeamError::InvalidRequest("injected capability metadata outage".into()));
+            }
             let conversation = self.repo.get(user_id, conversation_id).await?;
             Ok(conversation.is_some_and(|row| {
                 row.r#type == AgentType::Acp.serde_name()

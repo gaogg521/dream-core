@@ -74,6 +74,13 @@ A teammate going idle immediately after sending you a message does NOT mean they
 - **Idle teammates can receive both task assignments and messages.** Assigning a task to a teammate (team_task_create/team_task_update with `owner`) OR sending them a message both wake them up.
 - **Idle notifications are automatic.** The system sends an idle notification when a teammate's turn ends. You do NOT need to react to every idle notification — only when you want to assign new work or follow up.
 - **Do not treat idle as an error.** A teammate sending a message and then going idle is the normal flow.
+- After delegating, if no substantive result is available, end your turn. Reports and task-unblock events wake you automatically. Do not poll `team_read_messages` or `team_task_list` in a waiting loop, and do not send status-check messages merely to keep the conversation active.
+
+## Finish the Requested Work
+- Keep the user's scope and requested response format throughout delegation.
+- Once substantive teammate results satisfy that scope, give the final response and end your turn.
+- Do not create a new review, research, implementation, or follow-up phase unless the user's request requires it.
+- A routine idle notification or acknowledgement is not a new assignment. Remain silent when there is no actionable new result, blocker, or user request.
 
 ## Sequencing Dependent Work (CRITICAL — avoid teammate timeouts)
 When teammate B's work depends on teammate A's output (e.g. reviewer waits for implementer, tester waits for code), **do NOT dispatch the dependent task to B with a "stand by until A finishes" instruction**.
@@ -82,7 +89,7 @@ Doing so makes B sit in an open LLM stream waiting, which hits the provider's re
 
 **The correct sequencing:**
 1. Dispatch A's task first (via team_task_create with owner=A — this notifies and wakes A). Do NOT assign or message B yet.
-2. Wait for A's idle_notification (signaling A finished).
+2. Wait for A's substantive result report or the task's completion/unblock notification.
 3. Then dispatch B's task — by which time A's output is ready and B can start immediately without waiting.
 
 This applies to any dependency chain: code review, testing, integration, summarization of others' work, etc. Always dispatch sequentially as prerequisites complete, never in parallel with "wait" instructions.
@@ -263,7 +270,7 @@ replying to teammates, so you do not act on stale information. If the result has
 3. Use team_task_update to mark your task as "in_progress" when you start
 4. Do the actual work (read files, write code, search, etc.)
 5. When done, use team_task_update to mark the task "completed"
-6. Use team_send_message to report results to the leader slot_id
+6. Use team_send_message with `to: "leader"` to report results once. This stable team-local alias avoids copying the leader's slot_id.
 
 ## Standing By (CRITICAL — read carefully)
 "Standing by" or "waiting" means **end your current turn**, not generate idle text in a live LLM stream. The system holds you in an idle state and re-wakes you the instant new mailbox messages arrive — there is nothing you need to do meanwhile.
@@ -274,7 +281,7 @@ You are in a "standing by" situation when ANY of these is true:
 - You finished your current task and have nothing else assigned
 
 **The correct way to stand by:**
-1. (Optional) Send ONE short acknowledgement via `team_send_message` to the leader slot_id, e.g. `"Acknowledged, standing by until reviewer-1 finishes"` or `"Ready, no task yet — standing by"`
+1. Remain silent when there is no new result, blocker, or explicit question. Do not send a standing-by acknowledgement: it wakes the recipient without adding actionable work. Report each substantive result once.
 2. **STOP GENERATING.** Do NOT continue producing text like "I am waiting...", "still standing by...", reasoning loops, or repeated status updates. End your turn and return control.
 
 **Why this matters:** if you keep your turn open while "waiting", your underlying LLM request stays open and will hit the provider's hard request timeout (often 300 seconds) — the system will then mark you as failed. Ending the turn is the correct, lossless way to wait. The mailbox + wake mechanism guarantees you will be re-activated the moment work is ready for you.
@@ -399,7 +406,7 @@ mod tests {
         assert!(prompt.contains("Role: teammate"));
         assert!(!prompt.contains("Role: general-purpose AI assistant"));
         assert!(prompt.contains("You MUST use the `team_*` MCP tools for ALL team coordination."));
-        assert!(prompt.contains("Use team_send_message to report results to the leader slot_id"));
+        assert!(prompt.contains("Use team_send_message with `to: \"leader\"` to report results once"));
         assert!(prompt.contains("Leader: Lead (slot_id: lead-1)"));
         assert!(prompt.contains("Display names are only for user-facing text"));
         assert!(prompt.contains("Never pass display names as agent targets"));

@@ -20,6 +20,7 @@
 //! which is what makes the startup backfill and any re-index safe.
 
 pub mod api_assets;
+mod automatic_indexing;
 pub mod breakdown;
 pub mod config_resolver;
 pub mod dlp_service;

@@ -354,7 +354,7 @@ fn tool_specs() -> Vec<TeamToolSpec> {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                    "to": { "type": "string", "description": "Target agent slot_id or \"*\" for broadcast" },
+                    "to": { "type": "string", "description": "Target agent slot_id, \"leader\" for the current team leader, or \"*\" for broadcast. Prefer \"leader\" for result reports." },
                     "message": { "type": "string", "description": "Message content" },
                     "files": {
                         "type": "array",

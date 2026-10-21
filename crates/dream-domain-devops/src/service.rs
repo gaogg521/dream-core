@@ -16,6 +16,8 @@ use crate::models::{
 
 pub struct DevopsService {
     pub(crate) db: DbPool,
+    pub(crate) indexing_jobs: std::sync::Mutex<HashMap<String, tokio::sync::watch::Sender<String>>>,
+    pub(crate) indexing_slots: tokio::sync::Semaphore,
     /// Deployment data-encryption key, for the one thing in this crate that
     /// holds a real credential: company model channels
     /// (`provider_channel`). `None` when the app did not wire one — channel
@@ -87,6 +89,8 @@ impl DevopsService {
     pub fn new(db: DbPool) -> Self {
         Self {
             db,
+            indexing_jobs: std::sync::Mutex::new(HashMap::new()),
+            indexing_slots: tokio::sync::Semaphore::new(2),
             encryption_key: None,
             grants: std::sync::OnceLock::new(),
             config_resolver: std::sync::OnceLock::new(),
@@ -2286,14 +2290,14 @@ impl DevopsService {
     /// chunk rows, and update status/chunk_count. Records the dimension on
     /// first success. Returns the chunk count.
     pub async fn process_rag_document(&self, actor_user_id: &str, id: &str) -> Result<i64, DevopsError> {
-        let row: Option<(Option<String>, Option<String>)> = self
+        let row: Option<(Option<String>, Option<String>, i64)> = self
             .db
-            .fetch_optional_as::<(Option<String>, Option<String>)>(
-                "SELECT content, team_id FROM one_rag_documents WHERE id = ?",
+            .fetch_optional_as::<(Option<String>, Option<String>, i64)>(
+                "SELECT content, team_id, content_revision FROM one_rag_documents WHERE id = ?",
                 &db_params![id],
             )
             .await?;
-        let (content, team_id) = row.ok_or_else(|| DevopsError::NotFound(format!("rag document {id}")))?;
+        let (content, team_id, revision) = row.ok_or_else(|| DevopsError::NotFound(format!("rag document {id}")))?;
         if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
             return Err(DevopsError::Forbidden(
                 "this document belongs to a different project group".into(),
@@ -2315,8 +2319,8 @@ impl DevopsService {
                 let _ = self
                     .db
                     .execute(
-                        "UPDATE one_rag_documents SET status = 'error', last_error = ? WHERE id = ? AND content = ?",
-                        &db_params![e.to_string(), id, &content],
+                        "UPDATE one_rag_documents SET status = 'error', last_error = ? WHERE id = ? AND content_revision = ?",
+                        &db_params![e.to_string(), id, revision],
                     )
                     .await;
                 return Err(e);
@@ -2331,8 +2335,8 @@ impl DevopsService {
         // and the chunk replacement, resurrecting the previous revision.
         let count = chunks.len() as i64;
         let updated = tx.execute(
-            "UPDATE one_rag_documents SET status = 'ready', last_error = NULL, chunk_count = ? WHERE id = ? AND content = ?",
-            &db_params![count, id, &content],
+            "UPDATE one_rag_documents SET status = 'ready', last_error = NULL, chunk_count = ? WHERE id = ? AND content_revision = ?",
+            &db_params![count, id, revision],
         ).await?;
         if updated == 0 {
             return Ok(0);
@@ -2457,15 +2461,16 @@ impl DevopsService {
         };
 
         // Dense half. The ACL lives in the join, exactly as before.
-        let embedding = async {
+        let embedding = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             let config = self.load_embedding_config().await?;
             crate::embedding::embed(&config, &[query.to_owned()])
                 .await?
                 .into_iter()
                 .next()
                 .ok_or_else(|| DevopsError::Internal("empty query embedding".into()))
-        }
-        .await;
+        })
+        .await
+        .unwrap_or_else(|_| Err(DevopsError::Internal("query embedding timed out".into())));
 
         const BASE: &str = "SELECT c.id, c.document_id, c.chunk_index, c.content, c.embedding, d.title                             FROM one_rag_chunks c JOIN one_rag_documents d ON d.id = c.document_id";
         let sql = match acl_predicate.as_deref() {
@@ -2476,8 +2481,6 @@ impl DevopsService {
         for bind in &acl_binds {
             params.push(bind.as_str().into());
         }
-        let rows: Vec<(String, String, i64, String, Vec<u8>, String)> = self.db.fetch_all_as(&sql, &params).await?;
-
         let candidates = crate::retrieval::candidate_limit(limit);
         let lexical_ranked: Vec<String> =
             crate::retrieval::lexical_candidates(&self.db, query, acl_predicate.as_deref(), &acl_binds, candidates)
@@ -2495,9 +2498,25 @@ impl DevopsService {
                 if !crate::retrieval::ensure_fts_table(&self.db).await.is_available() {
                     return Err(error);
                 }
+                if lexical_ranked.is_empty() {
+                    return Ok(Vec::new());
+                }
+                // Fetch only authorized keyword hits, without loading vector blobs.
+                let placeholders = vec!["?"; lexical_ranked.len()].join(",");
+                let mut lexical_sql = format!(
+                    "SELECT c.id, c.document_id, c.chunk_index, c.content, d.title FROM one_rag_chunks c \
+                     JOIN one_rag_documents d ON d.id = c.document_id WHERE c.id IN ({placeholders})"
+                );
+                let mut lexical_params: Vec<DbValue> = lexical_ranked.iter().map(|id| id.as_str().into()).collect();
+                if let Some(predicate) = acl_predicate.as_deref() {
+                    lexical_sql.push_str(&format!(" AND ({predicate})"));
+                    lexical_params.extend(params.iter().cloned());
+                }
+                let rows: Vec<(String, String, i64, String, String)> =
+                    self.db.fetch_all_as(&lexical_sql, &lexical_params).await?;
                 let mut available: HashMap<String, RagSearchHit> = rows
                     .into_iter()
-                    .map(|(id, document_id, chunk_index, content, _, document_title)| {
+                    .map(|(id, document_id, chunk_index, content, document_title)| {
                         (
                             id,
                             RagSearchHit {
@@ -2520,6 +2539,7 @@ impl DevopsService {
             }
         };
 
+        let rows: Vec<(String, String, i64, String, Vec<u8>, String)> = self.db.fetch_all_as(&sql, &params).await?;
         let mut by_id: HashMap<String, (RagSearchHit, f32)> = HashMap::with_capacity(rows.len());
         let mut dense: Vec<(String, f32)> = Vec::with_capacity(rows.len());
         for (chunk_id, document_id, chunk_index, content, blob, document_title) in rows {

@@ -364,13 +364,29 @@ impl TeamSession {
         // cleanup. A concurrently committed intent may not appear in the snapshot,
         // but must remain claimable for the authoritative post-claim reread below.
         let stale_candidates = self.work_coordinator.mailbox_reconcile_candidates(slot_id);
-        let unread = self
+        let mut unread = self
             .mailbox
             .peek_unread(&self.team.id, slot_id)
             .await?
             .into_iter()
             .filter(|message| message.from_agent_id != slot_id)
             .collect::<Vec<_>>();
+        let bookkeeping_ids = unread
+            .iter()
+            .filter(|message| {
+                message.msg_type == crate::types::MailboxMessageType::IdleNotification
+                    && message
+                        .summary
+                        .as_deref()
+                        .is_none_or(|summary| summary.trim().is_empty())
+                    && message.files.as_ref().is_none_or(Vec::is_empty)
+            })
+            .map(|message| message.id.clone())
+            .collect::<Vec<_>>();
+        if !bookkeeping_ids.is_empty() {
+            self.mailbox.mark_read_batch(&self.team.id, &bookkeeping_ids).await?;
+            unread.retain(|message| !bookkeeping_ids.contains(&message.id));
+        }
         let unread_ids = unread.iter().map(|message| message.id.clone()).collect::<Vec<_>>();
         self.work_coordinator.reconcile_mailbox_snapshot(
             slot_id,
@@ -445,7 +461,17 @@ impl TeamSession {
                         .unwrap_or_default();
                     (command, false)
                 } else {
-                    let wake_body = build_wake_payload(&agent, &tasks, &claimed_unread, &current_slot_ids);
+                    let mut wake_body = build_wake_payload(&agent, &tasks, &claimed_unread, &current_slot_ids);
+                    let instructions = self.team_run_manager.user_instructions_for_runs(&batch.team_run_ids);
+                    if !instructions.is_empty() {
+                        wake_body = format!(
+                            "## Original User Request and Boundaries\nThe following instructions were sent directly by the user for this run. \
+                             They apply to every team member; a delegated task cannot relax them. \
+                             Do not invent logging, file edits, terminal work, or follow-up phases outside this scope.\n\n{}\n\n{}",
+                            instructions.join("\n\n"),
+                            wake_body
+                        );
+                    }
                     let needs_role_prompt = self.scheduler.take_needs_role_prompt(slot_id).await;
                     let first_message = if needs_role_prompt {
                         let tool_transport = self.team_tool_transport_for_agent(&agent).await?;
@@ -816,6 +842,11 @@ impl TeamSession {
         let commit = self
             .commit_persisted_enqueue(&lease, mailbox_message.id.clone())
             .await?;
+        if !matches!(source, WorkSource::UserCommand)
+            && let Some(run_id) = commit.team_run_id.as_deref()
+        {
+            self.team_run_manager.record_user_instruction(run_id, content);
+        }
         self.event_loops.notify(slot_id);
         let snapshot = self.work_coordinator.snapshot();
         let run = self
@@ -925,6 +956,7 @@ impl TeamSession {
             message_id = %mailbox_message.id,
             "team user message delivered into the running turn"
         );
+        self.team_run_manager.record_user_instruction(&run.team_run_id, content);
         Ok(Some(TeamRunAckResponse {
             enqueue_status: TeamMessageEnqueueStatus::Accepted,
             message_id: mailbox_message.id,
@@ -3092,6 +3124,75 @@ mod tests {
 
     async fn start_session_arc() -> Arc<TeamSession> {
         Arc::new(start_session().await)
+    }
+
+    #[tokio::test]
+    async fn delegated_wake_inherits_original_user_boundaries_even_when_assignment_omits_them() {
+        let session = start_session_arc().await;
+        let original = "Calculate 17 + 25 once. Do not read or write files or use the terminal.";
+        session.send_message(original, None).await.unwrap();
+        let lead_batch = claim_active_batch(&session, "lead-1").await;
+        session
+            .send_agent_message_from_agent("lead-1", "worker-1", "Calculate 17 + 25", None)
+            .await
+            .unwrap();
+        register_test_event_loop(&session, "worker-1");
+        let PrepareBatchResult::Execute { batch, input } = session.prepare_next_batch("worker-1").await.unwrap() else {
+            panic!("the delegated calculation should be claimable");
+        };
+        assert_eq!(batch.team_run_ids, lead_batch.team_run_ids);
+        assert!(input.first_message.contains(original));
+        assert!(input.first_message.contains("a delegated task cannot relax them"));
+        session.stop();
+    }
+
+    #[tokio::test]
+    async fn plain_idle_bookkeeping_does_not_start_a_model_batch() {
+        let session = start_session_arc().await;
+        register_test_event_loop(&session, "lead-1");
+        let idle = session
+            .mailbox
+            .write(
+                "t1",
+                "lead-1",
+                "worker-1",
+                MailboxMessageType::IdleNotification,
+                "idle",
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(!matches!(
+            session.prepare_next_batch("lead-1").await.unwrap(),
+            PrepareBatchResult::Execute { .. }
+        ));
+        assert!(
+            !session
+                .mailbox
+                .peek_unread("t1", "lead-1")
+                .await
+                .unwrap()
+                .iter()
+                .any(|row| row.id == idle.id)
+        );
+        let report = session
+            .mailbox
+            .write(
+                "t1",
+                "lead-1",
+                "worker-1",
+                MailboxMessageType::IdleNotification,
+                "42",
+                Some("calculation result"),
+            )
+            .await
+            .unwrap();
+        let PrepareBatchResult::Execute { batch, input } = session.prepare_next_batch("lead-1").await.unwrap() else {
+            panic!("substantive idle reports must still be delivered");
+        };
+        assert_eq!(batch.mailbox_message_ids, vec![report.id]);
+        assert_eq!(input.unread[0].content, "42");
+        session.stop();
     }
 
     fn register_test_event_loop(session: &Arc<TeamSession>, slot_id: &str) {

@@ -32,6 +32,7 @@ struct TeamRunRecord {
     cancel_reason: Option<String>,
     summary: Option<RunWorkSummary>,
     accepted_emitted: bool,
+    user_instructions: Vec<String>,
 }
 
 impl TeamRunRecord {
@@ -81,6 +82,7 @@ impl TeamRunManager {
             cancel_reason: None,
             summary: None,
             accepted_emitted: false,
+            user_instructions: Vec::new(),
         };
         let run_id = run.team_run_id.clone();
         *state = Some(run);
@@ -126,6 +128,7 @@ impl TeamRunManager {
             cancel_reason: None,
             summary: None,
             accepted_emitted: false,
+            user_instructions: Vec::new(),
         };
         let run_id = run.team_run_id.clone();
         *state = Some(run);
@@ -148,6 +151,20 @@ impl TeamRunManager {
             .as_ref()
             .filter(|run| run.is_active())
             .map(|run| run.team_run_id.clone())
+    }
+
+    pub(crate) fn record_user_instruction(&self, run_id: &str, content: &str) {
+        if let Some(run) = self.lock_state().as_mut().filter(|run| run.team_run_id == run_id) {
+            run.user_instructions.push(content.to_owned());
+        }
+    }
+
+    pub(crate) fn user_instructions_for_runs(&self, run_ids: &[String]) -> Vec<String> {
+        self.lock_state()
+            .as_ref()
+            .filter(|run| run_ids.contains(&run.team_run_id))
+            .map(|run| run.user_instructions.clone())
+            .unwrap_or_default()
     }
 
     pub(crate) fn apply_work_summary(&self, summary: RunWorkSummary) {

@@ -14,4 +14,6 @@ Both desktop and enterprise builds revalidate employee authorization on every se
 
 The employee roster searches all synchronized names, descriptions and expert display names, displays 20 employees per page, and requests run history only for the visible page.
 
+The desktop synchronization cycle waits for both skill and MCP materialization before publishing employees. A failed dependency synchronization retains the employee cache. Cycles are serialized across context changes; obsolete cycles stop before publishing, and departure cleanup waits for already-started local writes. Employee detail history belongs to the selected employee and modal lifetime, so a late response cannot replace another employee's history.
+
 Verification should include a bundle with distinct experts, skills and connectors; an actual model turn that reports its standing expert instructions and skill content and calls the bound MCP; connection-start counts; repeat sync; authorization removal and restoration; offline cache retention; and preservation of personal resources. A successful API response alone does not verify runtime execution.

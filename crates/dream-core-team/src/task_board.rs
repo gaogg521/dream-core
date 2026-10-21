@@ -117,7 +117,7 @@ impl TaskBoard {
 
         self.repo.update_task(&self.user_id, team_id, task_id, &params).await?;
 
-        if update.status == Some(TaskStatus::Completed) {
+        if update.status == Some(TaskStatus::Completed) && existing.status != TaskStatus::Completed.to_string() {
             self.check_unblocks(team_id, task_id, &existing).await?;
         }
 

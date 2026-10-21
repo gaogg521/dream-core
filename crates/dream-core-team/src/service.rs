@@ -3985,6 +3985,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn optional_context_metadata_outage_keeps_team_visible() {
+        let (svc, _repo, _task_manager, conv_repo) = setup_with_factory_metadata_team_repo_and_conversation_repo();
+        let created = svc
+            .create_team("user-test", two_agent_team_request("Metadata outage"))
+            .await
+            .unwrap();
+        let worker = created
+            .assistants
+            .iter()
+            .find(|agent| agent.role == "teammate")
+            .unwrap();
+        conv_repo.mark_capability_lookup_failed(&worker.conversation_id);
+        let listed = svc.list_teams("user-test").await.unwrap();
+        let team = listed
+            .iter()
+            .find(|team| team.id == created.id)
+            .expect("optional metadata cannot hide a team");
+        assert_eq!(team.assistants.len(), created.assistants.len());
+        let worker = team.assistants.iter().find(|agent| agent.role == "teammate").unwrap();
+        assert!(!worker.context_reset.supported);
+        assert_eq!(worker.context_reset.availability, TeamContextResetAvailability::Failed);
+    }
+
+    #[tokio::test]
     async fn clear_agent_context_resets_anchor_and_runtime_state_without_membership_noise() {
         let task_manager = Arc::new(MutableTaskManager::new());
         let (svc, _repo, _task_manager, conv_repo, broadcaster) =

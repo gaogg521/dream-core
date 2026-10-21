@@ -834,6 +834,11 @@ async fn exec_send_message(
 
     let resolved_to = if input.to == "*" {
         "*".to_owned()
+    } else if input.to == "leader" {
+        scheduler
+            .find_lead_slot_id()
+            .await
+            .ok_or_else(|| ToolCallError::from_message("Team leader is unavailable"))?
     } else {
         resolve_agent_target(scheduler, &input.to, true)
             .await
@@ -1198,8 +1203,22 @@ async fn exec_task_update(
     let input: TaskUpdateInput = serde_json::from_value(args.clone())
         .map_err(|e| ToolCallError::from_message(format!("Invalid params: {e}")))?;
 
-    let reassigned = input.owner.is_some();
-    let completed = input.status.as_deref() == Some("completed");
+    // Serialize state comparison and mutation so repeated concurrent tool
+    // updates cannot both observe the same transition.
+    let _notification_guard = scheduler.task_notification_lock.lock().await;
+    let before = scheduler
+        .list_tasks()
+        .await
+        .map_err(|e| ToolCallError::from_message(e.to_string()))?;
+    let previous = before
+        .iter()
+        .find(|task| task.id == input.task_id)
+        .ok_or_else(|| ToolCallError::from_message(format!("Task not found: {}", input.task_id)))?;
+    let reassigned = input
+        .owner
+        .as_ref()
+        .is_some_and(|owner| previous.owner.as_ref() != Some(owner));
+    let completed = input.status.as_deref() == Some("completed") && previous.status != TaskStatus::Completed;
 
     let task = scheduler
         .update_task(
@@ -1212,6 +1231,14 @@ async fn exec_task_update(
         .await
         .map_err(|e| ToolCallError::from_message(e.to_string()))?;
 
+    let downstream_snapshot = if completed && !task.blocks.is_empty() {
+        scheduler.list_tasks().await.ok()
+    } else {
+        None
+    };
+    // Runtime attachment and message delivery must not hold the task-write lock.
+    drop(_notification_guard);
+
     // A (re)assignment to a teammate notifies the new owner.
     if reassigned {
         maybe_notify_task_owner(scheduler, service, team_id, caller_slot_id, &task, "reassign").await;
@@ -1219,12 +1246,15 @@ async fn exec_task_update(
 
     // Completing a task can unblock downstream tasks; wake each downstream owner
     // whose task is now fully unblocked and actionable.
-    if completed
-        && !task.blocks.is_empty()
-        && let Ok(all_tasks) = scheduler.list_tasks().await
-    {
+    if let Some(all_tasks) = downstream_snapshot {
         for downstream in all_tasks.iter().filter(|t| task.blocks.contains(&t.id)) {
-            maybe_notify_task_owner(scheduler, service, team_id, caller_slot_id, downstream, "unblock").await;
+            if before
+                .iter()
+                .any(|old| old.id == downstream.id && !old.blocked_by.is_empty())
+                && downstream.blocked_by.is_empty()
+            {
+                maybe_notify_task_owner(scheduler, service, team_id, caller_slot_id, downstream, "unblock").await;
+            }
         }
     }
 

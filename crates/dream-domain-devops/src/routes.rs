@@ -2026,21 +2026,7 @@ async fn set_rag_content(
         .set_document_content_if_revision(&user.id, &id, &body.content, body.expected_revision)
         .await?;
     if !body.content.trim().is_empty() {
-        let service = state.service.clone();
-        let actor = user.id.clone();
-        tokio::spawn(async move {
-            static QUEUE: std::sync::LazyLock<tokio::sync::Mutex<()>> =
-                std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            let _guard = QUEUE.lock().await;
-            for attempt in 0..3 {
-                if service.process_rag_document(&actor, &id).await.is_ok() {
-                    return;
-                }
-                tracing::warn!(document_id = %id, attempt, "automatic knowledge indexing failed; retry scheduled");
-                tokio::time::sleep(std::time::Duration::from_secs(5 * (attempt + 1))).await;
-            }
-        });
+        state.service.schedule_indexing(user.id.clone(), id);
     }
 
     Ok(Json(ApiResponse::ok(revision)))

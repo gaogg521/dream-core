@@ -27,7 +27,16 @@ impl TeamSessionService {
         let icon = self.resolve_agent_icon(user_id, agent).await?;
         let mut response = agent.to_response_with_icon(icon);
         response.pending_confirmations = self.pending_confirmation_count(&agent.conversation_id);
-        response.context_reset = self.context_reset_capability(user_id, team_id, agent).await?;
+        response.context_reset = self
+            .context_reset_capability(user_id, team_id, agent)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, agent_id = %agent.slot_id, "team context-reset metadata unavailable");
+                dream_core_api_types::TeamContextResetCapability {
+                    supported: false,
+                    availability: dream_core_api_types::TeamContextResetAvailability::Failed,
+                }
+            });
         Ok(response)
     }
 
@@ -110,7 +119,11 @@ impl TeamSessionService {
             && let Some(definition) = self
                 .assistant_definition_repo
                 .get_by_assistant_id_for_user(user_id, assistant_id)
-                .await?
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, "team assistant avatar unavailable");
+                    None
+                })
             && let Some(icon) = assistant_icon(
                 definition.assistant_id.as_str(),
                 &definition.avatar_type,
@@ -123,7 +136,11 @@ impl TeamSessionService {
         if let Some(row) = self
             .agent_metadata_repo
             .find_builtin_by_backend_for_user(user_id, agent.backend.as_str())
-            .await?
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "team backend avatar unavailable");
+                None
+            })
             && row.icon.is_some()
         {
             return Ok(row.icon);
@@ -133,7 +150,11 @@ impl TeamSessionService {
             && let Some(row) = self
                 .agent_metadata_repo
                 .find_builtin_by_backend_for_user(user_id, agent.model.as_str())
-                .await?
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, "team ACP avatar unavailable");
+                    None
+                })
         {
             return Ok(row.icon);
         }

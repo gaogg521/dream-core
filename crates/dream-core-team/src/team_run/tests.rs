@@ -35,6 +35,21 @@ fn acquire(coordinator: &SlotWorkCoordinator, binding: CausalBinding) -> crate::
 }
 
 #[test]
+fn user_boundaries_follow_only_the_matching_run() {
+    let (coordinator, manager) = coordinator_and_manager();
+    let lease = acquire(&coordinator, CausalBinding::UserVisible);
+    let run_id = lease.team_run_id.clone().unwrap();
+    manager.record_user_instruction(&run_id, "Calculate once. No files or terminal.");
+    manager.record_user_instruction("unrelated-run", "must not enter this run");
+    manager.record_user_instruction(&run_id, "Return one sentence.");
+    assert_eq!(
+        manager.user_instructions_for_runs(std::slice::from_ref(&run_id)),
+        vec!["Calculate once. No files or terminal.", "Return one sentence."]
+    );
+    assert!(manager.user_instructions_for_runs(&["unrelated-run".into()]).is_empty());
+}
+
+#[test]
 fn background_work_does_not_create_or_block_a_run() {
     let (coordinator, manager) = coordinator_and_manager();
     let lease = coordinator
