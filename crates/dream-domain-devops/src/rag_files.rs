@@ -108,10 +108,8 @@ pub(crate) async fn upload(
     }
     let doc = state
         .service
-        .list_rag_documents(&user.id)
+        .rag_document(&id)
         .await?
-        .into_iter()
-        .find(|d| d.id == id)
         .ok_or_else(|| DevopsError::NotFound("document not found".into()))?;
     tracing::info!(document_id = %id, bytes = data.len(), "knowledge original file retained");
     Ok(Json(ApiResponse::ok(doc)))
@@ -123,12 +121,13 @@ pub(crate) async fn download(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, DevopsError> {
+    if !state.service.rag_document_visible(&user.id, &id).await? {
+        return Err(DevopsError::Forbidden("document is not visible to this member".into()));
+    }
     let doc = state
         .service
-        .list_rag_documents(&user.id)
+        .rag_document(&id)
         .await?
-        .into_iter()
-        .find(|d| d.id == id)
         .ok_or_else(|| DevopsError::Forbidden("document is not visible to this member".into()))?;
     let key = storage_key(doc.file_path.as_deref().unwrap_or(""))?;
     let root = state

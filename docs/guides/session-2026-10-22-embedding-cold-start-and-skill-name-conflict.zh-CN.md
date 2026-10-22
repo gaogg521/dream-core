@@ -23,16 +23,20 @@
 
 **现象**：官方“测试用例设计”与自建技能重名，同步报 `name '测试用例设计' is already taken by a self-built row; rename one of them`，被算作 1 项失败，每次同步都重复（先下载并校验 SKILL.md，再失败）。
 
-**决策**：自建内容继续优先，不覆盖、不自动改名（名称是技能的身份，自动加后缀会破坏同步映射和去重）。改变的是**怎么报告**：
+**第一版（9ca4d28，已被取代）**：重名条目直接跳过、连 payload 都不下载，只在报告里列为冲突。用户否决了这个做法：官方内容会就此永远进不来，等于被隐藏。
 
-- 同步报告新增 `conflicts: [{item, reason}]`，与 `errors` 分开；冲突不再算失败。
-- 在批量预取和逐条处理两处都**提前识别**（已导入过的条目不受影响），冲突条目不再下载 payload。
-- 管理员把任意一方改名后，下次同步自动导入官方版本（有测试）。
+**现行做法（5a06479）**：照常下载、照常导入，名字冲突时给市场这一份加区分标识，自建那份一个字不动。
+
+- 技能：`原名（来源名）`，来源名截前 24 个字符，例如「测试用例设计（官方 One Work 内容）」；同时改写 SKILL.md frontmatter 里的 `name`。团队技能在成员端按注册表 ID 建目录，但引擎按 frontmatter 的 `name` 识别技能，不改这一处的话成员端会出现两个同名技能。
+- MCP：`原名-market`（ASCII）。MCP 名会成为各 Agent CLI 配置里的键和工具名前缀，只能用 `[A-Za-z0-9_-]`。
+- 标签名本身也被占用时，追加序号（`（来源名 2）`、`-market-2`）。
+- 之后的同步更新内容时保留标签名，frontmatter 也同步改写（同步映射按上游原名记录，不受影响）。
+- 每次同步的报告都会在 `conflicts` 里列出 `{item, importedAs, reason}`，不会因为已经导入过就从报告里消失；冲突不算失败。
 - `upsert_new` 里原有的拒绝保留，作为并发下的最后防线。
 
-**管理后台（dream-en）**：同步报告弹窗两处（市场来源页、后台同步条）新增“与自建内容同名”分组和一句操作提示；顶部状态条追加“N 项与自建内容同名，已保留自建版本”；13 种语言文案。旧版管理后台不认识 `conflicts` 字段，会忽略它（条目被跳过但看不到提示），所以管理后台需要随后端一起升级。
+**管理后台（dream-en，2966a4c）**：同步报告两处显示「原名 → 导入后的名称」，13 种语言文案改为“已加来源标签导入”。旧版管理后台不认识 `conflicts`，会忽略它（条目照常导入，只是看不到说明）。
 
-**测试**：`a_self_built_name_collision_is_a_reported_conflict_not_a_failure_or_takeover`（含“未下载 payload”断言）、`renaming_the_self_built_row_lets_the_next_sync_import_the_official_one`；admin-web `marketSourcesTab.test.tsx` 新增冲突渲染用例。
+**测试**：`a_self_built_name_collision_imports_the_market_entry_under_a_labelled_name`、`a_labelled_entry_keeps_its_label_on_update_and_stays_listed_as_a_conflict`、`labels_are_readable_for_skills_and_identifier_safe_for_mcp`、`only_the_top_level_frontmatter_name_is_rewritten`；admin-web `marketSourcesTab.test.tsx`。
 
 ## 3. 验证记录
 

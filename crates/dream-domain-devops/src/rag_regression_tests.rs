@@ -416,3 +416,140 @@ async fn rag_embedding_warmup_calls_the_endpoint_only_when_there_is_something_to
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     server.abort();
 }
+
+#[tokio::test]
+async fn rag_single_document_visibility_matches_the_listing_for_every_viewer() {
+    let svc = service().await;
+    seed_two_group_enterprise(&svc).await;
+    let mut ids = Vec::new();
+    for (title, scope, team, visibility, author) in [
+        ("org", "org", None, "all", "admin1"),
+        ("groupA", "team", Some("tA"), "all", "admin1"),
+        ("groupB", "team", Some("tB"), "all", "admin2"),
+        ("secret", "org", None, "admin", "admin1"),
+        ("mine", "personal", None, "all", "memberA"),
+        ("otherPrivate", "personal", None, "all", "memberB"),
+        ("adminPrivate", "personal", None, "all", "admin1"),
+    ] {
+        ids.push(
+            svc.register_rag_document(title, None, None, None, scope, team, visibility, author, None)
+                .await
+                .unwrap()
+                .id,
+        );
+    }
+    for viewer in ["admin1", "admin2", "memberA", "memberB", "stranger"] {
+        let listed: std::collections::HashSet<String> =
+            svc.list_rag_documents(viewer).await.unwrap().into_iter().map(|d| d.id).collect();
+        for id in &ids {
+            assert_eq!(
+                svc.rag_document_visible(viewer, id).await.unwrap(),
+                listed.contains(id),
+                "viewer {viewer} / document {id}"
+            );
+        }
+    }
+}
+
+async fn rag_vector_server(dims: usize) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, axum::Router::new().route("/embeddings", axum::routing::post(
+            move |axum::Json(body): axum::Json<serde_json::Value>| async move {
+                // A vector that encodes the text: texts mentioning "alpha" point one way, others another.
+                let data: Vec<serde_json::Value> = body["input"].as_array().unwrap().iter().map(|text| {
+                    let alpha = text.as_str().unwrap_or("").contains("alpha");
+                    let mut v = vec![0.0f32; dims];
+                    v[if alpha { 0 } else { 1 }] = 1.0;
+                    serde_json::json!({ "embedding": v })
+                }).collect();
+                axum::Json(serde_json::json!({ "data": data }))
+            }
+        ))).await.unwrap();
+    });
+    (url, server)
+}
+
+#[tokio::test]
+async fn rag_vector_index_follows_reprocessing_deletion_and_outside_writes() {
+    let svc = service().await;
+    let (url, server) = rag_vector_server(4).await;
+    svc.set_rag_config(&url, "vec", Some("")).await.unwrap();
+    let doc = svc.register_rag_document("d", None, None, None, "org", None, "all", "admin1", None)
+        .await.unwrap();
+    svc.set_document_content("admin1", &doc.id, "alpha topic body").await.unwrap();
+    svc.process_rag_document("admin1", &doc.id).await.unwrap();
+
+    let hits = svc.search_rag("admin1", "about alpha", 5).await.unwrap();
+    assert_eq!(hits.len(), 1);
+    assert!(hits[0].score > 0.99, "exact cosine is reported, not the quantized estimate");
+    assert_eq!(svc.vectors.chunk_count().await, 1);
+
+    // Re-processed with different content: the old vector must not linger.
+    svc.set_document_content("admin1", &doc.id, "beta topic body").await.unwrap();
+    svc.process_rag_document("admin1", &doc.id).await.unwrap();
+    let hits = svc.search_rag("admin1", "about alpha", 5).await.unwrap();
+    assert_eq!(hits.len(), 1);
+    assert!(hits[0].score < 0.01, "the vector now points away from alpha");
+    assert!(hits[0].content.contains("beta"));
+
+    // A write the service did not make (backup restore, another process) is picked up through the change log.
+    let other = svc.register_rag_document("o", None, None, None, "org", None, "all", "admin1", None)
+        .await.unwrap();
+    sqlx::query("INSERT INTO one_rag_chunks (id, document_id, chunk_index, content, embedding, created_at) VALUES ('outside', ?, 0, 'alpha from outside', ?, 0)")
+        .bind(&other.id)
+        .bind(crate::embedding::pack_embedding(&[1.0, 0.0, 0.0, 0.0]))
+        .execute(svc.db.sqlite())
+        .await
+        .unwrap();
+    let hits = svc.search_rag("admin1", "about alpha", 5).await.unwrap();
+    assert_eq!(hits[0].document_id, other.id, "the outside write ranks first for alpha");
+    assert_eq!(svc.vectors.chunk_count().await, 2);
+
+    svc.delete_rag_document("admin1", &other.id).await.unwrap();
+    let hits = svc.search_rag("admin1", "about alpha", 5).await.unwrap();
+    assert!(hits.iter().all(|hit| hit.document_id != other.id));
+    assert_eq!(svc.vectors.chunk_count().await, 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn rag_large_document_is_embedded_in_batches_the_endpoint_accepts() {
+    let svc = service().await;
+    let largest = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = largest.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    svc.set_rag_config(&format!("http://{}", listener.local_addr().unwrap()), "small-batches", Some(""))
+        .await.unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, axum::Router::new().route("/embeddings", axum::routing::post(
+            move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let seen = seen.clone();
+                async move {
+                    let inputs = body["input"].as_array().unwrap().len();
+                    // Like providers that cap a batch: anything over 10 inputs is refused.
+                    if inputs > 10 {
+                        return axum::response::IntoResponse::into_response((axum::http::StatusCode::BAD_REQUEST, "batch size exceeds 10"));
+                    }
+                    seen.fetch_max(inputs, std::sync::atomic::Ordering::SeqCst);
+                    let data: Vec<serde_json::Value> =
+                        (0..inputs).map(|_| serde_json::json!({ "embedding": [1.0, 0.0] })).collect();
+                    axum::response::IntoResponse::into_response(axum::Json(serde_json::json!({ "data": data })))
+                }
+            }
+        ))).await.unwrap();
+    });
+    let doc = svc.register_rag_document("big", None, None, None, "org", None, "all", "admin1", None)
+        .await.unwrap();
+    let text: String = (0..300).map(|i| format!("Section {i}. {}\n\n", "words ".repeat(120))).collect();
+    svc.set_document_content("admin1", &doc.id, &text).await.unwrap();
+    let chunks = svc.process_rag_document("admin1", &doc.id).await.unwrap();
+    assert!(chunks > 100, "a large document produces many chunks ({chunks})");
+    let stored: i64 = svc.db
+        .fetch_one_scalar("SELECT COUNT(*) FROM one_rag_chunks WHERE document_id = ?", &db_params![&doc.id])
+        .await.unwrap();
+    assert_eq!(stored, chunks);
+    assert!(largest.load(std::sync::atomic::Ordering::SeqCst) <= 10);
+    server.abort();
+}

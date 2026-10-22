@@ -47,6 +47,7 @@ pub mod retrieval;
 pub mod routes;
 pub mod service;
 pub mod state;
+mod vector_index;
 
 pub use error::DevopsError;
 pub use migrate::run_one_devops_migrations;

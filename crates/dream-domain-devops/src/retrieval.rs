@@ -92,14 +92,21 @@ pub async fn sync_document(pool: &DbPool, document_id: &str, chunks: &[(String, 
     if !ensure_fts_table(pool).await.is_available() {
         return Ok(());
     }
-    delete_document(pool, document_id).await?;
+    // One transaction: thousands of auto-committed single-row inserts were most of a large document's write time.
+    let mut tx = pool.begin().await?;
+    tx.execute(
+        &format!("DELETE FROM {FTS_TABLE} WHERE chunk_id IN (SELECT id FROM one_rag_chunks WHERE document_id = ?)"),
+        &db_params![document_id],
+    )
+    .await?;
     for (chunk_id, content) in chunks {
-        pool.execute(
+        tx.execute(
             &format!("INSERT INTO {FTS_TABLE} (chunk_id, content) VALUES (?, ?)"),
             &db_params![chunk_id, content],
         )
         .await?;
     }
+    tx.commit().await?;
     Ok(())
 }
 

@@ -23,6 +23,8 @@ use crate::models::{
 
 pub struct DevopsService {
     pub(crate) db: DbPool,
+    /// In-memory dense index for knowledge search; see `vector_index`.
+    pub(crate) vectors: crate::vector_index::VectorIndex,
     pub(crate) indexing_jobs: std::sync::Mutex<HashMap<String, tokio::sync::watch::Sender<String>>>,
     pub(crate) indexing_slots: tokio::sync::Semaphore,
     /// Deployment data-encryption key, for the one thing in this crate that
@@ -101,6 +103,7 @@ impl DevopsService {
             encryption_key: None,
             grants: std::sync::OnceLock::new(),
             config_resolver: std::sync::OnceLock::new(),
+            vectors: Default::default(),
         }
     }
 
@@ -1510,13 +1513,19 @@ impl DevopsService {
         if query.is_empty() || documents.is_empty() {
             return Ok(documents);
         }
-        let matches: Vec<String> = self.db.fetch_all_scalar(
-            "SELECT d.id FROM one_rag_documents d WHERE \
-             INSTR(LOWER(d.title), LOWER(?)) > 0 OR \
-             INSTR(LOWER(COALESCE(d.content, '')), LOWER(?)) > 0 OR \
-             (COALESCE(d.content, '') = '' AND EXISTS (SELECT 1 FROM one_rag_chunks c WHERE c.document_id = d.id AND INSTR(LOWER(c.content), LOWER(?)) > 0))",
-            &db_params![query, query, query],
-        ).await?;
+        // `LIKE` folds ASCII case natively, exactly what `LOWER()` did (SQLite's LOWER is ASCII-only too), without
+        // allocating a lowered copy of every document's text per keystroke. Wildcards in the query are escaped.
+        let pattern = format!("%{}%", query.replace('!', "!!").replace('%', "!%").replace('_', "!_"));
+        let matches: Vec<String> = self
+            .db
+            .fetch_all_scalar(
+                "SELECT d.id FROM one_rag_documents d WHERE d.title LIKE ? ESCAPE '!' \
+                 OR COALESCE(d.content, '') LIKE ? ESCAPE '!' \
+                 OR (COALESCE(d.content, '') = '' AND EXISTS (SELECT 1 FROM one_rag_chunks c \
+                     WHERE c.document_id = d.id AND c.content LIKE ? ESCAPE '!'))",
+                &db_params![&pattern, &pattern, &pattern],
+            )
+            .await?;
         let matches: std::collections::HashSet<_> = matches.into_iter().collect();
         documents.retain(|document| matches.contains(&document.id));
         Ok(documents)
@@ -1567,6 +1576,62 @@ impl DevopsService {
         );
         docs.sort_by_key(|doc| std::cmp::Reverse(doc.created_at));
         Ok(docs)
+    }
+
+    /// Whether `viewer_user_id` may read document `id` — the same policy as [`Self::list_rag_documents`], evaluated
+    /// for one row. Opening, reading or downloading one document used to list the viewer's whole library first.
+    pub async fn rag_document_visible(&self, viewer_user_id: &str, id: &str) -> Result<bool, DevopsError> {
+        if self.viewer_is_privileged(viewer_user_id).await? {
+            return Ok(self
+                .db
+                .fetch_optional_scalar::<i64>(
+                    "SELECT 1 FROM one_rag_documents WHERE id = ? AND (scope <> 'personal' OR created_by = ?)",
+                    &db_params![id, viewer_user_id],
+                )
+                .await?
+                .is_some());
+        }
+        let own: Option<i64> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT 1 FROM one_rag_documents WHERE id = ? AND scope = 'personal' AND created_by = ?",
+                &db_params![id, viewer_user_id],
+            )
+            .await?;
+        if own.is_some() {
+            return Ok(true);
+        }
+        let grants = self
+            .extra_grants(viewer_user_id, crate::grants::resource_type::KNOWLEDGE)
+            .await;
+        let (predicate, grant_ids) =
+            Self::apply_grants(&Self::member_visibility_where(""), &grants, "", viewer_user_id);
+        let mut params: Vec<dream_core_db::DbValue> = Vec::with_capacity(grant_ids.len() + 1);
+        params.push(id.into());
+        for value in &grant_ids {
+            params.push(value.as_str().into());
+        }
+        Ok(self
+            .db
+            .fetch_optional_scalar::<i64>(
+                &format!("SELECT 1 FROM one_rag_documents WHERE id = ? AND ({predicate})"),
+                &params,
+            )
+            .await?
+            .is_some())
+    }
+
+    /// One document's metadata row, without any visibility check (callers check first).
+    pub async fn rag_document(&self, id: &str) -> Result<Option<RagDocumentDto>, DevopsError> {
+        Ok(self
+            .db
+            .fetch_optional_as::<RagDocumentDto>(
+                "SELECT id, title, file_path, file_size, mime_type, status, last_error, chunk_count, \
+                    scope, team_id, visibility, created_by, created_at, library_id \
+                 FROM one_rag_documents WHERE id = ?",
+                &db_params![id],
+            )
+            .await?)
     }
 
     /// Whether `user_id` may write company-wide registry content (skills, MCP,
@@ -2131,6 +2196,9 @@ impl DevopsService {
             // The first window load matters more than a warm model.
             tokio::time::sleep(EMBEDDING_WARMUP_DELAY).await;
             if service.has_indexed_chunks().await {
+                if let Err(error) = service.vectors.refresh(&service.db).await {
+                    tracing::warn!(%error, "knowledge vector index preload failed");
+                }
                 service.warm_embedding("startup").await;
             }
             let mut ticker = tokio::time::interval(EMBEDDING_KEEPALIVE_INTERVAL);
@@ -2284,12 +2352,7 @@ impl DevopsService {
         viewer: &str,
         id: &str,
     ) -> Result<dream_core_api_types::knowledge::RagContentState, DevopsError> {
-        if !self
-            .list_rag_documents(viewer)
-            .await?
-            .iter()
-            .any(|document| document.id == id)
-        {
+        if !self.rag_document_visible(viewer, id).await? {
             return Err(DevopsError::Forbidden("document is not visible to this member".into()));
         }
         let (content, revision): (Option<String>, i64) = self
@@ -2308,12 +2371,7 @@ impl DevopsService {
 
     /// Read using the library visibility policy, including grants and private ownership.
     pub async fn read_rag_document_content(&self, viewer: &str, id: &str) -> Result<String, DevopsError> {
-        if !self
-            .list_rag_documents(viewer)
-            .await?
-            .iter()
-            .any(|document| document.id == id)
-        {
+        if !self.rag_document_visible(viewer, id).await? {
             return Err(DevopsError::Forbidden("document is not visible to this member".into()));
         }
         Ok(self
@@ -2595,7 +2653,53 @@ impl DevopsService {
             }
         };
 
-        let rows: Vec<(String, String, i64, String, Vec<u8>, String)> = self.db.fetch_all_as(&sql, &params).await?;
+        let rows: Vec<(String, String, i64, String, Vec<u8>, String)> =
+            if crate::vector_index::VectorIndex::supported(&self.db) {
+                // Rank in memory, then read back only the candidates (and the keyword hits) with their text and
+                // exact vectors, under the same access predicate. Reading every visible chunk's text and vector on
+                // each query is what made search slow on a large library.
+                let visible_sql = match acl_predicate.as_deref() {
+                    None => "SELECT d.id FROM one_rag_documents d".to_owned(),
+                    Some(predicate) => format!("SELECT d.id FROM one_rag_documents d WHERE {predicate}"),
+                };
+                let visible: std::collections::HashSet<String> = self
+                    .db
+                    .fetch_all_scalar::<String>(&visible_sql, &params)
+                    .await?
+                    .into_iter()
+                    .collect();
+                let mut wanted = self
+                    .vectors
+                    .candidates(
+                        &self.db,
+                        &query_vec,
+                        &visible,
+                        crate::vector_index::rescore_pool(candidates),
+                    )
+                    .await?;
+                for id in &lexical_ranked {
+                    if !wanted.contains(id) {
+                        wanted.push(id.clone());
+                    }
+                }
+                if wanted.is_empty() {
+                    Vec::new()
+                } else {
+                    // Looked up by chunk id only, then held to the `visible` set computed above from the same
+                    // access predicate. Repeating a member's predicate (an OR with a subquery) in this statement
+                    // let SQLite plan it as a scan of every visible document's chunks.
+                    let placeholders = vec!["?"; wanted.len()].join(",");
+                    let candidate_params: Vec<DbValue> = wanted.iter().map(|id| id.as_str().into()).collect();
+                    let mut rows: Vec<(String, String, i64, String, Vec<u8>, String)> = self
+                        .db
+                        .fetch_all_as(&format!("{BASE} WHERE c.id IN ({placeholders})"), &candidate_params)
+                        .await?;
+                    rows.retain(|(_, document_id, ..)| visible.contains(document_id));
+                    rows
+                }
+            } else {
+                self.db.fetch_all_as(&sql, &params).await?
+            };
         let mut by_id: HashMap<String, (RagSearchHit, f32)> = HashMap::with_capacity(rows.len());
         let mut dense: Vec<(String, f32)> = Vec::with_capacity(rows.len());
         for (chunk_id, document_id, chunk_index, content, blob, document_title) in rows {
@@ -3141,6 +3245,7 @@ mod tests {
     use crate::migrate::run_one_devops_migrations;
 
     include!("rag_regression_tests.rs");
+    include!("rag_perf_bench.rs");
 
     async fn service() -> DevopsService {
         // max_connections(1): every new pool connection to `sqlite::memory:`

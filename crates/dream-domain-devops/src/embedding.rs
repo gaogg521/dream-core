@@ -117,12 +117,12 @@ fn local_model_repo_dir(cache_dir: &Path) -> PathBuf {
     cache_dir.join(format!("models--{}", LOCAL_MODEL_REPO.replace('/', "--")))
 }
 
-/// The snapshot dir of an already-seeded model, if the cache is complete.
 /// Whether the bundled local model is already on disk. Warm-up must never trigger the (network) download.
 pub fn local_model_ready() -> bool {
     seeded_snapshot(&local_model_repo_dir(&hf_cache_dir())).is_some()
 }
 
+/// The snapshot dir of an already-seeded model, if the cache is complete.
 fn seeded_snapshot(repo_dir: &Path) -> Option<PathBuf> {
     let commit = std::fs::read_to_string(repo_dir.join("refs/main")).ok()?;
     let commit = commit.trim();
@@ -386,57 +386,145 @@ pub async fn embed(config: &EmbeddingConfig, inputs: &[String]) -> Result<Vec<Ve
         // `CreateSymbolicLinkW` into a silent no-op (see module docs), so a
         // fresh install would otherwise never initialize the model.
         let snapshot = ensure_local_model_cache().await?;
-        let texts = inputs.to_vec();
-        return tokio::task::spawn_blocking(move || {
-            static ENGINE: std::sync::LazyLock<std::sync::Mutex<Option<fastembed::TextEmbedding>>> =
-                std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
-            let mut engine = ENGINE
-                .lock()
-                .map_err(|_| DevopsError::Internal("local embedding engine lock failed".into()))?;
-            if engine.is_none() {
-                // The ONNX Runtime library is loaded, not linked: a missing or
-                // unsupported one must surface as a normal error here (it is
-                // recorded on the document), never as a panic inside `ort`.
-                crate::onnxruntime::ensure_loaded().map_err(DevopsError::Internal)?;
-                let root = local_model_data_root();
-                tracing::info!("initializing local knowledge embedding model");
-                // A panic inside fastembed (e.g. a partially seeded cache)
-                // must surface as a normal error so the caller records it on
-                // the document instead of the worker task dying.
-                let init = std::panic::catch_unwind(|| {
-                    fastembed::TextEmbedding::try_new(
-                        fastembed::TextInitOptions::new(fastembed::EmbeddingModel::ParaphraseMLMiniLML12V2Q)
-                            .with_cache_dir(root.join("models/embedding"))
-                            .with_show_download_progress(false)
-                            .with_intra_threads(2),
-                    )
-                });
-                *engine = Some(match init {
-                    Ok(Ok(engine)) => engine,
-                    Ok(Err(e)) => {
-                        return Err(DevopsError::Internal(format!(
-                            "local embedding model initialization failed: {e} (cache: {})",
-                            snapshot.display()
-                        )));
-                    }
-                    Err(_) => {
-                        return Err(DevopsError::Internal(format!(
-                            "local embedding model initialization panicked; the model cache at {} may be \
-                             incomplete or corrupted — delete it and retry with network access",
-                            snapshot.display()
-                        )));
-                    }
-                });
-            }
-            engine
-                .as_mut()
-                .unwrap()
-                .embed(texts, Some(16))
-                .map_err(|e| DevopsError::Internal(format!("local embedding inference failed: {e}")))
-        })
-        .await
-        .map_err(|e| DevopsError::Internal(format!("local embedding worker failed: {e}")))?;
+        // One engine, one lock. Indexing a large document used to hold it for the whole document (tens of
+        // seconds), so every search in the meantime waited out its budget and fell back to keywords. A few chunks
+        // per hold lets a search's single query slip in between.
+        let mut vectors = Vec::with_capacity(inputs.len());
+        for slice in inputs.chunks(LOCAL_LOCK_BATCH) {
+            let texts = slice.to_vec();
+            let snapshot = snapshot.clone();
+            let batch = tokio::task::spawn_blocking(move || {
+                with_local_engine(&snapshot, |engine| {
+                    engine
+                        .embed(texts, Some(LOCAL_LOCK_BATCH))
+                        .map_err(|e| DevopsError::Internal(format!("local embedding inference failed: {e}")))
+                })
+            })
+            .await
+            .map_err(|e| DevopsError::Internal(format!("local embedding worker failed: {e}")))??;
+            vectors.extend(batch);
+        }
+        return Ok(vectors);
     }
+    embed_remote(config, inputs).await
+}
+
+/// Chunks embedded per hold of the local engine's lock (see `embed`).
+const LOCAL_LOCK_BATCH: usize = 4;
+
+/// Inference threads for the bundled model: `DREAM_LOCAL_EMBEDDING_THREADS`, else a quarter of the cores, between
+/// 2 and 4. Indexing runs in the background of a desktop app; it should be quick without making the machine sluggish.
+fn local_embedding_threads() -> usize {
+    std::env::var("DREAM_LOCAL_EMBEDDING_THREADS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|threads| (1..=64).contains(threads))
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get() / 4)
+                .unwrap_or(2)
+                .clamp(2, 4)
+        })
+}
+
+/// Run `work` against the process-wide local engine, initializing it on first use.
+fn with_local_engine<R>(
+    snapshot: &Path,
+    work: impl FnOnce(&mut fastembed::TextEmbedding) -> Result<R, DevopsError>,
+) -> Result<R, DevopsError> {
+    static ENGINE: std::sync::LazyLock<std::sync::Mutex<Option<fastembed::TextEmbedding>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+    let mut engine = ENGINE
+        .lock()
+        .map_err(|_| DevopsError::Internal("local embedding engine lock failed".into()))?;
+    if engine.is_none() {
+        // The ONNX Runtime library is loaded, not linked: a missing or
+        // unsupported one must surface as a normal error here (it is
+        // recorded on the document), never as a panic inside `ort`.
+        crate::onnxruntime::ensure_loaded().map_err(DevopsError::Internal)?;
+        let root = local_model_data_root();
+        let threads = local_embedding_threads();
+        tracing::info!(threads, "initializing local knowledge embedding model");
+        // A panic inside fastembed (e.g. a partially seeded cache)
+        // must surface as a normal error so the caller records it on
+        // the document instead of the worker task dying.
+        let init = std::panic::catch_unwind(|| {
+            fastembed::TextEmbedding::try_new(
+                fastembed::TextInitOptions::new(fastembed::EmbeddingModel::ParaphraseMLMiniLML12V2Q)
+                    .with_cache_dir(root.join("models/embedding"))
+                    .with_show_download_progress(false)
+                    .with_intra_threads(threads),
+            )
+        });
+        *engine = Some(match init {
+            Ok(Ok(engine)) => engine,
+            Ok(Err(e)) => {
+                return Err(DevopsError::Internal(format!(
+                    "local embedding model initialization failed: {e} (cache: {})",
+                    snapshot.display()
+                )));
+            }
+            Err(_) => {
+                return Err(DevopsError::Internal(format!(
+                    "local embedding model initialization panicked; the model cache at {} may be \
+                     incomplete or corrupted — delete it and retry with network access",
+                    snapshot.display()
+                )));
+            }
+        });
+    }
+    work(engine.as_mut().expect("initialized above"))
+}
+
+/// Inputs per request. Providers cap a batch by count (some at 10-25, OpenAI at 2048) or by body size; a large
+/// document used to send every chunk in one request and fail outright.
+const REMOTE_BATCH: usize = 32;
+/// Batches in flight at once for one call.
+const REMOTE_CONCURRENCY: usize = 4;
+
+async fn embed_remote(config: &EmbeddingConfig, inputs: &[String]) -> Result<Vec<Vec<f32>>, DevopsError> {
+    if inputs.len() <= REMOTE_BATCH {
+        return embed_remote_adaptive(config, inputs).await;
+    }
+    let mut vectors = Vec::with_capacity(inputs.len());
+    for group in inputs.chunks(REMOTE_BATCH * REMOTE_CONCURRENCY) {
+        let requests: Vec<_> = group
+            .chunks(REMOTE_BATCH)
+            .map(|batch| embed_remote_adaptive(config, batch))
+            .collect();
+        for batch in futures_util::future::join_all(requests).await {
+            vectors.extend(batch?);
+        }
+    }
+    Ok(vectors)
+}
+
+type EmbedFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<f32>>, DevopsError>> + Send + 'a>>;
+
+/// One request; if the endpoint says the batch is too big, halve it and try again.
+fn embed_remote_adaptive<'a>(config: &'a EmbeddingConfig, inputs: &'a [String]) -> EmbedFuture<'a> {
+    Box::pin(async move {
+        match embed_remote_once(config, inputs).await {
+            Ok(vectors) => Ok(vectors),
+            Err(RemoteFailure::TooLarge(_)) if inputs.len() > 1 => {
+                let (left, right) = inputs.split_at(inputs.len() / 2);
+                let mut vectors = embed_remote_adaptive(config, left).await?;
+                vectors.extend(embed_remote_adaptive(config, right).await?);
+                Ok(vectors)
+            }
+            Err(RemoteFailure::TooLarge(error) | RemoteFailure::Other(error)) => Err(error),
+        }
+    })
+}
+
+enum RemoteFailure {
+    /// The request was refused for its size or batch length; a smaller batch may succeed.
+    TooLarge(DevopsError),
+    Other(DevopsError),
+}
+
+async fn embed_remote_once(config: &EmbeddingConfig, inputs: &[String]) -> Result<Vec<Vec<f32>>, RemoteFailure> {
     static CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
         reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
@@ -454,26 +542,39 @@ pub async fn embed(config: &EmbeddingConfig, inputs: &[String]) -> Result<Vec<Ve
         req = req.bearer_auth(key);
     }
 
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| DevopsError::Internal(format!("embedding request failed: {e}")))?;
+    let resp = match req.send().await {
+        Ok(resp) => resp,
+        Err(e) => {
+            let error = DevopsError::Internal(format!("embedding request failed: {e}"));
+            // A server that cuts the connection while we are still sending the body is refusing its size;
+            // an unreachable or slow server is not helped by smaller batches.
+            return Err(if e.is_connect() || e.is_timeout() {
+                RemoteFailure::Other(error)
+            } else {
+                RemoteFailure::TooLarge(error)
+            });
+        }
+    };
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(DevopsError::Internal(format!("embedding endpoint {status}: {body}")));
+        let error = DevopsError::Internal(format!("embedding endpoint {status}: {body}"));
+        return Err(match status.as_u16() {
+            400 | 413 | 422 => RemoteFailure::TooLarge(error),
+            _ => RemoteFailure::Other(error),
+        });
     }
 
     let parsed: EmbeddingResponse = resp
         .json()
         .await
-        .map_err(|e| DevopsError::Internal(format!("embedding response parse failed: {e}")))?;
+        .map_err(|e| RemoteFailure::Other(DevopsError::Internal(format!("embedding response parse failed: {e}"))))?;
     if parsed.data.len() != inputs.len() {
-        return Err(DevopsError::Internal(format!(
+        return Err(RemoteFailure::Other(DevopsError::Internal(format!(
             "embedding count mismatch: got {}, expected {}",
             parsed.data.len(),
             inputs.len()
-        )));
+        ))));
     }
     Ok(parsed.data.into_iter().map(|d| d.embedding).collect())
 }
