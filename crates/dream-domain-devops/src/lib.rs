@@ -40,6 +40,7 @@ mod office_text;
 pub mod onnxruntime;
 pub mod provider_channel;
 pub mod proxy_usage;
+mod query_embedding;
 mod rag_files;
 pub mod resource_pack;
 pub mod retrieval;

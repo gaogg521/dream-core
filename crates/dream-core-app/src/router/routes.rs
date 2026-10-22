@@ -3913,6 +3913,8 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         dream_domain_devops::DevopsService::new(services.db.clone())
             .with_encryption_key(crate::config::derive_encryption_key(&services.data_secret_raw)),
     );
+    // Keeps the knowledge embedding model warm so a user's first search is not answered from keywords only.
+    one_devops_service.spawn_embedding_warmup();
 
     #[cfg(feature = "enterprise")]
     let governance = build_governance_plane(

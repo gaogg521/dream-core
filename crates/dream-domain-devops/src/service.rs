@@ -6,6 +6,13 @@ use dream_core_common::now_ms;
 use dream_core_db::{DbBackend, DbPool, DbValue, db_params};
 
 use crate::embedding::EmbeddingConfig;
+
+/// How long a search waits for the query embedding before answering from keywords.
+const QUERY_EMBEDDING_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+const EMBEDDING_WARMUP_DELAY: std::time::Duration = std::time::Duration::from_secs(20);
+const EMBEDDING_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(240);
+/// Keep-alive pings stop once nobody has searched for this long.
+const EMBEDDING_KEEPALIVE_ACTIVITY_WINDOW: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 use crate::error::DevopsError;
 use crate::models::{
     MILESTONE_STATUSES, McpRegistryDto, MilestoneDto, PIPELINE_RUN_STATUSES, PIPELINE_STATUSES, PIPELINE_TRIGGERS,
@@ -2085,6 +2092,58 @@ impl DevopsService {
             .ok_or_else(|| DevopsError::BadRequest("RAG embedding endpoint not configured".into()))
     }
 
+    /// Whether any document has indexed chunks, i.e. whether a search could ever need the embedding model.
+    async fn has_indexed_chunks(&self) -> bool {
+        self.db
+            .fetch_optional_scalar::<i64>("SELECT 1 FROM one_rag_chunks LIMIT 1", &[])
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+    }
+
+    /// One tiny embedding call so the model/endpoint is loaded before a user's first search needs it.
+    async fn warm_embedding(&self, reason: &str) {
+        let Ok(config) = self.load_embedding_config().await else {
+            return;
+        };
+        // Never start the bundled model's network download from a background warm-up.
+        if config.base_url == "local://embedding" && !crate::embedding::local_model_ready() {
+            return;
+        }
+        let started = std::time::Instant::now();
+        match crate::embedding::embed(&config, &[String::from("warm up")]).await {
+            Ok(_) => tracing::info!(
+                reason,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "knowledge embedding warmed"
+            ),
+            Err(error) => tracing::warn!(reason, %error, "knowledge embedding warm-up failed"),
+        }
+    }
+
+    /// Keep the embedding model warm: once shortly after startup (only if there is anything to search), then
+    /// every few minutes while knowledge search is being used. The first search after an idle period used to wait
+    /// on a cold endpoint (observed: a 17.5 s first embedding call), time out, and answer from keywords only.
+    pub fn spawn_embedding_warmup(self: &std::sync::Arc<Self>) {
+        let service = self.clone();
+        tokio::spawn(async move {
+            // The first window load matters more than a warm model.
+            tokio::time::sleep(EMBEDDING_WARMUP_DELAY).await;
+            if service.has_indexed_chunks().await {
+                service.warm_embedding("startup").await;
+            }
+            let mut ticker = tokio::time::interval(EMBEDDING_KEEPALIVE_INTERVAL);
+            ticker.tick().await; // the first tick completes immediately
+            loop {
+                ticker.tick().await;
+                if crate::query_embedding::queried_within(EMBEDDING_KEEPALIVE_ACTIVITY_WINDOW) {
+                    service.warm_embedding("keepalive").await;
+                }
+            }
+        });
+    }
+
     pub async fn check_rag_health(&self) -> Result<RagHealthDto, DevopsError> {
         let config = self.load_embedding_config().await?;
         let configured_dimensions: Option<i64> = self
@@ -2460,17 +2519,14 @@ impl DevopsService {
             )
         };
 
-        // Dense half. The ACL lives in the join, exactly as before.
-        let embedding = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        // Dense half. The ACL lives in the join, exactly as before. The query embedding gets a short budget; if it
+        // is not ready in time this search answers from keywords, but the request is NOT dropped — it finishes and
+        // is cached, so the next identical search is fully semantic (see `query_embedding`).
+        let embedding = async {
             let config = self.load_embedding_config().await?;
-            crate::embedding::embed(&config, &[query.to_owned()])
-                .await?
-                .into_iter()
-                .next()
-                .ok_or_else(|| DevopsError::Internal("empty query embedding".into()))
-        })
-        .await
-        .unwrap_or_else(|_| Err(DevopsError::Internal("query embedding timed out".into())));
+            crate::query_embedding::embed_query(&config, query, QUERY_EMBEDDING_BUDGET).await
+        }
+        .await;
 
         const BASE: &str = "SELECT c.id, c.document_id, c.chunk_index, c.content, c.embedding, d.title                             FROM one_rag_chunks c JOIN one_rag_documents d ON d.id = c.document_id";
         let sql = match acl_predicate.as_deref() {

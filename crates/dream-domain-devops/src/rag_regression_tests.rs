@@ -347,3 +347,72 @@ async fn rag_automatic_indexing_coalesces_saves_and_releases_backoff_capacity() 
     svc.delete_rag_document("admin1", &failed.id).await.unwrap();
     server.abort();
 }
+
+#[tokio::test]
+async fn rag_cold_embedding_finishes_in_the_background_and_the_next_search_is_semantic() {
+    let svc = service().await;
+    let doc = svc.register_rag_document("cold", None, None, None, "org", None, "all", "admin1", None)
+        .await.unwrap();
+    rag_seed_searchable_chunk(&svc, &doc.id, "coldstartdocument").await;
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = calls.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    svc.set_rag_config(&format!("http://{}", listener.local_addr().unwrap()), "cold", Some(""))
+        .await.unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, axum::Router::new().route("/embeddings", axum::routing::post(move || {
+            let counted = counted.clone();
+            async move {
+                // The first request is the cold one: the model has to load before it can answer.
+                if counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
+                }
+                axum::Json(serde_json::json!({"data":[{"embedding":[1.0, 0.0]}]}))
+            }
+        }))).await.unwrap();
+    });
+    // Natural language with no literal keyword in common with the stored text: only a vector can match it.
+    let question = "which note explains how the boot sequence behaves when nothing has run yet";
+
+    let started = std::time::Instant::now();
+    let first = svc.search_rag("admin1", question, 5).await.unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(4), "the first search stays bounded");
+    assert!(first.is_empty(), "no keyword match and the vector is not ready within the budget");
+
+    // The cold request was not dropped: it finishes and is cached.
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    let again = std::time::Instant::now();
+    let second = svc.search_rag("admin1", question, 5).await.unwrap();
+    assert_eq!(second.len(), 1, "the same question is now answered semantically");
+    assert_eq!(second[0].document_id, doc.id);
+    assert!(again.elapsed() < std::time::Duration::from_millis(800), "served from the cache, not the endpoint");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "no second embedding request was made");
+    server.abort();
+}
+
+#[tokio::test]
+async fn rag_embedding_warmup_calls_the_endpoint_only_when_there_is_something_to_search() {
+    let svc = service().await;
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = calls.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    svc.set_rag_config(&format!("http://{}", listener.local_addr().unwrap()), "warm", Some(""))
+        .await.unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, axum::Router::new().route("/embeddings", axum::routing::post(move || {
+            let counted = counted.clone();
+            async move {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                axum::Json(serde_json::json!({"data":[{"embedding":[1.0, 0.0]}]}))
+            }
+        }))).await.unwrap();
+    });
+    assert!(!svc.has_indexed_chunks().await, "an empty knowledge base has nothing to warm for");
+    let doc = svc.register_rag_document("warm", None, None, None, "org", None, "all", "admin1", None)
+        .await.unwrap();
+    rag_seed_searchable_chunk(&svc, &doc.id, "warmuptoken").await;
+    assert!(svc.has_indexed_chunks().await);
+    svc.warm_embedding("test").await;
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    server.abort();
+}

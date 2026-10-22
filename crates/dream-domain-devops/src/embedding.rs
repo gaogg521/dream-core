@@ -118,6 +118,11 @@ fn local_model_repo_dir(cache_dir: &Path) -> PathBuf {
 }
 
 /// The snapshot dir of an already-seeded model, if the cache is complete.
+/// Whether the bundled local model is already on disk. Warm-up must never trigger the (network) download.
+pub fn local_model_ready() -> bool {
+    seeded_snapshot(&local_model_repo_dir(&hf_cache_dir())).is_some()
+}
+
 fn seeded_snapshot(repo_dir: &Path) -> Option<PathBuf> {
     let commit = std::fs::read_to_string(repo_dir.join("refs/main")).ok()?;
     let commit = commit.trim();

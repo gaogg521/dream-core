@@ -269,7 +269,20 @@ pub struct MarketSyncReportDto {
     pub removed: Vec<String>,
     /// Per-item failures; a bad item never fails the whole sync.
     pub errors: Vec<MarketSyncItemError>,
+    /// Entries NOT imported because a self-built row already owns the name. This is a policy outcome, not a
+    /// failure: admin-authored content always wins, and renaming either side lets the next sync import it.
+    #[serde(default)]
+    pub conflicts: Vec<MarketSyncConflict>,
     pub synced_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketSyncConflict {
+    /// `kind:name` of the upstream entry that was left out.
+    pub item: String,
+    /// Why, in words an administrator can act on.
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -476,6 +489,7 @@ impl DevopsService {
             skipped: 0,
             removed: Vec::new(),
             errors: Vec::new(),
+            conflicts: Vec::new(),
             synced_at: now_ms(),
         };
 
@@ -517,6 +531,23 @@ impl DevopsService {
                     if existing.is_some_and(|(hash,)| pin.eq_ignore_ascii_case(&hash)) {
                         continue;
                     }
+                }
+                // A not-yet-imported skill whose name a self-built row owns is reported as a conflict later; do not
+                // download a payload that will never be used.
+                let imported_before: Option<(String,)> = self
+                    .db
+                    .fetch_optional_as(
+                        "SELECT registry_id FROM one_market_imports WHERE source_id = ? AND kind = ? AND item_name = ?",
+                        &db_params![&source_id, &item.kind, &item.name],
+                    )
+                    .await?;
+                if imported_before.is_none()
+                    && self
+                        .self_built_name_exists(&item.kind, &item.name)
+                        .await
+                        .unwrap_or(false)
+                {
+                    continue;
                 }
                 if let Some(path) = &item.path
                     && let Ok(url) = resolve_item_url(&source_url, path)
@@ -571,7 +602,7 @@ impl DevopsService {
         }
 
         self.record_market_sync_result(&source_id, "ok", None).await;
-        tracing::info!(source_id = %source_id, total = report.total_indexed, imported = report.imported, updated = report.updated, skipped = report.skipped, errors = report.errors.len(), elapsed_ms = started.elapsed().as_millis(), "content market synchronization finished");
+        tracing::info!(source_id = %source_id, total = report.total_indexed, imported = report.imported, updated = report.updated, skipped = report.skipped, errors = report.errors.len(), conflicts = report.conflicts.len(), elapsed_ms = started.elapsed().as_millis(), "content market synchronization finished");
         Ok(report)
     }
 
@@ -603,6 +634,21 @@ impl DevopsService {
             && declared.eq_ignore_ascii_case(existing_hash)
         {
             report.skipped += 1;
+            return Ok(());
+        }
+
+        // A name already owned by a self-built row can never be imported (admin-authored content is not taken
+        // over). Say so up front and skip the fetch, instead of downloading and validating the payload only to
+        // report a failure on every sync, forever.
+        if mapping.is_none() && self.self_built_name_exists(&item.kind, &item.name).await? {
+            report.conflicts.push(MarketSyncConflict {
+                item: format!("{}:{}", item.kind, item.name),
+                reason: format!(
+                    "a self-built {} named '{}' already exists and was kept; rename one of them to import the \
+                     official version",
+                    item.kind, item.name
+                ),
+            });
             return Ok(());
         }
 
@@ -688,7 +734,8 @@ impl DevopsService {
 
         // New mapping. Names are unique across the registry (D7, enforced at
         // the app level — no DB UNIQUE on those tables): a collision with a
-        // self-built row is an error, never a takeover; a collision with
+        // self-built row was already reported as a conflict above (and `upsert_new`
+        // still refuses it if one appears in between); a collision with
         // another MARKET row is an adoption (update in place + mapping
         // created), which also makes delete-source-then-re-add idempotent
         // instead of piling up orphan rows.
@@ -703,6 +750,21 @@ impl DevopsService {
             .map_err(|e| format!("mapping insert failed: {e}"))?;
         report.imported += 1;
         Ok(())
+    }
+
+    /// Whether a row of this kind and name exists that the market did not create.
+    async fn self_built_name_exists(&self, kind: &str, name: &str) -> Result<bool, String> {
+        let table = if kind == "skill" {
+            "one_skill_registry"
+        } else {
+            "one_mcp_registry"
+        };
+        let origin: Option<String> = self
+            .db
+            .fetch_optional_scalar(&format!("SELECT origin FROM {table} WHERE name = ?"), &db_params![name])
+            .await
+            .map_err(|e| format!("collision check failed: {e}"))?;
+        Ok(origin.is_some_and(|origin| origin != "market"))
     }
 
     /// Persist the sync outcome on the source row (status + error text).
@@ -1203,7 +1265,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_self_built_name_collision_is_an_item_error_not_a_takeover() {
+    async fn a_self_built_name_collision_is_a_reported_conflict_not_a_failure_or_takeover() {
         let (pool, service) = setup().await;
         service
             .upsert_skill(
@@ -1226,13 +1288,76 @@ mod tests {
 
         let report = service.sync_market_source("t1", &id, &fetcher).await.unwrap();
         assert_eq!(report.imported, 1, "the MCP item still imports (partial success)");
-        assert_eq!(report.errors.len(), 1);
-        assert!(report.errors[0].error.contains("self-built"));
+        assert!(
+            report.errors.is_empty(),
+            "a name owned by admin content is not a sync failure"
+        );
+        assert_eq!(report.conflicts.len(), 1);
+        assert_eq!(report.conflicts[0].item, "skill:review-skill");
+        assert!(report.conflicts[0].reason.contains("rename"));
+        assert!(
+            !fetcher.fetch_log.lock().unwrap().contains(&skill_url().to_string()),
+            "a conflicting entry is recognised before its payload is fetched"
+        );
         let origin: String = dream_core_db::DbPool::Sqlite(pool.clone())
             .fetch_one_scalar("SELECT origin FROM one_skill_registry WHERE name = 'review-skill'", &[])
             .await
             .unwrap();
         assert_eq!(origin, "self_built");
+    }
+
+    #[tokio::test]
+    async fn renaming_the_self_built_row_lets_the_next_sync_import_the_official_one() {
+        let (pool, service) = setup().await;
+        service
+            .upsert_skill(
+                None,
+                "review-skill",
+                "admin's own",
+                "own content",
+                true,
+                false,
+                "org",
+                None,
+                "all",
+                None,
+                "admin1",
+            )
+            .await
+            .unwrap();
+        let id = make_source(&service).await;
+        let fetcher = FakeFetcher::new(&[(source_url(), MANIFEST.as_bytes()), (skill_url(), SKILL_MD.as_bytes())]);
+        assert_eq!(
+            service
+                .sync_market_source("t1", &id, &fetcher)
+                .await
+                .unwrap()
+                .conflicts
+                .len(),
+            1
+        );
+
+        dream_core_db::DbPool::Sqlite(pool.clone())
+            .execute(
+                "UPDATE one_skill_registry SET name = 'review-skill-mine' WHERE name = 'review-skill'",
+                &[],
+            )
+            .await
+            .unwrap();
+        let report = service.sync_market_source("t1", &id, &fetcher).await.unwrap();
+        assert!(report.conflicts.is_empty() && report.errors.is_empty());
+        let origins: Vec<(String, String)> =
+            sqlx::query_as("SELECT name, origin FROM one_skill_registry ORDER BY name")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            origins,
+            vec![
+                ("review-skill".to_string(), "market".to_string()),
+                ("review-skill-mine".to_string(), "self_built".to_string())
+            ]
+        );
     }
 
     #[tokio::test]
