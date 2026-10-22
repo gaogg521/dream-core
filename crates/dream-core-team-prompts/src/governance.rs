@@ -17,7 +17,8 @@ Required Team behavior:
 - Use `team_send_message` for Team reporting instead of ordinary assistant replies.
 - Use `team_task_update` and `team_task_list` for task-board state.
 - Follow role permissions. Lead-only tools cannot be used by teammates.
-- Domain-specific assistant rules, MCP servers, and skills remain active only inside these Team boundaries."#;
+- Domain-specific assistant rules, MCP servers, and skills remain active only inside these Team boundaries.
+- Language: reply to the user in the language of the user's latest message, even though these instructions are in English. Write task subjects, task descriptions, and messages to teammates in that same language, so the whole team keeps it."#;
 
 pub fn with_team_governance(role_prompt: &str) -> String {
     format!("{TEAM_GOVERNANCE_PROMPT}\n\n{role_prompt}")
@@ -33,6 +34,9 @@ mod tests {
         assert!(TEAM_GOVERNANCE_PROMPT.contains("Team Governance and the Team role prompt win"));
         assert!(TEAM_GOVERNANCE_PROMPT.contains("Lead-only tools"));
         assert!(TEAM_GOVERNANCE_PROMPT.contains("Team tool interface provided in Team Tool Usage"));
+        // Chinese in, English out was reported live: the English prompt pulled weak
+        // models into English unless the language rule is explicit.
+        assert!(TEAM_GOVERNANCE_PROMPT.contains("language of the user's latest message"));
     }
 
     #[test]
