@@ -398,7 +398,7 @@ fn tool_specs() -> Vec<TeamToolSpec> {
                     "subject": { "type": "string", "description": "Task subject" },
                     "description": { "type": "string", "description": "Task description" },
                     "owner": { "type": "string", "description": "Owning agent slotId" },
-                    "blocked_by": { "type": "array", "items": { "type": "string" }, "description": "Task IDs this task depends on" }
+                    "blocked_by": { "type": "array", "items": { "type": "string" }, "description": "Task IDs that must be completed first. The owner is woken automatically when the last one completes" }
                 },
                 "required": ["subject"]
             }),

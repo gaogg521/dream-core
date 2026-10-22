@@ -1728,7 +1728,7 @@ impl TeamSession {
                 &agent.slot_id,
                 "team_system",
                 MailboxMessageType::Message,
-                "You were manually added to this team. Read your mailbox and wait for instructions.",
+                "You were manually added to this team. The leader will assign you work.",
                 None,
             )
             .await?;
@@ -1760,7 +1760,13 @@ impl TeamSession {
         )
         .await;
 
-        self.enqueue_system_work(&agent.slot_id, WorkSource::SpawnWelcome, Some(welcome.id), None)
+        // The welcome stays visible in the member's conversation but is born read
+        // and never queued: waking the member for it only produced an "I'm
+        // ready" turn that in turn woke the leader. The member's first turn is
+        // the leader's first assignment. (An unread row would be re-queued as a
+        // RecoveryDrain wake by `reconcile_mailbox_snapshot`.)
+        self.mailbox
+            .mark_read_batch(&self.team.id, std::slice::from_ref(&welcome.id))
             .await?;
         self.enqueue_system_work(
             &lead_slot_id,
@@ -2232,41 +2238,14 @@ impl TeamSession {
         // the new slot immediately.
         self.scheduler.add_agent(&new_agent).await;
 
-        // Step 6: welcome message. The mailbox write is the source of truth —
-        // if the wake never fires (e.g. warmup raced), the next caller-triggered
-        // wake will still drain this entry.
-        let welcome_message = match self
-            .mailbox
-            .write(
-                &self.team.id,
-                &new_agent.slot_id,
-                caller_slot_id,
-                MailboxMessageType::Message,
-                "You have been spawned as a teammate. Read your mailbox and wait for instructions.",
-                None,
-            )
-            .await
-        {
-            Ok(message) => message,
-            Err(err) => {
-                if let Some(service) = self.service.upgrade() {
-                    let _ = service
-                        .remove_agent(&self.user_id, &self.team.id, &new_agent.slot_id)
-                        .await;
-                } else {
-                    let _ = self.scheduler.remove_agent(&new_agent.slot_id).await;
-                }
-                return Err(err);
-            }
-        };
-
-        self.enqueue_system_work(
-            &new_agent.slot_id,
-            WorkSource::SpawnWelcome,
-            Some(welcome_message.id),
-            Some(caller_slot_id.to_owned()),
-        )
-        .await?;
+        // Step 6: no welcome message. It used to be a mailbox row ("you have been
+        // spawned, wait for instructions") plus a wake, so every new teammate spent
+        // a full model turn replying "ready" — and each reply woke the leader
+        // again — before the leader's task assignment could even start. The role
+        // prompt injected on the first real wake already says who the teammate is,
+        // and the assignment itself wakes it. Do not write an unread row here
+        // either: `reconcile_mailbox_snapshot` turns any unread row without an
+        // intent into a RecoveryDrain wake, which would bring the no-op turn back.
 
         // Step 7: attach the CLI process and register the finish subscriber
         // in a background task. This involves spawning the CLI process and

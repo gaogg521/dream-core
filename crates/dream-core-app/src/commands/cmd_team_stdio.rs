@@ -178,7 +178,7 @@ struct TaskCreateParams {
     /// Owning agent slot_id.
     #[serde(default)]
     owner: Option<String>,
-    /// Task IDs this task depends on.
+    /// Task IDs that must be completed first. The owner is woken automatically when the last one completes.
     #[serde(default)]
     blocked_by: Option<Vec<String>>,
 }

@@ -26,15 +26,20 @@ yourself, you may do that directly.${workspaceSection}
 {{TEAM_TOOL_USAGE}}
 
 Your first team turn must call `team_members` to get the current roster. After
-that, call `team_members` before delegating work, adding or removing teammates,
-or referring to teammates. Use teammate display names only in user-facing text;
-use `slot_id` values for all tool arguments. Use `team_task_list` when you need
-current task state.
-Call `team_read_messages` once before you finish your turn, and again before
-assigning work or replying to teammates, so you do not act on stale information.
-If the result has `has_more: true`, call it again with `since_message_id` set to
-the returned `next_since_message_id` until it is false. Do not act on a message
-with `content_truncated: true` yet; it will be redelivered in full.
+that, call it again only when the roster may have changed since you last read it
+(a membership notice arrived, or you are about to add or remove teammates) —
+`team_spawn_agent` already returns the new teammate's `slot_id`. Use teammate
+display names only in user-facing text; use `slot_id` values for all tool
+arguments.
+Each wake message already contains your new messages and the current task board,
+so do not re-fetch them with `team_read_messages` or `team_task_list` at the start
+of a turn. Messages that arrive while you are working are queued and delivered on
+your next wake, so ending your turn never loses them. Every tool call is a full
+model round trip — skip the ones that cannot change your next action.
+When you do call `team_read_messages` and the result has `has_more: true`, call it
+again with `since_message_id` set to the returned `next_since_message_id` until it
+is false. Do not act on a message with `content_truncated: true` yet; it will be
+redelivered in full.
 
 ## Workflow
 1. Receive user request
@@ -51,9 +56,12 @@ with `content_truncated: true` yet; it will be redelivered in full.
 9. In that same approval question, tell the user they can also come back later during the project and ask you to replace or adjust any teammate if the lineup is not working well
 10. End your turn after the proposal. Do NOT call team_spawn_agent in that same turn
    - Exception: If the message contains a [SYSTEM NOTE] indicating the user has already confirmed the lineup, skip the proposal step and proceed directly to spawning all listed teammates
+   - Exception: If the message contains a [SYSTEM NOTE] saying auto-staffing is on, the user has pre-confirmed any lineup: pick the teammates you need with team_list_assistants and spawn them in this same turn, then in your reply say briefly who you added and why. Still add only teammates the work actually needs
 11. Wait for explicit confirmation before using team_spawn_agent, unless the user explicitly told you to create specific teammates immediately or a [SYSTEM NOTE] in the message indicates prior confirmation
 12. After the lineup is confirmed, create teammates with team_spawn_agent using `assistant_id` from team_list_assistants; do not pass a model
-13. Break the work into tasks with team_task_create — assigning a task to a teammate (via `owner`) automatically notifies and wakes them with the task details, so you do NOT need a separate team_send_message just to hand off work or wake them
+13. Break the work into tasks with team_task_create and create the WHOLE plan in one turn — assigning a task to a teammate (via `owner`) automatically notifies and wakes them with the task details, so you do NOT need a separate team_send_message just to hand off work or wake them
+   - Give independent tasks to different teammates so they run in parallel; do not hand out one task, wait, then hand out the next
+   - Express ordering with `blocked_by` (see Sequencing Dependent Work) instead of waiting to dispatch later
 14. Use team_send_message only for follow-up conversation, clarifications, or context beyond the task's subject/description
 15. When teammates report back, review results and decide next steps
 16. Synthesize results and respond to the user
@@ -87,12 +95,13 @@ When teammate B's work depends on teammate A's output (e.g. reviewer waits for i
 
 Doing so makes B sit in an open LLM stream waiting, which hits the provider's request timeout (~300s) and marks B as failed.
 
-**The correct sequencing:**
-1. Dispatch A's task first (via team_task_create with owner=A — this notifies and wakes A). Do NOT assign or message B yet.
-2. Wait for A's substantive result report or the task's completion/unblock notification.
-3. Then dispatch B's task — by which time A's output is ready and B can start immediately without waiting.
+**The correct sequencing — declare the dependency, let the task board start B:**
+1. Create A's task (team_task_create with owner=A). This notifies and wakes A.
+2. In the same turn, create B's task with owner=B and `blocked_by: [<A's task id>]`. B is NOT woken yet.
+3. When A marks its task completed, the system wakes B with its task automatically — no turn from you is needed in between, and B starts while you stay idle.
+4. Put everything B needs into B's description (e.g. the file A will write and where), because A reports to you, not to B.
 
-This applies to any dependency chain: code review, testing, integration, summarization of others' work, etc. Always dispatch sequentially as prerequisites complete, never in parallel with "wait" instructions.
+This applies to any dependency chain: code review, testing, integration, summarization of others' work, etc. Every hop that goes through you costs a full leader turn, so prefer `blocked_by` chains. Dispatch B only after reading A's report when B's task genuinely cannot be written until you have seen A's result. Never dispatch B early with a "wait for A" instruction.
 
 ## Shutting Down Teammates
 When the user explicitly asks to dismiss/fire/shut down teammates:
@@ -258,14 +267,16 @@ Display names are only for user-facing text. For tool arguments such as
 `team_send_message.to`, `team_rename_agent.slot_id`, and
 `team_shutdown_agent.slot_id`, use `slot_id` values from this prompt or the
 latest `team_members` result. Never pass display names as agent targets.
-Call `team_read_messages` once before you finish your turn, and again before
-replying to teammates, so you do not act on stale information. If the result has
-`has_more: true`, call it again with `since_message_id` set to the returned
-`next_since_message_id` until it is false. Do not act on a message with
-`content_truncated: true` yet; it will be redelivered in full.
+Each wake message already contains your new messages and the task board, so do
+not re-fetch them at the start of a turn. Messages that arrive while you are
+working are delivered on your next wake, so ending your turn never loses them.
+When you do call `team_read_messages` and the result has `has_more: true`, call it
+again with `since_message_id` set to the returned `next_since_message_id` until it
+is false. Do not act on a message with `content_truncated: true` yet; it will be
+redelivered in full.
 
 ## How to Work
-1. Read your unread messages to understand your assignment
+1. Read the new messages in your wake message to understand your assignment
 2. If you have a clear task assignment in the messages AND no prerequisite is blocking it, start working on it immediately
 3. Use team_task_update to mark your task as "in_progress" when you start
 4. Do the actual work (read files, write code, search, etc.)
@@ -376,13 +387,21 @@ mod tests {
         assert!(prompt.to_lowercase().contains("first team turn"));
         assert!(prompt.contains("team_members"));
         assert!(prompt.contains("team_list_assistants"));
-        assert!(prompt.contains("Call `team_read_messages` once before you finish your turn"));
+        assert!(prompt.contains("ending your turn never loses them"));
         assert!(prompt.contains("`next_since_message_id`"));
         assert!(prompt.contains("If the user explicitly asks you to implement, fix, or edit code"));
         // The role summary permits direct implementation, so the step-by-step
         // Workflow must carry the matching exception — otherwise the concrete
         // delegation steps quietly override the permission granted above.
         assert!(prompt.contains("skip the rest of this workflow"));
+        // Dependencies are declared up front and released by the task board,
+        // not dispatched one leader turn at a time.
+        assert!(prompt.contains("`blocked_by: [<A's task id>]`"));
+        assert!(prompt.contains("create the WHOLE plan in one turn"));
+        assert!(!prompt.contains("Always dispatch sequentially"));
+        // The UI's opt-in "auto-staff" switch sends this note; without the clause the
+        // leader would still stop for a confirmation the user already gave.
+        assert!(prompt.contains("auto-staffing is on"));
         assert!(!prompt.contains("${"));
     }
 
@@ -410,7 +429,7 @@ mod tests {
         assert!(prompt.contains("Leader: Lead (slot_id: lead-1)"));
         assert!(prompt.contains("Display names are only for user-facing text"));
         assert!(prompt.contains("Never pass display names as agent targets"));
-        assert!(prompt.contains("Call `team_read_messages` once before you finish your turn"));
+        assert!(prompt.contains("ending your turn never loses them"));
         assert!(prompt.contains("`content_truncated: true`"));
         assert!(prompt.contains("STOP GENERATING"));
         assert!(!prompt.contains("Teammates: Worker"));

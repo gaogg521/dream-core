@@ -983,7 +983,7 @@ fn system_initiated_inherit_uses_caller_batch_run() {
         .acquire_enqueue(EnqueueRequest {
             slot_id: "worker-1".into(),
             role: TeamRunTargetRole::Teammate,
-            source: WorkSource::SpawnWelcome,
+            source: WorkSource::SpawnAttachFailure,
             binding: CausalBinding::SystemInitiated {
                 inherit_from: Some("lead-1".into()),
             },
@@ -1003,7 +1003,7 @@ fn system_initiated_none_delegates_to_port() {
         .acquire_enqueue(EnqueueRequest {
             slot_id: "lead-1".into(),
             role: TeamRunTargetRole::Lead,
-            source: WorkSource::SpawnWelcome,
+            source: WorkSource::SpawnAttachFailure,
             binding: CausalBinding::SystemInitiated { inherit_from: None },
         })
         .unwrap();

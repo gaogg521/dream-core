@@ -291,7 +291,7 @@ fn manual_or_leader_add_during_run_inherits_run_causality() {
         .acquire_enqueue(EnqueueRequest {
             slot_id: "worker-1".into(),
             role: TeamRunTargetRole::Teammate,
-            source: WorkSource::SpawnWelcome,
+            source: WorkSource::SpawnAttachFailure,
             binding: CausalBinding::ActiveRunOrBackground,
         })
         .unwrap();
@@ -299,7 +299,7 @@ fn manual_or_leader_add_during_run_inherits_run_causality() {
         .acquire_enqueue(EnqueueRequest {
             slot_id: "worker-2".into(),
             role: TeamRunTargetRole::Teammate,
-            source: WorkSource::SpawnWelcome,
+            source: WorkSource::SpawnAttachFailure,
             binding: CausalBinding::InheritRunningBatch {
                 caller_slot_id: "lead-1".into(),
             },
@@ -334,7 +334,7 @@ fn system_initiated_without_active_run_opens_system_lifecycle_run() {
         &coordinator,
         "lead-1",
         TeamRunTargetRole::Lead,
-        WorkSource::SpawnWelcome,
+        WorkSource::SpawnAttachFailure,
         None,
     );
     assert!(lease.team_run_id.is_some(), "a system wake must open a run when idle");
@@ -442,7 +442,7 @@ fn system_initiated_inherits_callers_running_run() {
         &coordinator,
         "worker-1",
         TeamRunTargetRole::Teammate,
-        WorkSource::SpawnWelcome,
+        WorkSource::SpawnAttachFailure,
         Some("lead-1".into()),
     );
     assert_eq!(
@@ -467,7 +467,7 @@ fn system_initiated_inherit_miss_falls_back_to_new_system_run() {
         &coordinator,
         "lead-1",
         TeamRunTargetRole::Lead,
-        WorkSource::SpawnWelcome,
+        WorkSource::SpawnAttachFailure,
         Some("worker-unknown".into()),
     );
     assert!(lease.team_run_id.is_some());
@@ -485,7 +485,7 @@ fn system_run_completes_after_single_batch_no_dangling() {
         &coordinator,
         "lead-1",
         TeamRunTargetRole::Lead,
-        WorkSource::SpawnWelcome,
+        WorkSource::SpawnAttachFailure,
         None,
     );
     coordinator.commit_enqueue(&lease, Some("m1".into())).unwrap();

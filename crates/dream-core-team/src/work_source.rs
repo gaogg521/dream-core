@@ -13,7 +13,6 @@ pub(crate) enum WorkSource {
     LeadIntervention,
     McpSendMessage,
     McpShutdownRequest,
-    SpawnWelcome,
     TeamMembershipChanged,
     SpawnAttachFailure,
     /// A teammate exhausted its mailbox delivery retries and was paused. Wakes
@@ -34,8 +33,7 @@ impl WorkSource {
             }
             Self::McpShutdownRequest | Self::ShutdownRejected => WorkPriority::Control,
             Self::McpSendMessage => WorkPriority::Directed,
-            Self::SpawnWelcome
-            | Self::TeamMembershipChanged
+            Self::TeamMembershipChanged
             | Self::SpawnAttachFailure
             | Self::DeliveryFailureNotification
             | Self::IdleNotification
@@ -68,7 +66,6 @@ impl WorkSource {
                 | Self::LeadIntervention
                 | Self::McpSendMessage
                 | Self::McpShutdownRequest
-                | Self::SpawnWelcome
                 | Self::SpawnAttachFailure
                 | Self::DeliveryFailureNotification
                 | Self::InterruptedNotification
@@ -87,7 +84,6 @@ impl fmt::Display for WorkSource {
             Self::LeadIntervention => "lead_intervention",
             Self::McpSendMessage => "mcp_send_message",
             Self::McpShutdownRequest => "mcp_shutdown_request",
-            Self::SpawnWelcome => "spawn_welcome",
             Self::TeamMembershipChanged => "team_membership_changed",
             Self::SpawnAttachFailure => "spawn_attach_failure",
             Self::DeliveryFailureNotification => "delivery_failure_notification",

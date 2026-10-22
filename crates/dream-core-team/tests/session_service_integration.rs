@@ -944,7 +944,6 @@ struct FullMockTeamRepo {
     teams: std::sync::Mutex<Vec<dream_core_db::models::TeamRow>>,
     fail_workspace_update: std::sync::Mutex<bool>,
     fail_agent_update: std::sync::Mutex<bool>,
-    fail_message_writes: std::sync::Mutex<bool>,
 }
 
 impl FullMockTeamRepo {
@@ -954,7 +953,6 @@ impl FullMockTeamRepo {
             teams: std::sync::Mutex::new(Vec::new()),
             fail_workspace_update: std::sync::Mutex::new(false),
             fail_agent_update: std::sync::Mutex::new(false),
-            fail_message_writes: std::sync::Mutex::new(false),
         }
     }
 
@@ -964,10 +962,6 @@ impl FullMockTeamRepo {
 
     fn fail_agent_updates(&self) {
         *self.fail_agent_update.lock().unwrap() = true;
-    }
-
-    fn fail_message_writes(&self) {
-        *self.fail_message_writes.lock().unwrap() = true;
     }
 }
 
@@ -1047,9 +1041,6 @@ impl ITeamRepository for FullMockTeamRepo {
         user_id: &str,
         row: &dream_core_db::models::MailboxMessageRow,
     ) -> Result<(), DbError> {
-        if *self.fail_message_writes.lock().unwrap() {
-            return Err(DbError::Init("forced mailbox write failure".into()));
-        }
         self.inner.write_message(user_id, row).await
     }
     async fn read_unread_and_mark(
@@ -4695,7 +4686,7 @@ async fn aa1_add_agent_to_team() {
 
 #[tokio::test]
 async fn manual_add_without_active_run_opens_system_lifecycle_run() {
-    let (svc, _, conv_repo) = setup_with_factory_and_metadata_and_conversation_repo(
+    let (svc, team_repo, _, conv_repo) = setup_with_factory_metadata_team_repo_and_conversation_repo(
         success_factory(),
         Arc::new(StubAgentMetadataRepo::empty()),
     );
@@ -4757,14 +4748,34 @@ async fn manual_add_without_active_run_opens_system_lifecycle_run() {
     assert_eq!(added_content["teammate_message"], true);
     assert!(added_content["content"].as_str().unwrap().contains("manually added"));
 
+    // The welcome is shown to the user but must not wake the new member: that
+    // turn only ever produced an "I'm ready" reply, which in turn woke the
+    // leader. It is born read, so `reconcile_mailbox_snapshot` cannot re-queue
+    // it as a RecoveryDrain wake either.
+    let added_unread = ITeamRepository::peek_unread(team_repo.as_ref(), "user1", &created.id, &added.slot_id)
+        .await
+        .unwrap();
+    assert!(
+        added_unread.is_empty(),
+        "welcome must not be left unread: {added_unread:?}"
+    );
+
     let run_state = svc.get_run_state("user1", &created.id).await.unwrap();
-    // Manual add during an idle team now opens a SystemLifecycle run so the
-    // welcome and membership-change turns run inside a run (invariant: no
-    // run-less turn), rather than falling to run-less background as before.
+    // Manual add during an idle team opens a SystemLifecycle run so the leader's
+    // membership-change turn runs inside a run (invariant: no run-less turn).
     let active_run = run_state.active_run.expect("manual add must open a system run");
     assert_eq!(active_run.source, TeamRunSource::SystemLifecycle);
     assert!(!active_run.has_user_intervention);
-    assert!(run_state.slot_work.iter().any(|slot| slot.slot_id == added.slot_id));
+    let leader_slot_id = &created.assistants[0].slot_id;
+    assert!(run_state.slot_work.iter().any(|slot| &slot.slot_id == leader_slot_id));
+    assert!(
+        run_state
+            .slot_work
+            .iter()
+            .filter(|slot| slot.slot_id == added.slot_id)
+            .all(|slot| slot.queued_foreground_count == 0 && slot.queued_background_count == 0),
+        "the new member must have no queued work until the leader assigns some"
+    );
 }
 
 #[tokio::test]
@@ -6655,7 +6666,7 @@ async fn spawn_agent_in_session_aborts_lease_when_persistence_fails() {
 }
 
 #[tokio::test]
-async fn spawn_agent_in_session_compensates_when_welcome_mailbox_write_fails() {
+async fn spawn_agent_in_session_does_not_wake_the_new_teammate_before_an_assignment() {
     let (svc, team_repo, _, _) = setup_with_factory_metadata_assistants_and_conversation_repo(
         success_factory(),
         seeded_agent_metadata_repo(),
@@ -6679,24 +6690,34 @@ async fn spawn_agent_in_session_compensates_when_welcome_mailbox_write_fails() {
     svc.send_message("user1", &created.id, "start active run", None, false)
         .await
         .expect("active run");
-    team_repo.fail_message_writes();
 
     let lead_slot_id = created.leader_assistant_id.clone().unwrap();
     let req = SpawnAgentRequest {
         name: "Helper".into(),
         assistant_id: Some("word-creator".into()),
     };
-
-    let err = svc
+    let spawned = svc
         .spawn_agent_in_session(&created.id, &lead_slot_id, req)
         .await
-        .expect_err("welcome mailbox write failure should fail spawn");
-    assert!(err.to_string().contains("forced mailbox write failure"));
+        .expect("spawn should succeed");
 
-    let after = svc.get_team("user1", &created.id).await.unwrap();
+    // A spawn used to leave a "you have been spawned, wait for instructions"
+    // row and a wake, so every teammate spent a model turn replying "ready"
+    // (and woke the leader with it) before its first real task. Its first
+    // turn is now the leader's first assignment, and no unread row is left
+    // for `reconcile_mailbox_snapshot` to turn into a RecoveryDrain wake.
+    let unread = ITeamRepository::peek_unread(team_repo.as_ref(), "user1", &created.id, &spawned.slot_id)
+        .await
+        .unwrap();
+    assert!(unread.is_empty(), "spawn must not leave a wake-up row: {unread:?}");
+    let run_state = svc.get_run_state("user1", &created.id).await.unwrap();
     assert!(
-        after.assistants.iter().all(|agent| agent.name != "Helper"),
-        "compensation must remove persisted helper after welcome write failure"
+        run_state
+            .slot_work
+            .iter()
+            .filter(|slot| slot.slot_id == spawned.slot_id)
+            .all(|slot| slot.queued_foreground_count == 0 && slot.queued_background_count == 0),
+        "the new teammate must have no queued work until the leader assigns some"
     );
 }
 
