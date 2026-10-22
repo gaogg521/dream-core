@@ -269,8 +269,9 @@ pub struct MarketSyncReportDto {
     pub removed: Vec<String>,
     /// Per-item failures; a bad item never fails the whole sync.
     pub errors: Vec<MarketSyncItemError>,
-    /// Entries NOT imported because a self-built row already owns the name. This is a policy outcome, not a
-    /// failure: admin-authored content always wins, and renaming either side lets the next sync import it.
+    /// Upstream entries whose name a self-built row already owns. They ARE imported, under a labelled name (see
+    /// [`labelled_market_name`]); the self-built row is never touched. Listed on every sync so the clash stays
+    /// visible instead of disappearing after the first import.
     #[serde(default)]
     pub conflicts: Vec<MarketSyncConflict>,
     pub synced_at: i64,
@@ -279,10 +280,72 @@ pub struct MarketSyncReportDto {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MarketSyncConflict {
-    /// `kind:name` of the upstream entry that was left out.
+    /// `kind:name` of the upstream entry.
     pub item: String,
+    /// The name it lives under in the registry (and, for a skill, in its SKILL.md frontmatter).
+    pub imported_as: String,
     /// Why, in words an administrator can act on.
     pub reason: String,
+}
+
+/// The source a manifest item is being synced from.
+struct SourceRef<'a> {
+    id: &'a str,
+    name: &'a str,
+    /// The manifest URL; item paths resolve against it.
+    url: &'a str,
+}
+
+/// The registry name for a market entry whose own name a self-built row already owns.
+///
+/// Skills carry the source's name in full-width brackets — skill names are free text (often CJK) and this reads
+/// naturally next to the original. MCP server names become config keys and tool-name prefixes in the agent CLIs,
+/// which only accept `[A-Za-z0-9_-]`, so they get an ASCII suffix. `attempt` > 0 disambiguates further when the
+/// labelled name itself is taken.
+pub fn labelled_market_name(kind: &str, name: &str, source_name: &str, attempt: usize) -> String {
+    let counter = if attempt == 0 {
+        String::new()
+    } else {
+        format!(" {}", attempt + 1)
+    };
+    if kind == "skill" {
+        let source: String = source_name.trim().chars().take(24).collect();
+        let source = if source.is_empty() { "market".to_owned() } else { source };
+        format!("{name}（{source}{counter}）")
+    } else if attempt == 0 {
+        format!("{name}-market")
+    } else {
+        format!("{name}-market-{}", attempt + 1)
+    }
+}
+
+/// Rewrite the `name:` line of a SKILL.md frontmatter block. Members' engines identify a skill by this name, so a
+/// relabelled market skill must carry the new name inside its content too, or two skills with one name reach them.
+pub fn with_frontmatter_name(content: &str, name: &str) -> String {
+    let normalized = content.replace("\r\n", "\n");
+    let Some(rest) = normalized.strip_prefix("---\n") else {
+        return content.to_owned();
+    };
+    let Some(end) = rest.find("\n---") else {
+        return content.to_owned();
+    };
+    let (front, body) = rest.split_at(end);
+    let mut replaced = false;
+    let front: Vec<String> = front
+        .lines()
+        .map(|line| {
+            if !replaced && line.trim_start().starts_with("name:") && !line.starts_with(char::is_whitespace) {
+                replaced = true;
+                format!("name: {name}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect();
+    if !replaced {
+        return content.to_owned();
+    }
+    format!("---\n{}{}", front.join("\n"), body)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -475,7 +538,7 @@ impl DevopsService {
         source_id: &str,
         fetcher: &dyn MarketFetcher,
     ) -> Result<MarketSyncReportDto, DevopsError> {
-        let (source_id, _tenant, _name, source_url, enabled, _synced, _status, _err, _by, _created, _updated) =
+        let (source_id, _tenant, source_name, source_url, enabled, _synced, _status, _err, _by, _created, _updated) =
             self.get_market_source(tenant_id, source_id).await?;
         if !enabled {
             return Err(DevopsError::BadRequest("source is disabled".into()));
@@ -532,23 +595,6 @@ impl DevopsService {
                         continue;
                     }
                 }
-                // A not-yet-imported skill whose name a self-built row owns is reported as a conflict later; do not
-                // download a payload that will never be used.
-                let imported_before: Option<(String,)> = self
-                    .db
-                    .fetch_optional_as(
-                        "SELECT registry_id FROM one_market_imports WHERE source_id = ? AND kind = ? AND item_name = ?",
-                        &db_params![&source_id, &item.kind, &item.name],
-                    )
-                    .await?;
-                if imported_before.is_none()
-                    && self
-                        .self_built_name_exists(&item.kind, &item.name)
-                        .await
-                        .unwrap_or(false)
-                {
-                    continue;
-                }
                 if let Some(path) = &item.path
                     && let Ok(url) = resolve_item_url(&source_url, path)
                     && !urls.contains(&url)
@@ -577,7 +623,17 @@ impl DevopsService {
                     continue;
                 }
                 if let Err(e) = self
-                    .sync_market_item(tenant_id, &source_id, &source_url, item, &batch_fetcher, &mut report)
+                    .sync_market_item(
+                        tenant_id,
+                        &SourceRef {
+                            id: &source_id,
+                            name: &source_name,
+                            url: &source_url,
+                        },
+                        item,
+                        &batch_fetcher,
+                        &mut report,
+                    )
                     .await
                 {
                     report.errors.push(MarketSyncItemError { item: label, error: e });
@@ -615,40 +671,50 @@ impl DevopsService {
         // tenant-scoped, so a manifest `category` is resolved to a category
         // row under this tenant — see `ensure_market_category`.
         tenant_id: &str,
-        source_id: &str,
-        manifest_url: &str,
+        source: &SourceRef<'_>,
         item: &ManifestItem,
         fetcher: &dyn MarketFetcher,
         report: &mut MarketSyncReportDto,
     ) -> Result<(), String> {
-        let mapping: Option<(String, String)> = self.db.fetch_optional_as::<(String, String)>(
-            "SELECT registry_id, content_hash FROM one_market_imports WHERE source_id = ? AND kind = ? AND item_name = ?",
-        &db_params![source_id, &item.kind, &item.name])
-        .await
-        .map_err(|e| format!("mapping lookup failed: {e}"))?;
+        let (source_id, source_name, manifest_url) = (source.id, source.name, source.url);
+        let table = if item.kind == "skill" {
+            "one_skill_registry"
+        } else {
+            "one_mcp_registry"
+        };
+        // The registry row's current name comes along: a relabelled entry keeps its label on every update.
+        let mapping: Option<(String, String, Option<String>)> = self
+            .db
+            .fetch_optional_as::<(String, String, Option<String>)>(
+                &format!(
+                    "SELECT m.registry_id, m.content_hash, r.name FROM one_market_imports m \
+                     LEFT JOIN {table} r ON r.id = m.registry_id \
+                     WHERE m.source_id = ? AND m.kind = ? AND m.item_name = ?"
+                ),
+                &db_params![source_id, &item.kind, &item.name],
+            )
+            .await
+            .map_err(|e| format!("mapping lookup failed: {e}"))?;
+        if let Some((_, _, Some(registry_name))) = &mapping
+            && registry_name != &item.name
+        {
+            report.conflicts.push(MarketSyncConflict {
+                item: format!("{}:{}", item.kind, item.name),
+                imported_as: registry_name.clone(),
+                reason: format!(
+                    "a self-built {} is named '{}'; the market version is kept as '{registry_name}'",
+                    item.kind, item.name
+                ),
+            });
+        }
 
         // A publisher-pinned hash matching the recorded one skips the item
         // entirely — no fetch, no write. Everything below is for new or
         // changed items.
-        if let (Some((_, existing_hash)), Some(declared)) = (&mapping, &item.sha256)
+        if let (Some((_, existing_hash, _)), Some(declared)) = (&mapping, &item.sha256)
             && declared.eq_ignore_ascii_case(existing_hash)
         {
             report.skipped += 1;
-            return Ok(());
-        }
-
-        // A name already owned by a self-built row can never be imported (admin-authored content is not taken
-        // over). Say so up front and skip the fetch, instead of downloading and validating the payload only to
-        // report a failure on every sync, forever.
-        if mapping.is_none() && self.self_built_name_exists(&item.kind, &item.name).await? {
-            report.conflicts.push(MarketSyncConflict {
-                item: format!("{}:{}", item.kind, item.name),
-                reason: format!(
-                    "a self-built {} named '{}' already exists and was kept; rename one of them to import the \
-                     official version",
-                    item.kind, item.name
-                ),
-            });
             return Ok(());
         }
 
@@ -719,11 +785,15 @@ impl DevopsService {
             ));
         }
 
-        if let Some((registry_id, existing_hash)) = mapping {
+        if let Some((registry_id, existing_hash, registry_name)) = mapping {
             if existing_hash == payload_hash {
                 report.skipped += 1;
                 return Ok(());
             }
+            let import = match registry_name {
+                Some(registry_name) if registry_name != item.name => import.renamed(&registry_name),
+                _ => import,
+            };
             import.update_by_id(&self.db, &registry_id).await?;
             self.db.execute("UPDATE one_market_imports SET content_hash = ?, updated_at = ? WHERE source_id = ? AND kind = ? AND item_name = ?", &db_params![&payload_hash, now_ms(), source_id, &item.kind, &item.name])
                 .await
@@ -739,7 +809,29 @@ impl DevopsService {
         // another MARKET row is an adoption (update in place + mapping
         // created), which also makes delete-source-then-re-add idempotent
         // instead of piling up orphan rows.
-        let new_id = import.upsert_new(&self.db, &item.name, &item.kind).await?;
+        let mut registry_name = item.name.clone();
+        let mut attempt = 0;
+        while self.self_built_name_exists(&item.kind, &registry_name).await? {
+            registry_name = labelled_market_name(&item.kind, &item.name, source_name, attempt);
+            attempt += 1;
+            if attempt > 20 {
+                return Err(format!("no free name for '{}' next to self-built content", item.name));
+            }
+        }
+        let import = if registry_name == item.name {
+            import
+        } else {
+            report.conflicts.push(MarketSyncConflict {
+                item: format!("{}:{}", item.kind, item.name),
+                imported_as: registry_name.clone(),
+                reason: format!(
+                    "a self-built {} is named '{}'; the market version was imported as '{registry_name}'",
+                    item.kind, item.name
+                ),
+            });
+            import.renamed(&registry_name)
+        };
+        let new_id = import.upsert_new(&self.db, &registry_name, &item.kind).await?;
         self.db
             .execute(
                 "INSERT INTO one_market_imports (source_id, kind, item_name, registry_id, content_hash, updated_at) \
@@ -864,6 +956,34 @@ enum MarketImport {
 }
 
 impl MarketImport {
+    /// The same entry under another registry name; a skill's SKILL.md frontmatter is rewritten to match.
+    fn renamed(self, new_name: &str) -> Self {
+        match self {
+            Self::Skill {
+                description,
+                content,
+                category_id,
+                ..
+            } => Self::Skill {
+                name: new_name.to_owned(),
+                description,
+                content: with_frontmatter_name(&content, new_name),
+                category_id,
+            },
+            Self::Mcp {
+                mcp_type,
+                endpoint,
+                category_id,
+                ..
+            } => Self::Mcp {
+                name: new_name.to_owned(),
+                mcp_type,
+                endpoint,
+                category_id,
+            },
+        }
+    }
+
     async fn update_by_id(&self, pool: &DbPool, registry_id: &str) -> Result<(), String> {
         match self {
             Self::Skill {
@@ -1264,9 +1384,7 @@ mod tests {
         assert!(row.0.contains("Updated body."));
     }
 
-    #[tokio::test]
-    async fn a_self_built_name_collision_is_a_reported_conflict_not_a_failure_or_takeover() {
-        let (pool, service) = setup().await;
+    async fn seed_self_built_review_skill(service: &DevopsService) {
         service
             .upsert_skill(
                 None,
@@ -1283,81 +1401,102 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_self_built_name_collision_imports_the_market_entry_under_a_labelled_name() {
+        let (pool, service) = setup().await;
+        seed_self_built_review_skill(&service).await;
         let id = make_source(&service).await;
         let fetcher = FakeFetcher::new(&[(source_url(), MANIFEST.as_bytes()), (skill_url(), SKILL_MD.as_bytes())]);
 
         let report = service.sync_market_source("t1", &id, &fetcher).await.unwrap();
-        assert_eq!(report.imported, 1, "the MCP item still imports (partial success)");
+        assert_eq!(report.imported, 2, "both entries are imported");
         assert!(
             report.errors.is_empty(),
             "a name owned by admin content is not a sync failure"
         );
         assert_eq!(report.conflicts.len(), 1);
         assert_eq!(report.conflicts[0].item, "skill:review-skill");
-        assert!(report.conflicts[0].reason.contains("rename"));
-        assert!(
-            !fetcher.fetch_log.lock().unwrap().contains(&skill_url().to_string()),
-            "a conflicting entry is recognised before its payload is fetched"
-        );
-        let origin: String = dream_core_db::DbPool::Sqlite(pool.clone())
-            .fetch_one_scalar("SELECT origin FROM one_skill_registry WHERE name = 'review-skill'", &[])
-            .await
-            .unwrap();
-        assert_eq!(origin, "self_built");
-    }
+        assert_eq!(report.conflicts[0].imported_as, "review-skill（acme）");
+        assert!(fetcher.fetch_log.lock().unwrap().contains(&skill_url().to_string()));
 
-    #[tokio::test]
-    async fn renaming_the_self_built_row_lets_the_next_sync_import_the_official_one() {
-        let (pool, service) = setup().await;
-        service
-            .upsert_skill(
-                None,
-                "review-skill",
-                "admin's own",
-                "own content",
-                true,
-                false,
-                "org",
-                None,
-                "all",
-                None,
-                "admin1",
-            )
-            .await
-            .unwrap();
-        let id = make_source(&service).await;
-        let fetcher = FakeFetcher::new(&[(source_url(), MANIFEST.as_bytes()), (skill_url(), SKILL_MD.as_bytes())]);
-        assert_eq!(
-            service
-                .sync_market_source("t1", &id, &fetcher)
-                .await
-                .unwrap()
-                .conflicts
-                .len(),
-            1
-        );
-
-        dream_core_db::DbPool::Sqlite(pool.clone())
-            .execute(
-                "UPDATE one_skill_registry SET name = 'review-skill-mine' WHERE name = 'review-skill'",
-                &[],
-            )
-            .await
-            .unwrap();
-        let report = service.sync_market_source("t1", &id, &fetcher).await.unwrap();
-        assert!(report.conflicts.is_empty() && report.errors.is_empty());
-        let origins: Vec<(String, String)> =
-            sqlx::query_as("SELECT name, origin FROM one_skill_registry ORDER BY name")
+        let rows: Vec<(String, String, String)> =
+            sqlx::query_as("SELECT name, origin, content FROM one_skill_registry ORDER BY origin, name")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
+        assert_eq!(rows.len(), 2);
+        let (market_name, market_origin, market_content) = &rows[0];
         assert_eq!(
-            origins,
-            vec![
-                ("review-skill".to_string(), "market".to_string()),
-                ("review-skill-mine".to_string(), "self_built".to_string())
-            ]
+            (market_name.as_str(), market_origin.as_str()),
+            ("review-skill（acme）", "market")
         );
+        let parsed = dream_core_cron::skill_file::validate_skill_content(market_content).unwrap();
+        assert_eq!(
+            parsed.name, "review-skill（acme）",
+            "members' engines see the label too"
+        );
+        let (own_name, own_origin, own_content) = &rows[1];
+        assert_eq!(
+            (own_name.as_str(), own_origin.as_str(), own_content.as_str()),
+            ("review-skill", "self_built", "own content"),
+            "the self-built row is untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_labelled_entry_keeps_its_label_on_update_and_stays_listed_as_a_conflict() {
+        let (pool, service) = setup().await;
+        seed_self_built_review_skill(&service).await;
+        let id = make_source(&service).await;
+        let v1 = FakeFetcher::new(&[(source_url(), MANIFEST.as_bytes()), (skill_url(), SKILL_MD.as_bytes())]);
+        service.sync_market_source("t1", &id, &v1).await.unwrap();
+
+        let unchanged = service.sync_market_source("t1", &id, &v1).await.unwrap();
+        assert_eq!(unchanged.conflicts.len(), 1, "still visible when nothing changed");
+        assert_eq!(unchanged.imported, 0);
+
+        const UPDATED: &str = "---\nname: review-skill\ndescription: Reviews code\n---\n\nDo a better review.";
+        let v2 = FakeFetcher::new(&[(source_url(), MANIFEST.as_bytes()), (skill_url(), UPDATED.as_bytes())]);
+        let report = service.sync_market_source("t1", &id, &v2).await.unwrap();
+        assert_eq!(report.updated, 1);
+        assert_eq!(report.conflicts.len(), 1);
+        let (name, content): (String, String) =
+            sqlx::query_as("SELECT name, content FROM one_skill_registry WHERE origin = 'market'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(name, "review-skill（acme）");
+        assert!(content.contains("Do a better review."));
+        assert_eq!(
+            dream_core_cron::skill_file::validate_skill_content(&content)
+                .unwrap()
+                .name,
+            "review-skill（acme）"
+        );
+    }
+
+    #[test]
+    fn labels_are_readable_for_skills_and_identifier_safe_for_mcp() {
+        assert_eq!(
+            labelled_market_name("skill", "测试用例设计", "官方 One Work 内容", 0),
+            "测试用例设计（官方 One Work 内容）"
+        );
+        assert_eq!(labelled_market_name("skill", "a", "src", 1), "a（src 2）");
+        assert_eq!(labelled_market_name("skill", "a", "  ", 0), "a（market）");
+        assert_eq!(labelled_market_name("mcp", "jira", "官方", 0), "jira-market");
+        assert_eq!(labelled_market_name("mcp", "jira", "官方", 2), "jira-market-3");
+    }
+
+    #[test]
+    fn only_the_top_level_frontmatter_name_is_rewritten() {
+        let content = "---\r\nname: old\r\ndescription: d\r\nmeta:\r\n  name: nested\r\n---\r\n\r\nname: in body";
+        let rewritten = with_frontmatter_name(content, "new（x）");
+        assert!(rewritten.starts_with("---\nname: new（x）\n"));
+        assert!(rewritten.contains("  name: nested"));
+        assert!(rewritten.ends_with("name: in body"));
+        assert_eq!(with_frontmatter_name("no frontmatter", "x"), "no frontmatter");
     }
 
     #[tokio::test]
