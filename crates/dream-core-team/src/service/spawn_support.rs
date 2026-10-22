@@ -128,9 +128,30 @@ impl TeamSessionService {
                 .flatten()
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty());
+            // Same backend as the caller (the leader): run on the model the caller is
+            // already running on. `default_model_for_backend` is "the first model of the
+            // first enabled provider", which says nothing about whether that provider
+            // works — seen live: experts spawned onto a stale local test provider failed
+            // every turn while the leader worked fine on its own, user-picked model.
+            let mut caller_model = (backend == fallback_backend)
+                .then(|| fallback_model.trim().to_owned())
+                .filter(|value| !value.is_empty());
+            // A dream model must still be offered by an enabled provider, or
+            // provisioning fails fast with "no enabled provider offers model".
+            if backend == "dream"
+                && let Some(model) = caller_model.as_deref()
+                && !self
+                    .collect_provider_models(user_id)
+                    .await
+                    .iter()
+                    .any(|offered| offered == model)
+            {
+                caller_model = None;
+            }
             let backend_default_model = self.default_model_for_backend(user_id, &backend).await;
             let model = requested_model
                 .or(fixed_model)
+                .or(caller_model)
                 .or(backend_default_model)
                 .unwrap_or_else(|| fallback_model.to_owned());
             return Ok((backend, model));
@@ -1121,10 +1142,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn resolve_spawn_backend_and_model_prefers_assistant_identity_over_caller_backend() {
+    fn word_creator_service(providers: Vec<Provider>) -> Arc<TeamSessionService> {
         let (svc, _, _, _) = setup_with_factory_metadata_team_repo_and_conversation_repo();
-        let svc = TeamSessionService::new(
+        TeamSessionService::new(
             svc.repo.clone(),
             svc.agent_metadata_repo.clone(),
             Arc::new(RowsTeamAssistantCatalog {
@@ -1176,9 +1196,7 @@ mod tests {
                     updated_at: 0,
                 },
             }),
-            Arc::new(SingleProviderRepo {
-                rows: vec![provider_row("openai", &["gpt-5-mini"])],
-            }),
+            Arc::new(SingleProviderRepo { rows: providers }),
             svc.conversation_port.clone(),
             svc.projection_store.clone(),
             svc.broadcaster.clone(),
@@ -1186,7 +1204,12 @@ mod tests {
             svc.turn_port.clone(),
             svc.cancellation_port.clone(),
             svc.backend_binary_path.clone(),
-        );
+        )
+    }
+
+    #[tokio::test]
+    async fn resolve_spawn_backend_and_model_prefers_assistant_identity_over_caller_backend() {
+        let svc = word_creator_service(vec![provider_row("openai", &["gpt-5-mini"])]);
 
         let (backend, model) = svc
             .resolve_spawn_backend_and_model("user1", Some("word-creator"), None, "gemini", "gemini-2.5-pro")
@@ -1194,6 +1217,35 @@ mod tests {
             .unwrap();
 
         assert_eq!(backend, "dream");
+        assert_eq!(model, "gpt-5-mini");
+    }
+    #[tokio::test]
+    async fn same_backend_spawn_runs_on_the_leaders_model_not_the_first_provider() {
+        // The first enabled provider is a dead test endpoint; the leader runs fine on a
+        // model from the second one. The teammate must follow the leader.
+        let svc = word_creator_service(vec![
+            provider_row("stale-local", &["my-personal-model"]),
+            provider_row("openrouter", &["openrouter/free"]),
+        ]);
+
+        let (backend, model) = svc
+            .resolve_spawn_backend_and_model("user1", Some("word-creator"), None, "dream", "openrouter/free")
+            .await
+            .unwrap();
+
+        assert_eq!(backend, "dream");
+        assert_eq!(model, "openrouter/free");
+    }
+
+    #[tokio::test]
+    async fn same_backend_spawn_skips_a_leader_model_no_provider_offers_anymore() {
+        let svc = word_creator_service(vec![provider_row("openai", &["gpt-5-mini"])]);
+
+        let (_, model) = svc
+            .resolve_spawn_backend_and_model("user1", Some("word-creator"), None, "dream", "retired-model")
+            .await
+            .unwrap();
+
         assert_eq!(model, "gpt-5-mini");
     }
 }

@@ -156,6 +156,8 @@ pub enum TeamToolErrorCode {
     TransportUnavailable,
     RuntimeContextMissing,
     RuntimeAuthFailed,
+    /// A `blocked_by` entry names a task that does not exist.
+    DependencyNotFound,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

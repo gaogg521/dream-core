@@ -163,7 +163,9 @@ fn status_for_error(code: TeamToolErrorCode) -> StatusCode {
         TeamToolErrorCode::ConversationNotFound
         | TeamToolErrorCode::TeamNotFound
         | TeamToolErrorCode::AgentNotFound => StatusCode::NOT_FOUND,
-        TeamToolErrorCode::UnknownTool | TeamToolErrorCode::SchemaValidationFailed => StatusCode::BAD_REQUEST,
+        TeamToolErrorCode::UnknownTool
+        | TeamToolErrorCode::SchemaValidationFailed
+        | TeamToolErrorCode::DependencyNotFound => StatusCode::BAD_REQUEST,
         TeamToolErrorCode::TransportUnavailable | TeamToolErrorCode::RuntimeContextMissing => StatusCode::CONFLICT,
     }
 }

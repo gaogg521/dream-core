@@ -97,7 +97,7 @@ Doing so makes B sit in an open LLM stream waiting, which hits the provider's re
 
 **The correct sequencing — declare the dependency, let the task board start B:**
 1. Create A's task (team_task_create with owner=A). This notifies and wakes A.
-2. In the same turn, create B's task with owner=B and `blocked_by: [<A's task id>]`. B is NOT woken yet.
+2. In the same turn, create B's task with owner=B and `blocked_by: [<A's task id>]`. B is NOT woken yet. A's task id is in the result of A's `team_task_create`, so wait for that call to return before creating B — never put the two in one parallel batch and never use a placeholder id. Independent tasks (no `blocked_by`) can be created in one parallel batch.
 3. When A marks its task completed, the system wakes B with its task automatically — no turn from you is needed in between, and B starts while you stay idle.
 4. Put everything B needs into B's description (e.g. the file A will write and where), because A reports to you, not to B.
 

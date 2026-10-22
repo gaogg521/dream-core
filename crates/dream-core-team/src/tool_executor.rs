@@ -96,7 +96,9 @@ fn team_tool_role(role: TeammateRole) -> TeamToolRole {
 }
 
 fn map_tool_error(error: ToolCallError) -> TeamToolErrorPayload {
-    let code = if error.message.starts_with("Unknown tool:") {
+    let code = if error.domain_code == Some("TEAM_BLOCKED_TASK_NOT_FOUND") {
+        TeamToolErrorCode::DependencyNotFound
+    } else if error.message.starts_with("Unknown tool:") {
         TeamToolErrorCode::UnknownTool
     } else if error.message.starts_with("Only Lead") {
         TeamToolErrorCode::PermissionDenied
@@ -127,6 +129,15 @@ fn map_tool_error(error: ToolCallError) -> TeamToolErrorPayload {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn missing_dependency_maps_to_its_own_code_not_runtime_context_missing() {
+        let err = map_tool_error(ToolCallError::from_message(
+            crate::error::TeamError::BlockedTaskNotFound("task_id_placeholder".into()).to_string(),
+        ));
+        assert_eq!(err.code, TeamToolErrorCode::DependencyNotFound);
+        assert_eq!(err.details, Some(json!({ "task_id": "task_id_placeholder" })));
+    }
 
     #[test]
     fn unknown_tool_maps_to_shared_error_payload() {

@@ -162,6 +162,17 @@ pub fn classify_public_error(message: &str) -> Option<TeamPublicError> {
         return Some(TeamPublicError::new("TEAM_SERVICE_UNAVAILABLE", None));
     }
 
+    // A dependency that does not exist (yet). Seen live: the leader created two
+    // tasks in one parallel batch, gave the second `blocked_by: ["task_id_placeholder"]`,
+    // and — told only that the tool failed — retried without the dependency, so the
+    // downstream owner started before its input existed.
+    if let Some(task_id) = message.strip_prefix("Blocked task not found: ") {
+        return Some(TeamPublicError::new(
+            "TEAM_BLOCKED_TASK_NOT_FOUND",
+            Some(json!({ "task_id": task_id })),
+        ));
+    }
+
     None
 }
 
@@ -174,6 +185,14 @@ mod tests {
         assert_eq!(TeamError::TeamNotFound("t1".into()).to_string(), "Team not found: t1");
         assert_eq!(TeamError::AgentNotFound("s1".into()).to_string(), "Agent not found: s1");
         assert_eq!(TeamError::TaskNotFound("tk1".into()).to_string(), "Task not found: tk1");
+    }
+
+    #[test]
+    fn classify_public_error_recognizes_missing_dependency() {
+        let missing = classify_public_error(&TeamError::BlockedTaskNotFound("task_id_placeholder".into()).to_string())
+            .expect("classified");
+        assert_eq!(missing.code, "TEAM_BLOCKED_TASK_NOT_FOUND");
+        assert_eq!(missing.details, Some(json!({ "task_id": "task_id_placeholder" })));
     }
 
     #[test]

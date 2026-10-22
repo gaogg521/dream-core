@@ -494,7 +494,7 @@ pub(crate) struct ToolCallError {
 }
 
 impl ToolCallError {
-    fn from_message(message: impl Into<String>) -> Self {
+    pub(crate) fn from_message(message: impl Into<String>) -> Self {
         let message = message.into();
         let classified = classify_public_error(&message);
         Self {

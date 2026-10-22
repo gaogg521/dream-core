@@ -34,6 +34,10 @@ const ERR_TCP_CONNECT: &str = "failed to connect to local MCP TCP listener";
 const ERR_TCP_WRITE: &str = "failed to write MCP frame to TCP listener";
 const ERR_TCP_READ: &str = "failed to read MCP frame from TCP listener";
 const ERR_TOOL_REMOTE: &str = "local team tool returned an error";
+// Fixed guidance for public domain codes. The upstream error text is deliberately
+// not forwarded (it can carry internal ids), but a bare "returned an error" leaves
+// the model guessing; these strings are written here and contain nothing upstream.
+const ERR_TOOL_BLOCKED_TASK_NOT_FOUND: &str = "blocked_by names a task id that does not exist. Create the upstream task first, wait for its result, then pass the task_id it returned. Do not create dependent tasks in the same parallel batch or use placeholder ids.";
 const ERR_TOOL_RESPONSE_UNEXPECTED: &str = "unexpected local team tool response";
 
 pub async fn run_team_stdio() -> ExitCode {
@@ -695,9 +699,13 @@ fn remote_tool_error(
     upstream_code: Option<serde_json::Value>,
     domain_code: Option<serde_json::Value>,
 ) -> ToolForwardError {
+    let message = match domain_code.as_ref().and_then(serde_json::Value::as_str) {
+        Some("dependency_not_found") => ERR_TOOL_BLOCKED_TASK_NOT_FOUND,
+        _ => ERR_TOOL_REMOTE,
+    };
     ToolForwardError::Tool {
         code: CliBoundaryCode::McpToolRemoteError,
-        message: ERR_TOOL_REMOTE,
+        message,
         upstream_code,
         domain_code,
     }
@@ -1228,5 +1236,41 @@ mod tests {
         };
         assert_eq!(code, CliBoundaryCode::McpToolRemoteError);
         assert_eq!(upstream_code, Some(json!(-32000)));
+    }
+
+    #[test]
+    fn dependency_not_found_gets_fixed_guidance_instead_of_a_bare_failure() {
+        let err = parse_tool_response(
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                    "content": [{ "type": "text", "text": "Blocked task not found: conv-secret-123" }],
+                    "isError": true,
+                    "structuredContent": {
+                        "code": "dependency_not_found",
+                        "message": "Blocked task not found: conv-secret-123"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap_err();
+
+        let ToolForwardError::Tool {
+            code,
+            message,
+            upstream_code,
+            domain_code,
+        } = err
+        else {
+            panic!("expected tool error");
+        };
+        // The model is told what to do differently; the upstream text still stays out.
+        assert_eq!(message, ERR_TOOL_BLOCKED_TASK_NOT_FOUND);
+        let result = tool_error(code, message, upstream_code, domain_code);
+        let serialized = serde_json::to_string(&result).unwrap();
+        assert!(serialized.contains("Create the upstream task first"));
+        assert!(!serialized.contains("conv-secret-123"));
     }
 }

@@ -43,7 +43,8 @@ pub(crate) fn data() -> Value {
             "not_in_team",
             "transport_unavailable",
             "runtime_context_missing",
-            "runtime_auth_failed"
+            "runtime_auth_failed",
+            "dependency_not_found"
         ]
     })
 }
