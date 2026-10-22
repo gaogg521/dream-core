@@ -2424,12 +2424,13 @@ impl DevopsService {
         static INLINE_IMAGES: std::sync::LazyLock<regex::Regex> =
             std::sync::LazyLock::new(|| regex::Regex::new(r"!\[[^\]]*\]\(data:image/[^;]+;base64,[^)]+\)").unwrap());
         let text = INLINE_IMAGES.replace_all(&content, " ");
-        let chunks = crate::embedding::chunk_text(&text, 800, 100);
-        if chunks.is_empty() {
+        if text.trim().is_empty() {
             return Err(DevopsError::BadRequest("document has no content to process".into()));
         }
 
         let config = self.load_embedding_config().await?;
+        let (chunk_size, overlap) = crate::embedding::chunk_params(&config);
+        let chunks = crate::embedding::chunk_text(&text, chunk_size, overlap);
         let vectors = match crate::embedding::embed(&config, &chunks).await {
             Ok(v) => v,
             Err(e) => {
@@ -2648,6 +2649,7 @@ impl DevopsService {
                 return Ok(lexical_ranked
                     .into_iter()
                     .filter_map(|id| available.remove(&id))
+                    .filter(|hit| crate::retrieval::keyword_evidence_suffices(query, &hit.content))
                     .take(limit)
                     .collect());
             }
@@ -3246,6 +3248,7 @@ mod tests {
 
     include!("rag_regression_tests.rs");
     include!("rag_perf_bench.rs");
+    include!("rag_chunk_eval.rs");
 
     async fn service() -> DevopsService {
         // max_connections(1): every new pool connection to `sqlite::memory:`

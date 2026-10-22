@@ -162,16 +162,95 @@ pub async fn rebuild_index(pool: &DbPool) -> Result<usize, DevopsError> {
 /// a Chinese query has no spaces, so it stays one phrase and the trigram
 /// tokenizer substring-matches it.
 pub fn build_match_expression(query: &str) -> Option<String> {
-    let phrases: Vec<String> = query
-        .split_whitespace()
-        .map(|token| token.replace('"', "\"\""))
-        .filter(|token| !token.trim().is_empty())
-        .map(|token| format!("\"{token}\""))
-        .collect();
+    let phrases = match_phrases(query);
     if phrases.is_empty() {
         return None;
     }
-    Some(phrases.join(" OR "))
+    Some(
+        phrases
+            .iter()
+            .map(|phrase| format!("\"{}\"", phrase.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" OR "),
+    )
+}
+
+/// The literal phrases a query is matched by (see [`build_match_expression`]), deduplicated and capped.
+pub fn match_phrases(query: &str) -> Vec<String> {
+    let mut phrases: Vec<String> = Vec::new();
+    for token in query.split_whitespace().filter(|token| !token.trim().is_empty()) {
+        for phrase in split_cjk_trigrams(token) {
+            if !phrases.contains(&phrase) {
+                phrases.push(phrase);
+            }
+        }
+    }
+    phrases.truncate(MAX_MATCH_PHRASES);
+    phrases
+}
+
+/// Whether keyword-only retrieval may return `content` for `query`.
+///
+/// With no vector to check relevance against, one shared trigram ("怎么样", "是什么") would otherwise be enough
+/// to hand an unrelated chunk to a caller as knowledge. A query of three or more phrases needs two of them.
+pub fn keyword_evidence_suffices(query: &str, content: &str) -> bool {
+    let phrases = match_phrases(query);
+    let needed = if phrases.len() >= 3 { 2 } else { 1 };
+    let lowered = content.to_lowercase();
+    phrases
+        .iter()
+        .filter(|phrase| lowered.contains(&phrase.to_lowercase()))
+        .take(needed)
+        .count()
+        >= needed
+}
+
+/// Phrases OR-ed into one lexical query, at most. Keeps a pasted paragraph from becoming a huge expression.
+const MAX_MATCH_PHRASES: usize = 48;
+
+fn is_cjk(c: char) -> bool {
+    matches!(c, '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}')
+}
+
+/// A whitespace token as match phrases. A CJK run longer than three characters becomes its overlapping trigrams:
+/// a Chinese question has no spaces, so as one phrase it only ever matched text containing the whole question
+/// verbatim — the lexical ranker contributed nothing to natural-language queries. Trigrams line up with the
+/// trigram tokenizer, and BM25 discounts the ones that are everywhere (question words and the like). Everything
+/// else (identifiers, Latin words, short CJK words) stays a single literal phrase.
+fn split_cjk_trigrams(token: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut run: Vec<char> = Vec::new();
+    let mut other = String::new();
+    let flush_run = |run: &mut Vec<char>, out: &mut Vec<String>| {
+        if run.len() > 3 {
+            out.extend(run.windows(3).map(|w| w.iter().collect::<String>()));
+        } else if !run.is_empty() {
+            out.push(run.iter().collect());
+        }
+        run.clear();
+    };
+    for c in token.chars() {
+        if is_cjk(c) {
+            if !other.is_empty() {
+                out.push(std::mem::take(&mut other));
+            }
+            run.push(c);
+        } else if c.is_alphanumeric() || c == '_' || c == '-' || c == '.' {
+            flush_run(&mut run, &mut out);
+            other.push(c);
+        } else {
+            // Punctuation (，。？ etc.) separates phrases.
+            flush_run(&mut run, &mut out);
+            if !other.is_empty() {
+                out.push(std::mem::take(&mut other));
+            }
+        }
+    }
+    flush_run(&mut run, &mut out);
+    if !other.is_empty() {
+        out.push(other);
+    }
+    out
 }
 
 /// One lexical hit: a chunk id and its BM25 rank position.
@@ -445,13 +524,58 @@ mod tests {
             build_match_expression("alpha beta"),
             Some("\"alpha\" OR \"beta\"".into())
         );
-        assert_eq!(
-            build_match_expression("say \"hi\""),
-            Some("\"say\" OR \"\"\"hi\"\"\"".into())
-        );
+        // Quotes are separators, never syntax.
+        assert_eq!(build_match_expression("say \"hi\""), Some("\"say\" OR \"hi\"".into()));
         assert_eq!(build_match_expression("   "), None);
-        // CJK stays a single phrase — there is nothing to split on.
-        assert_eq!(build_match_expression("报销流程"), Some("\"报销流程\"".into()));
+        // A CJK run becomes overlapping trigrams; short CJK words and identifiers stay whole.
+        assert_eq!(
+            build_match_expression("报销流程"),
+            Some("\"报销流\" OR \"销流程\"".into())
+        );
+        assert_eq!(build_match_expression("年假"), Some("\"年假\"".into()));
+        assert_eq!(
+            build_match_expression("ERR_QUOTA_4471怎么处理？"),
+            Some("\"ERR_QUOTA_4471\" OR \"怎么处\" OR \"么处理\"".into())
+        );
+        let pasted = "很".repeat(10) + &"长段落内容".repeat(40);
+        let phrases = build_match_expression(&pasted).unwrap().matches(" OR ").count() + 1;
+        assert!(phrases <= MAX_MATCH_PHRASES);
+    }
+
+    #[test]
+    fn keyword_only_results_need_more_than_one_common_trigram() {
+        let text = "报销流程需要部门经理审批后提交财务。";
+        assert!(keyword_evidence_suffices("报销流程一般要谁来审批", text));
+        assert!(!keyword_evidence_suffices(
+            "今天食堂伙食怎么样",
+            "网络状况怎么样都要记录"
+        ));
+        assert!(keyword_evidence_suffices(
+            "ERR_QUOTA_4471",
+            "the code err_quota_4471 appears"
+        ));
+        assert!(keyword_evidence_suffices("年假", "年假需要提前申请"));
+    }
+
+    /// The point of the trigrams: a Chinese question shares a few words with the text, never the whole sentence.
+    #[tokio::test]
+    async fn a_chinese_question_matches_text_it_only_partly_repeats() {
+        let pool = pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO one_rag_documents (id, title) VALUES ('d1', '规章'), ('d2', '其他');
+             INSERT INTO one_rag_chunks (id, document_id, content) VALUES ('zh1', 'd1', '报销流程需要部门经理审批后提交财务。');
+             INSERT INTO one_rag_chunks (id, document_id, content) VALUES ('zh2', 'd2', '机房巡检每周进行一次。');",
+        )
+        .execute(pool.sqlite())
+        .await
+        .unwrap();
+        rebuild_index(&pool).await.unwrap();
+
+        let hits = lexical_candidates(&pool, "报销流程一般要谁来审批？", None, &[], 5)
+            .await
+            .unwrap();
+        let ids: Vec<&str> = hits.iter().map(|h| h.chunk_id.as_str()).collect();
+        assert_eq!(ids, ["zh1"]);
     }
 
     #[test]

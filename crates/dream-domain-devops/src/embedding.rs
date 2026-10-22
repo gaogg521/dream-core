@@ -635,6 +635,20 @@ const SENTENCE_ENDINGS: [char; 8] = ['.', '!', '?', '。', '！', '？', '；', 
 ///
 /// `overlap` characters of the previous chunk are prepended to each subsequent
 /// chunk so an answer that straddles a boundary is still retrievable.
+/// Chunk size and overlap (characters) for indexing with this embedding endpoint.
+///
+/// The bundled local model (MiniLM, trained on short sentences) ranks far better on smaller chunks: on a real
+/// 130 000-character Chinese corpus with 48 hand-written questions, 350/60 scored hit@5 88% / MRR 0.68 against
+/// 77% / 0.60 for 800/100 (hybrid search), with indexing time unchanged. Remote models are left at 800/100 — that
+/// evaluation did not cover them, and they are built for long passages.
+pub fn chunk_params(config: &EmbeddingConfig) -> (usize, usize) {
+    if config.base_url == "local://embedding" {
+        (350, 60)
+    } else {
+        (800, 100)
+    }
+}
+
 pub fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<String> {
     let size = chunk_size.max(1);
     if text.trim().is_empty() {
