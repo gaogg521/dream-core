@@ -507,6 +507,22 @@ impl EnterpriseService {
         Ok(role.as_deref().map(is_company_admin_role).unwrap_or(false))
     }
 
+    /// Resolve company governance consistently with the SSO/project-group gates.
+    /// Instance administrators do not need a duplicate company-admin membership;
+    /// project-group administrators still require an explicit company grant.
+    pub async fn company_admin_scope(&self, user_id: &str) -> Result<Option<String>, EnterpriseError> {
+        if self.caller_is_system_admin(user_id).await? {
+            return match self.company_of(user_id).await? {
+                Some(id) => Ok(Some(id)),
+                None => self.deployment_company_id().await,
+            };
+        }
+        let Some(id) = self.company_of(user_id).await? else {
+            return Ok(None);
+        };
+        Ok(self.is_company_admin_of(user_id, &id).await?.then_some(id))
+    }
+
     /// 显式设立: a system_admin establishes the deployment's company by name and
     /// becomes its company admin. One server = one company. If an SSO login had
     /// already bootstrapped a nameless company, it is adopted (named + marked
@@ -936,7 +952,7 @@ impl EnterpriseService {
         actor_user_id: &str,
         enterprise_id: &str,
     ) -> Result<DisbandCompanyResult, EnterpriseError> {
-        if !self.is_company_admin_of(actor_user_id, enterprise_id).await? {
+        if self.company_admin_scope(actor_user_id).await?.as_deref() != Some(enterprise_id) {
             return Err(EnterpriseError::Forbidden(
                 "only a company admin can disband the company".into(),
             ));
@@ -1496,6 +1512,57 @@ mod tests {
             .unwrap();
         let err = svc.setup_company("bob", "Acme").await.unwrap_err();
         assert_eq!(err.code(), "FORBIDDEN");
+    }
+
+    #[tokio::test]
+    async fn company_admin_scope_respects_instance_and_company_roles_without_promoting_group_admins() {
+        let (svc, db) = service_with_governance().await;
+        let company = svc
+            .setup_company(SYSTEM_DEFAULT_USER_ID, "Scope regression")
+            .await
+            .unwrap()
+            .company_id;
+        for (user, role) in [
+            ("instance", "system_admin"),
+            ("group", "org_admin"),
+            ("company", "member"),
+        ] {
+            sqlx::query("INSERT INTO one_user_org (user_id, tenant_id, role) VALUES (?, 'group-one', ?)")
+                .bind(user)
+                .bind(role)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        // A system administrator may be absent from the company seat table.
+        assert_eq!(
+            svc.company_admin_scope("instance").await.unwrap().as_deref(),
+            Some(company.as_str())
+        );
+        svc.upsert_member_role("instance", &company, ROLE_COMPANY_MEMBER, 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            svc.company_admin_scope("instance").await.unwrap().as_deref(),
+            Some(company.as_str())
+        );
+        svc.upsert_member_role("group", &company, ROLE_COMPANY_MEMBER, 1)
+            .await
+            .unwrap();
+        assert_eq!(svc.company_admin_scope("group").await.unwrap(), None);
+        svc.upsert_member_role("company", &company, ROLE_COMPANY_ADMIN, 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            svc.company_admin_scope("company").await.unwrap().as_deref(),
+            Some(company.as_str())
+        );
+        // Role demotion is effective on the very next request, without a login/token cache.
+        sqlx::query("UPDATE one_user_org SET role = 'org_admin' WHERE user_id = 'instance'")
+            .execute(&db)
+            .await
+            .unwrap();
+        assert_eq!(svc.company_admin_scope("instance").await.unwrap(), None);
     }
 
     #[tokio::test]

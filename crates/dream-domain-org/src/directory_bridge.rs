@@ -46,6 +46,13 @@ pub trait DirectoryTreeSource: Send + Sync {
     /// SSO-authenticated user into the project group whose department tree was
     /// mapped from the branch of the company directory they actually sit in.
     async fn person_department(&self, external_id: &str) -> Option<String>;
+
+    /// Existing signed-in members and authoritative directory departments,
+    /// matched by provider + IdP identity (never by a display name).
+    /// Does not provision accounts or move users between project groups.
+    async fn member_departments(&self, _tenant_id: &str) -> Result<Vec<(String, String)>, String> {
+        Ok(Vec::new())
+    }
 }
 
 /// Default when nothing is wired: personal and standalone installs have no

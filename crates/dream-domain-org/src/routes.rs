@@ -1289,13 +1289,11 @@ async fn admin_map_directory_department(
     Json(body): Json<MapDirectoryDepartmentBody>,
 ) -> Result<Json<ApiResponse<DirectoryMapReport>>, OrgError> {
     let __audit_t0 = std::time::Instant::now();
-    let all = match &state.directory_source {
-        Some(source) => source.directory_departments().await,
-        None => Vec::new(),
-    };
+    let noop = crate::directory_bridge::NoopDirectoryTreeSource;
+    let source = state.directory_source.as_deref().unwrap_or(&noop);
     let report = state
         .service
-        .map_directory_subtree(&actor.tenant_id, &body.root_external_id, &all)
+        .map_directory_with_members(&actor.tenant_id, &body.root_external_id, source)
         .await?;
     state
         .service

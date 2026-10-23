@@ -32,12 +32,9 @@ impl FromRequestParts<OneEnterpriseRouterState> for RequireCompanyAdmin {
             .ok_or_else(|| EnterpriseError::Forbidden("Authentication required".into()))?;
         let enterprise_id = state
             .service
-            .company_of(&user.id)
+            .company_admin_scope(&user.id)
             .await?
             .ok_or_else(|| EnterpriseError::Forbidden("Company administrator role required".into()))?;
-        if !state.service.is_company_admin_of(&user.id, &enterprise_id).await? {
-            return Err(EnterpriseError::Forbidden("Company administrator role required".into()));
-        }
         Ok(Self {
             user_id: user.id,
             enterprise_id,

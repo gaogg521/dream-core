@@ -283,6 +283,8 @@ pub struct SsoAutoJoinOutcome {
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryMapReport {
+    /// Existing accounts newly attached to mapped departments; no new seats.
+    pub members_bound: usize,
     pub created: Vec<String>,
     pub updated: Vec<String>,
     /// Removed because they dropped out of the mapped subtree AND were empty

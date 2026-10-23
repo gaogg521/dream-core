@@ -381,6 +381,15 @@ struct DirectoryTreeSourceAdapter(std::sync::Arc<dream_domain_enterprise::Enterp
 #[async_trait::async_trait]
 #[cfg(feature = "enterprise")]
 impl dream_domain_org::DirectoryTreeSource for DirectoryTreeSourceAdapter {
+    async fn member_departments(&self, tenant_id: &str) -> Result<Vec<(String, String)>, String> {
+        let Some(enterprise_id) = self.0.deployment_company_id().await.map_err(|e| e.to_string())? else {
+            return Ok(Vec::new());
+        };
+        self.0
+            .directory_member_departments(&enterprise_id, tenant_id)
+            .await
+            .map_err(|e| e.to_string())
+    }
     async fn directory_departments(&self) -> Vec<dream_domain_org::DirectoryDepartmentRef> {
         let Some(enterprise_id) = self.0.deployment_company_id().await.ok().flatten() else {
             return Vec::new();

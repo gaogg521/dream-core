@@ -409,6 +409,29 @@ impl EnterpriseService {
             .await?)
     }
 
+    /// Join the existing account/SSO membership to the current directory provider
+    /// in one query, so mapping a large subtree does not issue one query per user.
+    pub async fn directory_member_departments(
+        &self,
+        enterprise_id: &str,
+        tenant_id: &str,
+    ) -> Result<Vec<(String, String)>, EnterpriseError> {
+        Ok(self
+            .db
+            .fetch_all_as::<(String, String)>(
+                "SELECT DISTINCT uo.user_id, p.department_external_id \
+             FROM one_directory_people p \
+             JOIN one_directory_sync_state s ON s.enterprise_id = p.enterprise_id \
+             JOIN one_sso_identities i ON i.external_id = p.external_id AND i.provider = s.provider \
+             JOIN one_enterprise_members m ON m.user_id = i.user_id AND m.enterprise_id = p.enterprise_id \
+             JOIN one_user_org uo ON uo.user_id = i.user_id \
+             WHERE p.enterprise_id = ? AND uo.tenant_id = ? AND uo.department_id IS NULL \
+               AND p.active = 1 AND p.missing_since IS NULL AND p.department_external_id IS NOT NULL",
+                &db_params![enterprise_id, tenant_id],
+            )
+            .await?)
+    }
+
     /// Every department currently in the directory mirror, flat — for T6
     /// stage 3's "pick a subtree to map into a project group" picker, and for
     /// the `dream_domain_org::DirectoryTreeSource` adapter that reads it.
@@ -618,6 +641,60 @@ mod tests {
             complete,
             error: None,
         }
+    }
+
+    #[tokio::test]
+    async fn mapped_member_lookup_requires_matching_provider_company_and_unassigned_membership() {
+        let (svc, db) = service().await;
+        with_project_groups(&svc, &db).await;
+        sqlx::query("ALTER TABLE one_user_org ADD COLUMN department_id TEXT")
+            .execute(&db)
+            .await
+            .unwrap();
+        let company = svc
+            .ensure_deployment_company("owner", "Directory regression")
+            .await
+            .unwrap();
+        let people = vec![
+            person("id-good", true),
+            person("id-wrong-provider", true),
+            person("id-manual", true),
+            person("id-inactive", false),
+        ];
+        svc.apply_directory_snapshot(&company, &snapshot(people, true))
+            .await
+            .unwrap();
+        for (user, external, provider, tenant, department) in [
+            ("good", "id-good", "feishu", "current", None),
+            ("wrong-provider", "id-wrong-provider", "oidc", "current", None),
+            ("manual", "id-manual", "feishu", "current", Some("manual-dept")),
+            ("other-group", "id-good", "feishu", "other", None),
+            ("inactive", "id-inactive", "feishu", "current", None),
+        ] {
+            svc.sync_member(user, "feishu", &company, "", Some(user), None, None)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO one_sso_identities (user_id, provider, external_id) VALUES (?, ?, ?)")
+                .bind(user)
+                .bind(provider)
+                .bind(external)
+                .execute(&db)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO one_user_org (user_id, tenant_id, role, department_id) VALUES (?, ?, 'member', ?)",
+            )
+            .bind(user)
+            .bind(tenant)
+            .bind(department)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            svc.directory_member_departments(&company, "current").await.unwrap(),
+            vec![("good".into(), "od_1".into())]
+        );
     }
 
     /// one-org owns the project-group tables. Stand up just enough of them to

@@ -19,7 +19,7 @@ use dream_core_common::{decrypt_string, encrypt_string, now_ms};
 use dream_core_db::{DbBackend, DbPool, DbValue, IConversationRepository, IUserRepository, db_params};
 
 use crate::credential_revoker::{CredentialRevoker, NoopCredentialRevoker};
-use crate::directory_bridge::DirectoryDepartmentRef;
+use crate::directory_bridge::{DirectoryDepartmentRef, DirectoryTreeSource};
 use crate::email::{EmailSender, SendEmailResult, StubEmailSender, send_invite_via_smtp};
 use crate::error::OrgError;
 use crate::integration::{
@@ -3207,6 +3207,73 @@ impl OrgService {
         Ok(report)
     }
 
+    pub async fn map_directory_with_members(
+        &self,
+        tenant_id: &str,
+        root_external_id: &str,
+        source: &dyn DirectoryTreeSource,
+    ) -> Result<DirectoryMapReport, OrgError> {
+        let all = source.directory_departments().await;
+        let mut report = self.map_directory_subtree(tenant_id, root_external_id, &all).await?;
+        let members = source.member_departments(tenant_id).await.map_err(|_| {
+            OrgError::BadRequest("Directory member lookup failed; retry mapping after checking directory sync".into())
+        })?;
+        report.members_bound = self
+            .bind_unassigned_directory_members(tenant_id, root_external_id, &members)
+            .await?;
+        Ok(report)
+    }
+
+    /// Backfill signed-in members when a directory subtree is mapped after login.
+    /// Preserve explicit assignments, roles and tenant membership. Ambiguous IdP
+    /// bindings are left untouched instead of arbitrarily choosing a department.
+    pub async fn bind_unassigned_directory_members(
+        &self,
+        tenant_id: &str,
+        root_external_id: &str,
+        members: &[(String, String)],
+    ) -> Result<usize, OrgError> {
+        let departments = self
+            .db
+            .fetch_all_as::<(String, String)>(
+                "SELECT directory_external_id, id FROM one_departments \
+             WHERE tenant_id = ? AND source = 'directory' AND directory_map_root_external_id = ?",
+                &db_params![tenant_id, root_external_id],
+            )
+            .await?
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut identities = std::collections::HashMap::<&str, std::collections::HashSet<&str>>::new();
+        for (user, department) in members {
+            identities.entry(user.as_str()).or_default().insert(department.as_str());
+        }
+        let mut assignments = Vec::new();
+        for (user, candidates) in identities {
+            if candidates.len() != 1 {
+                continue;
+            }
+            let Some(department) = candidates.iter().next().and_then(|id| departments.get(*id)) else {
+                continue;
+            };
+            assignments.push((user, department));
+        }
+        let mut bound = 0;
+        for chunk in assignments.chunks(Self::DEPARTMENT_MAP_WRITE_CHUNK) {
+            let mut tx = self.db.begin().await?;
+            for (user, department) in chunk {
+                bound += tx
+                    .execute(
+                        "UPDATE one_user_org SET department_id = ?, updated_at = ? \
+                     WHERE tenant_id = ? AND user_id = ? AND department_id IS NULL",
+                        &db_params![*department, now_ms() as i64, tenant_id, *user],
+                    )
+                    .await? as usize;
+            }
+            tx.commit().await?;
+        }
+        Ok(bound)
+    }
+
     /// Promote/demote a user's role within a tenant. `role` must be one of
     /// `member`/`org_admin`/`system_admin` — validated by the caller (route
     /// handler) so we keep the service free of string validation.
@@ -4625,6 +4692,92 @@ mod tests {
         assert_eq!(root.source.as_deref(), Some("directory"));
         let child = depts.iter().find(|d| d.name == "后端组").unwrap();
         assert_eq!(child.parent_id.as_deref(), Some(root.id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn mapping_backfills_existing_members_without_overwriting_manual_or_cross_tenant_assignments() {
+        let (db, service, repo) = setup().await;
+        let (tenant, _) = service
+            .create_tenant(SYSTEM_DEFAULT_USER_ID, "Mapping regression")
+            .await
+            .unwrap();
+        let manual = service.create_department(&tenant, "Manual", None).await.unwrap();
+        let all = vec![
+            dref("security", None, "信息安全中心"),
+            dref("blue", Some("security"), "蓝队"),
+        ];
+        service.map_directory_subtree(&tenant, "security", &all).await.unwrap();
+        let mapped = service
+            .list_departments(&tenant)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|d| d.name == "蓝队")
+            .unwrap();
+        let mut people = Vec::new();
+        for name in ["late-map", "manual-map", "ambiguous-map", "other-branch"] {
+            let user = create_user(&repo, name).await;
+            sqlx::query("INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) VALUES (?, ?, 'org_admin', 0, 0)")
+                .bind(&user).bind(&tenant).execute(db.pool()).await.unwrap();
+            people.push(user);
+        }
+        service
+            .assign_member_department(&tenant, &people[1], Some(&manual.id))
+            .await
+            .unwrap();
+        let input = vec![
+            (people[0].clone(), "blue".into()),
+            (people[1].clone(), "blue".into()),
+            (people[2].clone(), "blue".into()),
+            (people[2].clone(), "security".into()),
+            (people[3].clone(), "unmapped".into()),
+            ("not-a-member".into(), "blue".into()),
+        ];
+        assert_eq!(
+            service
+                .bind_unassigned_directory_members(&tenant, "security", &input)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            service
+                .bind_unassigned_directory_members(&tenant, "security", &input)
+                .await
+                .unwrap(),
+            0
+        );
+        let members = service.list_users(&tenant).await.unwrap();
+        assert_eq!(
+            members
+                .iter()
+                .find(|m| m.user_id == people[0])
+                .unwrap()
+                .department_id
+                .as_deref(),
+            Some(mapped.id.as_str())
+        );
+        assert_eq!(
+            members
+                .iter()
+                .find(|m| m.user_id == people[1])
+                .unwrap()
+                .department_id
+                .as_deref(),
+            Some(manual.id.as_str())
+        );
+        assert!(
+            members
+                .iter()
+                .filter(|m| people[2..].contains(&m.user_id))
+                .all(|m| m.department_id.is_none())
+        );
+        assert!(
+            members
+                .iter()
+                .filter(|m| people.contains(&m.user_id))
+                .all(|m| m.role == "org_admin")
+        );
     }
 
     #[tokio::test]
