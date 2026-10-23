@@ -1693,6 +1693,15 @@ mod tests {
             .ensure_deployment_company("system_default_user", "BootCo")
             .await
             .unwrap();
+        assert_eq!(ent, "sso-1");
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprises")
+            .fetch_one(&sqlite)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+        assert!(svc.is_company_admin("system_default_user").await.unwrap());
+    }
+
     async fn seed_tenants(sqlite: &sqlx::SqlitePool, enterprise_id: &str) {
         sqlx::query(
             "CREATE TABLE one_tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL, enterprise_id TEXT,              created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)",
@@ -1768,15 +1777,6 @@ mod tests {
 
         assert_eq!(svc.align_placeholder_tenant_names().await.unwrap(), 0);
         assert_eq!(tenant_name(&sqlite, "root").await, DEFAULT_TENANT_NAME);
-    }
-
-        assert_eq!(ent, "sso-1");
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprises")
-            .fetch_one(&sqlite)
-            .await
-            .unwrap();
-        assert_eq!(count, 1);
-        assert!(svc.is_company_admin("system_default_user").await.unwrap());
     }
 
     #[tokio::test]

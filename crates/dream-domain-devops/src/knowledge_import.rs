@@ -139,6 +139,11 @@ fn normalize_sub_prefix(raw: &str) -> Result<String, DevopsError> {
     })
 }
 
+/// One document a source already brought: id, key, signature, source state, indexing status.
+type ExistingRow = (String, String, Option<String>, Option<String>, String);
+/// The same without its key (the key is the map's): id, signature, source state, indexing status.
+type ExistingDoc = (String, Option<String>, Option<String>, String);
+
 /// How a file is judged unchanged: the storage's own marker plus size and
 /// modified time, so a storage with no ETag (WebDAV) still notices a rewrite.
 fn signature(entry: &ExternalEntry) -> String {
@@ -631,16 +636,16 @@ impl DevopsService {
         report.truncated = !complete;
 
         // --- what we already hold for this source ---------------------------
-        let existing_rows: Vec<(String, String, Option<String>, Option<String>, String)> = self
+        let existing_rows: Vec<ExistingRow> = self
             .db
-            .fetch_all_as::<(String, String, Option<String>, Option<String>, String)>(
+            .fetch_all_as::<ExistingRow>(
                 "SELECT id, source_key, source_signature, source_state, status FROM one_rag_documents \
                  WHERE source_id = ? AND source_key IS NOT NULL",
                 &db_params![&source.id],
             )
             .await
             .map_err(|e| e.to_string())?;
-        let existing: HashMap<String, (String, Option<String>, Option<String>, String)> = existing_rows
+        let existing: HashMap<String, ExistingDoc> = existing_rows
             .into_iter()
             .map(|(id, key, sig, state, status)| (key, (id, sig, state, status)))
             .collect();
