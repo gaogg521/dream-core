@@ -1809,6 +1809,9 @@ pub struct LocalToolSecurityGate {
     /// until an administrator on the console decides — so it rides this
     /// channel to the company's own workflow API instead of a local copy.
     pub upstream: std::sync::Arc<dream_core_system::EnterpriseUpstreamService>,
+    /// Lets the conversation say it is waiting on an administrator instead of
+    /// looking frozen. `None` where nothing listens (tests).
+    pub events: Option<std::sync::Arc<dyn dream_core_realtime::EventBroadcaster>>,
 }
 
 /// Mirrors `dream_domain_workflow::TERMINAL_APPROVAL_TIMEOUT_MS` (not
@@ -1869,6 +1872,12 @@ impl LocalToolSecurityGate {
             return self.run_remote_terminal_approval(user_id, command_text, context).await;
         }
         Ok(None)
+    }
+
+    fn announce(&self, name: &str, payload: serde_json::Value) {
+        if let Some(events) = self.events.as_ref() {
+            events.broadcast(WebSocketMessage::new(name, payload));
+        }
     }
 
     /// The company's current `terminalToolsRequireApproval`, or `None` when the
@@ -1974,56 +1983,89 @@ impl LocalToolSecurityGate {
         // deadline the answer is `expired`, same as the server-side wait.
         let deadline =
             std::time::Instant::now() + std::time::Duration::from_millis(TERMINAL_APPROVAL_TIMEOUT_MS as u64);
-        loop {
-            let read = client
-                .get(format!("{}/api/workflow/tasks/{}", upstream.base_url, task_id))
-                .bearer_auth(&upstream.token)
-                .timeout(std::time::Duration::from_secs(15))
-                .send()
-                .await
-                .map_err(|e| format!("approval status check failed: {e}"))?;
-            if !read.status().is_success() {
-                return Err(format!("approval status check was refused (HTTP {})", read.status()));
-            }
-            let body: serde_json::Value = read
-                .json()
-                .await
-                .map_err(|e| format!("unreadable approval status: {e}"))?;
-            match body
-                .get("data")
-                .and_then(|data| data.get("status"))
-                .and_then(|status| status.as_str())
-                .unwrap_or("pending")
-            {
-                "approved" => {
-                    tracing::info!(task_id = %task_id, "terminal tool call approved");
-                    return Ok(None);
+        let conversation_id = context.conversation_id.clone();
+        if let Some(conversation_id) = conversation_id.as_deref() {
+            self.announce(
+                "conversation.approvalPending",
+                serde_json::json!({
+                    "conversationId": conversation_id,
+                    "taskId": task_id,
+                    "command": request.payload["command"],
+                    "startedAtMs": dream_core_common::now_ms(),
+                    "expiresAtMs": dream_core_common::now_ms() + TERMINAL_APPROVAL_TIMEOUT_MS,
+                }),
+            );
+        }
+        let outcome: Result<Option<String>, String> = async {
+            loop {
+                let read = client
+                    .get(format!("{}/api/workflow/tasks/{}", upstream.base_url, task_id))
+                    .bearer_auth(&upstream.token)
+                    .timeout(std::time::Duration::from_secs(15))
+                    .send()
+                    .await
+                    .map_err(|e| format!("approval status check failed: {e}"))?;
+                if !read.status().is_success() {
+                    return Err(format!("approval status check was refused (HTTP {})", read.status()));
                 }
-                "rejected" => {
-                    let reason = body
-                        .get("data")
-                        .and_then(|data| data.get("note"))
-                        .and_then(|note| note.as_str())
-                        .map(|note| format!("rejected by an administrator: {note}"))
-                        .unwrap_or_else(|| "rejected by an administrator".to_owned());
-                    return Ok(Some(format!("blocked by company security policy ({reason})")));
+                let body: serde_json::Value = read
+                    .json()
+                    .await
+                    .map_err(|e| format!("unreadable approval status: {e}"))?;
+                match body
+                    .get("data")
+                    .and_then(|data| data.get("status"))
+                    .and_then(|status| status.as_str())
+                    .unwrap_or("pending")
+                {
+                    "approved" => {
+                        tracing::info!(task_id = %task_id, "terminal tool call approved");
+                        return Ok(None);
+                    }
+                    "rejected" => {
+                        let reason = body
+                            .get("data")
+                            .and_then(|data| data.get("note"))
+                            .and_then(|note| note.as_str())
+                            .map(|note| format!("rejected by an administrator: {note}"))
+                            .unwrap_or_else(|| "rejected by an administrator".to_owned());
+                        return Ok(Some(format!("blocked by company security policy ({reason})")));
+                    }
+                    "expired" => {
+                        return Ok(Some(
+                            "blocked by company security policy (approval timed out — denied by default)".to_owned(),
+                        ));
+                    }
+                    _ => {}
                 }
-                "expired" => {
+                if std::time::Instant::now() >= deadline {
+                    // The server will expire it on its own next read; do not wait
+                    // for that to answer the member.
                     return Ok(Some(
                         "blocked by company security policy (approval timed out — denied by default)".to_owned(),
                     ));
                 }
-                _ => {}
+                tokio::time::sleep(std::time::Duration::from_millis(APPROVAL_POLL_INTERVAL_MS)).await;
             }
-            if std::time::Instant::now() >= deadline {
-                // The server will expire it on its own next read; do not wait
-                // for that to answer the member.
-                return Ok(Some(
-                    "blocked by company security policy (approval timed out — denied by default)".to_owned(),
-                ));
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(APPROVAL_POLL_INTERVAL_MS)).await;
         }
+        .await;
+        if let Some(conversation_id) = conversation_id.as_deref() {
+            let (result, reason) = match &outcome {
+                Ok(None) => ("approved", None),
+                Ok(Some(reason)) => ("denied", Some(reason.clone())),
+                Err(error) => ("failed", Some(error.clone())),
+            };
+            self.announce(
+                "conversation.approvalResolved",
+                serde_json::json!({
+                    "conversationId": conversation_id,
+                    "taskId": task_id,
+                    "outcome": result,
+                    "reason": reason,
+                }),
+            );
+        }
+        outcome
     }
 }
 

@@ -83,6 +83,7 @@ fn gate(upstream: Arc<EnterpriseUpstreamService>) -> dream_core_app::LocalToolSe
     dream_core_app::LocalToolSecurityGate {
         policy: Arc::new(ToolSecurityService::new()),
         upstream,
+        events: None,
     }
 }
 
@@ -294,4 +295,63 @@ async fn a_stale_local_policy_does_not_hold_the_call_once_the_company_relaxed_it
         !gate.policy.policy().terminal_tools_require_approval,
         "the stale local copy is corrected so later calls skip the lookup"
     );
+}
+
+#[tokio::test]
+async fn the_conversation_is_told_it_is_waiting_and_then_how_it_ended() {
+    let seen = Arc::new(std::sync::Mutex::new(Seen::default()));
+    let base = spawn_company_server("approved", "", seen.clone()).await;
+    let upstream = Arc::new(EnterpriseUpstreamService::new());
+    upstream.set(EnterpriseUpstream {
+        base_url: base,
+        token: "t".to_owned(),
+    });
+    let bus = Arc::new(dream_core_realtime::BroadcastEventBus::new(16));
+    let mut events = bus.subscribe();
+    let mut gate = gate(upstream);
+    gate.events = Some(bus.clone());
+    gate.policy.set_policy(approval_required_policy());
+    let context = dream_core_ai_agent::ToolCallContext {
+        conversation_id: Some("conv-9".to_owned()),
+        tool_name: Some("ExecCommand".to_owned()),
+        tool_input: Some(serde_json::json!({ "cmd": "Get-ChildItem" })),
+        ..Default::default()
+    };
+
+    let verdict = gate
+        .check_in_context("member-1", "ExecCommand {}", false, true, &context)
+        .await;
+    assert_eq!(verdict, Ok(None));
+
+    let pending = events.try_recv().expect("a pending event must be broadcast");
+    assert_eq!(pending.name, "conversation.approvalPending");
+    assert_eq!(pending.data["conversationId"], "conv-9");
+    assert_eq!(pending.data["command"], "Get-ChildItem");
+    assert!(pending.data["expiresAtMs"].is_i64());
+
+    let resolved = events.try_recv().expect("a resolved event must follow");
+    assert_eq!(resolved.name, "conversation.approvalResolved");
+    assert_eq!(resolved.data["conversationId"], "conv-9");
+    assert_eq!(resolved.data["outcome"], "approved");
+}
+
+#[tokio::test]
+async fn a_call_without_a_conversation_announces_nothing() {
+    let seen = Arc::new(std::sync::Mutex::new(Seen::default()));
+    let base = spawn_company_server("approved", "", seen.clone()).await;
+    let upstream = Arc::new(EnterpriseUpstreamService::new());
+    upstream.set(EnterpriseUpstream {
+        base_url: base,
+        token: "t".to_owned(),
+    });
+    let bus = Arc::new(dream_core_realtime::BroadcastEventBus::new(16));
+    let mut events = bus.subscribe();
+    let mut gate = gate(upstream);
+    gate.events = Some(bus.clone());
+    gate.policy.set_policy(approval_required_policy());
+
+    let verdict = gate.check("member-1", "ExecCommand {}", false, true).await;
+
+    assert_eq!(verdict, Ok(None));
+    assert!(events.try_recv().is_err(), "no conversation, nobody to tell");
 }

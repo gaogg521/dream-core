@@ -588,6 +588,7 @@ impl AppServices {
             tool_call_security_gate: Some(Arc::new(crate::router::LocalToolSecurityGate {
                 policy: tool_security.clone(),
                 upstream: enterprise_upstream.clone(),
+                events: Some(event_bus.clone()),
             })),
             // Enterprise memory recall (P2-2 §B.4 完整版): a per-turn ACP
             // prompt hook injects the caller's readable memory into every
