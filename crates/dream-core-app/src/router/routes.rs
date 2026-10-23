@@ -1830,17 +1830,68 @@ impl dream_core_ai_agent::ToolCallSecurityGate for LocalToolSecurityGate {
         is_network_fetch: bool,
         is_terminal_tool: bool,
     ) -> Result<Option<String>, String> {
-        if let Some(reason) = self.policy.check(command_text, is_network_fetch) {
-            return Ok(Some(reason));
-        }
-        if is_terminal_tool && self.policy.policy().terminal_tools_require_approval {
-            return self.run_remote_terminal_approval(user_id, command_text).await;
-        }
-        Ok(None)
+        self.decide(
+            user_id,
+            command_text,
+            is_network_fetch,
+            is_terminal_tool,
+            &dream_core_ai_agent::ToolCallContext::default(),
+        )
+        .await
+    }
+
+    async fn check_in_context(
+        &self,
+        user_id: &str,
+        command_text: &str,
+        is_network_fetch: bool,
+        is_terminal_tool: bool,
+        context: &dream_core_ai_agent::ToolCallContext,
+    ) -> Result<Option<String>, String> {
+        self.decide(user_id, command_text, is_network_fetch, is_terminal_tool, context)
+            .await
     }
 }
 
 impl LocalToolSecurityGate {
+    async fn decide(
+        &self,
+        user_id: &str,
+        command_text: &str,
+        is_network_fetch: bool,
+        is_terminal_tool: bool,
+        context: &dream_core_ai_agent::ToolCallContext,
+    ) -> Result<Option<String>, String> {
+        if let Some(reason) = self.policy.check(command_text, is_network_fetch) {
+            return Ok(Some(reason));
+        }
+        if is_terminal_tool && self.policy.policy().terminal_tools_require_approval {
+            return self.run_remote_terminal_approval(user_id, command_text, context).await;
+        }
+        Ok(None)
+    }
+
+    /// The company's current `terminalToolsRequireApproval`, or `None` when the
+    /// server could not be read.
+    async fn live_terminal_approval_required(
+        &self,
+        client: &reqwest::Client,
+        upstream: &dream_core_system::EnterpriseUpstream,
+    ) -> Option<bool> {
+        let response = client
+            .get(format!("{}/api/one/platform/my-security-policy", upstream.base_url))
+            .bearer_auth(&upstream.token)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let body: serde_json::Value = response.json().await.ok()?;
+        body.get("data")?.get("terminalToolsRequireApproval")?.as_bool()
+    }
+
     /// Hold the call until an administrator on the company console decides
     /// (C0-1 plan A). The task is created on the company's own workflow API
     /// over the upstream channel, with an expiry so the server-side queue
@@ -1852,7 +1903,12 @@ impl LocalToolSecurityGate {
     /// was never synced, an unreachable server, or an unreadable answer all
     /// refuse this ONE call — never a silent allow of something the company
     /// asked to gate.
-    async fn run_remote_terminal_approval(&self, user_id: &str, command_text: &str) -> Result<Option<String>, String> {
+    async fn run_remote_terminal_approval(
+        &self,
+        user_id: &str,
+        command_text: &str,
+        context: &dream_core_ai_agent::ToolCallContext,
+    ) -> Result<Option<String>, String> {
         let Some(upstream) = self.upstream.get() else {
             return Err(
                 "terminal tools require approval but the client has not received the company server connection"
@@ -1860,15 +1916,30 @@ impl LocalToolSecurityGate {
             );
         };
         let client = reqwest::Client::new();
-        let title: String = command_text.chars().take(APPROVAL_TITLE_MAX_CHARS).collect();
+        // The local policy copy is refreshed on a timer (minutes), so an
+        // administrator who has just relaxed the policy would otherwise keep
+        // holding every terminal call here until the next sync. Ask the server
+        // now; when it cannot be read, fall through to the approval flow
+        // (fail closed), exactly as before.
+        if self.live_terminal_approval_required(&client, &upstream).await == Some(false) {
+            let mut policy = self.policy.policy();
+            policy.terminal_tools_require_approval = false;
+            self.policy.set_policy(policy);
+            tracing::info!(
+                user_id,
+                "company policy no longer requires terminal approval; local copy was stale"
+            );
+            return Ok(None);
+        }
+        let request = dream_core_ai_agent::approval_request_text(command_text, context);
         let created = client
             .post(format!("{}/api/workflow/tasks", upstream.base_url))
             .bearer_auth(&upstream.token)
             .json(&serde_json::json!({
                 "kind": "tool",
-                "title": title,
-                "detail": "terminal tool call awaiting administrator approval (security policy)",
-                "payload": { "commandText": command_text },
+                "title": request.title,
+                "detail": request.detail,
+                "payload": request.payload,
                 "expiresAtMs": dream_core_common::now_ms() + TERMINAL_APPROVAL_TIMEOUT_MS,
             }))
             .timeout(std::time::Duration::from_secs(15))
@@ -2026,11 +2097,6 @@ pub(crate) struct PlatformToolCallSecurityGate {
     pub(crate) workflow: Option<std::sync::Arc<dream_domain_workflow::WorkflowService>>,
 }
 
-/// The task title carries a bounded slice of the command text: enough for an
-/// administrator skimming the queue to tell two terminal calls apart, short
-/// enough that a machine-generated blob cannot flood the list.
-const APPROVAL_TITLE_MAX_CHARS: usize = 120;
-
 #[async_trait::async_trait]
 #[cfg(feature = "enterprise")]
 impl dream_core_ai_agent::ToolCallSecurityGate for PlatformToolCallSecurityGate {
@@ -2040,6 +2106,39 @@ impl dream_core_ai_agent::ToolCallSecurityGate for PlatformToolCallSecurityGate 
         command_text: &str,
         is_network_fetch: bool,
         is_terminal_tool: bool,
+    ) -> Result<Option<String>, String> {
+        self.decide(
+            user_id,
+            command_text,
+            is_network_fetch,
+            is_terminal_tool,
+            &dream_core_ai_agent::ToolCallContext::default(),
+        )
+        .await
+    }
+
+    async fn check_in_context(
+        &self,
+        user_id: &str,
+        command_text: &str,
+        is_network_fetch: bool,
+        is_terminal_tool: bool,
+        context: &dream_core_ai_agent::ToolCallContext,
+    ) -> Result<Option<String>, String> {
+        self.decide(user_id, command_text, is_network_fetch, is_terminal_tool, context)
+            .await
+    }
+}
+
+#[cfg(feature = "enterprise")]
+impl PlatformToolCallSecurityGate {
+    async fn decide(
+        &self,
+        user_id: &str,
+        command_text: &str,
+        is_network_fetch: bool,
+        is_terminal_tool: bool,
+        context: &dream_core_ai_agent::ToolCallContext,
     ) -> Result<Option<String>, String> {
         let actor = match self.platform.resolve_actor(user_id).await {
             // No enterprise membership: nothing governs this caller.
@@ -2084,7 +2183,7 @@ impl dream_core_ai_agent::ToolCallSecurityGate for PlatformToolCallSecurityGate 
                 return Err("terminal tools require approval but no approval backend is wired".to_owned());
             };
             match self
-                .run_terminal_approval(workflow, &actor.tenant_id, user_id, command_text)
+                .run_terminal_approval(workflow, &actor.tenant_id, user_id, command_text, context)
                 .await
             {
                 Ok(None) => {}
@@ -2108,16 +2207,17 @@ impl PlatformToolCallSecurityGate {
         tenant_id: &str,
         user_id: &str,
         command_text: &str,
+        context: &dream_core_ai_agent::ToolCallContext,
     ) -> Result<Option<String>, String> {
-        let title: String = command_text.chars().take(APPROVAL_TITLE_MAX_CHARS).collect();
+        let request = dream_core_ai_agent::approval_request_text(command_text, context);
         let task = workflow
             .create_task(
                 tenant_id,
                 "tool",
                 user_id,
-                &title,
-                "terminal tool call awaiting administrator approval (security policy)",
-                &serde_json::json!({ "commandText": command_text }),
+                &request.title,
+                &request.detail,
+                &request.payload,
                 Some(dream_core_common::now_ms() + dream_domain_workflow::TERMINAL_APPROVAL_TIMEOUT_MS),
             )
             .await
@@ -3230,6 +3330,13 @@ async fn bootstrap_default_enterprise(services: &AppServices) -> Result<(), Rout
         }
         Err(error) => tracing::warn!(%error, "bootstrap: could not scan for unenrolled admin-created members"),
     }
+    // A company renamed before its workspace followed would otherwise keep
+    // showing the placeholder group name to every member, indefinitely.
+    match enterprise.align_placeholder_tenant_names().await {
+        Ok(0) => {}
+        Ok(renamed) => tracing::info!(renamed, "bootstrap: workspace names aligned with their company"),
+        Err(error) => tracing::warn!(%error, "bootstrap: could not align workspace names with their company"),
+    }
     if is_enterprise_tenant_id(&active) && company_exists {
         tracing::info!(tenant_id = %active, "bootstrap: default enterprise already provisioned");
         return Ok(());
@@ -3239,8 +3346,12 @@ async fn bootstrap_default_enterprise(services: &AppServices) -> Result<(), Rout
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    let company_name = default_name.as_deref().unwrap_or("默认企业");
-    let tenant_name = default_name.as_deref().unwrap_or("默认组织");
+    let company_name = default_name
+        .as_deref()
+        .unwrap_or(dream_domain_enterprise::DEFAULT_COMPANY_NAME);
+    let tenant_name = default_name
+        .as_deref()
+        .unwrap_or(dream_domain_enterprise::DEFAULT_TENANT_NAME);
 
     let enterprise_id = enterprise
         .ensure_deployment_company(SYSTEM_DEFAULT_USER_ID, company_name)

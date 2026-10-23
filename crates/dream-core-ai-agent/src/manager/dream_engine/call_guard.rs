@@ -40,7 +40,7 @@ use dream_engine_protocol::ToolCallGuard;
 use serde_json::Value;
 use tracing::warn;
 
-use crate::security_policy::ToolCallSecurityGate;
+use crate::security_policy::{ToolCallContext, ToolCallSecurityGate};
 
 /// The engine's built-in shell tool. The only one whose category is `Exec`
 /// (verified: `dream-engine-tools`' `Tool::category` implementations), and so
@@ -50,6 +50,8 @@ const EXEC_TOOL: &str = "ExecCommand";
 pub struct SecurityPolicyCallGuard {
     gate: Arc<dyn ToolCallSecurityGate>,
     user_id: String,
+    conversation_id: Option<String>,
+    conversations: Option<Arc<dyn dream_core_db::IConversationRepository>>,
 }
 
 impl SecurityPolicyCallGuard {
@@ -57,6 +59,32 @@ impl SecurityPolicyCallGuard {
         Self {
             gate,
             user_id: user_id.into(),
+            conversation_id: None,
+            conversations: None,
+        }
+    }
+
+    /// Lets an approval request name the conversation it came from.
+    pub fn with_conversation(
+        mut self,
+        conversation_id: impl Into<String>,
+        conversations: Arc<dyn dream_core_db::IConversationRepository>,
+    ) -> Self {
+        self.conversation_id = Some(conversation_id.into());
+        self.conversations = Some(conversations);
+        self
+    }
+
+    /// The conversation's current name. Read per call: it is renamed after the
+    /// first message, long after this guard was built.
+    async fn conversation_title(&self) -> Option<String> {
+        let (id, repo) = (self.conversation_id.as_deref()?, self.conversations.as_ref()?);
+        match repo.get(&self.user_id, id).await {
+            Ok(row) => row.map(|row| row.name),
+            Err(error) => {
+                warn!(conversation_id = id, %error, "conversation title lookup failed; approval request will omit it");
+                None
+            }
         }
     }
 }
@@ -65,9 +93,21 @@ impl SecurityPolicyCallGuard {
 impl ToolCallGuard for SecurityPolicyCallGuard {
     async fn check(&self, tool_name: &str, input: &Value) -> Option<String> {
         let command_text = format!("{tool_name} {input}");
+        let is_terminal = tool_name == EXEC_TOOL;
+        let context = ToolCallContext {
+            conversation_id: self.conversation_id.clone(),
+            // Only a terminal call can end up in an approval queue.
+            conversation_title: if is_terminal {
+                self.conversation_title().await
+            } else {
+                None
+            },
+            tool_name: Some(tool_name.to_owned()),
+            tool_input: Some(input.clone()),
+        };
         match self
             .gate
-            .check(&self.user_id, &command_text, false, tool_name == EXEC_TOOL)
+            .check_in_context(&self.user_id, &command_text, false, is_terminal, &context)
             .await
         {
             Ok(reason) => reason,

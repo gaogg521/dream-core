@@ -202,3 +202,96 @@ async fn non_terminal_tool_skips_the_approval_even_when_demanded() {
         "no approval task may be created"
     );
 }
+
+#[tokio::test]
+async fn approval_request_is_titled_with_the_conversation_and_reads_the_command() {
+    let seen = Arc::new(std::sync::Mutex::new(Seen::default()));
+    let base = spawn_company_server("approved", "", seen.clone()).await;
+    let upstream = Arc::new(EnterpriseUpstreamService::new());
+    upstream.set(EnterpriseUpstream {
+        base_url: base,
+        token: "t".to_owned(),
+    });
+    let gate = gate(upstream);
+    gate.policy.set_policy(approval_required_policy());
+    let context = dream_core_ai_agent::ToolCallContext {
+        conversation_id: Some("conv-1".to_owned()),
+        conversation_title: Some("My test chat".to_owned()),
+        tool_name: Some("ExecCommand".to_owned()),
+        tool_input: Some(serde_json::json!({ "cmd": "Get-ChildItem -Force" })),
+    };
+
+    let verdict = gate
+        .check_in_context(
+            "member-1",
+            "ExecCommand {\"cmd\":\"Get-ChildItem -Force\"}",
+            false,
+            true,
+            &context,
+        )
+        .await;
+
+    assert_eq!(verdict, Ok(None));
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.create_body["title"], "My test chat");
+    let detail = seen.create_body["detail"].as_str().unwrap();
+    assert!(detail.contains("Get-ChildItem -Force"), "detail: {detail}");
+    assert!(
+        !detail.contains("\"cmd\""),
+        "the raw JSON must not be the headline: {detail}"
+    );
+    assert_eq!(seen.create_body["payload"]["conversationId"], "conv-1");
+    assert_eq!(seen.create_body["payload"]["command"], "Get-ChildItem -Force");
+}
+
+/// A company server whose current policy no longer asks for approval, counting
+/// how many approval tasks anyone tried to create on it.
+async fn spawn_relaxed_company_server(creates: Arc<std::sync::atomic::AtomicUsize>) -> String {
+    async fn policy() -> Json<serde_json::Value> {
+        Json(json!({ "success": true, "data": { "terminalToolsRequireApproval": false } }))
+    }
+    async fn create(
+        axum::extract::State(creates): axum::extract::State<Arc<std::sync::atomic::AtomicUsize>>,
+    ) -> Json<serde_json::Value> {
+        creates.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Json(json!({ "success": true, "data": { "id": "task-x", "status": "pending" } }))
+    }
+    let app = axum::Router::new()
+        .route("/api/one/platform/my-security-policy", get(policy))
+        .route("/api/workflow/tasks", post(create).with_state(creates));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn a_stale_local_policy_does_not_hold_the_call_once_the_company_relaxed_it() {
+    let creates = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let base = spawn_relaxed_company_server(creates.clone()).await;
+    let upstream = Arc::new(EnterpriseUpstreamService::new());
+    upstream.set(EnterpriseUpstream {
+        base_url: base,
+        token: "t".to_owned(),
+    });
+    let gate = gate(upstream);
+    // The local copy still says "approval required" — the sync has not run yet.
+    gate.policy.set_policy(approval_required_policy());
+
+    let verdict = gate
+        .check("member-1", "ExecCommand {\"cmd\":\"dir\"}", false, true)
+        .await;
+
+    assert_eq!(verdict, Ok(None), "the company no longer requires approval");
+    assert_eq!(
+        creates.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "no approval task may be created for a policy the company already relaxed"
+    );
+    assert!(
+        !gate.policy.policy().terminal_tools_require_approval,
+        "the stale local copy is corrected so later calls skip the lookup"
+    );
+}

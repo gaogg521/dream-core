@@ -94,6 +94,9 @@ pub struct AgentFactoryDeps {
     /// builds and tests — every tool call then flows through unmodified,
     /// exactly as before this existed.
     pub tool_call_security_gate: Option<Arc<dyn crate::security_policy::ToolCallSecurityGate>>,
+    /// Lets an approval request name the conversation it came from. `None` in
+    /// tests: the request then falls back to the command as its title.
+    pub conversation_repo: Option<Arc<dyn dream_core_db::IConversationRepository>>,
     /// Enterprise memory recall (P2-2 §B.4 完整版) — a per-turn ACP prompt
     /// hook prepends the caller's readable memory to every prompt, so
     /// accumulated memory reaches continuing conversations too. `None` for

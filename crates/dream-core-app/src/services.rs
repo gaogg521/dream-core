@@ -535,6 +535,7 @@ impl AppServices {
         // registry/machine-id/spawner trio upstream added, so they're dropped
         // rather than kept unused.
         let factory = build_agent_factory(AgentFactoryDeps {
+            conversation_repo: Some(conversation_repo.clone()),
             skill_manager: AcpSkillManager::new_with_repo(skill_paths.clone(), skill_repo.clone()),
             provider_repo,
             encryption_key,

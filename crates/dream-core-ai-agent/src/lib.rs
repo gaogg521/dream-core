@@ -73,7 +73,7 @@ pub use runtime_token::{
     RuntimeTokenClaims, RuntimeTokenError, RuntimeTokenIssue, RuntimeTokenScope, RuntimeTokenService,
     TEAM_RUNTIME_TOKEN_SESSION_GENERATION,
 };
-pub use security_policy::ToolCallSecurityGate;
+pub use security_policy::{ApprovalRequestText, ToolCallContext, ToolCallSecurityGate, approval_request_text};
 pub use services::AgentAvailabilityFeedbackPort;
 pub use services::AgentService;
 pub use services::RemoteAgentService;

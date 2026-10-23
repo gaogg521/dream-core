@@ -16,6 +16,12 @@ use crate::session_revoker::{NoopSessionRevoker, SessionRevoker};
 const SYSTEM_DEFAULT_USER_ID: &str = "system_default_user";
 /// one-org's instance-level admin role (mirrors `dream_domain_org::models::ROLE_SYSTEM_ADMIN`).
 const ROLE_SYSTEM_ADMIN: &str = "system_admin";
+/// Placeholder names the bootstrap gives a deployment's first company and its
+/// root project group when no name was configured. The project group's name is
+/// what members see as their workspace, so a company renamed away from the
+/// placeholder must take the group with it.
+pub const DEFAULT_COMPANY_NAME: &str = "默认企业";
+pub const DEFAULT_TENANT_NAME: &str = "默认组织";
 
 pub struct EnterpriseService {
     pub(crate) db: DbPool,
@@ -622,6 +628,13 @@ impl EnterpriseService {
             return Err(EnterpriseError::NameRequired);
         }
         let now = now_ms() as i64;
+        let previous: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT display_name FROM one_enterprises WHERE id = ?",
+                &db_params![enterprise_id],
+            )
+            .await?;
         self.db
             .execute(
                 "UPDATE one_enterprises SET display_name = ?, updated_at = ? WHERE id = ?",
@@ -629,9 +642,46 @@ impl EnterpriseService {
             )
             .await?;
         tracing::info!(user_id, enterprise_id, "company renamed");
+        // Best effort: the rename itself has already succeeded.
+        let previous = previous.as_deref().unwrap_or(DEFAULT_TENANT_NAME);
+        if let Err(error) = self
+            .db
+            .execute(
+                "UPDATE one_tenants SET name = ?, updated_at = ? WHERE enterprise_id = ? AND (name = ? OR name = ?)",
+                &db_params![name, now, enterprise_id, DEFAULT_TENANT_NAME, previous],
+            )
+            .await
+        {
+            tracing::warn!(%error, enterprise_id, "company renamed but its workspace name could not follow");
+        }
         self.company_overview(user_id)
             .await?
             .ok_or(EnterpriseError::CompanyNotFound)
+    }
+
+    /// Bring the workspace name of every company's root project group in line
+    /// with the company name, for deployments renamed before `rename_company`
+    /// did it. Only a group still carrying the bootstrap placeholder is
+    /// touched, so a name an administrator chose on purpose survives.
+    /// Idempotent; returns the number of groups renamed.
+    pub async fn align_placeholder_tenant_names(&self) -> Result<u64, EnterpriseError> {
+        let now = now_ms() as i64;
+        let renamed = self
+            .db
+            .execute(
+                concat!(
+                    "UPDATE one_tenants SET ",
+                    "name = (SELECT e.display_name FROM one_enterprises e WHERE e.id = one_tenants.enterprise_id), ",
+                    "updated_at = ? ",
+                    "WHERE name = ? AND enterprise_id IN (",
+                    "SELECT id FROM one_enterprises ",
+                    "WHERE display_name IS NOT NULL AND display_name <> '' ",
+                    "AND display_name <> ? AND display_name <> ?)"
+                ),
+                &db_params![now, DEFAULT_TENANT_NAME, DEFAULT_TENANT_NAME, DEFAULT_COMPANY_NAME],
+            )
+            .await?;
+        Ok(renamed)
     }
 
     /// The deployment's company as seen by `user_id` (their membership, else
@@ -1643,6 +1693,83 @@ mod tests {
             .ensure_deployment_company("system_default_user", "BootCo")
             .await
             .unwrap();
+    async fn seed_tenants(sqlite: &sqlx::SqlitePool, enterprise_id: &str) {
+        sqlx::query(
+            "CREATE TABLE one_tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL, enterprise_id TEXT,              created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)",
+        )
+        .execute(sqlite)
+        .await
+        .unwrap();
+        for (id, name) in [("root", DEFAULT_TENANT_NAME), ("rd", "研发部")] {
+            sqlx::query("INSERT INTO one_tenants (id, name, enterprise_id) VALUES (?, ?, ?)")
+                .bind(id)
+                .bind(name)
+                .bind(enterprise_id)
+                .execute(sqlite)
+                .await
+                .unwrap();
+        }
+    }
+
+    async fn tenant_name(sqlite: &sqlx::SqlitePool, id: &str) -> String {
+        sqlx::query_scalar("SELECT name FROM one_tenants WHERE id = ?")
+            .bind(id)
+            .fetch_one(sqlite)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn rename_company_carries_the_placeholder_workspace_name_with_it() {
+        let (svc, sqlite) = service_with_governance().await;
+        svc.setup_company("system_default_user", "Acme").await.unwrap();
+        let enterprise_id = svc.company_of("system_default_user").await.unwrap().unwrap();
+        seed_tenants(&sqlite, &enterprise_id).await;
+
+        svc.rename_company("system_default_user", &enterprise_id, "上海某某公司")
+            .await
+            .unwrap();
+
+        assert_eq!(tenant_name(&sqlite, "root").await, "上海某某公司");
+        assert_eq!(
+            tenant_name(&sqlite, "rd").await,
+            "研发部",
+            "a project group an administrator named must not be renamed"
+        );
+    }
+
+    #[tokio::test]
+    async fn align_repairs_a_company_renamed_before_the_workspace_followed() {
+        let (svc, sqlite) = service_with_governance().await;
+        svc.setup_company("system_default_user", "Acme").await.unwrap();
+        let enterprise_id = svc.company_of("system_default_user").await.unwrap().unwrap();
+        seed_tenants(&sqlite, &enterprise_id).await;
+        // The company was renamed by the old code: only `one_enterprises` moved.
+        sqlx::query("UPDATE one_enterprises SET display_name = '上海某某公司' WHERE id = ?")
+            .bind(&enterprise_id)
+            .execute(&sqlite)
+            .await
+            .unwrap();
+
+        assert_eq!(svc.align_placeholder_tenant_names().await.unwrap(), 1);
+        assert_eq!(tenant_name(&sqlite, "root").await, "上海某某公司");
+        assert_eq!(tenant_name(&sqlite, "rd").await, "研发部");
+        assert_eq!(svc.align_placeholder_tenant_names().await.unwrap(), 0, "idempotent");
+    }
+
+    #[tokio::test]
+    async fn align_leaves_a_company_that_still_has_the_placeholder_name() {
+        let (svc, sqlite) = service_with_governance().await;
+        svc.setup_company("system_default_user", DEFAULT_COMPANY_NAME)
+            .await
+            .unwrap();
+        let enterprise_id = svc.company_of("system_default_user").await.unwrap().unwrap();
+        seed_tenants(&sqlite, &enterprise_id).await;
+
+        assert_eq!(svc.align_placeholder_tenant_names().await.unwrap(), 0);
+        assert_eq!(tenant_name(&sqlite, "root").await, DEFAULT_TENANT_NAME);
+    }
+
         assert_eq!(ent, "sso-1");
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprises")
             .fetch_one(&sqlite)

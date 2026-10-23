@@ -27,6 +27,6 @@ pub use error::EnterpriseError;
 pub use migrate::run_one_enterprise_migrations;
 pub use models::{CompanyMemberDto, CompanyOverviewDto, DisbandCompanyResult, EnterpriseIdentityDto};
 pub use routes::one_enterprise_routes;
-pub use service::EnterpriseService;
+pub use service::{DEFAULT_COMPANY_NAME, DEFAULT_TENANT_NAME, EnterpriseService};
 pub use session_revoker::{NoopSessionRevoker, SessionRevoker};
 pub use state::OneEnterpriseRouterState;

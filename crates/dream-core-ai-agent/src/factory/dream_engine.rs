@@ -282,10 +282,14 @@ pub(super) async fn build(
     // The company policy has to reach this path too: the engine runs the
     // product's default conversation type, and in full-auto it never asks for
     // permission, so the ACP router's copy of this check is never consulted.
-    let call_guard = deps
-        .tool_call_security_gate
-        .clone()
-        .map(|gate| Arc::new(SecurityPolicyCallGuard::new(gate, ctx.user_id.clone())) as Arc<dyn ToolCallGuard>);
+    let call_guard = deps.tool_call_security_gate.clone().map(|gate| {
+        let guard = SecurityPolicyCallGuard::new(gate, ctx.user_id.clone());
+        let guard = match deps.conversation_repo.clone() {
+            Some(repo) => guard.with_conversation(ctx.conversation_id.clone(), repo),
+            None => guard,
+        };
+        Arc::new(guard) as Arc<dyn ToolCallGuard>
+    });
     // Same reason as the call guard: the recall port was only ever consulted by
     // the ACP prompt pipeline, so the member's company memory never reached the
     // conversation type they actually use.
