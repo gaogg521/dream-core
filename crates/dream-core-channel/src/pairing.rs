@@ -234,6 +234,9 @@ impl PairingService {
             .await?
             .ok_or_else(|| ChannelError::PairingNotFound(code.to_owned()))?;
 
+        if row.status == PairingStatus::Expired.to_string() {
+            return Err(ChannelError::PairingExpired(code.to_owned()));
+        }
         if row.status != PairingStatus::Pending.to_string() {
             return Err(ChannelError::PairingAlreadyProcessed(code.to_owned()));
         }
@@ -715,6 +718,10 @@ mod tests {
         };
         repo.pairings.lock().unwrap().push(row);
 
+        let err = svc.approve_pairing(OWNER_ID, "999999").await.unwrap_err();
+        assert!(matches!(err, ChannelError::PairingExpired(_)));
+        // Cleanup (or the first failed approval) may already have marked it
+        // expired. Repeated attempts must keep the actionable expiry reason.
         let err = svc.approve_pairing(OWNER_ID, "999999").await.unwrap_err();
         assert!(matches!(err, ChannelError::PairingExpired(_)));
     }
