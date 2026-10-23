@@ -101,10 +101,13 @@ async fn service() -> (Arc<DevopsService>, FakeStorage, tempfile::TempDir) {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone()))
-        .await
-        .unwrap();
-    let svc = Arc::new(DevopsService::new(dream_core_db::DbPool::Sqlite(pool)));
+    service_over(dream_core_db::DbPool::Sqlite(pool)).await
+}
+
+/// Same fixture over any backend, so the lifecycle can also run on MySQL.
+async fn service_over(db: dream_core_db::DbPool) -> (Arc<DevopsService>, FakeStorage, tempfile::TempDir) {
+    run_one_devops_migrations(&db).await.unwrap();
+    let svc = Arc::new(DevopsService::new(db));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -544,6 +547,72 @@ async fn the_scheduler_starts_only_sources_that_are_due() {
         find(&manual.id).last_run_at.is_none(),
         "manual sources never run by themselves"
     );
+}
+
+/// The whole lifecycle again on a real MySQL (set `DREAM_TEST_MYSQL_URL`): the
+/// migration, the claim/stale-run SQL, the unique source index and the upserts
+/// are dialect-sensitive, and the SQLite run cannot see a MySQL-only failure.
+#[tokio::test]
+async fn the_import_lifecycle_also_works_on_mysql() {
+    let Some(mysql) = dream_core_db::testing::mysql_test_pool().await else {
+        eprintln!("skipping: DREAM_TEST_MYSQL_URL not set");
+        return;
+    };
+    let (svc, storage, _dir) = service_over(mysql.pool.clone()).await;
+    storage.put("keep.md", b"keepmysqlword", 1);
+    storage.put("gone.md", b"gonemysqlword", 1);
+    storage.put("sub/nested.docx", &docx("nestedmysqlword"), 1);
+    storage.put("skip.pdf", b"%PDF-1.4", 1);
+    let source = make_source(&svc).await;
+
+    let first = sync(&svc, &source.id).await;
+    assert_eq!(
+        (first.added, first.skipped_total, first.failed_total),
+        (3, 1, 0),
+        "{first:?}"
+    );
+    wait_for_chunk(&svc, "nestedmysqlword").await;
+    assert!(
+        docs(&svc)
+            .await
+            .iter()
+            .all(|d| d.source_key.is_some() && d.source_state.as_deref() == Some("ok")),
+        "the listing carries the source columns on MySQL"
+    );
+
+    let again = sync(&svc, &source.id).await;
+    assert_eq!((again.added, again.updated, again.unchanged), (0, 0, 3), "{again:?}");
+
+    storage.put("keep.md", b"changedmysqlword", 2);
+    storage.remove("gone.md");
+    let changed = sync(&svc, &source.id).await;
+    assert_eq!(
+        (changed.updated, changed.unchanged, changed.missing),
+        (1, 1, 1),
+        "{changed:?}"
+    );
+    wait_for_chunk(&svc, "changedmysqlword").await;
+    assert!(!chunk_texts(&svc).await.iter().any(|c| c.contains("keepmysqlword")));
+    assert_eq!(docs(&svc).await.len(), 3, "nothing was deleted");
+
+    // A second claim while one is held is refused (the atomic UPDATE).
+    sqlx::query("UPDATE one_rag_import_sources SET running_since = ? WHERE id = ?")
+        .bind(now_ms() as i64)
+        .bind(&source.id)
+        .execute(match &svc.db {
+            dream_core_db::DbPool::MySql(pool) => pool,
+            _ => unreachable!("this test runs on MySQL"),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        svc.start_import_run("admin1", &source.id).await,
+        Err(DevopsError::BadRequest(message)) if message.contains("already running")
+    ));
+
+    svc.delete_import_source("admin1", &source.id).await.unwrap();
+    assert_eq!(docs(&svc).await.len(), 3);
+    mysql.cleanup().await.unwrap();
 }
 
 #[test]

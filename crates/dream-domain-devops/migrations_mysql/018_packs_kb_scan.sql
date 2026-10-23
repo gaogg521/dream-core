@@ -1,5 +1,5 @@
 -- MCP pack content, knowledge libraries, scan policy (MySQL).
-ALTER TABLE one_mcp_registry ADD COLUMN content LONGTEXT NOT NULL DEFAULT '';
+ALTER TABLE one_mcp_registry ADD COLUMN content LONGTEXT NOT NULL DEFAULT ('');
 
 CREATE TABLE IF NOT EXISTS one_rag_libraries (
     id          VARCHAR(64)  PRIMARY KEY NOT NULL,

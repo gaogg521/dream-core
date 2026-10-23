@@ -35,20 +35,39 @@ const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8"?>
   </d:prop>
 </d:propfind>"#;
 
+/// Percent-encode a path, keeping its `/` separators.
+///
+/// Names on a NAS routinely contain characters that mean something in a URL:
+/// `#` would cut the path at a fragment, `?` would start a query, `%` would be
+/// read as an escape. Left to the HTTP client they are not encoded for us, so a
+/// file called `report#v2.md` was listed but could never be read.
+fn encode_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => out.push(byte as char),
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
 /// Join the configured endpoint, the share ("bucket") and a prefix into one
-/// URL, without doubling or dropping separators.
+/// URL, without doubling or dropping separators. The share and the prefix are
+/// names, so they are percent-encoded; the endpoint is the operator's own URL
+/// and is used as written.
 fn build_url(cfg: &DriverConfig, prefix: &str) -> String {
     let base = cfg.endpoint.trim_end_matches('/');
     let share = cfg.bucket.trim_matches('/');
     let mut url = base.to_owned();
     if !share.is_empty() {
         url.push('/');
-        url.push_str(share);
+        url.push_str(&encode_path(share));
     }
     let prefix = prefix.trim_start_matches('/');
     if !prefix.is_empty() {
         url.push('/');
-        url.push_str(prefix.trim_end_matches('/'));
+        url.push_str(&encode_path(prefix.trim_end_matches('/')));
     }
     url.push('/');
     url
@@ -358,6 +377,23 @@ mod tests {
     }
 
     #[test]
+    fn names_are_percent_encoded_so_hash_and_question_mark_stay_in_the_path() {
+        assert_eq!(
+            build_url(&cfg("http://nas:5005", "team"), "docs/report#v2 final?.md"),
+            "http://nas:5005/team/docs/report%23v2%20final%3F.md/"
+        );
+        assert_eq!(
+            build_url(&cfg("http://nas:5005", "team"), "报告/100%.md"),
+            "http://nas:5005/team/%E6%8A%A5%E5%91%8A/100%25.md/"
+        );
+        // Plain names are untouched.
+        assert_eq!(
+            build_url(&cfg("http://nas:5005", "team"), "media/a-b_c.d~e/"),
+            "http://nas:5005/team/media/a-b_c.d~e/"
+        );
+    }
+
+    #[test]
     fn multistatus_parses_folders_and_files_regardless_of_namespace_prefix() {
         // `D:` here, `d:` on Synology, bare on some others — matching is on
         // the local name for exactly this reason.
@@ -441,6 +477,23 @@ mod tests {
             .unwrap();
 
         assert_eq!(bytes, b"hello from the nas");
+    }
+
+    /// The server receives the real name, whatever characters it holds.
+    #[tokio::test]
+    async fn read_reaches_a_file_whose_name_has_hash_space_and_chinese() {
+        let app = axum::Router::new().route(
+            "/team/{*rest}",
+            axum::routing::get(|axum::extract::Path(rest): axum::extract::Path<String>| async move { rest }),
+        );
+        let endpoint = serve(app).await;
+
+        let bytes = WebDavDriver
+            .read(&cfg(&endpoint, "team"), "docs/报告 2026#v2?.md", 1024)
+            .await
+            .unwrap();
+
+        assert_eq!(String::from_utf8(bytes).unwrap(), "docs/报告 2026#v2?.md");
     }
 
     #[tokio::test]
