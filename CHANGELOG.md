@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.1.94](https://github.com/gaogg521/dream-core/compare/v0.1.93...v0.1.94) (2026-10-23)
+
+
+### Features
+
+* **knowledge:** import a folder of a registered file storage into the company knowledge base ([45d2604](https://github.com/gaogg521/dream-core/commit/45d26046827506742161d44b4f8db8d35aeedb50))
+* **security:** tell the conversation when a terminal call is waiting on an administrator ([56616e9](https://github.com/gaogg521/dream-core/commit/56616e9f9965e2d6e2b263da5f5abedfef575883))
+
+
+### Bug Fixes
+
+* **ci:** put the workspace-name tests where they compile, name the import row types ([f80709e](https://github.com/gaogg521/dream-core/commit/f80709ee38ec3888e4e2cbe4b8d4db4a94a3e85f))
+* **employee:** bind built-in role guides and preserve customer settings ([93ec62b](https://github.com/gaogg521/dream-core/commit/93ec62bad5da1592b58dbea327f69eb1c28ea1e8))
+* **enterprise:** align admin authority and bind signed-in directory members ([d5a7140](https://github.com/gaogg521/dream-core/commit/d5a7140ee4f540e317989f8e7a66aff936a3778a))
+* **enterprise:** readable terminal approvals, no stale approval holds, workspace follows company name ([d6cab53](https://github.com/gaogg521/dream-core/commit/d6cab53ff69362c3c25f5aa35f4b5d7eb6c26eb4))
+* **knowledge:** an import run queues unchanged files whose indexing failed ([f204765](https://github.com/gaogg521/dream-core/commit/f2047653c1c0d7688f6f270be9444e3ebd3193df))
+* **knowledge:** match Chinese questions by trigram; smaller chunks for the local model ([c2c2449](https://github.com/gaogg521/dream-core/commit/c2c24493b8a376e32a29f7f1a0eb5bdf94253e6e))
+* **knowledge:** stop dropping a cold query embedding; report name clashes as conflicts ([9ca4d28](https://github.com/gaogg521/dream-core/commit/9ca4d284ae10bc8467f1614844acf2d2191d767d))
+* **market:** import a name clash under a source-labelled name instead of skipping it ([5a06479](https://github.com/gaogg521/dream-core/commit/5a064790e3fb30812a089a1c929d813da0c4a1db))
+* **org:** judge GitHub/GitLab/Jira connectors on the token, not on the host answering ([a6fd809](https://github.com/gaogg521/dream-core/commit/a6fd809cf1ac6ab32eaec7700f093625456b1133))
+* **platform:** refuse an IP allowlist that would lock its own author out ([6a4d26f](https://github.com/gaogg521/dream-core/commit/6a4d26fb3321395877941bf1297fec6ed88efa59))
+* **security:** ACP conversations get readable approval titles too ([1fe0738](https://github.com/gaogg521/dream-core/commit/1fe0738eea9da06f20d37f687fbc1818c7c9838a))
+* **storage,mysql:** WebDAV names with # ? % are readable; devops MySQL migrations apply again ([bd0c1f7](https://github.com/gaogg521/dream-core/commit/bd0c1f79b252aaa044df5c473bb2339badc8aa85))
+* **team:** make the teammate thought-level seed effective; default to one deliverable ([46ca4e4](https://github.com/gaogg521/dream-core/commit/46ca4e4ca44c53a8792035ff278301c34854c46b))
+* **team:** reply in the user's language even though the team prompts are English ([387a94a](https://github.com/gaogg521/dream-core/commit/387a94a6610a519f8d953d018c2b1a933f27dcd6))
+* **team:** spawned teammates follow the leader's model; name missing dependencies ([0bd171f](https://github.com/gaogg521/dream-core/commit/0bd171f78f312e4bd19eb27b86fb94ecdc15cceb))
+* **team:** spawned teammates follow the leader's real model; cap self-check loops; leader delegates research ([5a57183](https://github.com/gaogg521/dream-core/commit/5a57183430173891b439f0190e9bff94cd5801ff))
+
+
+### Performance Improvements
+
+* **knowledge:** in-memory vector ranking, covering indexes, batched embedding ([72a89c7](https://github.com/gaogg521/dream-core/commit/72a89c782c4af7c9956a1fd80656ecb5d12b74c3))
+* **team:** lower teammate thinking level; tell members to write early and leaders to keep tasks short ([5c54f8f](https://github.com/gaogg521/dream-core/commit/5c54f8f7e9050ee1a2a0f8053934bd0aa65938a1))
+* **team:** stop the no-op welcome turn and route dependencies through the task board ([4fcbff0](https://github.com/gaogg521/dream-core/commit/4fcbff0047ff1c9dbb9449a078e54cd843f5c0fe))
+
 ## [0.1.93](https://github.com/gaogg521/dream-core/compare/v0.1.92...v0.1.93) (2026-10-21)
 
 
