@@ -10,6 +10,8 @@ mod fs_monitor;
 mod health;
 mod item_revealer;
 #[cfg(feature = "enterprise")]
+mod knowledge_import_source;
+#[cfg(feature = "enterprise")]
 mod knowledge_office;
 mod routes;
 mod runtime_team_tools;

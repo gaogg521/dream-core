@@ -82,30 +82,7 @@ pub(crate) async fn upload(
     if data.is_empty() {
         return Err(DevopsError::BadRequest("file is empty".into()));
     }
-    let key = uuid::Uuid::new_v4().to_string();
-    tokio::fs::create_dir_all(root)
-        .await
-        .map_err(|e| DevopsError::Internal(e.to_string()))?;
-    tokio::fs::write(root.join(&key), &data)
-        .await
-        .map_err(|e| DevopsError::Internal(e.to_string()))?;
-    // Keep old versions on disk; replacing a source never destroys its prior bytes.
-    let mut transaction = state.service.db.begin().await?;
-    transaction
-        .execute(
-            "UPDATE one_rag_documents SET file_path = ?, file_size = ?, mime_type = ?, \
-             content = '', content_revision = content_revision + 1, status = 'ready', chunk_count = 0, last_error = NULL WHERE id = ?",
-            &db_params![format!("{PREFIX}{key}"), data.len() as i64, mime(&name), &id],
-        )
-        .await?;
-    transaction
-        .execute("DELETE FROM one_rag_chunks WHERE document_id = ?", &db_params![&id])
-        .await?;
-    transaction.commit().await?;
-    // A new original must never keep matches from the previous file's text.
-    if let Err(error) = crate::retrieval::sync_document(&state.service.db, &id, &[]).await {
-        tracing::warn!(%error, document_id = %id, "could not clear original file lexical index");
-    }
+    retain_original(&state.service, root, &id, &name, &data).await?;
     let doc = state
         .service
         .rag_document(&id)
@@ -113,6 +90,43 @@ pub(crate) async fn upload(
         .ok_or_else(|| DevopsError::NotFound("document not found".into()))?;
     tracing::info!(document_id = %id, bytes = data.len(), "knowledge original file retained");
     Ok(Json(ApiResponse::ok(doc)))
+}
+
+/// Keep `data` as the document's original file and drop everything derived from
+/// the previous one. Shared by the upload endpoint and knowledge imports, so a
+/// replaced original behaves the same whichever way it arrived.
+pub(crate) async fn retain_original(
+    service: &crate::service::DevopsService,
+    root: &std::path::Path,
+    id: &str,
+    name: &str,
+    data: &[u8],
+) -> Result<(), DevopsError> {
+    let key = uuid::Uuid::new_v4().to_string();
+    tokio::fs::create_dir_all(root)
+        .await
+        .map_err(|e| DevopsError::Internal(e.to_string()))?;
+    tokio::fs::write(root.join(&key), data)
+        .await
+        .map_err(|e| DevopsError::Internal(e.to_string()))?;
+    // Keep old versions on disk; replacing a source never destroys its prior bytes.
+    let mut transaction = service.db.begin().await?;
+    transaction
+        .execute(
+            "UPDATE one_rag_documents SET file_path = ?, file_size = ?, mime_type = ?, \
+             content = '', content_revision = content_revision + 1, status = 'ready', chunk_count = 0, last_error = NULL WHERE id = ?",
+            &db_params![format!("{PREFIX}{key}"), data.len() as i64, mime(name), id],
+        )
+        .await?;
+    transaction
+        .execute("DELETE FROM one_rag_chunks WHERE document_id = ?", &db_params![id])
+        .await?;
+    transaction.commit().await?;
+    // A new original must never keep matches from the previous file's text.
+    if let Err(error) = crate::retrieval::sync_document(&service.db, id, &[]).await {
+        tracing::warn!(%error, document_id = %id, "could not clear original file lexical index");
+    }
+    Ok(())
 }
 
 pub(crate) async fn download(

@@ -215,6 +215,7 @@ pub use team_tools::{
 pub use websocket::WebSocketMessage;
 pub mod employee_sync;
 pub mod knowledge;
+pub mod knowledge_import;
 pub mod knowledge_office;
 
 #[cfg(test)]

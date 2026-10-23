@@ -113,6 +113,7 @@ impl StorageDriver for S3Driver {
                 is_prefix: true,
                 size_bytes: None,
                 last_modified: None,
+                etag: None,
             })
             .collect();
 
@@ -128,6 +129,7 @@ impl StorageDriver for S3Driver {
                         is_prefix: false,
                         size_bytes: o.size(),
                         last_modified: o.last_modified().map(|t| t.to_millis().unwrap_or(0)),
+                        etag: o.e_tag().map(|t| t.trim_matches('"').to_owned()),
                     }
                 }),
         );
@@ -136,6 +138,33 @@ impl StorageDriver for S3Driver {
             entries,
             next_token: out.next_continuation_token().map(str::to_owned),
         })
+    }
+
+    async fn read(&self, cfg: &DriverConfig, key: &str, max_bytes: u64) -> Result<Vec<u8>, PlatformError> {
+        let out = client(cfg)
+            .get_object()
+            .bucket(&cfg.bucket)
+            .key(key)
+            .send()
+            .await
+            .map_err(|e| PlatformError::BadRequest(s3_message(&e)))?;
+        // Refuse before downloading when the storage already tells us the size.
+        if out
+            .content_length()
+            .is_some_and(|len| len > 0 && len as u64 > max_bytes)
+        {
+            return Err(PlatformError::BadRequest(format!("object exceeds {max_bytes} bytes")));
+        }
+        let bytes = out
+            .body
+            .collect()
+            .await
+            .map_err(|e| PlatformError::BadRequest(format!("could not read object body: {e}")))?
+            .into_bytes();
+        if bytes.len() as u64 > max_bytes {
+            return Err(PlatformError::BadRequest(format!("object exceeds {max_bytes} bytes")));
+        }
+        Ok(bytes.to_vec())
     }
 }
 

@@ -162,6 +162,18 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
             "/api/one/devops/rag/libraries/{id}",
             axum::routing::put(update_rag_library).delete(delete_rag_library),
         )
+        .route(
+            "/api/one/devops/knowledge-imports",
+            get(list_knowledge_imports).post(create_knowledge_import),
+        )
+        .route(
+            "/api/one/devops/knowledge-imports/{id}",
+            axum::routing::put(update_knowledge_import).delete(delete_knowledge_import),
+        )
+        .route(
+            "/api/one/devops/knowledge-imports/{id}/run",
+            axum::routing::post(run_knowledge_import),
+        )
         .route("/api/one/devops/rag/documents", get(list_rag).post(register_rag))
         .route(
             "/api/one/devops/rag/documents/{id}",
@@ -1840,6 +1852,56 @@ async fn dlp_summary(
     Ok(Json(ApiResponse::ok(
         state.service.dlp_summary(query.since.unwrap_or(0)).await?,
     )))
+}
+
+async fn list_knowledge_imports(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<dream_core_api_types::knowledge_import::KnowledgeImportSource>>>, DevopsError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_import_sources(&user.id).await?,
+    )))
+}
+
+async fn create_knowledge_import(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<dream_core_api_types::knowledge_import::SaveKnowledgeImportSource>,
+) -> Result<Json<ApiResponse<dream_core_api_types::knowledge_import::KnowledgeImportSource>>, DevopsError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.save_import_source(&user.id, None, body).await?,
+    )))
+}
+
+async fn update_knowledge_import(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(body): Json<dream_core_api_types::knowledge_import::SaveKnowledgeImportSource>,
+) -> Result<Json<ApiResponse<dream_core_api_types::knowledge_import::KnowledgeImportSource>>, DevopsError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.save_import_source(&user.id, Some(&id), body).await?,
+    )))
+}
+
+async fn delete_knowledge_import(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    state.service.delete_import_source(&user.id, &id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+/// Starts the run in the background and returns at once; the console polls the
+/// source list for `running` and the finished report.
+async fn run_knowledge_import(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    state.service.start_import_run(&user.id, &id).await?;
+    Ok(Json(ApiResponse::ok(())))
 }
 
 async fn list_rag_libraries(

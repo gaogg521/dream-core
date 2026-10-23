@@ -27,6 +27,9 @@ pub struct DriverEntry {
     pub size_bytes: Option<i64>,
     /// Epoch milliseconds.
     pub last_modified: Option<i64>,
+    /// The storage's own change marker (S3 ETag), when it lists one. Lets a
+    /// caller tell a rewritten object from an untouched one without reading it.
+    pub etag: Option<String>,
 }
 
 pub struct DriverListing {
@@ -62,6 +65,14 @@ pub trait StorageDriver: Send + Sync {
         token: Option<&str>,
         limit: i32,
     ) -> Result<DriverListing, PlatformError>;
+
+    /// Read one object whole, refusing anything larger than `max_bytes`.
+    ///
+    /// The bound is part of the contract, not a courtesy: a caller importing a
+    /// folder must never be made to hold an arbitrarily large object in memory
+    /// because someone dropped a disk image into it. `key` is already resolved
+    /// and confined to the configured prefix by the service.
+    async fn read(&self, cfg: &DriverConfig, key: &str, max_bytes: u64) -> Result<Vec<u8>, PlatformError>;
 }
 
 /// Protocols the console offers. A closed set: the UI renders different

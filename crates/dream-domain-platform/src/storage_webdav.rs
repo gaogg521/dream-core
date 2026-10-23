@@ -261,6 +261,7 @@ impl StorageDriver for WebDavDriver {
                     is_prefix: r.is_collection,
                     size_bytes: if r.is_collection { None } else { r.size },
                     last_modified: r.last_modified,
+                    etag: None,
                 })
             })
             .collect();
@@ -270,6 +271,37 @@ impl StorageDriver for WebDavDriver {
             entries,
             next_token: None,
         })
+    }
+
+    async fn read(&self, cfg: &DriverConfig, key: &str, max_bytes: u64) -> Result<Vec<u8>, PlatformError> {
+        // `build_url` always ends in a slash because it names a collection; a
+        // file is the same path without it.
+        let url = build_url(cfg, key).trim_end_matches('/').to_owned();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .map_err(|e| PlatformError::Internal(format!("http client: {e}")))?;
+        let res = client
+            .get(&url)
+            .header("Authorization", auth_header(cfg))
+            .send()
+            .await
+            .map_err(|e| PlatformError::BadRequest(format!("{e}")))?;
+        let status = res.status().as_u16();
+        if status != 200 {
+            return Err(PlatformError::BadRequest(format!("HTTP {status}")));
+        }
+        if res.content_length().is_some_and(|len| len > max_bytes) {
+            return Err(PlatformError::BadRequest(format!("object exceeds {max_bytes} bytes")));
+        }
+        let bytes = res
+            .bytes()
+            .await
+            .map_err(|e| PlatformError::BadRequest(format!("could not read object body: {e}")))?;
+        if bytes.len() as u64 > max_bytes {
+            return Err(PlatformError::BadRequest(format!("object exceeds {max_bytes} bytes")));
+        }
+        Ok(bytes.to_vec())
     }
 }
 
@@ -373,5 +405,62 @@ mod tests {
         assert_eq!(parse_http_date("Thu, 01 Jan 1970 00:00:00 GMT"), Some(0));
         assert_eq!(parse_http_date("not a date"), None);
         assert_eq!(parse_http_date(""), None);
+    }
+
+    async fn serve(router: axum::Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn read_fetches_the_file_and_sends_the_share_credentials() {
+        use axum::http::{HeaderMap, StatusCode};
+        let expected = auth_header(&cfg("http://unused", "team"));
+        let app = axum::Router::new().route(
+            "/team/docs/a.md",
+            axum::routing::get(move |headers: HeaderMap| {
+                let expected = expected.clone();
+                async move {
+                    if headers.get("authorization").and_then(|v| v.to_str().ok()) == Some(expected.as_str()) {
+                        (StatusCode::OK, "hello from the nas")
+                    } else {
+                        (StatusCode::UNAUTHORIZED, "no")
+                    }
+                }
+            }),
+        );
+        let endpoint = serve(app).await;
+
+        let bytes = WebDavDriver
+            .read(&cfg(&endpoint, "team"), "docs/a.md", 1024)
+            .await
+            .unwrap();
+
+        assert_eq!(bytes, b"hello from the nas");
+    }
+
+    #[tokio::test]
+    async fn read_refuses_a_file_above_the_bound() {
+        let app = axum::Router::new().route("/team/big.bin", axum::routing::get(|| async { vec![b'x'; 4096] }));
+        let endpoint = serve(app).await;
+
+        match WebDavDriver.read(&cfg(&endpoint, "team"), "big.bin", 1024).await {
+            Err(PlatformError::BadRequest(message)) => assert!(message.contains("exceeds"), "{message}"),
+            other => panic!("expected a size refusal, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_names_a_missing_file_by_its_http_status() {
+        let endpoint = serve(axum::Router::new()).await;
+
+        match WebDavDriver.read(&cfg(&endpoint, "team"), "gone.md", 1024).await {
+            Err(PlatformError::BadRequest(message)) => assert_eq!(message, "HTTP 404"),
+            other => panic!("expected HTTP 404, got {other:?}"),
+        }
     }
 }

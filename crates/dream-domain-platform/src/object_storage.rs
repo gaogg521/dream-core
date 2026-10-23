@@ -81,6 +81,9 @@ pub struct ObjectEntryDto {
     pub is_prefix: bool,
     pub size_bytes: Option<i64>,
     pub last_modified: Option<i64>,
+    /// The storage's change marker when it lists one (S3); absent for WebDAV.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -523,11 +526,35 @@ impl PlatformService {
                     is_prefix: e.is_prefix,
                     size_bytes: e.size_bytes,
                     last_modified: e.last_modified,
+                    etag: e.etag,
                 })
                 .collect(),
             prefix,
             next_token: listing.next_token,
         })
+    }
+
+    /// Read one object, whole, up to `max_bytes`.
+    ///
+    /// Confined the same way listing is: the key has to sit under the config's
+    /// own prefix and may not contain traversal segments, so a config scoped to
+    /// `media/` cannot be used to read the rest of the bucket.
+    pub async fn read_object_storage_object(
+        &self,
+        tenant_id: &str,
+        id: &str,
+        key: &str,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, PlatformError> {
+        let (driver, cfg, row) = self.driver_for_config(tenant_id, id).await?;
+        reject_traversal(key)?;
+        let base = row.6.clone().unwrap_or_default();
+        if key.is_empty() || key.ends_with('/') || !key.starts_with(&base) {
+            return Err(PlatformError::BadRequest(
+                "object key is outside this storage's configured prefix".into(),
+            ));
+        }
+        driver.read(&cfg, key, max_bytes).await
     }
 }
 

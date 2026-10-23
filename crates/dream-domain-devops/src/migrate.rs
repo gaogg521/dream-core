@@ -69,6 +69,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "022_knowledge_listing_index",
         include_str!("../migrations/022_knowledge_listing_index.sql"),
     ),
+    (
+        "023_knowledge_import_sources",
+        include_str!("../migrations/023_knowledge_import_sources.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -138,6 +142,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "022_knowledge_listing_index",
         include_str!("../migrations_mysql/022_knowledge_listing_index.sql"),
+    ),
+    (
+        "023_knowledge_import_sources",
+        include_str!("../migrations_mysql/023_knowledge_import_sources.sql"),
     ),
 ];
 

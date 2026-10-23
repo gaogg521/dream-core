@@ -4096,6 +4096,17 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     one_devops_service.set_grants(governance.grant_source.clone());
     #[cfg(feature = "enterprise")]
     one_devops_service.set_config_resolver(governance.config_resolver.clone());
+    // Knowledge imports read the company's registered file storages. The
+    // scheduler runs here, on the process that serves the console, not on the
+    // admin binary, so a due source is started exactly once per tick.
+    #[cfg(feature = "enterprise")]
+    {
+        one_devops_service.set_external_object_source(std::sync::Arc::new(
+            super::knowledge_import_source::PlatformObjectSource::new(one_platform_service.clone()),
+        ));
+        one_devops_service.set_rag_source_root(services.data_dir.join("knowledge-sources"));
+        one_devops_service.spawn_import_scheduler();
+    }
 
     #[cfg(feature = "enterprise")]
     services.enterprise_provider_repo.bind(one_devops_service.clone());

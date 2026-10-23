@@ -29,6 +29,7 @@ pub mod embedding;
 pub mod error;
 pub mod grants;
 mod knowledge;
+pub mod knowledge_import;
 pub mod market_sync;
 pub mod migrate;
 pub mod model_proxy;
@@ -51,6 +52,7 @@ pub mod state;
 mod vector_index;
 
 pub use error::DevopsError;
+pub use knowledge_import::{ExternalEntry, ExternalListing, ExternalObjectSource};
 pub use migrate::run_one_devops_migrations;
 pub use model_proxy::model_proxy_routes;
 pub use office_routes::office_engine_routes;

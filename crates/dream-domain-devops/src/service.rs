@@ -27,6 +27,11 @@ pub struct DevopsService {
     pub(crate) vectors: crate::vector_index::VectorIndex,
     pub(crate) indexing_jobs: std::sync::Mutex<HashMap<String, tokio::sync::watch::Sender<String>>>,
     pub(crate) indexing_slots: tokio::sync::Semaphore,
+    /// Read access to the company's registered file storages, for knowledge
+    /// imports. Unset in the personal edition and in tests.
+    pub(crate) external_source: std::sync::OnceLock<std::sync::Arc<dyn crate::knowledge_import::ExternalObjectSource>>,
+    /// Where retained originals live, for imports that run without a request.
+    pub(crate) rag_source_root: std::sync::OnceLock<std::path::PathBuf>,
     /// Deployment data-encryption key, for the one thing in this crate that
     /// holds a real credential: company model channels
     /// (`provider_channel`). `None` when the app did not wire one — channel
@@ -100,6 +105,8 @@ impl DevopsService {
             db,
             indexing_jobs: std::sync::Mutex::new(HashMap::new()),
             indexing_slots: tokio::sync::Semaphore::new(2),
+            external_source: std::sync::OnceLock::new(),
+            rag_source_root: std::sync::OnceLock::new(),
             encryption_key: None,
             grants: std::sync::OnceLock::new(),
             config_resolver: std::sync::OnceLock::new(),
@@ -1533,7 +1540,7 @@ impl DevopsService {
 
     pub async fn list_rag_documents(&self, viewer_user_id: &str) -> Result<Vec<RagDocumentDto>, DevopsError> {
         const COLS: &str = "id, title, file_path, file_size, mime_type, status, last_error, chunk_count, \
-                            scope, team_id, visibility, created_by, created_at, library_id";
+                            scope, team_id, visibility, created_by, created_at, library_id, source_key, source_state";
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
         // Personal documents belong to the member who made them: nobody else
         // sees them, administrators included.

@@ -254,6 +254,15 @@ pub struct RagDocumentDto {
     /// Knowledge-library container (018). Older rows backfill to `oraglib_default`.
     #[serde(default)]
     pub library_id: String,
+    /// Where the document was imported from, when it was imported from a file
+    /// storage (023). `source_state` is `missing` once the file is gone there.
+    /// Only the library listing selects these; every other query leaves them unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub source_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub source_state: Option<String>,
 }
 
 // -- test plans -----------------------------------------------------------
