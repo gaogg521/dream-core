@@ -42,6 +42,7 @@ dream-engine-types.workspace = true
 dream-engine-protocol.workspace = true
 dream-engine-config.workspace = true
 dream-engine-mcp.workspace = true
+dream-engine-tools.workspace = true
 uuid.workspace = true
 agent-client-protocol = { version = "2.0.0", features = ["unstable_session_fork", "unstable_end_turn_token_usage"] }
 tokio-util = { version = "0.7", features = ["compat", "codec"] }

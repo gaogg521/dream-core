@@ -482,6 +482,9 @@ pub(super) async fn build(
     };
     let mut session_mcp_servers = user_mcp_servers;
     for server in &config.session_mcp_servers {
+        if !super::session_mcp::snapshot_server_allowed(deps.mcp_server_repo.as_deref(), &ctx.user_id, server).await {
+            continue;
+        }
         // Reserved name defense: the team coordination MCP must win.
         if is_team_mcp_server_name(&server.name) {
             warn!(

@@ -91,6 +91,7 @@ dream-engine-types = { git = "https://github.com/gaogg521/dream-engine.git", bra
 dream-engine-protocol = { git = "https://github.com/gaogg521/dream-engine.git", branch = "main" }
 dream-engine-config = { git = "https://github.com/gaogg521/dream-engine.git", branch = "main" }
 dream-engine-mcp = { git = "https://github.com/gaogg521/dream-engine.git", branch = "main" }
+dream-engine-tools = { git = "https://github.com/gaogg521/dream-engine.git", branch = "main" }
 
 # Core framework
 tokio = { version = "1", features = ["full"] }

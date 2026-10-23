@@ -92,3 +92,145 @@ async fn a_failed_check_refuses_the_call() {
 
     assert!(refusal.unwrap().contains("database is locked"));
 }
+
+#[tokio::test]
+async fn cached_mcp_access_tracks_disable_restore_and_delete_in_the_live_repository() {
+    use dream_core_db::{CreateMcpServerParams, IMcpServerRepository, UpdateMcpServerParams};
+    let db = dream_core_db::init_database_memory().await.unwrap();
+    let repo = dream_core_db::SqliteMcpServerRepository::new(db.pool().clone(), [3; 32]);
+    let user = "system_default_user";
+    let row = repo
+        .create(CreateMcpServerParams {
+            user_id: user,
+            name: "company-test",
+            description: None,
+            enabled: true,
+            transport_type: "stdio",
+            transport_config: r#"{"command":"node","args":[]}"#,
+            tools: None,
+            original_json: Some(r#"{"teamRegistryId":"omcp-test"}"#),
+            builtin: false,
+        })
+        .await
+        .unwrap();
+    assert!(team_mcp_refusal(&repo, user, &row.id).await.is_none());
+    repo.update(
+        user,
+        &row.id,
+        UpdateMcpServerParams {
+            enabled: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(team_mcp_refusal(&repo, user, &row.id).await.is_some());
+    repo.update(
+        user,
+        &row.id,
+        UpdateMcpServerParams {
+            enabled: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(team_mcp_refusal(&repo, user, &row.id).await.is_none());
+    repo.delete(user, &row.id).await.unwrap();
+    assert!(team_mcp_refusal(&repo, user, &row.id).await.is_some());
+}
+
+#[tokio::test]
+async fn registry_names_enforce_revocation_for_normalized_collisions_and_preserve_other_tools() {
+    use dream_core_db::{CreateMcpServerParams, IMcpServerRepository, UpdateMcpServerParams};
+    use dream_engine_mcp::{manager::McpManager, tool_proxy::McpToolProxy};
+    use dream_engine_tools::{read::ReadTool, registry::ToolRegistry};
+    let db = dream_core_db::init_database_memory().await.unwrap();
+    let repo = Arc::new(dream_core_db::SqliteMcpServerRepository::new(
+        db.pool().clone(),
+        [4; 32],
+    ));
+    let user = "system_default_user";
+    let row = repo
+        .create(CreateMcpServerParams {
+            user_id: user,
+            name: "company",
+            description: None,
+            enabled: false,
+            transport_type: "stdio",
+            transport_config: r#"{"command":"node","args":[]}"#,
+            tools: None,
+            original_json: Some(r#"{"teamRegistryId":"omcp-test"}"#),
+            builtin: false,
+        })
+        .await
+        .unwrap();
+    let manager = Arc::new(McpManager::connect_all(&Default::default()).await.unwrap());
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(ReadTool::new(None)));
+    let long_server = "a very long company connector name".repeat(4);
+    let cases = [
+        ("company", "ping", "ping"),
+        ("company", "Read", "mcp__company_Read"),
+        ("企业费用核算", "Read", "mcp___12345678_Read"),
+        (long_server.as_str(), "Read", "mcp__a_87654321_Read"),
+    ];
+    let mut endpoints = Vec::new();
+    for (server, original, registered) in cases {
+        registry.register(Box::new(McpToolProxy::new(
+            registered.into(),
+            original.into(),
+            server.into(),
+            "test".into(),
+            json!({"type":"object"}),
+            manager.clone(),
+            false,
+        )));
+        endpoints.push((server.into(), original.into(), row.id.clone()));
+    }
+    registry.register(Box::new(McpToolProxy::new(
+        "personal_tool".into(),
+        "personal_tool".into(),
+        "personal".into(),
+        "test".into(),
+        json!({"type":"object"}),
+        manager,
+        false,
+    )));
+    let bindings = team_mcp_tool_bindings(&registry, &endpoints);
+    assert_eq!(bindings.len(), 4);
+    let gate = Arc::new(RecordingGate::default());
+    let guard = TeamMcpCallGuard {
+        inner: Some(Arc::new(SecurityPolicyCallGuard::new(gate.clone(), user))),
+        repo: repo.clone(),
+        user_id: user.into(),
+        tool_server_ids: bindings.clone(),
+    };
+    for name in bindings.keys() {
+        assert!(
+            guard.check(name, &json!({})).await.unwrap().contains("revoked"),
+            "{name}"
+        );
+    }
+    assert!(guard.check("Read", &json!({})).await.is_none());
+    assert!(guard.check("personal_tool", &json!({})).await.is_none());
+    assert_eq!(
+        gate.seen.lock().unwrap().len(),
+        2,
+        "unrelated tools still run the existing company guard"
+    );
+    repo.update(
+        user,
+        &row.id,
+        UpdateMcpServerParams {
+            enabled: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    for name in bindings.keys() {
+        assert!(guard.check(name, &json!({})).await.is_none());
+    }
+    assert_eq!(gate.seen.lock().unwrap().len(), 6);
+}

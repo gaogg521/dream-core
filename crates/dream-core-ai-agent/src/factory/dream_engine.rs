@@ -69,15 +69,34 @@ pub(super) async fn build(
             extra_mcp_servers.entry(name).or_insert(config);
         }
     }
+    let mut allowed_snapshots = Vec::new();
+    for server in &overrides.session_mcp_servers {
+        if super::session_mcp::snapshot_server_allowed(deps.mcp_server_repo.as_deref(), &ctx.user_id, server).await {
+            allowed_snapshots.push(server.clone());
+        }
+    }
     merge_session_snapshot_mcp_servers(
         &mut extra_mcp_servers,
-        &overrides.session_mcp_servers,
+        &allowed_snapshots,
         &ctx.user_id,
         &ctx.conversation_id,
         &ctx.workspace,
         deps.broadcaster.clone(),
     )
     .await;
+
+    let mut team_mcp_ids = HashMap::new();
+    if let Some(repo) = deps.mcp_server_repo.as_ref() {
+        for row in repo
+            .list(&ctx.user_id)
+            .await
+            .map_err(|e| AgentError::internal(e.to_string()))?
+        {
+            if super::session_mcp::is_team_mcp_row(&row) && extra_mcp_servers.contains_key(&row.name) {
+                team_mcp_ids.insert(row.name, row.id);
+            }
+        }
+    }
 
     if !extra_mcp_servers.is_empty() {
         info!(
@@ -306,6 +325,13 @@ pub(super) async fn build(
         memory,
     )
     .await?;
+    if let Some(repo) = deps.mcp_server_repo.clone()
+        && !team_mcp_ids.is_empty()
+    {
+        agent
+            .install_team_mcp_guard(repo, ctx.user_id.clone(), team_mcp_ids)
+            .await;
+    }
     Ok(AgentInstance::DreamEngine(Arc::new(agent)))
 }
 

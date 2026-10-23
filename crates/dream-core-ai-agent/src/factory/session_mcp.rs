@@ -19,6 +19,32 @@ use dream_core_db::IMcpServerRepository;
 use dream_core_db::models::McpServerRow;
 use tracing::warn;
 
+pub(crate) fn is_team_mcp_row(row: &McpServerRow) -> bool {
+    row.original_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .is_some_and(|v| v.get("teamRegistryId").is_some_and(|id| id.is_string()))
+}
+
+pub(crate) async fn snapshot_server_allowed(
+    repo: Option<&dyn IMcpServerRepository>,
+    user_id: &str,
+    server: &dream_core_api_types::SessionMcpServer,
+) -> bool {
+    let Some(repo) = repo else {
+        return true;
+    };
+    match repo.find_by_id_any(user_id, &server.id).await {
+        Ok(Some(row)) => row.deleted_at.is_none() && (!is_team_mcp_row(&row) || row.enabled),
+        // Inline snapshots need not have a registry row.
+        Ok(None) => true,
+        Err(error) => {
+            warn!(server_id = %server.id, %error, "MCP snapshot access check failed; skipping server");
+            false
+        }
+    }
+}
+
 /// Built-in servers a conversation gets on the strength of their own `enabled`
 /// flag, without anyone having to tick them per assistant.
 ///
@@ -136,6 +162,9 @@ pub(crate) async fn load_session_mcp_rows(
 
     rows.into_iter()
         .filter(|row| {
+            if is_team_mcp_row(row) && !row.enabled {
+                return false;
+            }
             if row.builtin {
                 // An auto-injected built-in answers to its own enabled flag,
                 // never to the snapshot — the snapshot is about user servers.
@@ -228,6 +257,37 @@ mod tests {
         }
         async fn update_tools(&self, _user_id: &str, _id: &str, _tools: Option<&str>) -> Result<(), DbError> {
             unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn snapshots_cannot_restore_revoked_team_or_deleted_personal_servers() {
+        use dream_core_api_types::{SessionMcpServer, SessionMcpTransport};
+        let mut team = row("team", "company", false, false);
+        team.original_json = Some(r#"{"teamRegistryId":"omcp-test"}"#.into());
+        let personal = row("personal", "personal", false, false);
+        let mut deleted = row("deleted", "deleted", true, false);
+        deleted.deleted_at = Some(1);
+        let repo = FakeRepo {
+            rows: vec![team, personal, deleted],
+        };
+        let selected = vec!["team".to_owned()];
+        assert!(
+            load_session_mcp_rows(&repo, Some(&selected), "u", "conv")
+                .await
+                .is_empty()
+        );
+        for (id, allowed) in [("team", false), ("personal", true), ("deleted", false)] {
+            let snapshot = SessionMcpServer {
+                id: id.into(),
+                name: id.into(),
+                transport: SessionMcpTransport::Stdio {
+                    command: "node".into(),
+                    args: vec![],
+                    env: Default::default(),
+                },
+            };
+            assert_eq!(snapshot_server_allowed(Some(&repo), "u", &snapshot).await, allowed);
         }
     }
 

@@ -306,6 +306,33 @@ pub struct TurnMemory {
 }
 
 impl DreamEngineAgentManager {
+    pub(crate) async fn install_team_mcp_guard(
+        &self,
+        repo: Arc<dyn dream_core_db::IMcpServerRepository>,
+        user_id: String,
+        server_ids: std::collections::HashMap<String, String>,
+    ) {
+        let mut engine = self.engine.lock().await;
+        let registry = engine.registry_mut();
+        let endpoints = self
+            .mcp_managers
+            .iter()
+            .flat_map(|manager| manager.all_tools())
+            .filter_map(|(server, tool)| {
+                server_ids
+                    .get(server)
+                    .map(|id| (server.to_owned(), tool.name.clone(), id.clone()))
+            })
+            .collect::<Vec<_>>();
+        let tool_server_ids = super::call_guard::team_mcp_tool_bindings(registry, &endpoints);
+        let inner = registry.call_guard().cloned();
+        engine.set_tool_call_guard(Arc::new(super::call_guard::TeamMcpCallGuard {
+            inner,
+            repo,
+            user_id,
+            tool_server_ids,
+        }));
+    }
     /// Prepend the member's readable company memory to this turn's text.
     ///
     /// The engine has no prompt-hook pipeline of its own, so the injection

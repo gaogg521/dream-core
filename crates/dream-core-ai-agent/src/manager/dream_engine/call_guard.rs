@@ -42,6 +42,74 @@ use tracing::warn;
 
 use crate::security_policy::{ToolCallContext, ToolCallSecurityGate};
 
+pub(super) struct TeamMcpCallGuard {
+    pub inner: Option<Arc<dyn ToolCallGuard>>,
+    pub repo: Arc<dyn dream_core_db::IMcpServerRepository>,
+    pub user_id: String,
+    pub tool_server_ids: std::collections::HashMap<String, Vec<String>>,
+}
+
+/// Bind the real registry names, including sanitized and truncated collision names.
+/// The descriptor contract is verified in the pinned dream-engine-mcp tool_proxy.rs,
+/// McpToolProxy::describe. Do not reimplement its private naming algorithm here.
+pub(super) fn team_mcp_tool_bindings(
+    registry: &dream_engine_tools::registry::ToolRegistry,
+    endpoints: &[(String, String, String)],
+) -> std::collections::HashMap<String, Vec<String>> {
+    let mut endpoint_ids: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for (server, original, id) in endpoints {
+        endpoint_ids
+            .entry(format!("MCP {server}/{original}: null"))
+            .or_default()
+            .push(id.clone());
+    }
+    let mut bindings = std::collections::HashMap::new();
+    for name in registry.tool_names() {
+        let Some(tool) = registry.get(&name) else { continue };
+        if !matches!(tool.category(), dream_engine_protocol::events::ToolCategory::Mcp) {
+            continue;
+        }
+        let descriptor = tool.describe(&Value::Null);
+        if let Some(ids) = endpoint_ids.get(&descriptor) {
+            bindings.insert(name, ids.clone());
+        }
+    }
+    bindings
+}
+
+/// This lookup stays live even when the agent and its MCP connection are cached.
+pub(super) async fn team_mcp_refusal(
+    repo: &dyn dream_core_db::IMcpServerRepository,
+    user_id: &str,
+    server_id: &str,
+) -> Option<String> {
+    match repo.find_by_id_any(user_id, server_id).await {
+        Ok(Some(row)) if row.enabled && row.deleted_at.is_none() => None,
+        Ok(_) => Some("Company MCP access was revoked. This tool cannot run; restart the conversation runtime to refresh its tools.".into()),
+        Err(error) => {
+            warn!(server_id, %error, "MCP access lookup failed; refusing cached tool");
+            Some("MCP access could not be verified; the tool was refused.".into())
+        }
+    }
+}
+
+#[async_trait]
+impl ToolCallGuard for TeamMcpCallGuard {
+    async fn check(&self, tool_name: &str, input: &Value) -> Option<String> {
+        if let Some(ids) = self.tool_server_ids.get(tool_name) {
+            for id in ids {
+                if let Some(reason) = team_mcp_refusal(self.repo.as_ref(), &self.user_id, id).await {
+                    return Some(reason);
+                }
+            }
+        }
+        match &self.inner {
+            Some(inner) => inner.check(tool_name, input).await,
+            None => None,
+        }
+    }
+}
+
 /// The engine's built-in shell tool. The only one whose category is `Exec`
 /// (verified: `dream-engine-tools`' `Tool::category` implementations), and so
 /// the only built-in that feeds `terminal_tools_require_approval`.

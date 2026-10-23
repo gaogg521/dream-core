@@ -2376,6 +2376,7 @@ dependencies = [
  "dream-engine-mcp",
  "dream-engine-protocol",
  "dream-engine-providers",
+ "dream-engine-tools",
  "dream-engine-types",
  "ed25519-dalek",
  "fs2",
