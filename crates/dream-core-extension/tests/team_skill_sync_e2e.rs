@@ -163,3 +163,80 @@ async fn admin_delete_propagates_to_listing() {
         .collect();
     assert_eq!(team_names, vec!["alpha"], "beta must be reconciled away, alpha kept");
 }
+
+/// Distribution must reach the agent resolver, not only the settings list.
+#[tokio::test]
+async fn distributed_skills_resolve_by_name_and_stop_resolving_after_revocation() {
+    use dream_core_db::{SqliteSkillRepository, init_database_memory};
+    use dream_core_extension::skill_service::{materialize_skills_for_agent, materialize_skills_for_agent_with_repo};
+    let tmp = TempDir::new().unwrap();
+    let paths = make_paths(tmp.path());
+    sync_team_skills(
+        &paths.team_skills_dir(),
+        &[
+            payload("oskill_brief", "meeting-brief", "Brief", "Create meeting-brief.md"),
+            payload("oskill_csv", "action-csv", "CSV", "Create action-items.csv"),
+        ],
+        true,
+    )
+    .await
+    .unwrap();
+    let names = vec!["meeting-brief".into(), "action-csv".into()];
+    let disk = materialize_skills_for_agent(&paths, "conv-team", &names).await.unwrap();
+    assert_eq!(disk.len(), 2);
+    let db = init_database_memory().await.unwrap();
+    let repo = SqliteSkillRepository::new(db.pool().clone());
+    let resolved = materialize_skills_for_agent_with_repo(&paths, &repo, "conv-team", &names)
+        .await
+        .unwrap();
+    assert_eq!(resolved, disk);
+    assert_eq!(resolved[0].source_path, paths.team_skills_dir().join("oskill_csv"));
+    assert!(
+        std::fs::read_to_string(resolved[1].source_path.join("SKILL.md"))
+            .unwrap()
+            .contains("Create meeting-brief.md")
+    );
+    sync_team_skills(&paths.team_skills_dir(), &[], true).await.unwrap();
+    assert!(
+        materialize_skills_for_agent_with_repo(&paths, &repo, "conv-revoked", &names)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn five_hundred_distributed_skills_resolve_and_refresh_after_revocation() {
+    use dream_core_extension::skill_service::materialize_skills_for_agent;
+    let tmp = TempDir::new().unwrap();
+    let paths = make_paths(tmp.path());
+    let payloads: Vec<_> = (0..500)
+        .map(|i| {
+            payload(
+                &format!("oskill_{i:03}"),
+                &format!("team-{i:03}"),
+                "Team",
+                "Company guidance",
+            )
+        })
+        .collect();
+    sync_team_skills(&paths.team_skills_dir(), &payloads, true)
+        .await
+        .unwrap();
+    let names: Vec<_> = payloads.iter().map(|p| p.name.clone()).collect();
+    let started = std::time::Instant::now();
+    let resolved = materialize_skills_for_agent(&paths, "conv-bulk", &names).await.unwrap();
+    eprintln!("500 distributed skill resolution: {:?}", started.elapsed());
+    assert_eq!(resolved.len(), 500);
+    for (item, expected) in resolved.iter().zip(&payloads) {
+        assert_eq!(item.name, expected.name);
+        assert_eq!(item.source_path, paths.team_skills_dir().join(&expected.id));
+    }
+    sync_team_skills(&paths.team_skills_dir(), &payloads[..250], true)
+        .await
+        .unwrap();
+    let refreshed = materialize_skills_for_agent(&paths, "conv-bulk-next", &names)
+        .await
+        .unwrap();
+    assert_eq!(refreshed, resolved[..250]);
+}

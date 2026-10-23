@@ -1417,6 +1417,7 @@ pub async fn materialize_skills_for_agent(
 ) -> Result<Vec<ResolvedAgentSkill>, ExtensionError> {
     validate_filename(conversation_id)?;
 
+    let mut team_sources = None;
     let mut resolved = Vec::with_capacity(skills.len());
     for name in skills {
         if name.is_empty() {
@@ -1426,7 +1427,7 @@ pub async fn materialize_skills_for_agent(
             warn!(skill = %name, "skipping skill with invalid name");
             continue;
         }
-        match resolve_skill_source_path(paths, name).await? {
+        match resolve_skill_source_path(paths, name, &mut team_sources).await? {
             Some(source_path) => resolved.push(ResolvedAgentSkill {
                 name: name.clone(),
                 source_path,
@@ -1460,6 +1461,7 @@ pub async fn materialize_skills_for_agent_with_repo_for_user(
     validate_filename(conversation_id)?;
     sync_disk_user_skills_into_repo_for_user(paths, repo, user_id).await?;
 
+    let mut team_sources = None;
     let mut resolved = Vec::with_capacity(skills.len());
     for name in skills {
         if name.is_empty() {
@@ -1469,7 +1471,7 @@ pub async fn materialize_skills_for_agent_with_repo_for_user(
             warn!(skill = %name, "skipping skill with invalid name");
             continue;
         }
-        match resolve_skill_source_path_with_repo_for_user(paths, repo, user_id, name).await? {
+        match resolve_skill_source_path_with_repo_for_user(paths, repo, user_id, name, &mut team_sources).await? {
             Some(source_path) => resolved.push(ResolvedAgentSkill {
                 name: name.clone(),
                 source_path,
@@ -1660,7 +1662,11 @@ async fn path_is_dir(path: &Path) -> bool {
 /// Resolve a skill name to its on-disk source directory using the same
 /// search order as [`materialize_skills_for_agent`]. Returns `None` if
 /// no matching directory exists in any known source.
-async fn resolve_skill_source_path(paths: &SkillPaths, name: &str) -> Result<Option<PathBuf>, ExtensionError> {
+async fn resolve_skill_source_path(
+    paths: &SkillPaths,
+    name: &str,
+    team_sources: &mut Option<std::collections::HashMap<String, PathBuf>>,
+) -> Result<Option<PathBuf>, ExtensionError> {
     let top = paths.builtin_skills_dir.join(name);
     if top.is_dir() {
         return Ok(Some(top));
@@ -1673,9 +1679,32 @@ async fn resolve_skill_source_path(paths: &SkillPaths, name: &str) -> Result<Opt
     if user.is_dir() {
         return Ok(Some(user));
     }
+    if let Some(team) = resolve_team_skill_source_path(paths, name, team_sources).await? {
+        return Ok(Some(team));
+    }
     // Per-job cron skill dirs are intentionally NOT probed: they hold
     // user content and resolve only through an owned repo row.
     Ok(None)
+}
+
+/// Enterprise sync stores directories by resource ID, while agents select the
+/// frontmatter name. Resolve only currently distributed entries; revoked
+/// resources disappear from this directory on the next successful sync.
+async fn resolve_team_skill_source_path(
+    paths: &SkillPaths,
+    name: &str,
+    team_sources: &mut Option<std::collections::HashMap<String, PathBuf>>,
+) -> Result<Option<PathBuf>, ExtensionError> {
+    // Cache only for this batch: a new materialization observes revocations.
+    // Keep the first matching name, as the previous single-name scan did.
+    if team_sources.is_none() {
+        let mut sources = std::collections::HashMap::new();
+        for skill in scan_skill_dirs(&paths.team_skills_dir()).await? {
+            sources.entry(skill.name).or_insert_with(|| PathBuf::from(skill.path));
+        }
+        *team_sources = Some(sources);
+    }
+    Ok(team_sources.as_ref().and_then(|sources| sources.get(name)).cloned())
 }
 
 async fn resolve_skill_source_path_with_repo_for_user(
@@ -1683,6 +1712,7 @@ async fn resolve_skill_source_path_with_repo_for_user(
     repo: &dyn ISkillRepository,
     user_id: &str,
     name: &str,
+    team_sources: &mut Option<std::collections::HashMap<String, PathBuf>>,
 ) -> Result<Option<PathBuf>, ExtensionError> {
     if let Some(row) = repo.find_by_name_any_for_user(user_id, name).await? {
         let path = PathBuf::from(&row.path);
@@ -1706,6 +1736,9 @@ async fn resolve_skill_source_path_with_repo_for_user(
     let auto = paths.builtin_skills_dir.join(BUILTIN_AUTO_SKILLS_SUBDIR).join(name);
     if auto.is_dir() {
         return Ok(Some(auto));
+    }
+    if let Some(team) = resolve_team_skill_source_path(paths, name, team_sources).await? {
+        return Ok(Some(team));
     }
     // Per-job cron skill dirs are intentionally NOT probed as a fallback:
     // they hold user content (job prompts) and must resolve only through

@@ -163,6 +163,7 @@ impl SkillResolver for ExtensionSkillResolver {
                                 .as_deref()
                                 .is_some_and(|location| location.starts_with("auto-inject/")))
                             || item.source == dream_core_extension::SkillSource::Custom
+                            || (item.source == dream_core_extension::SkillSource::Team && item.auto_active)
                     })
                     .map(|item| item.name)
                     .collect();
@@ -380,15 +381,51 @@ mod tests {
             .await
             .unwrap();
 
-        let resolver = ExtensionSkillResolver::new(paths, repo);
+        let required = dream_core_extension::team_sync::TeamSkillPayload {
+            id: "oskill_required".into(),
+            name: "required-team".into(),
+            description: "Policy".into(),
+            content: "Apply company policy".into(),
+            auto_active: true,
+            category: None,
+            tags: vec![],
+        };
+        let optional = dream_core_extension::team_sync::TeamSkillPayload {
+            id: "oskill_optional".into(),
+            name: "optional-team".into(),
+            auto_active: false,
+            ..required.clone()
+        };
+        dream_core_extension::team_sync::sync_team_skills(
+            &paths.team_skills_dir(),
+            &[required.clone(), optional],
+            true,
+        )
+        .await
+        .unwrap();
+        let resolver = ExtensionSkillResolver::new(paths.clone(), repo);
 
         // Per-user: builtins auto set + that user's customs only.
         let user_b_set = resolver.auto_inject_names_for_user("user_b").await;
-        assert_eq!(user_b_set, vec!["auto-cron".to_string(), "fund-analysis".to_string()]);
+        assert_eq!(
+            user_b_set,
+            vec![
+                "auto-cron".to_string(),
+                "fund-analysis".to_string(),
+                "required-team".to_string()
+            ]
+        );
 
         // Another user's import must not leak in.
         let user_a_set = resolver.auto_inject_names_for_user("system_default_user").await;
-        assert_eq!(user_a_set, vec!["auto-cron".to_string(), "stock-picker".to_string()]);
+        assert_eq!(
+            user_a_set,
+            vec![
+                "auto-cron".to_string(),
+                "required-team".to_string(),
+                "stock-picker".to_string()
+            ]
+        );
 
         // The legacy builtin-only variant is unchanged.
         assert_eq!(resolver.auto_inject_names().await, vec!["auto-cron".to_string()]);
