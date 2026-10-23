@@ -445,8 +445,16 @@ struct SetIpAllowlistBody {
 async fn set_ip_allowlist(
     State(state): State<OnePlatformRouterState>,
     RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    parts: axum::http::request::Parts,
     Json(body): Json<SetIpAllowlistBody>,
 ) -> Result<Json<ApiResponse<IpAllowlistConfigDto>>, PlatformError> {
+    // The same address the auth middleware will judge the next request by.
+    let peer = parts
+        .extensions
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0);
+    let caller = dream_core_auth::caller_ip(&parts.headers, peer).map(|ip| ip.to_string());
+    crate::ip_allowlist::refuse_self_lockout(&body.cidrs, body.enabled, caller.as_deref())?;
     Ok(Json(ApiResponse::ok(
         state
             .service

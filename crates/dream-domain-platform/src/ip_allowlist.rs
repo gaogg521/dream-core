@@ -5,6 +5,26 @@
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
+use crate::error::PlatformError;
+
+/// Refuse an allowlist that would shut its own author out.
+///
+/// Enforcement blocks every request from outside the list, the admin console
+/// included, and the only way back in is editing the database by hand. Saving a
+/// list (or an empty one) that does not contain the address the save came from
+/// is almost always a typo, so it is refused with the address named. `caller`
+/// is `None` when the caller's address cannot be resolved (behind a proxy we do
+/// not trust); there is nothing to compare then, and the middleware fails
+/// closed for such a caller on its own.
+pub fn refuse_self_lockout(cidrs: &[String], enabled: bool, caller: Option<&str>) -> Result<(), PlatformError> {
+    match caller {
+        Some(ip) if enabled && !ip_allowed(cidrs, ip) => Err(PlatformError::BadRequest(format!(
+            "This allowlist would lock you out: your own address {ip} is not in it. Add it (or a range that contains it) before turning enforcement on."
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// Does `ip` fall within any of the allowlist `entries`? Each entry is a CIDR
 /// (`10.0.0.0/8`, `2001:db8::/32`) or a bare address (treated as `/32` / `/128`
 /// exact match). Unparseable entries/IPs are skipped (never panic). An empty
@@ -53,6 +73,28 @@ fn cidr_contains(net: &str, prefix: u8, ip: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_list_that_excludes_its_author_is_refused_with_their_address() {
+        let list = vec!["10.9.9.0/24".to_string()];
+        let err = refuse_self_lockout(&list, true, Some("203.0.113.7")).unwrap_err();
+        assert!(
+            matches!(&err, PlatformError::BadRequest(m) if m.contains("203.0.113.7")),
+            "{err:?}"
+        );
+        // An empty list matches nothing, so enabling it is the same mistake.
+        assert!(refuse_self_lockout(&[], true, Some("203.0.113.7")).is_err());
+    }
+
+    #[test]
+    fn lists_that_keep_the_author_in_or_stay_off_are_accepted() {
+        let list = vec!["203.0.113.0/24".to_string()];
+        assert!(refuse_self_lockout(&list, true, Some("203.0.113.7")).is_ok());
+        // Turning it off, or editing a list while it is off, can never lock anyone out.
+        assert!(refuse_self_lockout(&["10.9.9.0/24".to_string()], false, Some("203.0.113.7")).is_ok());
+        // Nothing to compare against when the address is unknown.
+        assert!(refuse_self_lockout(&list, true, None).is_ok());
+    }
 
     #[test]
     fn cidr_and_exact_matching() {

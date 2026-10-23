@@ -60,7 +60,7 @@ pub use csrf::csrf_middleware;
 pub use middleware::{
     ApiKeyGate, ApiKeyVerdict, AuthIdentityMode, AuthState, CLIENT_IP_HEADER, CurrentUser, IRuntimeTokenVerifier,
     IpAllowlistGate, NoopIpAllowlistGate, RUNTIME_CONVERSATION_ID_HEADER, RUNTIME_TOKEN_HEADER, RUNTIME_USER_ID_HEADER,
-    WEBUI_PROXY_HEADER, WEBUI_PROXY_VALUE, auth_middleware, is_webui_proxied, local_auth_middleware,
+    WEBUI_PROXY_HEADER, WEBUI_PROXY_VALUE, auth_middleware, caller_ip, is_webui_proxied, local_auth_middleware,
 };
 
 // QR token store

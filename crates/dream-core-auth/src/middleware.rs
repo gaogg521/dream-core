@@ -101,17 +101,27 @@ pub const CLIENT_IP_HEADER: &str = "x-dream-client-ip";
 /// in `cmd_server.rs`). Returns `None` when neither source is available —
 /// callers must treat that as "cannot verify", not "allowed".
 fn resolve_caller_ip(request: &Request) -> Option<IpAddr> {
-    if is_webui_proxied(request.headers()) {
-        return request
-            .headers()
+    caller_ip(
+        request.headers(),
+        request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ConnectInfo(addr)| *addr),
+    )
+}
+
+/// [`resolve_caller_ip`] over the parts a handler can extract, so a handler
+/// that must reason about the caller's own address (the allowlist editor
+/// refusing a list that would lock its author out) uses the very rule the
+/// middleware enforces, not a second copy of it.
+pub fn caller_ip(headers: &axum::http::HeaderMap, peer: Option<SocketAddr>) -> Option<IpAddr> {
+    if is_webui_proxied(headers) {
+        return headers
             .get(CLIENT_IP_HEADER)
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<IpAddr>().ok());
     }
-    request
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|ConnectInfo(addr)| addr.ip())
+    peer.map(|addr| addr.ip())
 }
 
 /// Per-project-group IP allowlist check, bridged from `one-platform` (same
