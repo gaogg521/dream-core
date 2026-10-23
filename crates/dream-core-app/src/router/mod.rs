@@ -3,6 +3,7 @@
 #[cfg(feature = "enterprise")]
 mod admin_web;
 mod antigravity_hook;
+mod catalog_reference;
 mod clipboard_writer;
 mod employee_notifications;
 mod fs_monitor;

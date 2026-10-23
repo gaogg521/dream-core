@@ -22,6 +22,7 @@
 pub mod api_assets;
 mod automatic_indexing;
 pub mod breakdown;
+mod catalog_guides;
 pub mod config_resolver;
 pub mod dlp_service;
 pub mod embedding;

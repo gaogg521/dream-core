@@ -10,6 +10,7 @@
 //! (ConversationService::create / run_agent_turn).
 
 pub mod catalog;
+pub mod catalog_reference;
 pub mod employee_pack;
 pub mod error;
 pub mod migrate;

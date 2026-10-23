@@ -1310,6 +1310,7 @@ impl EmployeeService {
     /// same as `dream_domain_devops::DevopsService::list_skills`'s
     /// privileged branch does for the other three registries.
     pub async fn list_all_for_tenant(&self, tenant_id: &str) -> Result<Vec<PersonalAgentDto>, EmployeeError> {
+        catalog::seed_catalog_for_tenant(&self.db, tenant_id).await?;
         let rows = self
             .db
             .fetch_all_as::<PersonalAgentRow>(

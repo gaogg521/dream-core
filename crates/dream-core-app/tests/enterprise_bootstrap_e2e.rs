@@ -34,6 +34,10 @@ async fn first_run_provisions_a_working_default_enterprise_and_is_idempotent() {
     let _router = dream_core_app::create_router(&services).await.expect("build router");
     let pool = services.database.pool();
 
+    // References ship with a fresh image, rather than relying on demo-server
+    // data. They are published for explicit bindings, never auto-injected.
+    assert_eq!(count(pool, "SELECT COUNT(*) FROM one_skill_registry WHERE id LIKE 'builtin-employee-%-guide-v1' AND published = 1 AND auto_active = 0").await, 28);
+
     // The deployment admin is now a real enterprise-tenant member.
     assert_eq!(
         count(pool, "SELECT COUNT(*) FROM one_tenants WHERE id = 'enterprise'").await,
@@ -76,6 +80,14 @@ async fn first_run_provisions_a_working_default_enterprise_and_is_idempotent() {
     // dreamcore / dreamcore-admin double-run, and every later restart) must
     // not duplicate anything.
     let _router2 = dream_core_app::create_router(&services).await.expect("rebuild router");
+    assert_eq!(
+        count(
+            pool,
+            "SELECT COUNT(*) FROM one_skill_registry WHERE id LIKE 'builtin-employee-%-guide-v1'"
+        )
+        .await,
+        28
+    );
     assert_eq!(count(pool, "SELECT COUNT(*) FROM one_tenants").await, 1);
     assert_eq!(count(pool, "SELECT COUNT(*) FROM one_enterprises").await, 1);
     assert_eq!(

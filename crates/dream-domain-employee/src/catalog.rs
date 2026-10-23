@@ -126,13 +126,13 @@ fn catalog_agent_id() -> String {
 /// mirror constant) so the migration is the single source of truth and the
 /// two can never drift. Called from every catalog read/write path — cheap
 /// (28 guarded inserts against a small table) and self-healing.
-async fn seed_catalog_for_tenant(pool: &DbPool, tenant_id: &str) -> Result<(), EmployeeError> {
+pub(crate) async fn seed_catalog_for_tenant(pool: &DbPool, tenant_id: &str) -> Result<(), EmployeeError> {
     let entries = pool
         .fetch_all_as::<CatalogEntryRow>("SELECT * FROM one_employee_catalog ORDER BY id ASC", &[])
         .await?;
     let now = now_ms() as i64;
     for entry in entries {
-        let config = serde_json::json!({ "persona": entry.persona }).to_string();
+        let config = crate::catalog_reference::reference_config(&entry).to_string();
         pool.execute(
             "INSERT INTO one_personal_agents \
                  (id, owner_user_id, tenant_id, name, description, agent_type, automation_config, \
@@ -283,7 +283,7 @@ pub(crate) async fn instantiate_catalog_entry(
 
     let id = catalog_agent_id();
     let now = now_ms() as i64;
-    let config = serde_json::json!({ "persona": entry.persona }).to_string();
+    let config = crate::catalog_reference::reference_config(&entry).to_string();
     pool.execute(
         "INSERT INTO one_personal_agents \
              (id, owner_user_id, tenant_id, name, description, agent_type, automation_config, \

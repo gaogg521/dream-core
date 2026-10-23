@@ -2364,6 +2364,7 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
             )
             .with_source(e)
         })?;
+    super::catalog_reference::seed(services).await?;
     #[cfg(feature = "enterprise")]
     {
         dream_domain_enterprise::run_one_enterprise_migrations(&services.db.clone())
