@@ -20,6 +20,9 @@ use crate::service::spawn_support::{agent_type_for_backend, cli_backend_metadata
 use crate::types::{Team, TeamAgent, TeammateRole};
 use crate::workspace::TeamWorkspaceResolver;
 
+/// Startup thought level for teammates (not the leader) on ACP backends.
+const TEAMMATE_THOUGHT_LEVEL: &str = "medium";
+
 #[derive(Clone)]
 pub struct TeamAgentProvisioner {
     repo: Arc<dyn ITeamRepository>,
@@ -888,6 +891,15 @@ impl TeamAgentProvisioner {
         if agent_type != AgentType::DreamEngine {
             extra["current_model_id"] = serde_json::Value::String(model.to_owned());
         }
+        // Executors do not need the deepest reasoning: measured on a live team, a Claude
+        // Code teammate on the default effort spent ~15 of its ~20 minutes thinking out
+        // the whole deliverable before writing a file. The leader keeps the backend
+        // default because planning is its job. This is only a startup seed: it is applied
+        // when the backend offers the level, dropped silently when it does not, and an
+        // assistant that pins its own thought level still wins in the conversation service.
+        if role == TeammateRole::Teammate && agent_type == AgentType::Acp {
+            extra["thought_level"] = serde_json::Value::String(TEAMMATE_THOUGHT_LEVEL.to_owned());
+        }
         if let Some(assistant_id) = assistant_id {
             extra["assistant_id"] = serde_json::Value::String(assistant_id.to_owned());
         }
@@ -1750,6 +1762,35 @@ mod tests {
             "attach must not patch, kill, or warm up"
         );
         assert_eq!(*persisted_extra.lock().unwrap(), existing_extra);
+    }
+
+    #[tokio::test]
+    async fn build_team_extra_seeds_a_lower_thought_level_for_acp_teammates_only() {
+        let provisioner = test_provisioner(Arc::new(Mutex::new(Vec::new())));
+        let build = |role: TeammateRole, agent_type: AgentType| {
+            provisioner.build_team_extra(
+                "team-1",
+                "slot-1",
+                role,
+                "claude",
+                "sonnet",
+                None,
+                Some("/ws"),
+                agent_type,
+                None,
+                None,
+                None,
+            )
+        };
+
+        assert_eq!(build(TeammateRole::Teammate, AgentType::Acp)["thought_level"], "medium");
+        // The leader plans, so it keeps the backend default; dream-engine has no such axis here.
+        assert!(build(TeammateRole::Lead, AgentType::Acp).get("thought_level").is_none());
+        assert!(
+            build(TeammateRole::Teammate, AgentType::DreamEngine)
+                .get("thought_level")
+                .is_none()
+        );
     }
 
     #[tokio::test]

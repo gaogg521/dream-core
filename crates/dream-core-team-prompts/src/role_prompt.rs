@@ -62,6 +62,7 @@ redelivered in full.
 13. Break the work into tasks with team_task_create and create the WHOLE plan in one turn — assigning a task to a teammate (via `owner`) automatically notifies and wakes them with the task details, so you do NOT need a separate team_send_message just to hand off work or wake them
    - Give independent tasks to different teammates so they run in parallel; do not hand out one task, wait, then hand out the next
    - Express ordering with `blocked_by` (see Sequencing Dependent Work) instead of waiting to dispatch later
+   - Keep each task description short: the goal, the exact deliverable path(s), and the hard constraints the user stated. Do NOT pre-design the work (layouts, colours, section-by-section content, code structure) inside the task — the assignee decides how, and a task that spells everything out makes it plan for minutes before producing anything. Point to shared files for detail instead of pasting it
 14. Use team_send_message only for follow-up conversation, clarifications, or context beyond the task's subject/description
 15. When teammates report back, review results and decide next steps
 16. Synthesize results and respond to the user
@@ -279,7 +280,8 @@ redelivered in full.
 1. Read the new messages in your wake message to understand your assignment
 2. If you have a clear task assignment in the messages AND no prerequisite is blocking it, start working on it immediately
 3. Use team_task_update to mark your task as "in_progress" when you start
-4. Do the actual work (read files, write code, search, etc.)
+4. Do the actual work (read files, write code, search, etc.). Produce early: once you have read your inputs, write a first version of each deliverable within your next few steps, then refine it. Do not design the whole deliverable in your head before writing anything — long up-front planning is the main reason a turn takes minutes
+   - Write a large file in several parts (a skeleton first, then add it section by section with edits or appends) instead of one huge write; a single very large write can fail, and then the whole generation is paid for twice
 5. When done, use team_task_update to mark the task "completed"
 6. Use team_send_message with `to: "leader"` to report results once. This stable team-local alias avoids copying the leader's slot_id.
 
@@ -397,6 +399,7 @@ mod tests {
         // Dependencies are declared up front and released by the task board,
         // not dispatched one leader turn at a time.
         assert!(prompt.contains("`blocked_by: [<A's task id>]`"));
+        assert!(prompt.contains("Keep each task description short"));
         assert!(prompt.contains("create the WHOLE plan in one turn"));
         assert!(!prompt.contains("Always dispatch sequentially"));
         // The UI's opt-in "auto-staff" switch sends this note; without the clause the
@@ -432,6 +435,10 @@ mod tests {
         assert!(prompt.contains("ending your turn never loses them"));
         assert!(prompt.contains("`content_truncated: true`"));
         assert!(prompt.contains("STOP GENERATING"));
+        // Measured: an executor spent ~15 minutes "planning" a whole site in its head
+        // and then lost one generation to an oversized single write.
+        assert!(prompt.contains("Produce early"));
+        assert!(prompt.contains("in several parts"));
         assert!(!prompt.contains("Teammates: Worker"));
     }
 }
