@@ -274,6 +274,41 @@ async fn a_second_run_only_touches_what_changed() {
     );
 }
 
+/// Found against a real COS bucket with a CPU embedding server under load: one
+/// file's indexing ran out of retries and the document sat in `error`. The file
+/// itself had not changed, so every later run called it "unchanged" and never
+/// touched it again.
+#[tokio::test]
+async fn an_unchanged_file_whose_indexing_failed_is_queued_again() {
+    let (svc, storage, _dir) = service().await;
+    storage.put("a.md", b"survives an outage with steadytoken", 1);
+    let source = make_source(&svc).await;
+    sync(&svc, &source.id).await;
+    wait_for_chunk(&svc, "steadytoken").await;
+
+    // What a failed embedding run leaves behind.
+    svc.db
+        .execute(
+            "UPDATE one_rag_documents SET status = 'error', last_error = 'embedding request failed', chunk_count = 0",
+            &[],
+        )
+        .await
+        .unwrap();
+    svc.db.execute("DELETE FROM one_rag_chunks", &[]).await.unwrap();
+    assert_eq!(docs(&svc).await[0].status, "error");
+
+    let again = sync(&svc, &source.id).await;
+    assert_eq!(
+        (again.added, again.updated, again.unchanged),
+        (0, 0, 1),
+        "the file did not change, so it is not re-read"
+    );
+    wait_for_chunk(&svc, "steadytoken").await;
+    let doc = &docs(&svc).await[0];
+    assert_eq!(doc.status, "ready", "the run must have queued the document again");
+    assert!(doc.chunk_count > 0);
+}
+
 #[tokio::test]
 async fn a_file_removed_from_storage_is_flagged_not_deleted_and_can_return() {
     let (svc, storage, _dir) = service().await;

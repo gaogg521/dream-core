@@ -631,18 +631,18 @@ impl DevopsService {
         report.truncated = !complete;
 
         // --- what we already hold for this source ---------------------------
-        let existing_rows: Vec<(String, String, Option<String>, Option<String>)> = self
+        let existing_rows: Vec<(String, String, Option<String>, Option<String>, String)> = self
             .db
-            .fetch_all_as::<(String, String, Option<String>, Option<String>)>(
-                "SELECT id, source_key, source_signature, source_state FROM one_rag_documents \
+            .fetch_all_as::<(String, String, Option<String>, Option<String>, String)>(
+                "SELECT id, source_key, source_signature, source_state, status FROM one_rag_documents \
                  WHERE source_id = ? AND source_key IS NOT NULL",
                 &db_params![&source.id],
             )
             .await
             .map_err(|e| e.to_string())?;
-        let existing: HashMap<String, (String, Option<String>, Option<String>)> = existing_rows
+        let existing: HashMap<String, (String, Option<String>, Option<String>, String)> = existing_rows
             .into_iter()
-            .map(|(id, key, sig, state)| (key, (id, sig, state)))
+            .map(|(id, key, sig, state, status)| (key, (id, sig, state, status)))
             .collect();
 
         // --- bring each file up to date --------------------------------------
@@ -680,9 +680,17 @@ impl DevopsService {
             }
             let sig = signature(&entry);
             let previous = existing.get(&entry.key);
-            if let Some((id, Some(old_sig), state)) = previous
+            if let Some((id, Some(old_sig), state, status)) = previous
                 && *old_sig == sig
             {
+                if status == "error" {
+                    // The file is unchanged but its indexing failed (the
+                    // embedding service was down or overloaded). The text is
+                    // already stored, so this run only has to queue it again;
+                    // otherwise it would stay unsearchable until someone
+                    // edited the source file.
+                    self.schedule_indexing(source.created_by.clone(), id.clone());
+                }
                 if state.as_deref() == Some("missing") {
                     // It came back; nothing to re-read.
                     let _ = self
@@ -719,7 +727,7 @@ impl DevopsService {
         // Only judged when the whole folder was read: a capped or half-listed
         // walk would otherwise flag everything it did not reach.
         if complete && failed.total == 0 {
-            for (key, (id, _, state)) in &existing {
+            for (key, (id, _, state, _)) in &existing {
                 if !seen.contains(key) && state.as_deref() != Some("missing") {
                     let _ = self
                         .db
