@@ -84,6 +84,7 @@ fn gate(upstream: Arc<EnterpriseUpstreamService>) -> dream_core_app::LocalToolSe
         policy: Arc::new(ToolSecurityService::new()),
         upstream,
         events: None,
+        conversations: None,
     }
 }
 
@@ -354,4 +355,77 @@ async fn a_call_without_a_conversation_announces_nothing() {
 
     assert_eq!(verdict, Ok(None));
     assert!(events.try_recv().is_err(), "no conversation, nobody to tell");
+}
+
+/// The ACP path knows only the conversation's id; the gate names it from the
+/// member's own conversation, as it is called right now.
+#[tokio::test]
+async fn a_call_known_only_by_conversation_id_is_titled_with_the_conversations_name() {
+    use dream_core_db::models::ConversationRow;
+    use dream_core_db::{IConversationRepository, SqliteConversationRepository};
+
+    let seen = Arc::new(std::sync::Mutex::new(Seen::default()));
+    let base = spawn_company_server("approved", "", seen.clone()).await;
+    let upstream = Arc::new(EnterpriseUpstreamService::new());
+    upstream.set(EnterpriseUpstream {
+        base_url: base,
+        token: "t".to_owned(),
+    });
+
+    let db = dream_core_db::init_database_memory().await.unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, user_type, username, password_hash, status, session_generation, created_at, updated_at)          VALUES ('member-1', 'local', 'member-1', 'hash', 'active', 0, 0, 0)",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+    let repo = Arc::new(SqliteConversationRepository::new(db.pool().clone()));
+    let now = dream_core_common::now_ms();
+    repo.create(&ConversationRow {
+        id: "conv-acp".to_owned(),
+        user_id: "member-1".to_owned(),
+        name: "Quarterly report chat".to_owned(),
+        r#type: "acp".to_owned(),
+        extra: "{}".to_owned(),
+        model: None,
+        status: Some("finished".to_owned()),
+        source: Some("dream".to_owned()),
+        channel_chat_id: None,
+        pinned: false,
+        pinned_at: None,
+        created_at: now,
+        updated_at: now,
+        project_id: None,
+        folder_id: None,
+        name_source: None,
+    })
+    .await
+    .unwrap();
+
+    let mut gate = gate(upstream);
+    gate.conversations = Some(repo);
+    gate.policy.set_policy(approval_required_policy());
+    let context = dream_core_ai_agent::ToolCallContext {
+        conversation_id: Some("conv-acp".to_owned()),
+        tool_input: Some(serde_json::json!({ "command": "dir" })),
+        ..Default::default()
+    };
+
+    let verdict = gate
+        .check_in_context(
+            "member-1",
+            "Run shell command {\"command\":\"dir\"}",
+            false,
+            true,
+            &context,
+        )
+        .await;
+
+    assert_eq!(verdict, Ok(None));
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.create_body["title"], "Quarterly report chat");
+    assert_eq!(
+        seen.create_body["payload"]["conversationTitle"],
+        "Quarterly report chat"
+    );
 }

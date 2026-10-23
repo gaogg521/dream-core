@@ -1812,6 +1812,9 @@ pub struct LocalToolSecurityGate {
     /// Lets the conversation say it is waiting on an administrator instead of
     /// looking frozen. `None` where nothing listens (tests).
     pub events: Option<std::sync::Arc<dyn dream_core_realtime::EventBroadcaster>>,
+    /// Names the conversation in an approval request when the caller only knows
+    /// its id (the ACP path). `None` where there is no conversation store (tests).
+    pub conversations: Option<std::sync::Arc<dyn dream_core_db::IConversationRepository>>,
 }
 
 /// Mirrors `dream_domain_workflow::TERMINAL_APPROVAL_TIMEOUT_MS` (not
@@ -1869,6 +1872,20 @@ impl LocalToolSecurityGate {
             return Ok(Some(reason));
         }
         if is_terminal_tool && self.policy.policy().terminal_tools_require_approval {
+            // The engine path names the conversation itself; the ACP path only
+            // knows its id, so look the title up here, now, because a
+            // conversation is renamed after the agent starts.
+            if context.conversation_title.is_none()
+                && let (Some(id), Some(conversations)) =
+                    (context.conversation_id.as_deref(), self.conversations.as_ref())
+                && let Ok(Some(row)) = conversations.get(user_id, id).await
+            {
+                let named = dream_core_ai_agent::ToolCallContext {
+                    conversation_title: Some(row.name),
+                    ..context.clone()
+                };
+                return self.run_remote_terminal_approval(user_id, command_text, &named).await;
+            }
             return self.run_remote_terminal_approval(user_id, command_text, context).await;
         }
         Ok(None)

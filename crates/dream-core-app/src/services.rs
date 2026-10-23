@@ -589,6 +589,7 @@ impl AppServices {
                 policy: tool_security.clone(),
                 upstream: enterprise_upstream.clone(),
                 events: Some(event_bus.clone()),
+                conversations: Some(conversation_repo.clone()),
             })),
             // Enterprise memory recall (P2-2 §B.4 完整版): a per-turn ACP
             // prompt hook injects the caller's readable memory into every

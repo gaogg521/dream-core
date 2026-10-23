@@ -2,7 +2,7 @@ use crate::agent_runtime::AgentRuntime;
 use crate::error::AgentError;
 use crate::protocol::acp::{PermissionDecision, PermissionRequest};
 use crate::protocol::events::{AgentStreamEvent, permission_request_to_event_data};
-use crate::security_policy::ToolCallSecurityGate;
+use crate::security_policy::{ToolCallContext, ToolCallSecurityGate};
 use agent_client_protocol::schema::v1::PermissionOptionKind as SdkPermissionOptionKind;
 use agent_client_protocol::schema::v1::ToolKind as SdkToolKind;
 use dream_core_api_types::TEAM_MCP_SERVER_NAME;
@@ -85,8 +85,23 @@ impl PermissionRouter {
                     let kind = perm_req.request.tool_call.fields.kind;
                     let is_network_fetch = kind == Some(SdkToolKind::Fetch);
                     let is_terminal_tool = kind == Some(SdkToolKind::Execute);
+                    // The conversation lets an approval request say which chat
+                    // it came from, and lets the client show what it is waiting
+                    // for; the call itself is described by what ACP surfaced.
+                    let context = ToolCallContext {
+                        conversation_id: Some(runtime.conversation_id().to_owned()),
+                        conversation_title: None,
+                        tool_name: perm_req.request.tool_call.fields.title.clone(),
+                        tool_input: perm_req.request.tool_call.fields.raw_input.clone(),
+                    };
                     match gate
-                        .check(&this.user_id, &command_text, is_network_fetch, is_terminal_tool)
+                        .check_in_context(
+                            &this.user_id,
+                            &command_text,
+                            is_network_fetch,
+                            is_terminal_tool,
+                            &context,
+                        )
                         .await
                     {
                         Ok(Some(reason)) => {
@@ -862,6 +877,70 @@ mod tests {
             self.seen.lock().unwrap().push((is_network_fetch, is_terminal_tool));
             Ok(None)
         }
+    }
+
+    /// Keeps the context each call arrived with.
+    struct ContextRecordingGate {
+        seen: StdMutex<Vec<ToolCallContext>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolCallSecurityGate for ContextRecordingGate {
+        async fn check(&self, _: &str, _: &str, _: bool, _: bool) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        async fn check_in_context(
+            &self,
+            _user_id: &str,
+            _command_text: &str,
+            _is_network_fetch: bool,
+            _is_terminal_tool: bool,
+            context: &ToolCallContext,
+        ) -> Result<Option<String>, String> {
+            self.seen.lock().unwrap().push(context.clone());
+            Ok(None)
+        }
+    }
+
+    /// An ACP tool call reaches the gate with the conversation it belongs to,
+    /// so an approval task can be titled and the client can show the wait.
+    #[tokio::test]
+    async fn start_tells_the_gate_which_conversation_the_call_belongs_to() {
+        let (permission_tx, permission_rx) = mpsc::channel(1);
+        let gate = Arc::new(ContextRecordingGate {
+            seen: StdMutex::new(Vec::new()),
+        });
+        let router = Arc::new(PermissionRouter::new(
+            permission_rx,
+            "test-user".to_owned(),
+            Some(gate.clone() as Arc<dyn ToolCallSecurityGate>),
+        ));
+        router.start(AgentRuntime::new("conv-acp-7", "/tmp/workspace", 8));
+
+        let request = RequestPermissionRequest::new(
+            "session-1",
+            SdkToolCallUpdate::new(
+                "tool-1",
+                ToolCallUpdateFields::new()
+                    .kind(SdkToolKind::Execute)
+                    .title("Run shell command".to_owned())
+                    .raw_input(json!({ "command": "dir" })),
+            ),
+            vec![allow_once_option("allow_once")],
+        );
+        let (response_tx, _response_rx) = oneshot::channel();
+        permission_tx
+            .send(PermissionRequest { request, response_tx })
+            .await
+            .expect("permission request should be accepted");
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let seen = gate.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].conversation_id.as_deref(), Some("conv-acp-7"));
+        assert_eq!(seen[0].tool_name.as_deref(), Some("Run shell command"));
+        assert_eq!(seen[0].tool_input, Some(json!({ "command": "dir" })));
     }
 
     fn permission_request_with_kind(kind: SdkToolKind, options: Vec<PermissionOption>) -> RequestPermissionRequest {
