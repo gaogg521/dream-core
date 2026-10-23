@@ -454,6 +454,18 @@ pub(crate) mod workspace_harness {
             self.set_extra_flag(id, "capability_lookup_failed");
         }
 
+        pub(crate) fn set_extra_string(&self, id: &str, key: &str, value: &str) {
+            let mut conversations = self.conversations.lock().unwrap();
+            let conversation = conversations
+                .iter_mut()
+                .find(|c| c.id == id)
+                .expect("conversation exists");
+            let mut extra: serde_json::Value =
+                serde_json::from_str(&conversation.extra).unwrap_or_else(|_| serde_json::json!({}));
+            extra[key] = serde_json::Value::String(value.to_owned());
+            conversation.extra = serde_json::to_string(&extra).unwrap();
+        }
+
         fn set_extra_flag(&self, id: &str, key: &str) {
             let mut conversations = self.conversations.lock().unwrap();
             let conversation = conversations
@@ -1119,6 +1131,7 @@ pub(crate) mod workspace_harness {
             Ok(crate::TeamConversationModelFacts {
                 confirmed_model_id: value("confirmed_model_id").or_else(|| value("current_model_id")),
                 runtime_seed_model_id: value("current_model_id"),
+                selected_model_id: value("selected_model_id"),
             })
         }
 

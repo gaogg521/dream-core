@@ -624,9 +624,22 @@ impl TeamConversationProvisioningPort for TeamConversationAdapters {
             .confirmed_model_id(&user_id, conversation_id)
             .await
             .map_err(map_conversation_update_error)?;
+        let selected_model_id = row
+            .model
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .and_then(|value| {
+                value
+                    .get("model")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .map(str::to_owned)
+            })
+            .filter(|value| !value.is_empty());
         Ok(TeamConversationModelFacts {
             confirmed_model_id,
             runtime_seed_model_id,
+            selected_model_id,
         })
     }
 

@@ -92,6 +92,11 @@ pub struct TeamMcpSnapshotResolution {
 pub struct TeamConversationModelFacts {
     pub confirmed_model_id: Option<String>,
     pub runtime_seed_model_id: Option<String>,
+    /// The model the conversation actually runs on: for a dream-engine conversation this is
+    /// the top-level `model` the user picked in the model selector. It can differ from
+    /// `confirmed_model_id`, which for such a conversation falls back to the assistant
+    /// snapshot's default and so can name a model nobody chose.
+    pub selected_model_id: Option<String>,
 }
 
 #[async_trait]

@@ -2206,13 +2206,14 @@ impl TeamSession {
         // Step 3: resolve the effective assistant/backend/model target before
         // capability checks. Assistant spawns derive backend from the preset
         // identity rather than inheriting the caller backend.
+        let caller_model = service.effective_member_model(&caller).await;
         let (backend, model) = service
             .resolve_spawn_backend_and_model(
                 &self.user_id,
                 Some(assistant_id),
                 None,
                 caller.backend.as_str(),
-                caller.model.as_str(),
+                caller_model.as_str(),
             )
             .await?;
 

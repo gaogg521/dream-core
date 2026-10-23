@@ -46,7 +46,7 @@ redelivered in full.
    - Exception: if the user explicitly asked YOU to implement, fix, or edit something
      yourself, skip the rest of this workflow — do the work with your own tools and
      report back. The steps below are for the normal case where you delegate.
-2. Analyze the request and decide whether the current team is enough
+2. Analyze the request and decide whether the current team is enough. Do NOT research the request yourself first: do not study the user's reference files or demos, render or screenshot them, or run exploratory commands before delegating. Read only what you need to choose the team and write the tasks, and hand the research itself to a teammate by pointing the task at the user's file paths — every minute you spend studying is a minute the whole team waits
 3. If additional teammates would help, FIRST call `team_members` to confirm the current roster
 4. Then call `team_list_assistants` to see the real assistant catalog and choose candidate assistants
 5. Then reply in text with a staffing proposal
@@ -281,6 +281,7 @@ redelivered in full.
 2. If you have a clear task assignment in the messages AND no prerequisite is blocking it, start working on it immediately
 3. Use team_task_update to mark your task as "in_progress" when you start
 4. Do the actual work (read files, write code, search, etc.). Produce early: once you have read your inputs, write a first version of each deliverable within your next few steps, then refine it. Do not design the whole deliverable in your head before writing anything — long up-front planning is the main reason a turn takes minutes
+   - Check your own work sparingly: verify a deliverable with at most three render-or-run-and-look rounds, then stop once it meets what the task asked for. Do not keep iterating on polish nobody requested — each extra screenshot-and-fix round costs minutes for the whole team
    - Write a large file in several parts (a skeleton first, then add it section by section with edits or appends) instead of one huge write; a single very large write can fail, and then the whole generation is paid for twice
 5. When done, use team_task_update to mark the task "completed"
 6. Use team_send_message with `to: "leader"` to report results once. This stable team-local alias avoids copying the leader's slot_id.
@@ -400,6 +401,7 @@ mod tests {
         // not dispatched one leader turn at a time.
         assert!(prompt.contains("`blocked_by: [<A's task id>]`"));
         assert!(prompt.contains("Keep each task description short"));
+        assert!(prompt.contains("Do NOT research the request yourself first"));
         assert!(prompt.contains("create the WHOLE plan in one turn"));
         assert!(!prompt.contains("Always dispatch sequentially"));
         // The UI's opt-in "auto-staff" switch sends this note; without the clause the
@@ -439,6 +441,7 @@ mod tests {
         // and then lost one generation to an oversized single write.
         assert!(prompt.contains("Produce early"));
         assert!(prompt.contains("in several parts"));
+        assert!(prompt.contains("at most three render-or-run-and-look rounds"));
         assert!(!prompt.contains("Teammates: Worker"));
     }
 }

@@ -103,6 +103,25 @@ impl TeamSessionService {
             })
     }
 
+    /// The model a member is really running on. The roster's `model` is seeded from the
+    /// assistant's default and is not updated when the user picks another model in the
+    /// selector (live: the leader ran on glm-flash-latest while the roster said
+    /// deepseek-flash-vision-latest), so a teammate "following the leader" off the roster
+    /// ran on the wrong one. For a dream-engine member the conversation's own selection
+    /// wins; anything unreadable falls back to the roster value.
+    pub(crate) async fn effective_member_model(&self, member: &TeamAgent) -> String {
+        if member.backend == "dream"
+            && let Ok(facts) = self
+                .conversation_port
+                .conversation_model_facts(&member.conversation_id)
+                .await
+            && let Some(selected) = facts.selected_model_id
+        {
+            return selected;
+        }
+        member.model.clone()
+    }
+
     pub(crate) async fn resolve_spawn_backend_and_model(
         &self,
         user_id: &str,
@@ -1235,6 +1254,38 @@ mod tests {
 
         assert_eq!(backend, "dream");
         assert_eq!(model, "openrouter/free");
+    }
+
+    #[tokio::test]
+    async fn effective_member_model_prefers_the_conversations_own_selection_for_dream_members() {
+        let (svc, _, _, conv_repo) = setup_with_factory_metadata_team_repo_and_conversation_repo();
+        let created = svc
+            .create_team("user1", single_agent_team_request("Model Facts"))
+            .await
+            .unwrap();
+        let conversation_id = created.assistants[0].conversation_id.clone();
+        let member = |backend: &str| TeamAgent {
+            slot_id: "slot-1".into(),
+            name: "Lead".into(),
+            role: crate::types::TeammateRole::Lead,
+            conversation_id: conversation_id.clone(),
+            backend: backend.into(),
+            model: "roster-model".into(),
+            assistant_id: None,
+            status: None,
+            conversation_type: None,
+            cli_path: None,
+        };
+
+        // Nothing selected yet: the roster value is all there is.
+        assert_eq!(svc.effective_member_model(&member("dream")).await, "roster-model");
+
+        // The roster still says "roster-model" after the user picks another one in the selector.
+        conv_repo.set_extra_string(&conversation_id, "selected_model_id", "glm-flash-latest");
+        assert_eq!(svc.effective_member_model(&member("dream")).await, "glm-flash-latest");
+
+        // Other backends keep reading the roster: their model lives in the ACP runtime state.
+        assert_eq!(svc.effective_member_model(&member("claude")).await, "roster-model");
     }
 
     #[tokio::test]

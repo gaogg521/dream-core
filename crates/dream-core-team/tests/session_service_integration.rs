@@ -697,6 +697,7 @@ impl TeamConversationProvisioningPort for FakeConversationPorts {
         Ok(dream_core_team::TeamConversationModelFacts {
             confirmed_model_id: value("confirmed_model_id").or_else(|| value("current_model_id")),
             runtime_seed_model_id: value("current_model_id"),
+            selected_model_id: value("selected_model_id"),
         })
     }
 
