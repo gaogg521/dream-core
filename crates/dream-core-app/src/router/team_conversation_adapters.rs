@@ -3,8 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use dream_core_ai_agent::IWorkerTaskManager;
 use dream_core_api_types::{
-    AssistantConversationRequest, CreateConversationRequest, GetConfigOptionsResponse, McpRuntimeSnapshot,
-    SetConfigOptionRequest, SetConfigOptionResponse, TeamMcpSelection,
+    AssistantConversationOverridesRequest, AssistantConversationRequest, CreateConversationRequest,
+    GetConfigOptionsResponse, McpRuntimeSnapshot, SetConfigOptionRequest, SetConfigOptionResponse, TeamMcpSelection,
 };
 use dream_core_common::AgentType;
 use dream_core_conversation::{
@@ -441,12 +441,53 @@ impl TeamProjectionMessageStore for TeamConversationAdapters {
     }
 }
 
+/// The thought level the team asked for, as a conversation override.
+///
+/// For an assistant-backed conversation the service resolves `extra.thought_level` from the
+/// assistant snapshot (a fixed value, or the level last remembered for that assistant) and
+/// overwrites whatever the creator put in `extra`. Live: the team seeded "medium" for a Claude
+/// Code teammate and the conversation still came out as "default", the level a user had once
+/// picked by hand for that assistant. Only a request override outranks both, so the seed has to
+/// travel as one.
+fn team_thought_level_override(extra: &serde_json::Value) -> Option<AssistantConversationOverridesRequest> {
+    let thought_level = extra
+        .get("thought_level")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    Some(AssistantConversationOverridesRequest {
+        thought_level: Some(thought_level.to_owned()),
+        ..Default::default()
+    })
+}
+
+#[cfg(test)]
+mod team_thought_level_override_tests {
+    use super::*;
+
+    #[test]
+    fn a_team_seeded_thought_level_travels_as_an_override() {
+        let overrides = team_thought_level_override(&serde_json::json!({ "thought_level": " medium " }))
+            .expect("seed becomes an override");
+        assert_eq!(overrides.thought_level.as_deref(), Some("medium"));
+        assert_eq!(overrides.model, None);
+    }
+
+    #[test]
+    fn no_seed_means_no_override() {
+        assert!(team_thought_level_override(&serde_json::json!({})).is_none());
+        assert!(team_thought_level_override(&serde_json::json!({ "thought_level": "  " })).is_none());
+        assert!(team_thought_level_override(&serde_json::Value::Null).is_none());
+    }
+}
+
 #[async_trait]
 impl TeamConversationProvisioningPort for TeamConversationAdapters {
     async fn create_team_conversation(
         &self,
         request: TeamConversationCreateRequest,
     ) -> Result<TeamConversationCreateResult, TeamError> {
+        let conversation_overrides = team_thought_level_override(&request.extra);
         let response = self
             .conversation_service
             .create(
@@ -458,7 +499,7 @@ impl TeamConversationProvisioningPort for TeamConversationAdapters {
                     assistant: request.assistant_id.map(|assistant_id| AssistantConversationRequest {
                         id: assistant_id,
                         locale: None,
-                        conversation_overrides: None,
+                        conversation_overrides,
                     }),
                     source: None,
                     channel_chat_id: None,

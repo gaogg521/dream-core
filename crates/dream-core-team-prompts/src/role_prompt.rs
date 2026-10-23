@@ -62,6 +62,7 @@ redelivered in full.
 13. Break the work into tasks with team_task_create and create the WHOLE plan in one turn — assigning a task to a teammate (via `owner`) automatically notifies and wakes them with the task details, so you do NOT need a separate team_send_message just to hand off work or wake them
    - Give independent tasks to different teammates so they run in parallel; do not hand out one task, wait, then hand out the next
    - Express ordering with `blocked_by` (see Sequencing Dependent Work) instead of waiting to dispatch later
+   - Scope: deliver what the user asked for, no more. When the user did not say how big it should be ("design a promotional website", "write a report"), the default is ONE page / ONE document, not a multi-page site, a document set, or extra assets (generated images, share cards, extra locales). Say that scope in the task ("a single page — do not add other pages or assets"), and offer the extras to the user afterwards instead of building them unasked. Large deliverables are mostly generation time: every extra page is minutes for the whole team
    - Keep each task description short: the goal, the exact deliverable path(s), and the hard constraints the user stated. Do NOT pre-design the work (layouts, colours, section-by-section content, code structure) inside the task — the assignee decides how, and a task that spells everything out makes it plan for minutes before producing anything. Point to shared files for detail instead of pasting it
 14. Use team_send_message only for follow-up conversation, clarifications, or context beyond the task's subject/description
 15. When teammates report back, review results and decide next steps
@@ -282,6 +283,7 @@ redelivered in full.
 3. Use team_task_update to mark your task as "in_progress" when you start
 4. Do the actual work (read files, write code, search, etc.). Produce early: once you have read your inputs, write a first version of each deliverable within your next few steps, then refine it. Do not design the whole deliverable in your head before writing anything — long up-front planning is the main reason a turn takes minutes
    - Check your own work sparingly: verify a deliverable with at most three render-or-run-and-look rounds, then stop once it meets what the task asked for. Do not keep iterating on polish nobody requested — each extra screenshot-and-fix round costs minutes for the whole team
+   - Stay inside the scope of your task. If it does not name extra pages, files, images or variants, do not add them, and do not widen a brief you write for a teammate beyond what the user asked for; mention possible extras in your report instead
    - Write a large file in several parts (a skeleton first, then add it section by section with edits or appends) instead of one huge write; a single very large write can fail, and then the whole generation is paid for twice
 5. When done, use team_task_update to mark the task "completed"
 6. Use team_send_message with `to: "leader"` to report results once. This stable team-local alias avoids copying the leader's slot_id.
@@ -402,6 +404,7 @@ mod tests {
         assert!(prompt.contains("`blocked_by: [<A's task id>]`"));
         assert!(prompt.contains("Keep each task description short"));
         assert!(prompt.contains("Do NOT research the request yourself first"));
+        assert!(prompt.contains("the default is ONE page / ONE document"));
         assert!(prompt.contains("create the WHOLE plan in one turn"));
         assert!(!prompt.contains("Always dispatch sequentially"));
         // The UI's opt-in "auto-staff" switch sends this note; without the clause the
@@ -442,6 +445,7 @@ mod tests {
         assert!(prompt.contains("Produce early"));
         assert!(prompt.contains("in several parts"));
         assert!(prompt.contains("at most three render-or-run-and-look rounds"));
+        assert!(prompt.contains("Stay inside the scope of your task"));
         assert!(!prompt.contains("Teammates: Worker"));
     }
 }
