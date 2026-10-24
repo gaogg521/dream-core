@@ -464,6 +464,9 @@ pub struct IntegrationDto {
     pub base_url: Option<String>,
     pub config: serde_json::Value,
     pub has_secret: bool,
+    /// The saved secret with its middle hidden (`ghp_********ab12`), so an administrator can tell which token is
+    /// stored without it being readable. `None` when nothing is stored.
+    pub secret_hint: Option<String>,
     pub enabled: bool,
     pub updated_at: Option<i64>,
 }

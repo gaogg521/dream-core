@@ -1214,6 +1214,12 @@ impl OrgService {
             .unwrap_or_else(|| serde_json::json!({}))
     }
 
+    fn secret_hint_of(&self, encrypted: &str) -> Option<String> {
+        decrypt_string(encrypted, &self.encryption_key)
+            .ok()
+            .map(|secret| mask_secret(&secret))
+    }
+
     /// All configured connectors for a project group (redacted — no secrets).
     pub async fn list_integrations(&self, tenant_id: &str) -> Result<Vec<IntegrationDto>, OrgError> {
         type IntegrationRow = (String, Option<String>, Option<String>, Option<String>, bool, i64);
@@ -1233,6 +1239,7 @@ impl OrgService {
                     base_url,
                     config: Self::parse_config(config_json),
                     has_secret: secret_encrypted.is_some(),
+                    secret_hint: secret_encrypted.as_deref().and_then(|e| self.secret_hint_of(e)),
                     enabled,
                     updated_at: Some(updated_at),
                 },
@@ -1258,6 +1265,7 @@ impl OrgService {
                 base_url,
                 config: Self::parse_config(config_json),
                 has_secret: secret_encrypted.is_some(),
+                secret_hint: secret_encrypted.as_deref().and_then(|e| self.secret_hint_of(e)),
                 enabled,
                 updated_at: Some(updated_at),
             },
@@ -1266,6 +1274,7 @@ impl OrgService {
                 base_url: None,
                 config: serde_json::json!({}),
                 has_secret: false,
+                secret_hint: None,
                 enabled: false,
                 updated_at: None,
             },
@@ -3636,6 +3645,24 @@ impl OrgService {
     }
 }
 
+/// A stored secret with its middle hidden, for showing in an admin console. How much of the ends is shown depends
+/// on the length, so a short secret never gives away a large share of itself: 24+ characters show 4 and 4, 16+
+/// show 2 and 2, anything shorter shows nothing. The hidden part is a fixed width, so the length does not leak.
+pub(crate) fn mask_secret(secret: &str) -> String {
+    let chars: Vec<char> = secret.chars().collect();
+    let shown = match chars.len() {
+        24.. => 4,
+        16..=23 => 2,
+        _ => 0,
+    };
+    if shown == 0 {
+        return "********".to_owned();
+    }
+    let head: String = chars[..shown].iter().collect();
+    let tail: String = chars[chars.len() - shown..].iter().collect();
+    format!("{head}********{tail}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5080,6 +5107,24 @@ mod tests {
         assert_eq!(service.list_departments(&tenant_id).await.unwrap().len(), 2);
     }
 
+    #[test]
+    fn a_secret_shows_its_ends_and_never_its_middle() {
+        // A GitHub classic token: 4 + 36 characters.
+        let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        let hint = mask_secret(token);
+        assert_eq!(hint, "ghp_********6789");
+        assert!(!hint.contains("mnop"));
+        // Short secrets give away proportionally more, so they show less.
+        assert_eq!(mask_secret("0123456789abcdef"), "01********ef");
+        assert_eq!(mask_secret("short-secret"), "********");
+        assert_eq!(mask_secret(""), "********");
+        // Multi-byte characters are cut on character boundaries, never in the middle of one.
+        assert_eq!(
+            mask_secret(&"密".repeat(30)),
+            format!("{}********{}", "密".repeat(4), "密".repeat(4))
+        );
+    }
+
     #[tokio::test]
     async fn integration_connector_roundtrips_redacts_and_stubs_test() {
         let (_db, service, _user_repo) = setup().await;
@@ -5110,6 +5155,31 @@ mod tests {
         // The DTO never carries the plaintext/ciphertext secret.
         let serialized = serde_json::to_string(&saved).unwrap();
         assert!(!serialized.contains("ghp_secret"));
+        // ...only a masked hint, which survives a later save that omits the secret.
+        assert_eq!(saved.secret_hint.as_deref(), Some("********"));
+        let long = service
+            .set_integration(
+                &tenant_id,
+                "github",
+                None,
+                &config,
+                Some("ghp_0123456789abcdefghijklmnopqrstuvwxyz"),
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(long.secret_hint.as_deref(), Some("ghp_********wxyz"));
+        assert!(!serde_json::to_string(&long).unwrap().contains("0123456789abcdef"));
+        let kept = service
+            .set_integration(&tenant_id, "github", None, &config, None, true)
+            .await
+            .unwrap();
+        assert_eq!(kept.secret_hint.as_deref(), Some("ghp_********wxyz"));
+        // Back to the short secret the rest of this test is about.
+        service
+            .set_integration(&tenant_id, "github", None, &config, Some("ghp_secret"), true)
+            .await
+            .unwrap();
 
         // Omitting the secret on a later save keeps the stored one; other
         // fields update.
