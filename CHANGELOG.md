@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.96](https://github.com/gaogg521/dream-core/compare/v0.1.95...v0.1.96) (2026-10-24)
+
+
+### Features
+
+* **org:** show a masked hint of a saved connector secret ([6496b1d](https://github.com/gaogg521/dream-core/commit/6496b1d17a45c5f0920a441945f37ce71eab7f8e))
+
+
+### Bug Fixes
+
+* **acp:** retire cached company MCP runtimes after revocation ([7beb67a](https://github.com/gaogg521/dream-core/commit/7beb67af82f0469434c8d3074e750944d72fb664))
+
 ## [0.1.95](https://github.com/gaogg521/dream-core/compare/v0.1.94...v0.1.95) (2026-10-24)
 
 
