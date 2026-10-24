@@ -178,7 +178,13 @@ fn clip(text: String) -> String {
     text.chars().take(ERROR_CHARS).collect()
 }
 
-async fn send(kind: Kind, endpoint: &str, secret: Option<&str>, tenant_id: &str, rows: &[AuditRow]) -> Result<(), String> {
+async fn send(
+    kind: Kind,
+    endpoint: &str,
+    secret: Option<&str>,
+    tenant_id: &str,
+    rows: &[AuditRow],
+) -> Result<(), String> {
     match kind {
         Kind::Syslog => {
             let address = syslog_address(endpoint)?;
@@ -221,7 +227,10 @@ async fn send(kind: Kind, endpoint: &str, secret: Option<&str>, tenant_id: &str,
                 }
                 r
             };
-            let response = request.send().await.map_err(|e| format!("could not reach {url}: {e}"))?;
+            let response = request
+                .send()
+                .await
+                .map_err(|e| format!("could not reach {url}: {e}"))?;
             if response.status().is_success() {
                 Ok(())
             } else {
@@ -311,7 +320,8 @@ impl PlatformService {
             let (next_at, next_id) = (last.7, last.0.clone());
             if let Err(error) = send(kind, &endpoint, secret.as_deref(), tenant_id, &rows).await {
                 let error = clip(error);
-                self.record_siem_run(tenant_id, "error", Some(&error), forwarded).await?;
+                self.record_siem_run(tenant_id, "error", Some(&error), forwarded)
+                    .await?;
                 return Ok(SiemForwardReport {
                     status: "error".into(),
                     forwarded,
@@ -380,7 +390,11 @@ impl PlatformService {
                     tracing::warn!(tenant_id, error = %report.message, "SIEM export failed; will retry");
                 }
                 Ok(report) if report.forwarded > 0 => {
-                    tracing::info!(tenant_id, forwarded = report.forwarded, "SIEM export delivered audit events");
+                    tracing::info!(
+                        tenant_id,
+                        forwarded = report.forwarded,
+                        "SIEM export delivered audit events"
+                    );
                 }
                 Ok(_) => {}
                 Err(error) => tracing::warn!(tenant_id, %error, "SIEM export pass failed"),
@@ -447,7 +461,11 @@ mod tests {
         let at = 1_792_803_723_004;
         let body = syslog_body("t1", &[row("a", at, "success"), row("b", at, "failure")]);
         let lines: Vec<&str> = body.lines().collect();
-        assert_eq!(lines.len(), 2, "a newline inside a field must not split a record: {body:?}");
+        assert_eq!(
+            lines.len(),
+            2,
+            "a newline inside a field must not split a record: {body:?}"
+        );
         assert!(lines[0].starts_with("<134>1 2026-10-24T01:02:03.004Z one-work dreamcore - audit - {"));
         assert!(lines[1].starts_with("<132>1 "), "a failure is warning severity");
         assert!(lines[0].contains("\"tenantId\":\"t1\"") && lines[0].contains("res\\nsplit"));
@@ -643,7 +661,10 @@ mod tests {
         let report = service.forward_siem_once("t1").await.unwrap();
         assert_eq!(report.forwarded, 1, "{report:?}");
         let text = reader.await.unwrap();
-        assert!(text.starts_with("<134>1 ") && text.contains("\"id\":\"s1\"") && text.ends_with('\n'), "{text:?}");
+        assert!(
+            text.starts_with("<134>1 ") && text.contains("\"id\":\"s1\"") && text.ends_with('\n'),
+            "{text:?}"
+        );
     }
 
     #[tokio::test]

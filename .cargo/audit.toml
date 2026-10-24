@@ -2,4 +2,11 @@
 # RUSTSEC-2023-0071 (rsa: Marvin timing sidechannel): pre-existing lockfile-only
 # entry pulled in by a target/feature-gated dependency; `cargo tree -i rsa`
 # resolves to nothing in our build graph, and no patched release exists yet.
-ignore = ["RUSTSEC-2023-0071"]
+#
+# RUSTSEC-2026-0387 (crypto-bigint timing variability): the 0.7.x copy is patched
+# (0.7.6). What is left is crypto-bigint 0.5.5, which only `aws-sigv4` reaches,
+# through its ECDSA/p256 code for SigV4A (multi-region access point signing). We
+# sign S3 requests with ordinary SigV4 (HMAC), never SigV4A, and the advisory's
+# fix is a 0.7 release that the 0.5 line cannot take. Re-check when aws-sigv4
+# moves off crypto-bigint 0.5.
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0387"]

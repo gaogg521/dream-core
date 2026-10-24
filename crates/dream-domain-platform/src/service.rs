@@ -745,7 +745,10 @@ impl PlatformService {
             // Export starts from the moment it is switched on, not from wherever
             // an earlier run stopped before it was switched off.
             self.db
-                .execute("DELETE FROM one_siem_cursor WHERE tenant_id = ?", &db_params![tenant_id])
+                .execute(
+                    "DELETE FROM one_siem_cursor WHERE tenant_id = ?",
+                    &db_params![tenant_id],
+                )
                 .await?;
         }
         self.upsert(
