@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.97](https://github.com/gaogg521/dream-core/compare/v0.1.96...v0.1.97) (2026-10-24)
+
+
+### Features
+
+* **knowledge:** read Chinese PDFs whose text is stored as plain Unicode codes ([f13c11f](https://github.com/gaogg521/dream-core/commit/f13c11fa68d9ea971ce0ce90b755b93bb3f16954))
+
 ## [0.1.96](https://github.com/gaogg521/dream-core/compare/v0.1.95...v0.1.96) (2026-10-24)
 
 
