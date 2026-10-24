@@ -29,7 +29,7 @@ use crate::service::{DevopsService, new_id};
 const MAX_DEPTH: usize = 8;
 const MAX_OBJECTS: usize = 5000;
 /// One file, as read into memory. Larger files are skipped, not truncated.
-const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
+const MAX_FILE_BYTES: u64 = 100 * 1024 * 1024;
 /// Extracted text beyond this is refused: it would cost an embedding call per
 /// few hundred characters and is almost never meant to be searched whole.
 const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
@@ -677,7 +677,7 @@ impl DevopsService {
                 continue;
             }
             if entry.size_bytes.is_some_and(|size| size as u64 > MAX_FILE_BYTES) {
-                skipped.push(&entry.key, "file is larger than 50 MiB");
+                skipped.push(&entry.key, "file is larger than 100 MiB");
                 continue;
             }
             let sig = signature(&entry);
