@@ -229,23 +229,34 @@ async fn a_first_run_imports_every_supported_kind_and_makes_it_searchable() {
         1,
     );
     storage.put("handbook/plan.docx", &docx("ocelottoken in a word file"), 1);
+    storage.put(
+        "handbook/manual.pdf",
+        &crate::pdf_text::tiny_pdf("a manual that mentions flamingotoken somewhere inside"),
+        1,
+    );
     let source = make_source(&svc).await;
 
     let report = sync(&svc, &source.id).await;
 
     assert_eq!(report.status, "ok", "{report:?}");
-    assert_eq!(report.added, 4);
+    assert_eq!(report.added, 5);
     assert_eq!(report.updated + report.unchanged + report.failed_total, 0);
     let all = docs(&svc).await;
-    assert_eq!(all.len(), 4);
+    assert_eq!(all.len(), 5);
     assert!(all.iter().all(|d| d.scope == "org" && d.created_by == "admin1"));
     // The original is retained, as for an upload.
     assert!(
         all.iter()
             .all(|d| d.file_path.as_deref().is_some_and(|p| p.starts_with("rag-source:")))
     );
-    assert!(std::fs::read_dir(dir.path()).unwrap().count() >= 4);
-    for token in ["zebratoken", "quokkatoken", "giraffetoken", "ocelottoken"] {
+    assert!(std::fs::read_dir(dir.path()).unwrap().count() >= 5);
+    for token in [
+        "zebratoken",
+        "quokkatoken",
+        "giraffetoken",
+        "ocelottoken",
+        "flamingotoken",
+    ] {
         wait_for_chunk(&svc, token).await;
     }
 }
@@ -349,7 +360,9 @@ async fn a_file_removed_from_storage_is_flagged_not_deleted_and_can_return() {
 async fn files_that_cannot_be_imported_are_listed_with_why() {
     let (svc, storage, _dir) = service().await;
     storage.put("ok.md", b"fine", 1);
-    storage.put("manual.pdf", b"%PDF-1.4", 1);
+    // A PDF whose pages are pictures has nothing to index; it is a failure with
+    // its reason, not a "ready" document that never matches anything.
+    storage.put("scan.pdf", &crate::pdf_text::tiny_pdf(""), 1);
     storage.put("photo.png", b"png", 1);
     storage.put("~$lock.docx", b"lock", 1);
     storage.put(".hidden.md", b"hidden", 1);
@@ -358,10 +371,10 @@ async fn files_that_cannot_be_imported_are_listed_with_why() {
     let report = sync(&svc, &source.id).await;
 
     assert_eq!(report.added, 1);
-    assert_eq!(report.skipped_total, 2);
-    let pdf = report.skipped.iter().find(|i| i.key == "manual.pdf").unwrap();
-    assert!(pdf.reason.contains("PDF"), "{}", pdf.reason);
+    assert_eq!(report.skipped_total, 1);
     assert!(report.skipped.iter().any(|i| i.key == "photo.png"));
+    let scan = report.failed.iter().find(|i| i.key == "scan.pdf").unwrap();
+    assert!(scan.reason.contains("no text layer"), "{}", scan.reason);
     assert!(
         !report
             .skipped
@@ -523,7 +536,7 @@ async fn saving_a_source_validates_its_inputs() {
         ("blank name", with(|b| b.name = "  ".into())),
         ("unknown storage", with(|b| b.storage_config_id = "nope".into())),
         ("traversal", with(|b| b.prefix = "a/../b".into())),
-        ("pdf type", with(|b| b.extensions = vec!["pdf".into()])),
+        ("unsupported type", with(|b| b.extensions = vec!["exe".into()])),
         ("bad schedule", with(|b| b.schedule = Some("weekly".into()))),
         ("bad scope", with(|b| b.scope = Some("personal".into()))),
     ] {
@@ -597,7 +610,7 @@ async fn the_import_lifecycle_also_works_on_mysql() {
     storage.put("keep.md", b"keepmysqlword", 1);
     storage.put("gone.md", b"gonemysqlword", 1);
     storage.put("sub/nested.docx", &docx("nestedmysqlword"), 1);
-    storage.put("skip.pdf", b"%PDF-1.4", 1);
+    storage.put("skip.png", b"png", 1);
     let source = make_source(&svc).await;
 
     let first = sync(&svc, &source.id).await;

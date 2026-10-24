@@ -524,11 +524,32 @@ enum RemoteFailure {
     Other(DevopsError),
 }
 
+/// How long one request may take. A fixed 30 seconds gave up on the bundled CPU embedding server long before it
+/// finished an ordinary batch: it needs about a second and a half per chunk when it has the machine to itself, so
+/// 32 chunks take around a minute, and several of them in flight at once each take several times that. Timing
+/// out does not cancel the work on the server, so every give-up also left that work running and made the next
+/// attempt slower. The allowance therefore grows with the batch; a server that is down is still caught by the
+/// 5 second connect timeout.
+fn request_timeout(inputs: usize) -> std::time::Duration {
+    std::time::Duration::from_secs(60 + 20 * inputs as u64)
+}
+
+/// Requests in flight to the embedding server across the whole process. Each document brings `REMOTE_CONCURRENCY`
+/// batches and two documents index at once, so without a shared cap eight requests sat at the server together. A
+/// CPU-only server does not get faster for it: measured with four 32-chunk requests at once, they finished after
+/// 317-478 s, against 52 s for one alone. Waiting here instead keeps that time out of the request, so the timeout
+/// measures the server, not the queue.
+const EMBED_IN_FLIGHT: usize = 2;
+static EMBED_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(EMBED_IN_FLIGHT);
+
 async fn embed_remote_once(config: &EmbeddingConfig, inputs: &[String]) -> Result<Vec<Vec<f32>>, RemoteFailure> {
+    let _slot = EMBED_SLOTS
+        .acquire()
+        .await
+        .expect("the embedding semaphore is never closed");
     static CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
         reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
-            .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("embedding HTTP client configuration is valid")
     });
@@ -541,11 +562,21 @@ async fn embed_remote_once(config: &EmbeddingConfig, inputs: &[String]) -> Resul
     if !key.is_empty() {
         req = req.bearer_auth(key);
     }
+    req = req.timeout(request_timeout(inputs.len()));
 
     let resp = match req.send().await {
         Ok(resp) => resp,
         Err(e) => {
-            let error = DevopsError::Internal(format!("embedding request failed: {e}"));
+            // reqwest's own message stops at "error sending request"; the cause (timed out, connection reset,
+            // refused) is what an administrator needs, and is recorded on the document.
+            let mut reason = e.to_string();
+            let mut source = std::error::Error::source(&e);
+            while let Some(cause) = source {
+                reason.push_str(": ");
+                reason.push_str(&cause.to_string());
+                source = cause.source();
+            }
+            let error = DevopsError::Internal(format!("embedding request failed: {reason}"));
             // A server that cuts the connection while we are still sending the body is refusing its size;
             // an unreachable or slow server is not helped by smaller batches.
             return Err(if e.is_connect() || e.is_timeout() {
@@ -754,6 +785,14 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+
+    #[test]
+    fn the_request_allowance_grows_with_the_batch() {
+        assert_eq!(request_timeout(1).as_secs(), 80);
+        // A full batch sharing a CPU-only server with another one (measured: 52 s alone, ~200 s with three
+        // others in flight) must still fit.
+        assert!(request_timeout(REMOTE_BATCH).as_secs() >= 600);
+    }
 
     #[test]
     fn pack_unpack_roundtrip() {

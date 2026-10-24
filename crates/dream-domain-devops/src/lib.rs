@@ -40,6 +40,7 @@ pub mod office_service;
 pub mod office_session;
 mod office_text;
 pub mod onnxruntime;
+mod pdf_text;
 pub mod provider_channel;
 pub mod proxy_usage;
 mod query_embedding;

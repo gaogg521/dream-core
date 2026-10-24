@@ -43,12 +43,14 @@ const SCHEDULER_TICK: std::time::Duration = std::time::Duration::from_secs(60);
 
 const TEXT_EXTENSIONS: [&str; 6] = ["md", "markdown", "txt", "csv", "html", "htm"];
 const OFFICE_EXTENSIONS: [&str; 3] = ["docx", "pptx", "xlsx"];
+const PDF_EXTENSION: &str = "pdf";
 
 /// What the server can read the text of today.
 pub fn supported_extensions() -> Vec<&'static str> {
     TEXT_EXTENSIONS
         .iter()
         .chain(OFFICE_EXTENSIONS.iter())
+        .chain(std::iter::once(&PDF_EXTENSION))
         .copied()
         .collect()
 }
@@ -176,6 +178,8 @@ fn html_to_text(html: &str) -> String {
 fn extract_text(extension: &str, bytes: &[u8]) -> Result<String, DevopsError> {
     let text = if OFFICE_EXTENSIONS.contains(&extension) {
         crate::office_text::extract(bytes, extension)?
+    } else if extension == PDF_EXTENSION {
+        crate::pdf_text::extract(bytes)?
     } else if matches!(extension, "html" | "htm") {
         html_to_text(&String::from_utf8_lossy(bytes))
     } else {
@@ -660,13 +664,6 @@ impl DevopsService {
             }
             seen.insert(entry.key.clone());
             let extension = extension_of(&name);
-            if extension == "pdf" {
-                skipped.push(
-                    &entry.key,
-                    "PDF: the server cannot read PDF text yet, so it was not imported",
-                );
-                continue;
-            }
             let known = supported_extensions().contains(&extension.as_str());
             if !known {
                 skipped.push(&entry.key, "file type is not supported for import");

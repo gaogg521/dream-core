@@ -33,6 +33,7 @@ zip.workspace = true
 jsonwebtoken.workspace = true
 quick-xml.workspace = true
 calamine.workspace = true
+pdf-extract.workspace = true
 # ONNX Runtime is loaded at run time from a shared library shipped next to the
 # binary (see `src/onnxruntime.rs`), not linked in: the prebuilt static ort
 # libraries need a newer glibc/libstdc++/MSVC CRT than the release builds target,
