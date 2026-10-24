@@ -677,13 +677,17 @@ impl PlatformService {
                 &db_params![tenant_id],
             )
             .await?;
-        Ok(match row {
+        let mut dto = match row {
             Some((kind, endpoint, secret_encrypted, enabled, updated_at)) => SiemConfigDto {
                 kind,
                 endpoint,
                 has_secret: secret_encrypted.is_some(),
                 enabled,
                 updated_at: Some(updated_at),
+                last_forward_at: None,
+                last_forward_status: None,
+                last_forward_error: None,
+                forwarded_total: 0,
             },
             None => SiemConfigDto {
                 kind: None,
@@ -691,8 +695,19 @@ impl PlatformService {
                 has_secret: false,
                 enabled: false,
                 updated_at: None,
+                last_forward_at: None,
+                last_forward_status: None,
+                last_forward_error: None,
+                forwarded_total: 0,
             },
-        })
+        };
+        if let Some((at, status, error, total)) = self.siem_delivery_state(tenant_id).await? {
+            dto.last_forward_at = at;
+            dto.last_forward_status = status;
+            dto.last_forward_error = error;
+            dto.forwarded_total = total;
+        }
+        Ok(dto)
     }
 
     /// `secret` absent/empty = keep the stored one (if any).
@@ -712,12 +727,27 @@ impl PlatformService {
             )
             .await?
             .flatten();
+        let was_enabled: bool = self
+            .db
+            .fetch_optional_scalar::<bool>(
+                "SELECT enabled FROM one_siem_config WHERE tenant_id = ?",
+                &db_params![tenant_id],
+            )
+            .await?
+            .unwrap_or(false);
         let secret_encrypted = match secret {
             Some(s) if !s.is_empty() => {
                 Some(encrypt_string(s, &self.encryption_key).map_err(|e| PlatformError::Internal(e.to_string()))?)
             }
             _ => existing,
         };
+        if enabled && !was_enabled {
+            // Export starts from the moment it is switched on, not from wherever
+            // an earlier run stopped before it was switched off.
+            self.db
+                .execute("DELETE FROM one_siem_cursor WHERE tenant_id = ?", &db_params![tenant_id])
+                .await?;
+        }
         self.upsert(
             "INSERT INTO one_siem_config (tenant_id, kind, endpoint, secret_encrypted, enabled, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?) \

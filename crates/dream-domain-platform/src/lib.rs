@@ -21,6 +21,7 @@ mod secure_export_routes;
 mod secure_export_tests;
 pub mod service;
 pub mod siem;
+mod siem_forward;
 pub mod state;
 pub mod storage_driver;
 pub mod storage_s3;

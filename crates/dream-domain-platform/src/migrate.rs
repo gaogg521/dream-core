@@ -71,6 +71,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("021_secure_export", include_str!("../migrations/021_secure_export.sql")),
     ("022_scene_prompt", include_str!("../migrations/022_scene_prompt.sql")),
     ("023_scene_intent", include_str!("../migrations/023_scene_intent.sql")),
+    ("024_siem_cursor", include_str!("../migrations/024_siem_cursor.sql")),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -151,6 +152,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "023_scene_intent",
         include_str!("../migrations_mysql/023_scene_intent.sql"),
+    ),
+    (
+        "024_siem_cursor",
+        include_str!("../migrations_mysql/024_siem_cursor.sql"),
     ),
 ];
 

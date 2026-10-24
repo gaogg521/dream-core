@@ -54,6 +54,14 @@ pub struct SiemConfigDto {
     pub has_secret: bool,
     pub enabled: bool,
     pub updated_at: Option<i64>,
+    /// When the forwarder last ran for this company, and how it went; `None`
+    /// until it has run once.
+    pub last_forward_at: Option<i64>,
+    /// `"ok"` or `"error"`.
+    pub last_forward_status: Option<String>,
+    pub last_forward_error: Option<String>,
+    /// Audit events delivered since export was first switched on.
+    pub forwarded_total: i64,
 }
 
 /// One row of the resource-authorization matrix (E5): `subject` (a member or

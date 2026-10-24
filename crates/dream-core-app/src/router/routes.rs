@@ -4123,6 +4123,9 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         ));
         one_devops_service.set_rag_source_root(services.data_dir.join("knowledge-sources"));
         one_devops_service.spawn_import_scheduler();
+        // A saved SIEM endpoint only matters if events actually reach it; same
+        // single-process rule as the import scheduler.
+        one_platform_service.spawn_siem_forwarder();
     }
 
     #[cfg(feature = "enterprise")]
