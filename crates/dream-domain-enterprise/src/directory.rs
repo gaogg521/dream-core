@@ -134,12 +134,35 @@ impl EnterpriseService {
         enterprise_id: &str,
         input: &DirectorySyncInput,
     ) -> Result<DirectorySyncReport, EnterpriseError> {
+        self.apply_directory_snapshot_at(enterprise_id, input, now_ms() as i64)
+            .await
+    }
+
+    async fn apply_directory_snapshot_at(
+        &self,
+        enterprise_id: &str,
+        input: &DirectorySyncInput,
+        clock_ms: i64,
+    ) -> Result<DirectorySyncReport, EnterpriseError> {
+        // Keep chunked pulls on this service from interleaving. This lock does
+        // not hold a database writer while other requests use the database.
+        let _sync = self.directory_sync_lock.lock().await;
         let pool = &self.db;
-        // Computed once and reused by every chunk below. The completeness pass
-        // identifies absent people by `last_seen_at < now`, which is only exact
-        // because every row this run touches carries this same stamp — so the
-        // value must not be re-read per chunk.
-        let now = now_ms() as i64;
+        // A wall-clock millisecond is not a run identifier: consecutive pulls
+        // can share it, and the clock can move backwards. Include persisted
+        // rows (also from interrupted/partial pulls), so restarting the service
+        // cannot reuse an earlier stamp. Every chunk must share the new stamp.
+        let (last_stamp,) = pool
+            .fetch_one_as::<(i64,)>(
+                "SELECT COALESCE(MAX(stamp), 0) FROM (                 SELECT MAX(last_seen_at) AS stamp FROM one_directory_people WHERE enterprise_id = ?                  UNION ALL SELECT MAX(last_seen_at) AS stamp FROM one_directory_departments WHERE enterprise_id = ?                  UNION ALL SELECT last_run_at AS stamp FROM one_directory_sync_state WHERE enterprise_id = ?) AS runs",
+                &db_params![enterprise_id, enterprise_id, enterprise_id],
+            )
+            .await?;
+        let now = clock_ms.max(
+            last_stamp
+                .checked_add(1)
+                .ok_or_else(|| EnterpriseError::Internal("directory sync timestamp exhausted".into()))?,
+        );
 
         for chunk in input.departments.chunks(DIRECTORY_WRITE_CHUNK) {
             let mut tx = pool.begin().await?;
@@ -531,6 +554,52 @@ mod tests {
             department_external_id: Some("od_1".into()),
             active,
         }
+    }
+
+    #[tokio::test]
+    async fn repeated_clock_ticks_and_clock_rollback_preserve_departures() {
+        let (svc, _) = service().await;
+        let first = snapshot(vec![person("present", true), person("leaving", true)], true);
+        svc.apply_directory_snapshot_at("ent1", &first, 1_000).await.unwrap();
+        let remaining = snapshot(vec![person("present", true)], true);
+        let absent = svc
+            .apply_directory_snapshot_at("ent1", &remaining, 1_000)
+            .await
+            .unwrap();
+        assert_eq!(absent.newly_missing, 1, "same-millisecond sync must detect departure");
+        let returned = svc.apply_directory_snapshot_at("ent1", &first, 999).await.unwrap();
+        assert_eq!(returned.returned, 1, "clock rollback must still detect return");
+        // Even after a process/service restart, persisted stamps must win over the clock.
+        let restarted = EnterpriseService::new(svc.db.clone());
+        let departed = restarted
+            .apply_directory_snapshot_at("ent1", &remaining, 998)
+            .await
+            .unwrap();
+        assert_eq!(departed.newly_missing, 1);
+        let mut incomplete = first.clone();
+        incomplete.complete = false;
+        let report = restarted
+            .apply_directory_snapshot_at("ent1", &incomplete, 997)
+            .await
+            .unwrap();
+        assert_eq!(report.returned, 0, "incomplete pulls cannot clear departure flags");
+        assert_eq!(report.newly_missing, 0);
+        let report = restarted
+            .apply_directory_snapshot_at("ent1", &remaining, 996)
+            .await
+            .unwrap();
+        assert_eq!(
+            report.returned, 0,
+            "a person seen only in a partial pull is still absent"
+        );
+        assert_eq!(
+            restarted
+                .apply_directory_snapshot_at("ent2", &first, 1)
+                .await
+                .unwrap()
+                .newly_missing,
+            0
+        );
     }
 
     /// A pull larger than one chunk must land completely, and the

@@ -25,6 +25,7 @@ pub const DEFAULT_TENANT_NAME: &str = "默认组织";
 
 pub struct EnterpriseService {
     pub(crate) db: DbPool,
+    pub(crate) directory_sync_lock: tokio::sync::Mutex<()>,
     session_revoker: std::sync::Arc<dyn SessionRevoker>,
     disband_cascade: std::sync::Arc<dyn CompanyDisbandCascade>,
 }
@@ -44,6 +45,7 @@ impl EnterpriseService {
     pub fn new(db: DbPool) -> Self {
         Self {
             db,
+            directory_sync_lock: tokio::sync::Mutex::new(()),
             session_revoker: std::sync::Arc::new(NoopSessionRevoker),
             disband_cascade: std::sync::Arc::new(NoopCompanyDisbandCascade),
         }
