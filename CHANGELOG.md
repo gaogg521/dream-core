@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.95](https://github.com/gaogg521/dream-core/compare/v0.1.94...v0.1.95) (2026-10-24)
+
+
+### Features
+
+* **knowledge:** import PDF text from file storage; embed large documents on a CPU server ([e23c751](https://github.com/gaogg521/dream-core/commit/e23c7516bf12b93cd66b23fc3e88a5cc4fb4d10b))
+* **platform:** forward the audit log to the company's SIEM ([79c2d23](https://github.com/gaogg521/dream-core/commit/79c2d2343a622dd703486ecd78ee6a9034b3ebc9))
+
+
+### Bug Fixes
+
+* **ai-agent:** enforce team MCP revocation for snapshots and cached tools ([540c75f](https://github.com/gaogg521/dream-core/commit/540c75fa141d8b4ca71160637dbb0e6c068cc12a))
+* **channel:** preserve expiry reason on repeated pairing approval ([828d61b](https://github.com/gaogg521/dream-core/commit/828d61b8ee6f85a250406c1d7b1fce98078ecf36))
+* **ci:** rustfmt the SIEM forwarder; patch crypto-bigint 0.7.x; record the 0.5.x exception ([7b7de2e](https://github.com/gaogg521/dream-core/commit/7b7de2e6695cca926a38b11f00fed363f58dc2b8))
+* **deps:** patch ctutils and tokio security advisories ([c4c71aa](https://github.com/gaogg521/dream-core/commit/c4c71aaaecfd070a52e2b9f06538a61043b40676))
+* **enterprise:** distinguish directory syncs within one clock tick ([a978e16](https://github.com/gaogg521/dream-core/commit/a978e164e0c12d64c0ef0b0419a2e236a2440a2c))
+* **skills:** resolve distributed skills and inject required team guidance ([27a8754](https://github.com/gaogg521/dream-core/commit/27a8754b47ec97b6fa63e86c91a0a69e83aeb88d))
+
 ## [0.1.94](https://github.com/gaogg521/dream-core/compare/v0.1.93...v0.1.94) (2026-10-23)
 
 
