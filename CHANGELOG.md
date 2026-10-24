@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.98](https://github.com/gaogg521/dream-core/compare/v0.1.97...v0.1.98) (2026-10-24)
+
+
+### Bug Fixes
+
+* **knowledge:** read big spreadsheets by their values; accept decks up to the upload limit ([dcc6920](https://github.com/gaogg521/dream-core/commit/dcc6920aec148fd3570f8791739307d9206c425c))
+
 ## [0.1.97](https://github.com/gaogg521/dream-core/compare/v0.1.96...v0.1.97) (2026-10-24)
 
 
