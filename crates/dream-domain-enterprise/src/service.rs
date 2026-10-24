@@ -2030,7 +2030,7 @@ mod tests {
         assert_eq!(result.deleted_project_group_ids, vec!["tenant-a", "tenant-b"]);
 
         // The cascade ran for THIS company, not some default/empty id.
-        assert_eq!(cascade.0.lock().unwrap().as_slice(), [ent.clone()]);
+        assert_eq!(cascade.0.lock().unwrap().as_slice(), std::slice::from_ref(&ent));
         // Both the admin and the SSO-synced member lost their sessions.
         let mut revoked = revoker.0.lock().unwrap().clone();
         revoked.sort();

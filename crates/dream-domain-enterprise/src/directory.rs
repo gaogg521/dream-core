@@ -808,7 +808,7 @@ mod tests {
         svc.apply_directory_snapshot("ent1", &snapshot(vec![], true))
             .await
             .unwrap();
-        bind_identity(svc, &sqlite, external_id, user_id).await;
+        bind_identity(svc, sqlite, external_id, user_id).await;
         sqlx::query(
             "INSERT INTO one_enterprise_members (user_id, enterprise_id, display_name, role, joined_at, updated_at) \
              VALUES (?, 'ent1', ?, 'member', 0, 0)",
