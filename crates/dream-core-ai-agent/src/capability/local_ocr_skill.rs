@@ -272,11 +272,10 @@ mod tests {
             Some(name) => assert!(is_bundled_local_ocr_skill(name)),
             // Only reachable on a platform the app does not ship; the callers
             // keep their image-unavailable path for it.
-            None => assert!(!cfg!(any(
-                target_os = "windows",
-                target_os = "macos",
-                target_os = "linux"
-            ))),
+            None => {
+                #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+                panic!("supported hosts must resolve a bundled OCR skill");
+            }
         }
     }
 }

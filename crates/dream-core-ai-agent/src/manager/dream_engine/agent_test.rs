@@ -463,23 +463,24 @@ mod turn_usage_frame {
 #[test]
 fn a_conversation_without_its_own_budget_still_gets_one() {
     assert_eq!(
-        Some(None::<usize>.unwrap_or(DEFAULT_MAX_TURNS_PER_TURN)),
+        Some(turn_budget(None)),
         Some(DEFAULT_MAX_TURNS_PER_TURN),
         "an unset per-conversation budget must fall back to the default"
     );
-    assert!(
-        DEFAULT_MAX_TURNS_PER_TURN >= 100,
-        "the budget is a runaway backstop, not a working limit — a hard task \
+    const {
+        assert!(
+            DEFAULT_MAX_TURNS_PER_TURN >= 100,
+            "the budget is a runaway backstop, not a working limit — a hard task \
          can legitimately spend 50-100 turns, so it must sit well clear of that"
-    );
+        );
+    }
 }
 
 /// A conversation that sets its own budget keeps it. The fallback must not
 /// quietly override an explicit choice.
 #[test]
 fn an_explicit_budget_is_not_overridden_by_the_default() {
-    let explicit = Some(7usize);
-    assert_eq!(explicit.unwrap_or(DEFAULT_MAX_TURNS_PER_TURN), 7);
+    assert_eq!(turn_budget(Some(7)), 7);
 }
 
 /// The idle limit bounds how long a single attempt may hang, which the turn

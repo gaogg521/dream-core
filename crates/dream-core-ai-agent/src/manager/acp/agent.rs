@@ -569,6 +569,7 @@ pub enum RequiredFullAutoApplication {
 }
 
 pub struct AcpAgentManager {
+    pub(super) team_mcp_guard: RwLock<Option<Arc<super::team_mcp_guard::TeamMcpGuard>>>,
     /// Pre-computed, immutable session parameters assembled by the factory.
     pub(super) params: Arc<AcpSessionParams>,
 
@@ -768,6 +769,7 @@ impl AcpAgentManager {
             domain_event_tx,
             pipeline,
             session_id_persisted: SessionIdPersistence::new(),
+            team_mcp_guard: RwLock::new(None),
         };
         Ok((manager, domain_event_rx, notification_rx))
     }
@@ -1601,6 +1603,9 @@ impl crate::agent_task::IAgentTask for AcpAgentManager {
 
     #[tracing::instrument(skip_all, fields(conversation_id = %self.params.conversation_id, msg_id = %data.msg_id))]
     async fn send_message(&self, data: SendMessageData) -> Result<(), AgentSendError> {
+        self.check_team_mcp_access()
+            .await
+            .map_err(AgentSendError::from_agent_error)?;
         self.runtime.bump_activity();
         info!(
             conversation_id = %self.params.conversation_id,
@@ -1801,6 +1806,9 @@ impl AcpAgentManager {
     /// separate from `send_message`: it belongs to the already-running turn
     /// and must not emit a second Start/Finish pair or reset runtime state.
     pub async fn deliver_midturn(&self, data: SendMessageData) -> Result<(), AgentSendError> {
+        self.check_team_mcp_access()
+            .await
+            .map_err(AgentSendError::from_agent_error)?;
         if !crate::agent_task::IAgentTask::supports_midturn_delivery(self) {
             return Err(AgentSendError::from_agent_error(AgentError::BadRequest(
                 "mid-turn delivery is not supported by this ACP backend".into(),

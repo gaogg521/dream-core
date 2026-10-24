@@ -5,7 +5,7 @@ mod acp_launch_policy;
 mod antigravity;
 mod context;
 pub(crate) mod dream_engine;
-mod session_mcp;
+pub(crate) mod session_mcp;
 
 use std::path::PathBuf;
 use std::sync::Arc;

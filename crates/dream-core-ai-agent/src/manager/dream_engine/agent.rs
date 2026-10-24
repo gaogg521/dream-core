@@ -59,6 +59,10 @@ use super::error::{engine_error_to_send_error, engine_runtime_error_summary};
 /// the user pressing stop.
 const DEFAULT_MAX_TURNS_PER_TURN: usize = 150;
 
+fn turn_budget(configured: Option<usize>) -> usize {
+    configured.unwrap_or(DEFAULT_MAX_TURNS_PER_TURN)
+}
+
 /// How long a turn may emit nothing, *with no tool running*, before we call it
 /// stalled.
 ///
@@ -417,7 +421,7 @@ impl DreamEngineAgentManager {
             // off *failing* tool calls, so a model that keeps making
             // successful-but-unproductive calls trips none of them and burns
             // tokens until the user notices and presses stop.
-            max_turns: Some(config_extra.max_turns.unwrap_or(DEFAULT_MAX_TURNS_PER_TURN)),
+            max_turns: Some(turn_budget(config_extra.max_turns)),
             max_tool_call_malformed_turns: config_extra.max_tool_call_malformed_turns,
             max_tool_call_failure_turns: config_extra.max_tool_call_failure_turns,
             system_prompt: config_extra.system_prompt.clone(),

@@ -466,15 +466,17 @@ pub(super) async fn build(
         .map(parse_acp_mcp_capabilities)
         .unwrap_or_default();
 
+    let mut team_mcp_ids = std::collections::HashSet::new();
     let user_mcp_servers = match deps.mcp_server_repo.as_ref() {
         Some(repo) => {
-            load_user_mcp_servers(
+            load_user_mcp_servers_with_grants(
                 repo.as_ref(),
                 config.mcp_server_ids.as_deref(),
                 &ctx.user_id,
                 &ctx.conversation_id,
                 &ctx.workspace,
                 &mcp_capabilities,
+                &mut team_mcp_ids,
             )
             .await
         }
@@ -503,8 +505,22 @@ pub(super) async fn build(
             );
             continue;
         }
+        let grant_id = if let Some(repo) = deps.mcp_server_repo.as_ref() {
+            match repo.find_by_id_any(&ctx.user_id, &server.id).await {
+                Ok(Some(row)) if super::session_mcp::is_team_mcp_row(&row) => Some(row.id),
+                Ok(_) => None,
+                Err(_) => continue,
+            }
+        } else {
+            None
+        };
         match session_server_to_sdk_mcp_server(server, &ctx.workspace, &ctx.conversation_id).await {
-            Ok(server) => session_mcp_servers.push(server),
+            Ok(server) => {
+                if let Some(id) = grant_id {
+                    team_mcp_ids.insert(id);
+                }
+                session_mcp_servers.push(server);
+            }
             Err(err) => {
                 warn!(
                     ctx.conversation_id,
@@ -545,6 +561,12 @@ pub(super) async fn build(
         AcpAgentManager::build(params, skill_mgr, &catalog_tx, deps.tool_call_security_gate.clone()).await?;
 
     let arc = Arc::new(agent);
+    if let Some(repo) = deps.mcp_server_repo.clone()
+        && let Err(error) = arc.install_team_mcp_guard(repo, team_mcp_ids).await
+    {
+        arc.kill_and_wait(None).await;
+        return Err(error);
+    }
     arc.start_permission_handler();
     arc.start_session_event_tracker(notification_rx);
     CatalogForwarder::spawn(
@@ -741,6 +763,7 @@ async fn resolve_builtin_managed_acp_command_spec(
 ///
 /// Which rows apply is `session_mcp::load_session_mcp_rows`'s call — one rule
 /// shared with the dream factory, including which built-ins ride along.
+#[cfg(test)]
 async fn load_user_mcp_servers(
     repo: &dyn IMcpServerRepository,
     selected_ids: Option<&[String]>,
@@ -748,6 +771,27 @@ async fn load_user_mcp_servers(
     conversation_id: &str,
     workspace: &str,
     capabilities: &AcpMcpCapabilities,
+) -> Vec<McpServer> {
+    load_user_mcp_servers_with_grants(
+        repo,
+        selected_ids,
+        user_id,
+        conversation_id,
+        workspace,
+        capabilities,
+        &mut Default::default(),
+    )
+    .await
+}
+
+async fn load_user_mcp_servers_with_grants(
+    repo: &dyn IMcpServerRepository,
+    selected_ids: Option<&[String]>,
+    user_id: &str,
+    conversation_id: &str,
+    workspace: &str,
+    capabilities: &AcpMcpCapabilities,
+    team_mcp_ids: &mut std::collections::HashSet<String>,
 ) -> Vec<McpServer> {
     let rows = load_session_mcp_rows(repo, selected_ids, user_id, conversation_id).await;
 
@@ -791,7 +835,12 @@ async fn load_user_mcp_servers(
             continue;
         }
         match row_to_sdk_mcp_server(&row, workspace, conversation_id).await {
-            Ok(server) => servers.push(server),
+            Ok(server) => {
+                if super::session_mcp::is_team_mcp_row(&row) {
+                    team_mcp_ids.insert(row.id);
+                }
+                servers.push(server);
+            }
             Err(err) => {
                 warn!(
                     conversation_id,
@@ -1818,6 +1867,41 @@ mod tests {
 
         let servers = load_user_mcp_servers(repo.as_ref(), None, TEST_USER_ID, "conv-1", "/tmp/ws", &caps).await;
         assert!(servers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn selected_company_ids_are_captured_with_the_injected_rows() {
+        let mut company = make_row(
+            "held-company",
+            "stdio",
+            r#"{"command":"node","args":[],"env":{}}"#,
+            true,
+            false,
+        );
+        company.original_json = Some(r#"{"teamRegistryId":"qa-held"}"#.into());
+        let expected = company.id.clone();
+        let repo = MockRepo {
+            rows: vec![company],
+            fail: false,
+        };
+        let caps = AcpMcpCapabilities {
+            stdio: true,
+            http: true,
+            sse: true,
+        };
+        let mut ids = std::collections::HashSet::new();
+        let servers = load_user_mcp_servers_with_grants(
+            &repo,
+            Some(std::slice::from_ref(&expected)),
+            TEST_USER_ID,
+            "qa-held",
+            "/tmp/ws",
+            &caps,
+            &mut ids,
+        )
+        .await;
+        assert_eq!(servers.len(), 1);
+        assert_eq!(ids, std::collections::HashSet::from([expected]));
     }
 
     /// Antigravity arrives on the ACP factory because the renderer puts every

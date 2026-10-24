@@ -1207,7 +1207,7 @@ mod extra_headers_tests {
             None,
             "personal providers must not carry internal headers"
         );
-        assert_eq!(resolve_extra_headers("prov_chan_fake", "conv-42").is_some(), true,);
+        assert!(resolve_extra_headers("prov_chan_fake", "conv-42").is_some());
     }
 }
 

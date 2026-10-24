@@ -14,6 +14,7 @@ pub(crate) mod mode_normalize;
 pub mod permission_router;
 pub mod session;
 mod stderr_error_extractor;
+mod team_mcp_guard;
 mod vision_image_hook;
 
 pub use agent::AcpAgentManager;
