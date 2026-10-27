@@ -420,10 +420,112 @@ async fn handle_proxy(
         conversation_id,
         user_ip,
     );
-    let stream = crate::proxy_usage::UsageTapStream::new(upstream.bytes_stream().map_err(std::io::Error::other), tap);
+    let observed = ObservedStream::new(
+        upstream.bytes_stream().map_err(std::io::Error::other),
+        channel.id.clone(),
+        channel.user_id.clone(),
+    );
+    let stream = crate::proxy_usage::UsageTapStream::new(observed, tap);
     builder
         .body(Body::from_stream(stream))
         .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
+}
+
+/// Leaves a trace when a proxied response does not finish cleanly, which used to
+/// be invisible: only a failed `send()` was logged, so a stream that broke
+/// halfway (an upstream reset, or the client / a gateway in front closing the
+/// connection) left nothing to tell the two apart.
+///
+/// * the upstream body errors  → `warn`, with the error's whole source chain;
+/// * the response is dropped before the upstream finished → `info`: whoever
+///   consumes this response (the member's client, Caddy, a load balancer) went
+///   away first. Not an upstream failure.
+///
+/// Logs carry ids, elapsed time and byte counts only — never request or
+/// response content.
+struct ObservedStream<S> {
+    inner: S,
+    channel_id: String,
+    user_id: String,
+    started: std::time::Instant,
+    bytes: u64,
+    done: bool,
+}
+
+impl<S> ObservedStream<S> {
+    fn new(inner: S, channel_id: String, user_id: String) -> Self {
+        Self {
+            inner,
+            channel_id,
+            user_id,
+            started: std::time::Instant::now(),
+            bytes: 0,
+            done: false,
+        }
+    }
+}
+
+/// `a: b: c` for an error and every cause under it; `io::Error::other(reqwest_err)`
+/// alone prints only the outermost layer.
+fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts = vec![err.to_string()];
+    let mut source = err.source();
+    while let Some(cause) = source {
+        parts.push(cause.to_string());
+        source = cause.source();
+    }
+    parts.join(": ")
+}
+
+impl<S> futures_util::Stream for ObservedStream<S>
+where
+    S: futures_util::Stream<Item = std::io::Result<axum::body::Bytes>> + Unpin,
+{
+    type Item = std::io::Result<axum::body::Bytes>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        use std::task::Poll;
+        match std::pin::Pin::new(&mut self.inner).poll_next(cx) {
+            Poll::Ready(Some(Ok(bytes))) => {
+                self.bytes += bytes.len() as u64;
+                Poll::Ready(Some(Ok(bytes)))
+            }
+            Poll::Ready(Some(Err(err))) => {
+                self.done = true;
+                warn!(
+                    channel_id = %self.channel_id,
+                    user_id = %self.user_id,
+                    elapsed_ms = self.started.elapsed().as_millis() as u64,
+                    bytes_forwarded = self.bytes,
+                    error = %error_chain(&err),
+                    "model_proxy: upstream response stream failed mid-body"
+                );
+                Poll::Ready(Some(Err(err)))
+            }
+            Poll::Ready(None) => {
+                self.done = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<S> Drop for ObservedStream<S> {
+    fn drop(&mut self) {
+        if !self.done {
+            tracing::info!(
+                channel_id = %self.channel_id,
+                user_id = %self.user_id,
+                elapsed_ms = self.started.elapsed().as_millis() as u64,
+                bytes_forwarded = self.bytes,
+                "model_proxy: response dropped before the upstream finished; the consumer closed first"
+            );
+        }
+    }
 }
 
 // ---------- Bedrock channels: server-side SigV4 re-signing ----------
@@ -740,7 +842,12 @@ async fn handle_bedrock_proxy(
         conversation_id_header(&headers),
         client_ip_header(&headers),
     );
-    let stream = crate::proxy_usage::UsageTapStream::new(upstream.bytes_stream().map_err(std::io::Error::other), tap);
+    let observed = ObservedStream::new(
+        upstream.bytes_stream().map_err(std::io::Error::other),
+        channel.id.clone(),
+        channel.user_id.clone(),
+    );
+    let stream = crate::proxy_usage::UsageTapStream::new(observed, tap);
     builder
         .body(Body::from_stream(stream))
         .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())

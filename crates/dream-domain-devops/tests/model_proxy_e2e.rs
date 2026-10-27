@@ -157,6 +157,165 @@ async fn fixture_with_platform_and_base_path(platform: &str, base_path: &str) ->
     }
 }
 
+/// A vendor that streams with long pauses, breaks mid-body, or reports the size
+/// of the request it was sent — the shapes a long agent task produces.
+async fn spawn_streaming_upstream() -> SocketAddr {
+    use axum::body::Bytes;
+    use futures_util::stream;
+
+    async fn handle(Path(path): Path<String>, body: Bytes) -> Response {
+        match path.as_str() {
+            "v1/slow" => {
+                let chunks = stream::unfold(0u8, |i| async move {
+                    if i >= 3 {
+                        return None;
+                    }
+                    if i > 0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    }
+                    Some((
+                        Ok::<_, std::io::Error>(Bytes::from(format!("data: chunk-{i}\n\n"))),
+                        i + 1,
+                    ))
+                });
+                ([("content-type", "text/event-stream")], Body::from_stream(chunks)).into_response()
+            }
+            "v1/broken" => {
+                // Headers and a first frame go out, then the vendor dies mid-answer.
+                let chunks = stream::unfold(0u8, |i| async move {
+                    match i {
+                        0 => Some((
+                            Ok::<_, std::io::Error>(Bytes::from(
+                                "data: first
+
+",
+                            )),
+                            1,
+                        )),
+                        1 => {
+                            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                            Some((Err(std::io::Error::other("upstream went away")), 2))
+                        }
+                        _ => None,
+                    }
+                });
+                ([("content-type", "text/event-stream")], Body::from_stream(chunks)).into_response()
+            }
+            "v1/size" => body.len().to_string().into_response(),
+            _ => StatusCode::NOT_FOUND.into_response(),
+        }
+    }
+
+    let app = Router::new()
+        .route("/{*path}", any(handle))
+        // The default 2 MiB limit would make this vendor hang up on a long task's request.
+        .layer(axum::extract::DefaultBodyLimit::disable());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    addr
+}
+
+/// A proxy channel in front of `addr`, for tests that bring their own upstream.
+async fn proxy_in_front_of(addr: SocketAddr) -> (Router, String, String) {
+    let svc = service().await;
+    let channel = svc
+        .upsert_provider_channel(
+            None,
+            "corp-gateway",
+            "openai",
+            &format!("http://{addr}"),
+            Some(COMPANY_SECRET),
+            r#"["gpt-image-2","claude"]"#,
+            None,
+            None,
+            true,
+            "org",
+            None,
+            "all",
+            "admin1",
+        )
+        .await
+        .unwrap();
+    let token = svc.issue_channel_token("admin1", &channel.id).await.unwrap().token;
+    let app = model_proxy_routes(OneDevopsRouterState::new(Arc::new(svc)));
+    (app, channel.id, token)
+}
+
+fn proxied_post(channel_id: &str, token: &str, path: &str, body: String) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!("/api/one/model-proxy/{channel_id}/{path}"))
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_stream_with_long_pauses_between_chunks_arrives_whole_and_in_order() {
+    let (app, channel_id, token) = proxy_in_front_of(spawn_streaming_upstream().await).await;
+    let started = std::time::Instant::now();
+    let response = app
+        .oneshot(proxied_post(
+            &channel_id,
+            &token,
+            "v1/slow",
+            r#"{"model":"claude","stream":true}"#.into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+    assert_eq!(&bytes[..], b"data: chunk-0\n\ndata: chunk-1\n\ndata: chunk-2\n\n");
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(3000),
+        "the pauses must be real, not buffered away"
+    );
+}
+
+#[tokio::test]
+async fn a_request_body_past_the_probe_limit_reaches_the_vendor_intact() {
+    let (app, channel_id, token) = proxy_in_front_of(spawn_streaming_upstream().await).await;
+    // A long agent task carries its whole history: well past the 8 MiB probe cap.
+    let body = format!(
+        r#"{{"model":"claude","stream":false,"pad":"{}"}}"#,
+        "x".repeat(9 * 1024 * 1024)
+    );
+    let sent = body.len();
+    let response = app
+        .oneshot(proxied_post(&channel_id, &token, "v1/size", body))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 64).await.unwrap();
+    assert_eq!(String::from_utf8_lossy(&bytes), sent.to_string());
+}
+
+#[tokio::test]
+async fn an_upstream_that_breaks_mid_stream_fails_the_client_promptly_instead_of_hanging() {
+    let (app, channel_id, token) = proxy_in_front_of(spawn_streaming_upstream().await).await;
+    let response = app
+        .oneshot(proxied_post(
+            &channel_id,
+            &token,
+            "v1/broken",
+            r#"{"model":"claude","stream":true}"#.into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let read = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        axum::body::to_bytes(response.into_body(), 4096),
+    )
+    .await
+    .expect("a broken upstream stream must not leave the client waiting");
+    assert!(read.is_err(), "the client must see the break, not a clean end");
+}
+
 #[tokio::test]
 async fn anthropic_gateway_rejects_a_model_outside_its_channel_allowlist() {
     let f = fixture_with_platform("anthropic").await;
