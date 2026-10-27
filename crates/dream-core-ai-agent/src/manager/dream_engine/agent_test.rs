@@ -14,6 +14,108 @@ use super::*;
 use crate::agent_task::IAgentTask;
 use crate::protocol::events::FinishEventData;
 
+struct BlockingMcpClose {
+    started: std::sync::Arc<tokio::sync::Notify>,
+    release: std::sync::Arc<tokio::sync::Notify>,
+    closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl dream_engine_mcp::transport::McpTransport for BlockingMcpClose {
+    async fn request(
+        &self,
+        _: &dream_engine_mcp::protocol::JsonRpcRequest,
+    ) -> Result<dream_engine_mcp::protocol::JsonRpcResponse, dream_engine_mcp::transport::McpError> {
+        unreachable!("teardown fixture never serves tools")
+    }
+    async fn notify(
+        &self,
+        _: &dream_engine_mcp::protocol::JsonRpcRequest,
+    ) -> Result<(), dream_engine_mcp::transport::McpError> {
+        Ok(())
+    }
+    async fn close(&self) -> Result<(), dream_engine_mcp::transport::McpError> {
+        if !self.closed.load(std::sync::atomic::Ordering::SeqCst) {
+            self.started.notify_one();
+            self.release.notified().await;
+            self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn retained_agent_arcs_do_not_keep_mcp_alive_after_kill_and_wait() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut agent = DreamEngineAgentManager::new(
+        "mcp-close".into(),
+        "/project".into(),
+        make_test_config(),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    agent.mcp_managers.push(Arc::new(McpManager::new_for_test(vec![(
+        "fixture",
+        false,
+        Box::new(BlockingMcpClose {
+            started: started.clone(),
+            release: release.clone(),
+            closed: closed.clone(),
+        }),
+    )])));
+    let retained = Arc::new(agent);
+    let wait = tokio::spawn(retained.kill_and_wait(Some(AgentKillReason::RuntimeRestart)));
+    timeout(Duration::from_secs(1), started.notified()).await.unwrap();
+    assert!(!wait.is_finished(), "teardown returned before MCP close");
+    release.notify_one();
+    wait.await.unwrap();
+    assert!(closed.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(Arc::strong_count(&retained), 1);
+}
+
+#[tokio::test]
+async fn dropping_agent_closes_mcp_even_with_an_external_manager_arc() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let manager = Arc::new(McpManager::new_for_test(vec![(
+        "fixture",
+        false,
+        Box::new(BlockingMcpClose {
+            started: started.clone(),
+            release: release.clone(),
+            closed: closed.clone(),
+        }),
+    )]));
+    let mut agent = DreamEngineAgentManager::new(
+        "mcp-drop".into(),
+        "/project".into(),
+        make_test_config(),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    agent.mcp_managers.push(manager.clone());
+    drop(agent);
+    timeout(Duration::from_secs(1), started.notified()).await.unwrap();
+    release.notify_one();
+    timeout(Duration::from_secs(1), async {
+        while !closed.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(Arc::strong_count(&manager), 1);
+}
+
 async fn assert_no_stop_signal(agent: &DreamEngineAgentManager) {
     let notified = agent.cancel_notify.notified();
     tokio::pin!(notified);

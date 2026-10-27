@@ -235,6 +235,8 @@ async fn create_user_inner(state: &OneSsoRouterState, body: Value) -> Result<(St
     }
 
     let profile = ProviderUserInfo {
+        employee_no: None,
+        enterprise_email: None,
         external_id: external_id.clone(),
         preferred_username: display_name.clone(),
         org_unit_path: None,

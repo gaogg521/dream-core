@@ -837,6 +837,11 @@ impl PlatformService {
         if subject_id.is_empty() {
             return Err(PlatformError::BadRequest("subject id must not be empty".into()));
         }
+        if resource_type == "mcp" && resource_id == GRANT_ALL_RESOURCES {
+            return Err(PlatformError::BadRequest(
+                "MCP_WILDCARD_FORBIDDEN: grant individual MCP servers only".into(),
+            ));
+        }
         if resource_id.is_empty() {
             return Err(PlatformError::BadRequest("resource id must not be empty".into()));
         }
@@ -1051,6 +1056,9 @@ impl PlatformService {
         }
         for (resource_id,) in self.db.fetch_all_as::<(String,)>(&sql, &params).await? {
             if resource_id == GRANT_ALL_RESOURCES {
+                if resource_type == "mcp" {
+                    continue;
+                }
                 *all = true;
                 return Ok(());
             }
@@ -1132,7 +1140,7 @@ impl PlatformService {
         // a row — so "fail to the historical behavior" here means
         // Restrictive, always. No mode row for 'employee' is honored; the
         // enforcement in dream-domain-employee never consults this table.
-        if resource_type == "employee" {
+        if matches!(resource_type, "employee" | "mcp") {
             return GrantMode::Restrictive;
         }
         let row: Result<Option<String>, _> = self
@@ -1177,7 +1185,13 @@ impl PlatformService {
                     .find(|(rt, ..)| rt == resource_type)
                     .map(|(rt, mode, by, at)| GrantModeDto {
                         resource_type: rt.clone(),
-                        mode: GrantMode::from_str_lossy(mode).as_str().to_owned(),
+                        mode: if matches!(*resource_type, "employee" | "mcp") {
+                            GrantMode::Restrictive
+                        } else {
+                            GrantMode::from_str_lossy(mode)
+                        }
+                        .as_str()
+                        .to_owned(),
                         updated_by: by.clone(),
                         updated_at: *at,
                     })
@@ -1186,7 +1200,7 @@ impl PlatformService {
                     // of any stray row in the table.
                     .unwrap_or_else(|| GrantModeDto {
                         resource_type: (*resource_type).to_owned(),
-                        mode: if *resource_type == "employee" {
+                        mode: if matches!(*resource_type, "employee" | "mcp") {
                             GrantMode::Restrictive
                         } else {
                             GrantMode::Additive
@@ -1212,6 +1226,11 @@ impl PlatformService {
             return Err(PlatformError::BadRequest(format!(
                 "unknown resource type '{resource_type}'"
             )));
+        }
+        if resource_type == "mcp" && mode != GrantMode::Restrictive {
+            return Err(PlatformError::BadRequest(
+                "MCP wildcard/additive distribution is disabled".into(),
+            ));
         }
         let now = now_ms();
         self.upsert(
@@ -1264,8 +1283,8 @@ impl PlatformService {
     /// the practical effect those bundles deliver.
     const BUILTIN_SCENE_GRANTS: [(&'static str, &'static [&'static str]); 5] = [
         ("办公", &["skill", "model_channel"]),
-        ("IT运维", &["skill", "mcp", "model_channel"]),
-        ("网络安全", &["mcp", "knowledge"]),
+        ("IT运维", &["skill", "model_channel"]),
+        ("网络安全", &["knowledge"]),
         ("新媒体运营", &["skill"]),
         ("市场营销", &["skill", "model_channel"]),
     ];
@@ -1642,6 +1661,48 @@ impl PlatformService {
             .into_iter()
             .find(|p| p.id == id)
             .ok_or_else(|| PlatformError::NotFound("im pipeline not found".into()))
+    }
+
+    pub async fn get_laboratory_settings(
+        &self,
+        tenant: &str,
+    ) -> Result<crate::models::LaboratorySettingsDto, PlatformError> {
+        let value: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT enabled_features_json FROM one_laboratory_settings WHERE tenant_id = ?",
+                &db_params![tenant],
+            )
+            .await?;
+        match value {
+            None => Ok(Default::default()),
+            Some(value) => serde_json::from_str(&value).map_err(|e| PlatformError::Internal(e.to_string())),
+        }
+    }
+
+    pub async fn set_laboratory_settings(
+        &self,
+        tenant: &str,
+        settings: &crate::models::LaboratorySettingsDto,
+    ) -> Result<crate::models::LaboratorySettingsDto, PlatformError> {
+        const KNOWN: &[&str] = &["im-channels", "integrations", "container", "collaboration"];
+        if settings
+            .enabled_features
+            .iter()
+            .any(|key| !KNOWN.contains(&key.as_str()))
+        {
+            return Err(PlatformError::BadRequest("Unknown laboratory capability".into()));
+        }
+        let mut settings = settings.clone();
+        settings.enabled_features.sort();
+        settings.enabled_features.dedup();
+        let value = serde_json::to_string(&settings).map_err(|e| PlatformError::Internal(e.to_string()))?;
+        self.upsert(
+            "INSERT INTO one_laboratory_settings (tenant_id, enabled_features_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(tenant_id) DO UPDATE SET enabled_features_json=excluded.enabled_features_json, updated_at=excluded.updated_at",
+            "INSERT INTO one_laboratory_settings (tenant_id, enabled_features_json, updated_at) VALUES (?, ?, ?) AS new ON DUPLICATE KEY UPDATE enabled_features_json=new.enabled_features_json, updated_at=new.updated_at",
+            &db_params![tenant, value, now_ms()],
+        ).await?;
+        Ok(settings)
     }
 
     pub async fn get_console_settings(&self, tenant_id: &str) -> Result<ConsoleSettingsDto, PlatformError> {
@@ -5772,6 +5833,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn laboratory_defaults_closed_is_tenant_scoped_and_rejects_unknown_flags() {
+        let (_db, service) = setup().await;
+        assert!(
+            service
+                .get_laboratory_settings("t1")
+                .await
+                .unwrap()
+                .enabled_features
+                .is_empty()
+        );
+        let on = crate::models::LaboratorySettingsDto {
+            enabled_features: vec!["im-channels".into()],
+        };
+        service.set_laboratory_settings("t1", &on).await.unwrap();
+        assert_eq!(service.get_laboratory_settings("t1").await.unwrap(), on);
+        assert!(
+            service
+                .get_laboratory_settings("t2")
+                .await
+                .unwrap()
+                .enabled_features
+                .is_empty()
+        );
+        assert!(
+            service
+                .set_laboratory_settings(
+                    "t1",
+                    &crate::models::LaboratorySettingsDto {
+                        enabled_features: vec!["unknown".into()]
+                    }
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(service.get_laboratory_settings("t1").await.unwrap(), on);
+        service
+            .set_laboratory_settings("t1", &Default::default())
+            .await
+            .unwrap();
+        assert!(
+            service
+                .get_laboratory_settings("t1")
+                .await
+                .unwrap()
+                .enabled_features
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn im_pipelines_and_console_settings_roundtrip() {
         let (_db, service) = setup().await;
         let created = service
@@ -6803,13 +6914,13 @@ mod tests {
     async fn builtin_package_seeding_is_idempotent_across_relists() {
         let (_db, service) = setup().await;
         service.list_scenes("t1").await.unwrap();
-        // 2 + 3 + 2 + 1 + 2 = one '*' row per entry of BUILTIN_SCENE_GRANTS.
+        // MCP requires explicit grants; the remaining built-in packages contain eight entries.
         let before = service
             .list_grants("t1", Some("scene"), None, None)
             .await
             .unwrap()
             .len();
-        assert_eq!(before, 10);
+        assert_eq!(before, 8);
 
         service.list_scenes("t1").await.unwrap();
         service.list_scenes("t1").await.unwrap();
@@ -6851,7 +6962,7 @@ mod tests {
                 .await
                 .unwrap()
                 .len(),
-            3,
+            2,
             "other scenes' packages are untouched"
         );
     }
@@ -6932,7 +7043,7 @@ mod tests {
         for rt in GRANT_RESOURCE_TYPES {
             // 'employee' is the one type whose untouched default is the
             // whitelist it has always been.
-            let expected = if rt == "employee" {
+            let expected = if matches!(rt, "employee" | "mcp") {
                 GrantMode::Restrictive
             } else {
                 GrantMode::Additive
@@ -6943,7 +7054,7 @@ mod tests {
         assert_eq!(listed.len(), GRANT_RESOURCE_TYPES.len(), "every type is reported");
         assert!(
             listed.iter().all(|m| {
-                let expected = if m.resource_type == "employee" {
+                let expected = if matches!(m.resource_type.as_str(), "employee" | "mcp") {
                     GrantMode::Restrictive
                 } else {
                     GrantMode::Additive
@@ -6968,7 +7079,7 @@ mod tests {
         assert_eq!(service.grant_mode("t1", "skill").await, GrantMode::Restrictive);
         assert_eq!(
             service.grant_mode("t1", "mcp").await,
-            GrantMode::Additive,
+            GrantMode::Restrictive,
             "one type flipping must not drag the others with it"
         );
 
@@ -6976,7 +7087,7 @@ mod tests {
         let eff = service.effective_resource_ids("t1", "alice", "skill").await.unwrap();
         assert!(eff.restrictive);
         let eff_mcp = service.effective_resource_ids("t1", "alice", "mcp").await.unwrap();
-        assert!(!eff_mcp.restrictive);
+        assert!(eff_mcp.restrictive);
     }
 
     /// Tenants must not inherit each other's mode — a whitelist is an access

@@ -453,7 +453,7 @@ mod tests {
         let dir = tmp.path().join("team-skills");
         let mut p = payload("oskill_auto", "auto-skill", "body");
         p.auto_active = true;
-        sync_team_skills(&dir, &[p.clone()], true).await.unwrap();
+        sync_team_skills(&dir, std::slice::from_ref(&p), true).await.unwrap();
         assert!(dir.join("oskill_auto").join(TEAM_AUTO_MARKER).exists());
 
         // Admin flips it back to opt-in → marker cleared on resync.
@@ -469,7 +469,7 @@ mod tests {
         let p = payload("oskill_a", "alpha", "do alpha");
         let manifest = dir.join("oskill_a").join(SKILL_MANIFEST_FILE);
 
-        sync_team_skills(&dir, &[p.clone()], true).await.unwrap();
+        sync_team_skills(&dir, std::slice::from_ref(&p), true).await.unwrap();
         let mtime_after_first = std::fs::metadata(&manifest).unwrap().modified().unwrap();
 
         // Give the filesystem clock room to distinguish "touched again" from
@@ -482,7 +482,7 @@ mod tests {
         // regardless of whether an admin touched anything is the actual
         // motivation for this short circuit — see the comment in
         // `sync_team_skills`.
-        let report = sync_team_skills(&dir, &[p.clone()], true).await.unwrap();
+        let report = sync_team_skills(&dir, std::slice::from_ref(&p), true).await.unwrap();
         let mtime_after_resync = std::fs::metadata(&manifest).unwrap().modified().unwrap();
         assert_eq!(
             mtime_after_first, mtime_after_resync,
@@ -558,7 +558,7 @@ mod tests {
         let mut p = payload("oskill_b", "ignored", full);
         p.category = Some("old-cat".into());
         p.tags = vec!["t1".into()];
-        sync_team_skills(&dir, &[p.clone()], true).await.unwrap();
+        sync_team_skills(&dir, std::slice::from_ref(&p), true).await.unwrap();
 
         let md = std::fs::read_to_string(dir.join("oskill_b").join(SKILL_MANIFEST_FILE)).unwrap();
         let (name, description, category, tags) = crate::skill_service::test_parse_frontmatter(&md).unwrap();
@@ -589,7 +589,7 @@ mod tests {
         let mut p = payload("oskill_c", "gamma", "body");
         p.category = Some("数据分析".into());
         p.tags = vec!["SQL".into()];
-        sync_team_skills(&dir, &[p.clone()], true).await.unwrap();
+        sync_team_skills(&dir, std::slice::from_ref(&p), true).await.unwrap();
         p.category = None;
         p.tags = Vec::new();
         sync_team_skills(&dir, &[p], true).await.unwrap();

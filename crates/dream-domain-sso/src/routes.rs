@@ -883,6 +883,8 @@ async fn run_provider_oauth(
             // comment for why this can never fail the login.
             let org_profile = FeishuProvider::fetch_org_profile(&cfg, &external_id, &cfg.external_id_field).await;
             profile.job_title = org_profile.job_title;
+            profile.employee_no = org_profile.employee_no;
+            profile.enterprise_email = org_profile.enterprise_email;
             profile.org_unit_path = org_profile.department_name;
             Ok(profile)
         }
@@ -903,7 +905,7 @@ async fn run_provider_oauth(
             let corp_token = WecomProvider::fetch_corp_access_token(&cfg.corp_id, &cfg.secret).await?;
             let user_id = WecomProvider::fetch_user_id_by_code(&corp_token, code).await?;
             let mut profile = WecomProvider::to_provider_user_info(&user_id);
-            WecomProvider::enrich_profile(&corp_token, &mut profile).await;
+            WecomProvider::enrich_profile(&corp_token, &mut profile, cfg.employee_no_field.as_deref()).await;
             Ok(profile)
         }
         SsoProviderKind::Oidc => {
@@ -970,6 +972,8 @@ async fn ldap_login(
 
     let auth = crate::providers::LdapProvider::authenticate(&cfg, &body.username, &body.password).await?;
     let profile = crate::providers::ProviderUserInfo {
+        employee_no: auth.employee_no,
+        enterprise_email: auth.enterprise_email,
         external_id: auth.external_id,
         preferred_username: auth.display_name.unwrap_or_else(|| body.username.trim().to_owned()),
         org_unit_path: auth.org_unit_path,

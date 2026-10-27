@@ -70,6 +70,7 @@ pub fn mcp_routes(state: McpRouterState) -> Router {
             "/api/mcp/servers/{id}",
             get(get_server).put(edit_server).delete(delete_server),
         )
+        .route("/api/mcp/selection", axum::routing::put(replace_selection))
         .route("/api/mcp/servers/{id}/toggle", post(toggle_server))
         // Connection test route
         .route("/api/mcp/test-connection", post(test_connection))
@@ -100,6 +101,9 @@ struct TeamMcpSyncItem {
     enabled: bool,
     #[serde(default)]
     secrets_json: Option<String>,
+    /// Bound by a distributed employee only; kept outside the member's quota.
+    #[serde(default)]
+    employee_bound: bool,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -139,6 +143,7 @@ async fn team_sync(
             endpoint: s.endpoint,
             enabled: s.enabled,
             secrets_json: s.secrets_json,
+            employee_bound: s.employee_bound,
         })
         .collect();
     let report = state
@@ -272,7 +277,19 @@ async fn test_connection(
     body: Result<Json<TestMcpConnectionRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
-    let transport = McpServerTransport::from(req.transport);
+    let mut transport =
+        crate::service::normalize_transport(McpServerTransport::from(req.transport)).map_err(ApiError::from)?;
+    if let McpServerTransport::Http { url, headers } | McpServerTransport::Sse { url, headers } = &mut transport
+        && let Some(token) = state
+            .oauth_service
+            .get_token(&user.id, url)
+            .await
+            .map_err(ApiError::from)?
+    {
+        headers
+            .entry("Authorization".into())
+            .or_insert_with(|| format!("Bearer {token}"));
+    }
     let result = state
         .connection_test_service
         .test_connection_with_runtime_scope(
@@ -365,8 +382,8 @@ async fn oauth_check_status(
 
 /// `POST /api/mcp/oauth/login` — start OAuth PKCE login flow.
 ///
-/// Discovers endpoints, opens the browser for authorization, waits for
-/// the callback, and exchanges the code for tokens.
+/// Returns a URL for one explicit client-side authorization action; the server
+/// waits for the callback asynchronously and never opens a browser.
 async fn oauth_login(
     State(state): State<McpRouterState>,
     Extension(user): Extension<CurrentUser>,
@@ -467,4 +484,23 @@ mod error_mapping_tests {
         let err = ApiError::from(McpError::Json(json_err));
         assert!(matches!(err, ApiError::Internal(_)));
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReplaceSelectionRequest {
+    ids: Vec<String>,
+}
+async fn replace_selection(
+    State(state): State<McpRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(req): Json<ReplaceSelectionRequest>,
+) -> Result<Json<ApiResponse<Vec<McpServerResponse>>>, ApiError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .config_service
+            .replace_enabled_selection(&user.id, &req.ids)
+            .await
+            .map_err(ApiError::from)?,
+    )))
 }

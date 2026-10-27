@@ -995,11 +995,12 @@ mod cache_tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
 
     /// Serializes the tests that mutate `HF_ENDPOINT` / `HF_HOME`, which are
     /// process-global and read by the seeder.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
     /// Sets the two HF env vars for the seeder and restores the previous
     /// values on drop, so the process-global state never leaks between tests.
@@ -1061,12 +1062,10 @@ mod cache_tests {
             let sha = sha.to_string();
             let files = files.to_vec();
             let handle = std::thread::spawn(move || {
-                let mut served = 0_usize;
-                for stream in listener.incoming() {
+                for (served, stream) in listener.incoming().enumerate() {
                     if served >= max_requests {
                         break;
                     }
-                    served += 1;
                     let Ok(mut stream) = stream else { break };
                     counter.fetch_add(1, Ordering::Relaxed);
                     let mut request = [0_u8; 8192];
@@ -1150,7 +1149,7 @@ mod cache_tests {
 
     #[tokio::test]
     async fn seeds_the_model_cache_from_the_hub_and_reuses_it_without_network() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let sha = "faf4aa4225822f3bc6376869cb1164e8e3feedd0";
         let files = fake_files();
         let mut hub = FakeHub::spawn(sha, &files, None, 8);
@@ -1188,7 +1187,7 @@ mod cache_tests {
 
     #[tokio::test]
     async fn a_truncated_download_is_rejected_and_leaves_no_complete_cache() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let sha = "0123456789abcdef0123456789abcdef01234567";
         let files = fake_files();
         // Claim 19 bytes for the "onnx" file but serve only 5.

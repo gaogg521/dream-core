@@ -1747,6 +1747,41 @@ pub async fn build_antigravity_instance(
         permission_hook_body,
     } = inputs;
 
+    let mut guarded_config = config.clone();
+    crate::factory::session_mcp::guard_mcp_selection(
+        &mut guarded_config.mcp_server_ids,
+        &mut guarded_config.session_mcp_servers,
+    );
+    guarded_config
+        .session_mcp_servers
+        .retain(|server| match &server.transport {
+            dream_core_api_types::SessionMcpTransport::Stdio { command, args, .. } => {
+                !dream_core_common::mcp_policy::is_browser_auth_proxy(command, args)
+            }
+            _ => true,
+        });
+    let mut authorized_inline = Vec::new();
+    for mut server in guarded_config.session_mcp_servers.drain(..) {
+        if !crate::factory::session_mcp::snapshot_server_allowed(
+            mcp_server_repo.map(|repo| repo.as_ref()),
+            &user_id,
+            &server,
+        )
+        .await
+        {
+            continue;
+        }
+        if let Some(repo) = mcp_server_repo
+            && crate::mcp_resolve::authorize_session_server(repo.as_ref(), &user_id, &mut server)
+                .await
+                .is_err()
+        {
+            continue;
+        }
+        authorized_inline.push(server);
+    }
+    guarded_config.session_mcp_servers = authorized_inline;
+    let config = &guarded_config;
     let (spec, mode, model) = spec_mode_model(&conversation_id, backend_session_id, config, session_snapshot, metadata);
 
     // Same MCP init surface and ordering as the claude/codex path: user servers
@@ -1861,6 +1896,41 @@ pub async fn build_session_instance(
     // GAP #1/#2 — the pure spec + mode/model mapping (resume anchor → Resume/Fresh,
     // snapshot-wins precedence). Extracted so it is unit-testable in isolation, the
     // exact sibling of clean-slate's `spec_and_config`.
+    let mut guarded_config = config.clone();
+    crate::factory::session_mcp::guard_mcp_selection(
+        &mut guarded_config.mcp_server_ids,
+        &mut guarded_config.session_mcp_servers,
+    );
+    guarded_config
+        .session_mcp_servers
+        .retain(|server| match &server.transport {
+            dream_core_api_types::SessionMcpTransport::Stdio { command, args, .. } => {
+                !dream_core_common::mcp_policy::is_browser_auth_proxy(command, args)
+            }
+            _ => true,
+        });
+    let mut authorized_inline = Vec::new();
+    for mut server in guarded_config.session_mcp_servers.drain(..) {
+        if !crate::factory::session_mcp::snapshot_server_allowed(
+            mcp_server_repo.map(|repo| repo.as_ref()),
+            &user_id,
+            &server,
+        )
+        .await
+        {
+            continue;
+        }
+        if let Some(repo) = mcp_server_repo
+            && crate::mcp_resolve::authorize_session_server(repo.as_ref(), &user_id, &mut server)
+                .await
+                .is_err()
+        {
+            continue;
+        }
+        authorized_inline.push(server);
+    }
+    guarded_config.session_mcp_servers = authorized_inline;
+    let config = &guarded_config;
     let (spec, mode, model) = spec_mode_model(&conversation_id, backend_session_id, config, session_snapshot, metadata);
 
     // GAP #3 — MCP init surface: resolve user-configured servers to the neutral

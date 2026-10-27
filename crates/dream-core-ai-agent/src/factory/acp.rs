@@ -358,6 +358,7 @@ pub(super) async fn build(
     ctx: FactoryContext,
 ) -> Result<AgentInstance, AgentError> {
     let mut config = build_context.config;
+    super::session_mcp::guard_mcp_selection(&mut config.mcp_server_ids, &mut config.session_mcp_servers);
 
     // Resolve the catalog row — prefer explicit agent_id, fall
     // back to a vendor-label match for legacy payloads.
@@ -514,7 +515,15 @@ pub(super) async fn build(
         } else {
             None
         };
-        match session_server_to_sdk_mcp_server(server, &ctx.workspace, &ctx.conversation_id).await {
+        let mut runtime_server = server.clone();
+        if let Some(repo) = deps.mcp_server_repo.as_deref()
+            && crate::mcp_resolve::authorize_session_server(repo, &ctx.user_id, &mut runtime_server)
+                .await
+                .is_err()
+        {
+            continue;
+        }
+        match session_server_to_sdk_mcp_server(&runtime_server, &ctx.workspace, &ctx.conversation_id).await {
             Ok(server) => {
                 if let Some(id) = grant_id {
                     team_mcp_ids.insert(id);
@@ -874,6 +883,21 @@ async fn row_to_sdk_mcp_server(
     let value: serde_json::Value =
         serde_json::from_str(&row.transport_config).map_err(|e| format!("invalid transport_config JSON: {e}"))?;
 
+    if row.transport_type == "stdio" {
+        let command = value.get("command").and_then(|v| v.as_str()).unwrap_or_default();
+        let args: Vec<String> = value
+            .get("args")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect();
+        if dream_core_common::mcp_policy::is_browser_auth_proxy(command, &args) {
+            return Err(
+                "MCP_AUTH_REQUIRED: configure native HTTP transport; browser proxy auto-start is disabled".into(),
+            );
+        }
+    }
     match row.transport_type.as_str() {
         "stdio" => {
             let command = value
@@ -1699,7 +1723,23 @@ mod tests {
             fail: false,
         });
 
-        let servers = load_user_mcp_servers(repo.as_ref(), None, TEST_USER_ID, "conv-1", "/tmp/ws", &caps).await;
+        let servers = load_user_mcp_servers(
+            repo.as_ref(),
+            Some(
+                &repo
+                    .list(TEST_USER_ID)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| r.id)
+                    .collect::<Vec<_>>(),
+            ),
+            TEST_USER_ID,
+            "conv-1",
+            "/tmp/ws",
+            &caps,
+        )
+        .await;
 
         assert_eq!(servers.len(), 1, "only the healthy server may be injected");
         assert!(
@@ -1723,7 +1763,23 @@ mod tests {
             fail: false,
         });
 
-        let servers = load_user_mcp_servers(repo.as_ref(), None, TEST_USER_ID, "conv-1", "/tmp/ws", &caps).await;
+        let servers = load_user_mcp_servers(
+            repo.as_ref(),
+            Some(
+                &repo
+                    .list(TEST_USER_ID)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| r.id)
+                    .collect::<Vec<_>>(),
+            ),
+            TEST_USER_ID,
+            "conv-1",
+            "/tmp/ws",
+            &caps,
+        )
+        .await;
         assert_eq!(servers.len(), 1);
     }
 
@@ -1749,7 +1805,23 @@ mod tests {
             ],
             fail: false,
         });
-        let servers = load_user_mcp_servers(repo.as_ref(), None, TEST_USER_ID, "conv-1", "/tmp/ws", &caps).await;
+        let servers = load_user_mcp_servers(
+            repo.as_ref(),
+            Some(
+                &repo
+                    .list(TEST_USER_ID)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| r.id)
+                    .collect::<Vec<_>>(),
+            ),
+            TEST_USER_ID,
+            "conv-1",
+            "/tmp/ws",
+            &caps,
+        )
+        .await;
         assert_eq!(servers.len(), 1);
         match &servers[0] {
             McpServer::Stdio(s) => assert_eq!(s.name, "user-enabled"),
@@ -1774,7 +1846,23 @@ mod tests {
             ],
             fail: false,
         });
-        let servers = load_user_mcp_servers(repo.as_ref(), None, TEST_USER_ID, "conv-1", "/tmp/ws", &caps).await;
+        let servers = load_user_mcp_servers(
+            repo.as_ref(),
+            Some(
+                &repo
+                    .list(TEST_USER_ID)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| r.id)
+                    .collect::<Vec<_>>(),
+            ),
+            TEST_USER_ID,
+            "conv-1",
+            "/tmp/ws",
+            &caps,
+        )
+        .await;
         assert_eq!(servers.len(), 1);
         match &servers[0] {
             McpServer::Stdio(s) => assert_eq!(s.name, "user-enabled"),
@@ -1793,7 +1881,23 @@ mod tests {
             rows: vec![],
             fail: true,
         });
-        let servers = load_user_mcp_servers(repo.as_ref(), None, TEST_USER_ID, "conv-1", "/tmp/ws", &caps).await;
+        let servers = load_user_mcp_servers(
+            repo.as_ref(),
+            Some(
+                &repo
+                    .list(TEST_USER_ID)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| r.id)
+                    .collect::<Vec<_>>(),
+            ),
+            TEST_USER_ID,
+            "conv-1",
+            "/tmp/ws",
+            &caps,
+        )
+        .await;
         assert!(servers.is_empty());
     }
 
@@ -1812,7 +1916,23 @@ mod tests {
             ],
             fail: false,
         });
-        let servers = load_user_mcp_servers(repo.as_ref(), None, TEST_USER_ID, "conv-1", "/tmp/ws", &caps).await;
+        let servers = load_user_mcp_servers(
+            repo.as_ref(),
+            Some(
+                &repo
+                    .list(TEST_USER_ID)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| r.id)
+                    .collect::<Vec<_>>(),
+            ),
+            TEST_USER_ID,
+            "conv-1",
+            "/tmp/ws",
+            &caps,
+        )
+        .await;
         assert_eq!(servers.len(), 1);
         match &servers[0] {
             McpServer::Stdio(s) => assert_eq!(s.name, "good"),
@@ -1821,7 +1941,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_user_mcp_servers_uses_selected_snapshot_over_enabled_state() {
+    async fn load_user_mcp_servers_respects_revocation_of_selected_snapshot() {
         let stdio_config = stdio_config_for_existing_command();
         let caps = AcpMcpCapabilities {
             stdio: true,
@@ -1840,11 +1960,10 @@ mod tests {
         let servers =
             load_user_mcp_servers(repo.as_ref(), Some(&selected), TEST_USER_ID, "conv-1", "/tmp/ws", &caps).await;
 
-        assert_eq!(servers.len(), 1);
-        match &servers[0] {
-            McpServer::Stdio(s) => assert_eq!(s.name, "disabled-picked"),
-            _ => panic!("expected stdio"),
-        }
+        assert!(
+            servers.is_empty(),
+            "a disabled connector must not be revived by history"
+        );
     }
 
     #[tokio::test]
@@ -1865,7 +1984,23 @@ mod tests {
             fail: false,
         });
 
-        let servers = load_user_mcp_servers(repo.as_ref(), None, TEST_USER_ID, "conv-1", "/tmp/ws", &caps).await;
+        let servers = load_user_mcp_servers(
+            repo.as_ref(),
+            Some(
+                &repo
+                    .list(TEST_USER_ID)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| r.id)
+                    .collect::<Vec<_>>(),
+            ),
+            TEST_USER_ID,
+            "conv-1",
+            "/tmp/ws",
+            &caps,
+        )
+        .await;
         assert!(servers.is_empty());
     }
 

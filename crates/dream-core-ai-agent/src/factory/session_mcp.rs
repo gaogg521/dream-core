@@ -31,11 +31,17 @@ pub(crate) async fn snapshot_server_allowed(
     user_id: &str,
     server: &dream_core_api_types::SessionMcpServer,
 ) -> bool {
+    if let dream_core_api_types::SessionMcpTransport::Stdio { command, args, .. } = &server.transport
+        && dream_core_common::mcp_policy::is_browser_auth_proxy(command, args)
+    {
+        warn!(server_id = %server.id, "Browser-authorizing MCP proxy blocked; configure native HTTP and authorize explicitly");
+        return false;
+    }
     let Some(repo) = repo else {
         return true;
     };
     match repo.find_by_id_any(user_id, &server.id).await {
-        Ok(Some(row)) => row.deleted_at.is_none() && (!is_team_mcp_row(&row) || row.enabled),
+        Ok(Some(row)) => row.deleted_at.is_none() && row.enabled,
         // Inline snapshots need not have a registry row.
         Ok(None) => true,
         Err(error) => {
@@ -123,10 +129,8 @@ pub(crate) fn is_auto_injected_builtin(name: &str) -> bool {
 /// Encodes one rule for both agent backends:
 ///
 /// - an explicit snapshot (`selected_ids`) defines the session's servers, and
-///   they are injected regardless of the current global `enabled` flag — a
-///   conversation keeps what it was created with;
-/// - without a snapshot, enabled personal rows apply; distributed company
-///   connectors require explicit selection or an employee's bound snapshot;
+///   only currently enabled rows may be injected; revocation wins over history;
+/// - without a snapshot, no user connector is connected;
 /// - built-ins are excluded either way, **except** the auto-injected ones,
 ///   which follow their own `enabled` flag under both branches. That exception
 ///   is the whole point of this function: it is what makes media generation
@@ -160,9 +164,10 @@ pub(crate) async fn load_session_mcp_rows(
         }
     };
 
-    rows.into_iter()
+    let mut selected: Vec<_> = rows
+        .into_iter()
         .filter(|row| {
-            if is_team_mcp_row(row) && !row.enabled {
+            if !row.enabled {
                 return false;
             }
             if row.builtin {
@@ -170,18 +175,60 @@ pub(crate) async fn load_session_mcp_rows(
                 // never to the snapshot — the snapshot is about user servers.
                 return is_auto_injected_builtin(&row.name) && row.enabled;
             }
-            selected_ids
-                .map(|ids| ids.iter().any(|id| id == &row.id))
-                .unwrap_or_else(|| {
-                    let distributed = row
-                        .original_json
-                        .as_deref()
-                        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
-                        .is_some_and(|value| value.get("teamRegistryId").is_some_and(|id| id.is_string()));
-                    row.enabled && !distributed
-                })
+            selected_ids.is_some_and(|ids| ids.iter().any(|id| id == &row.id))
         })
-        .collect()
+        .collect();
+    if selected.iter().filter(|row| !row.builtin).count() > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS {
+        warn!(
+            conversation_id,
+            "Over-limit MCP snapshot blocked before runtime preparation; selection required"
+        );
+        selected.retain(|row| row.builtin);
+    }
+    let mut authorized = Vec::with_capacity(selected.len());
+    for mut row in selected {
+        if crate::mcp_resolve::authorize_runtime_row(repo, user_id, &mut row)
+            .await
+            .is_ok()
+        {
+            authorized.push(row);
+        }
+    }
+    authorized
+}
+
+/// Apply the combined repo/inline bound before any per-server command preparation.
+pub(crate) fn guard_mcp_selection(
+    ids: &mut Option<Vec<String>>,
+    inline: &mut Vec<dream_core_api_types::SessionMcpServer>,
+) {
+    use dream_core_common::mcp_policy::{MAX_USER_MCP_SERVERS, is_employee_bound_mcp, is_system_mcp};
+    let unique: std::collections::HashSet<&str> = ids.iter().flatten().map(String::as_str).collect();
+    // Every inline entry is its own process, whatever id it claims (ids may be
+    // empty or repeated), so each one counts; overlap with `ids` errs strict.
+    // Connectors a digital employee binds are the administrator's choice, not
+    // the member's: they get their own bucket instead of eating the member's 20.
+    let employee_inline = inline.iter().filter(|s| is_employee_bound_mcp(&s.name)).count();
+    let inline_user = inline
+        .iter()
+        .filter(|s| !is_system_mcp(&s.name) && !is_employee_bound_mcp(&s.name))
+        .count();
+    let count = unique.len() + inline_user;
+    if employee_inline > MAX_USER_MCP_SERVERS {
+        warn!(
+            employee_inline,
+            "Over-limit employee-bound MCP set quarantined; an employee may bind at most 20 connectors"
+        );
+        inline.retain(|s| !is_employee_bound_mcp(&s.name));
+    }
+    if count > MAX_USER_MCP_SERVERS {
+        warn!(
+            count,
+            "Over-limit MCP selection quarantined; select at most 20 user MCP servers"
+        );
+        *ids = Some(Vec::new());
+        inline.retain(|s| is_system_mcp(&s.name) || is_employee_bound_mcp(&s.name));
+    }
 }
 
 #[cfg(test)]
@@ -277,7 +324,7 @@ mod tests {
                 .await
                 .is_empty()
         );
-        for (id, allowed) in [("team", false), ("personal", true), ("deleted", false)] {
+        for (id, allowed) in [("team", false), ("personal", false), ("deleted", false)] {
             let snapshot = SessionMcpServer {
                 id: id.into(),
                 name: id.into(),
@@ -289,6 +336,78 @@ mod tests {
             };
             assert_eq!(snapshot_server_allowed(Some(&repo), "u", &snapshot).await, allowed);
         }
+    }
+
+    fn inline(id: &str, name: &str) -> dream_core_api_types::SessionMcpServer {
+        use dream_core_api_types::{SessionMcpServer, SessionMcpTransport};
+        SessionMcpServer {
+            id: id.into(),
+            name: name.into(),
+            transport: SessionMcpTransport::Stdio {
+                command: "node".into(),
+                args: vec![name.into()],
+                env: Default::default(),
+            },
+        }
+    }
+
+    #[test]
+    fn guard_counts_inline_servers_with_empty_or_repeated_ids_individually() {
+        // 21 distinct servers all claiming the same (empty) id must not collapse to one.
+        let mut ids = None;
+        let mut servers: Vec<_> = (0..21).map(|i| inline("", &format!("srv-{i}"))).collect();
+        servers.push(inline("", "one-browser"));
+        guard_mcp_selection(&mut ids, &mut servers);
+        assert_eq!(ids, Some(Vec::new()));
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].name, "one-browser");
+
+        // Repeated non-empty id across different definitions is also counted per entry.
+        let mut ids = None;
+        let mut servers: Vec<_> = (0..21).map(|i| inline("same", &format!("srv-{i}"))).collect();
+        guard_mcp_selection(&mut ids, &mut servers);
+        assert!(servers.is_empty());
+
+        // Exactly 20 stays untouched; repo ids and inline entries add up.
+        let mut ids = Some((0..10).map(|i| format!("r{i}")).collect::<Vec<_>>());
+        let mut servers: Vec<_> = (0..10).map(|i| inline("", &format!("srv-{i}"))).collect();
+        guard_mcp_selection(&mut ids, &mut servers);
+        assert_eq!(servers.len(), 10);
+        assert_eq!(ids.as_ref().map(Vec::len), Some(10));
+        servers.push(inline("", "srv-extra"));
+        guard_mcp_selection(&mut ids, &mut servers);
+        assert!(servers.is_empty());
+    }
+
+    #[test]
+    fn guard_keeps_employee_bound_connectors_out_of_the_member_quota() {
+        // A member at their full 20 plus an employee binding two more must keep all of them.
+        let mut ids = Some((0..20).map(|i| format!("r{i}")).collect::<Vec<_>>());
+        let mut servers = vec![
+            inline("omcp_a", "enterprise_omcp_a"),
+            inline("omcp_b", "enterprise_omcp_b"),
+        ];
+        guard_mcp_selection(&mut ids, &mut servers);
+        assert_eq!(ids.as_ref().map(Vec::len), Some(20));
+        assert_eq!(servers.len(), 2);
+
+        // The employee bucket has its own ceiling; overflow drops only that bucket.
+        let mut ids = Some(vec!["r0".to_owned()]);
+        let mut servers: Vec<_> = (0..21)
+            .map(|i| inline(&format!("omcp_{i}"), &format!("enterprise_omcp_{i}")))
+            .collect();
+        servers.push(inline("one-browser-id", "one-browser"));
+        guard_mcp_selection(&mut ids, &mut servers);
+        assert_eq!(ids, Some(vec!["r0".to_owned()]));
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].name, "one-browser");
+
+        // An overflowing member selection still clears the member's bucket but keeps the employee's.
+        let mut ids = Some((0..21).map(|i| format!("r{i}")).collect::<Vec<_>>());
+        let mut servers = vec![inline("omcp_a", "enterprise_omcp_a")];
+        guard_mcp_selection(&mut ids, &mut servers);
+        assert_eq!(ids, Some(Vec::new()));
+        assert_eq!(servers.len(), 1);
     }
 
     fn names(rows: &[McpServerRow]) -> Vec<&str> {
@@ -307,7 +426,7 @@ mod tests {
         let repo = FakeRepo { rows };
         assert_eq!(
             names(&load_session_mcp_rows(&repo, None, "u", "c").await),
-            vec!["personal"]
+            Vec::<String>::new()
         );
         assert_eq!(
             names(&load_session_mcp_rows(&repo, Some(&["team-499".into()]), "u", "c").await),
@@ -448,7 +567,7 @@ mod tests {
             ],
         };
         let rows = load_session_mcp_rows(&repo, None, "u", "c1").await;
-        assert_eq!(names(&rows), vec!["user-server", "one-image-generation"]);
+        assert_eq!(names(&rows), vec!["one-image-generation"]);
     }
 
     /// …and equally when the conversation *does* carry a snapshot that never
@@ -462,7 +581,7 @@ mod tests {
             ],
         };
         let rows = load_session_mcp_rows(&repo, Some(&["u1".to_owned()]), "u", "c1").await;
-        assert_eq!(names(&rows), vec!["user-server", "one-image-generation"]);
+        assert_eq!(names(&rows), vec!["one-image-generation"]);
     }
 
     /// Only this one built-in. Handing every agent the PDF exporter and the
@@ -519,7 +638,10 @@ mod tests {
             ],
         };
         let rows = load_session_mcp_rows(&repo, Some(&["u1".to_owned()]), "u", "c1").await;
-        assert_eq!(names(&rows), vec!["pinned-though-disabled"]);
+        assert!(
+            rows.is_empty(),
+            "disabled personal MCP must not be resurrected by a snapshot"
+        );
     }
 
     /// De-dup: ticking it explicitly must not produce two entries.
@@ -530,5 +652,22 @@ mod tests {
         };
         let rows = load_session_mcp_rows(&repo, Some(&["b1".to_owned()]), "u", "c1").await;
         assert_eq!(names(&rows), vec!["one-image-generation"]);
+    }
+    #[tokio::test]
+    async fn twenty_one_snapshot_entries_are_quarantined_before_command_resolution() {
+        let ids: Vec<String> = (0..21).map(|i| format!("mcp-{i}")).collect();
+        let mut rows: Vec<_> = ids.iter().map(|id| row(id, id, true, false)).collect();
+        rows.push(row("system", "one-browser", true, true));
+        let repo = FakeRepo { rows };
+        let actual = load_session_mcp_rows(&repo, Some(&ids), "u", "c").await;
+        assert_eq!(names(&actual), vec!["one-browser"]);
+        assert!(load_session_mcp_rows(&repo, Some(&ids[..20]), "u", "c").await.len() <= 21);
+    }
+    #[tokio::test]
+    async fn no_selection_does_not_mean_the_entire_enabled_catalog() {
+        let repo = FakeRepo {
+            rows: vec![row("u", "personal", true, false)],
+        };
+        assert!(load_session_mcp_rows(&repo, None, "u", "c").await.is_empty());
     }
 }

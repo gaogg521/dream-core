@@ -44,6 +44,8 @@ pub(crate) fn synthetic_username_suffix(id: &str, max_chars: usize) -> String {
 /// Normalized user info across OAuth providers.
 #[derive(Debug, Clone)]
 pub struct ProviderUserInfo {
+    pub employee_no: Option<String>,
+    pub enterprise_email: Option<String>,
     pub external_id: String,
     pub preferred_username: String,
     pub org_unit_path: Option<String>,

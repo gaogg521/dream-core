@@ -18,6 +18,8 @@ pub struct EnterpriseRow {
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct EnterpriseMemberRow {
+    pub employee_no: Option<String>,
+    pub enterprise_email: Option<String>,
     pub user_id: String,
     pub enterprise_id: String,
     pub display_name: Option<String>,
@@ -38,6 +40,8 @@ pub struct EnterpriseMemberRow {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnterpriseIdentityDto {
+    pub employee_no: Option<String>,
+    pub enterprise_email: Option<String>,
     pub provider: String,
     pub company_id: String,
     pub company_name: Option<String>,
@@ -95,6 +99,8 @@ pub struct CompanyOverviewDto {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompanyMemberDto {
+    pub employee_no: Option<String>,
+    pub enterprise_email: Option<String>,
     pub user_id: String,
     pub username: Option<String>,
     pub display_name: Option<String>,

@@ -59,6 +59,10 @@ use crate::state::OnePlatformRouterState;
 pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
     Router::new()
         .route(
+            "/api/one/admin/platform/laboratory",
+            get(get_laboratory).put(set_laboratory),
+        )
+        .route(
             "/api/one/admin/platform/container",
             get(get_container).put(set_container),
         )
@@ -787,6 +791,24 @@ async fn delete_im_pipeline(
 ) -> Result<Json<ApiResponse<()>>, PlatformError> {
     state.service.delete_im_pipeline(&actor.tenant_id, &id).await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+async fn get_laboratory(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<crate::models::LaboratorySettingsDto>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.get_laboratory_settings(&actor.tenant_id).await?,
+    )))
+}
+async fn set_laboratory(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Json(body): Json<crate::models::LaboratorySettingsDto>,
+) -> Result<Json<ApiResponse<crate::models::LaboratorySettingsDto>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.set_laboratory_settings(&actor.tenant_id, &body).await?,
+    )))
 }
 
 async fn get_console_settings(

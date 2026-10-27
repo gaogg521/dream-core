@@ -32,6 +32,7 @@ pub struct McpConfigService {
     /// Last team sync answered per user, so an identical request that arrives
     /// again within [`TEAM_SYNC_MEMO_TTL`] costs no database round trips.
     recent_team_sync: Arc<std::sync::Mutex<std::collections::HashMap<String, RecentTeamSync>>>,
+    selection_mutation: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// How long an identical team sync request is answered from memory. The
@@ -55,6 +56,7 @@ fn team_sync_digest(payloads: &[TeamMcpPayload], authoritative: bool) -> u64 {
         p.server_type.hash(&mut hasher);
         p.endpoint.hash(&mut hasher);
         p.enabled.hash(&mut hasher);
+        p.employee_bound.hash(&mut hasher);
         p.secrets_json.hash(&mut hasher);
     }
     hasher.finish()
@@ -75,12 +77,68 @@ impl McpConfigService {
         Self {
             repo,
             recent_team_sync: Arc::default(),
+            selection_mutation: Arc::default(),
         }
     }
 
     /// List all MCP servers.
     pub async fn list_servers(&self, user_id: &str) -> Result<Vec<McpServerResponse>, McpError> {
-        let rows = self.repo.list(user_id).await?;
+        let _guard = self.selection_mutation.lock().await;
+        self.list_servers_locked(user_id).await
+    }
+
+    // Legacy quarantine must serialize with explicit replacement and team sync:
+    // a stale over-limit read must not clear a newly saved valid selection.
+    async fn list_servers_locked(&self, user_id: &str) -> Result<Vec<McpServerResponse>, McpError> {
+        let mut rows = self.repo.list(user_id).await?;
+        if rows.iter().filter(|r| r.enabled && !r.builtin).count() > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS
+        {
+            self.repo.replace_enabled_selection(user_id, &[]).await?;
+            warn!(
+                user_id,
+                "Historical oversized MCP activation quarantined; explicit selection required"
+            );
+            rows = self.repo.list(user_id).await?;
+        }
+        for row in &mut rows {
+            if let Ok(server) = McpServer::from_row(row.clone())
+                && let McpServerTransport::Stdio { command, args, .. } = &server.transport
+                && dream_core_common::mcp_policy::is_browser_auth_proxy(command, args)
+            {
+                match normalize_transport(server.transport) {
+                    Ok(native) => {
+                        let json = native.to_config_json()?;
+                        *row = self
+                            .repo
+                            .update(
+                                user_id,
+                                &row.id,
+                                UpdateMcpServerParams {
+                                    transport_type: Some(native.transport_type()),
+                                    transport_config: Some(&json),
+                                    ..Default::default()
+                                },
+                            )
+                            .await?;
+                        info!(server_id=%row.id, "Browser-authorizing MCP proxy migrated to native HTTP");
+                    }
+                    Err(_) => {
+                        *row = self
+                            .repo
+                            .update(
+                                user_id,
+                                &row.id,
+                                UpdateMcpServerParams {
+                                    enabled: Some(false),
+                                    ..Default::default()
+                                },
+                            )
+                            .await?;
+                        warn!(server_id=%row.id, "Unsupported browser-authorizing MCP proxy disabled; native HTTP configuration required");
+                    }
+                }
+            }
+        }
         rows.into_iter()
             .map(|row| McpServer::from_row(row).map(McpServer::into_response))
             .collect()
@@ -199,6 +257,21 @@ impl McpConfigService {
             .ok_or_else(|| McpError::NotFound(id.to_owned()))?;
 
         let new_enabled = !row.enabled;
+        if !row.builtin {
+            let mut ids: Vec<_> = self
+                .repo
+                .list(user_id)
+                .await?
+                .into_iter()
+                .filter(|r| r.enabled && !r.builtin && r.id != id)
+                .map(|r| r.id)
+                .collect();
+            if new_enabled {
+                ids.push(id.to_owned());
+            }
+            self.replace_enabled_selection(user_id, &ids).await?;
+            return self.get_server(user_id, id).await;
+        }
         let params = UpdateMcpServerParams {
             enabled: Some(new_enabled),
             ..Default::default()
@@ -206,6 +279,23 @@ impl McpConfigService {
         let updated = self.repo.update(user_id, id, params).await?;
         let server = McpServer::from_row(updated)?;
         Ok(server.into_response())
+    }
+
+    pub async fn replace_enabled_selection(
+        &self,
+        user_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<McpServerResponse>, McpError> {
+        let _guard = self.selection_mutation.lock().await;
+        if ids.iter().collect::<std::collections::HashSet<_>>().len()
+            > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS
+        {
+            return Err(McpError::InvalidEdit(
+                "MCP_LIMIT_EXCEEDED: remove an existing MCP before adding another (maximum 20)".into(),
+            ));
+        }
+        self.repo.replace_enabled_selection(user_id, ids).await?;
+        self.list_servers_locked(user_id).await
     }
 
     /// Batch import MCP servers (upsert by name).
@@ -241,7 +331,7 @@ impl McpConfigService {
                     transport: &transport,
                     original_json: server_req.original_json.as_deref(),
                     builtin: server_req.builtin,
-                    enabled: server_req.enabled.unwrap_or(false),
+                    enabled: false,
                 })
                 .await?;
             rows.push(server);
@@ -323,13 +413,49 @@ impl McpConfigService {
     }
 }
 
-fn normalize_transport(transport: McpServerTransport) -> Result<McpServerTransport, McpError> {
+pub(crate) fn normalize_transport(transport: McpServerTransport) -> Result<McpServerTransport, McpError> {
+    if let McpServerTransport::Stdio { command, args, env } = &transport
+        && dream_core_common::mcp_policy::is_browser_auth_proxy(command, args)
+    {
+        // Native HTTP never invokes an OS browser. Keep explicit header auth,
+        // but reject proxy-specific OAuth options instead of silently dropping them.
+        let index = args
+            .iter()
+            .position(|a| a.starts_with("https://") || a.starts_with("http://"))
+            .ok_or_else(|| McpError::InvalidTransport("mcp-remote requires a native HTTP endpoint".into()))?;
+        let url = args[index].clone();
+        let mut headers = std::collections::HashMap::new();
+        let mut i = index + 1;
+        while i < args.len() {
+            if args[i] == "--header" && i + 1 < args.len() {
+                let (name, value) = args[i + 1]
+                    .split_once(':')
+                    .ok_or_else(|| McpError::InvalidTransport("Invalid remote MCP header".into()))?;
+                let mut value = value.trim().to_owned();
+                for (key, replacement) in env {
+                    value = value.replace(&format!("${{{key}}}"), replacement);
+                }
+                if value.contains("${") {
+                    return Err(McpError::InvalidTransport(
+                        "Remote MCP header references an unavailable environment variable".into(),
+                    ));
+                }
+                headers.insert(name.trim().to_owned(), value);
+                i += 2;
+            } else if args[i] == "--allow-http" || args[i].parse::<u16>().is_ok() {
+                i += 1;
+            } else {
+                return Err(McpError::InvalidTransport("MCP_BROWSER_PROXY_DISABLED: configure the equivalent native HTTP transport and authorize explicitly".into()));
+            }
+        }
+        return Ok(McpServerTransport::Http { url, headers });
+    }
     match transport {
         McpServerTransport::Stdio { command, args, env } if args.is_empty() => {
             let Some((normalized_command, normalized_args)) = split_stdio_command(&command)? else {
                 return Ok(McpServerTransport::Stdio { command, args, env });
             };
-            Ok(McpServerTransport::Stdio {
+            normalize_transport(McpServerTransport::Stdio {
                 command: normalized_command,
                 args: normalized_args,
                 env,
@@ -440,6 +566,10 @@ pub struct TeamMcpPayload {
     /// D5: distributed credentials — a JSON object materialized as stdio `env`
     /// or sse `headers` so the connector authenticates locally (offline).
     pub secrets_json: Option<String>,
+    /// Bound by a distributed digital employee but not selected by the member.
+    /// Stored disabled and outside the member's 20-connector quota; only an
+    /// employee run resolves it (see [`McpConfigService::team_server_transport`]).
+    pub employee_bound: bool,
 }
 
 /// Parse a `{ "k": "v" }` secrets blob into a string map. Non-string values
@@ -469,8 +599,21 @@ pub struct TeamMcpSyncReport {
     pub kept: usize,
 }
 
-fn team_origin_json(registry_id: &str) -> String {
-    serde_json::json!({ TEAM_REGISTRY_KEY: registry_id }).to_string()
+const TEAM_EMPLOYEE_BOUND_KEY: &str = "teamEmployeeBound";
+
+fn team_origin_json(registry_id: &str, employee_bound: bool) -> String {
+    if employee_bound {
+        serde_json::json!({ TEAM_REGISTRY_KEY: registry_id, TEAM_EMPLOYEE_BOUND_KEY: true }).to_string()
+    } else {
+        serde_json::json!({ TEAM_REGISTRY_KEY: registry_id }).to_string()
+    }
+}
+
+fn team_employee_bound_of(original_json: Option<&str>) -> bool {
+    original_json
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| value.get(TEAM_EMPLOYEE_BOUND_KEY)?.as_bool())
+        .unwrap_or(false)
 }
 
 fn team_registry_id_of(original_json: Option<&str>) -> Option<String> {
@@ -493,7 +636,12 @@ impl McpConfigService {
         registry_id: &str,
     ) -> Result<Option<(String, McpServerTransport)>, McpError> {
         for row in self.repo.list(user_id).await? {
-            if !row.enabled || team_registry_id_of(row.original_json.as_deref()).as_deref() != Some(registry_id) {
+            if team_registry_id_of(row.original_json.as_deref()).as_deref() != Some(registry_id) {
+                continue;
+            }
+            // Employee-bound connectors are stored disabled on purpose; every
+            // other team row must still be enabled to resolve.
+            if !row.enabled && !team_employee_bound_of(row.original_json.as_deref()) {
                 continue;
             }
             let server = McpServer::from_row(row)?;
@@ -512,6 +660,36 @@ impl McpConfigService {
         payloads: &[TeamMcpPayload],
         authoritative: bool,
     ) -> Result<TeamMcpSyncReport, McpError> {
+        let _guard = self.selection_mutation.lock().await;
+        // Two separate buckets: what the member selected (their 20) and what
+        // distributed employees bind (admin-governed, own 20-entry ceiling).
+        let bound_count = payloads.iter().filter(|p| p.employee_bound).count();
+        if payloads.len() - bound_count > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS {
+            return Err(McpError::InvalidEdit(
+                "MCP_LIMIT_EXCEEDED: enterprise distribution must contain at most 20 explicitly selected connectors"
+                    .into(),
+            ));
+        }
+        if bound_count > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS {
+            return Err(McpError::InvalidEdit(
+                "MCP_LIMIT_EXCEEDED: digital employees may bind at most 20 connectors per member".into(),
+            ));
+        }
+        let _ = self.list_servers_locked(user_id).await?;
+        let personal_count = self
+            .repo
+            .list(user_id)
+            .await?
+            .iter()
+            .filter(|r| r.enabled && !r.builtin && team_registry_id_of(r.original_json.as_deref()).is_none())
+            .count();
+        if personal_count + payloads.iter().filter(|p| p.enabled && !p.employee_bound).count()
+            > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS
+        {
+            return Err(McpError::InvalidEdit(
+                "MCP_LIMIT_EXCEEDED: replace personal connectors before enabling company connectors".into(),
+            ));
+        }
         let digest = team_sync_digest(payloads, authoritative);
         if let Ok(recent) = self.recent_team_sync.lock()
             && let Some(last) = recent.get(user_id)
@@ -523,6 +701,16 @@ impl McpConfigService {
         let report = self
             .sync_team_servers_uncached(user_id, payloads, authoritative)
             .await?;
+        tracing::info!(
+            user_id,
+            authoritative,
+            requested_count = payloads.len(),
+            written_count = report.written.len(),
+            removed_count = report.removed.len(),
+            conflict_count = report.conflicts.len(),
+            reason = "enterprise_selection_sync",
+            "Reconciled selected enterprise MCP connectors"
+        );
         if let Ok(mut recent) = self.recent_team_sync.lock() {
             recent.insert(
                 user_id.to_owned(),
@@ -567,6 +755,8 @@ impl McpConfigService {
                 },
             };
 
+            let transport = normalize_transport(transport)?;
+
             // Conflict guard: never clobber a member's personal server that
             // happens to share the name — only servers we own (team marker).
             let existing = self.repo.find_by_name_any(user_id, &payload.name).await?;
@@ -578,7 +768,9 @@ impl McpConfigService {
             }
 
             let description = "Team-distributed MCP connector";
-            let original_json = team_origin_json(&payload.registry_id);
+            let original_json = team_origin_json(&payload.registry_id, payload.employee_bound);
+            // An employee-bound connector never joins the member's active set.
+            let enabled = payload.enabled && !payload.employee_bound;
             let config_json = transport.to_config_json()?;
 
             // Steady-state short circuit: this loop reruns every 5 minutes
@@ -588,7 +780,7 @@ impl McpConfigService {
             // changed about. Skip the write when the row already matches.
             let unchanged = existing.as_ref().is_some_and(|row| {
                 row.deleted_at.is_none()
-                    && row.enabled == payload.enabled
+                    && row.enabled == enabled
                     && row.description.as_deref() == Some(description)
                     && row.transport_type == transport.transport_type()
                     && row.transport_config == config_json
@@ -603,7 +795,7 @@ impl McpConfigService {
                     transport: &transport,
                     original_json: Some(&original_json),
                     builtin: false,
-                    enabled: payload.enabled,
+                    enabled,
                 })
                 .await?;
             }
@@ -687,6 +879,27 @@ mod tests {
 
     #[async_trait::async_trait]
     impl IMcpServerRepository for MockMcpServerRepo {
+        async fn replace_enabled_selection(&self, user_id: &str, ids: &[String]) -> Result<(), DbError> {
+            if ids.len() > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS {
+                return Err(DbError::Conflict("MCP_LIMIT_EXCEEDED".into()));
+            }
+            let mut rows = self.servers.lock().unwrap();
+            if ids.iter().any(|id| {
+                !rows
+                    .iter()
+                    .any(|r| r.user_id == user_id && &r.id == id && !r.builtin && r.deleted_at.is_none())
+            }) {
+                return Err(DbError::NotFound("MCP selection".into()));
+            }
+            for row in rows
+                .iter_mut()
+                .filter(|r| r.user_id == user_id && !r.builtin && r.deleted_at.is_none())
+            {
+                row.enabled = ids.contains(&row.id);
+            }
+            Ok(())
+        }
+
         async fn list(&self, user_id: &str) -> Result<Vec<McpServerRow>, DbError> {
             let servers = self.servers.lock().unwrap();
             Ok(servers
@@ -1647,7 +1860,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn batch_import_preserves_enabled_state() {
+    async fn batch_import_requires_explicit_activation() {
         let svc = make_service();
         let mut req = stdio_import_req("enabled-mcp");
         req.enabled = Some(true);
@@ -1657,7 +1870,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(result[0].name, "enabled-mcp");
-        assert!(result[0].enabled);
+        assert!(!result[0].enabled);
     }
 
     #[tokio::test]
@@ -1790,6 +2003,7 @@ mod team_sync_tests {
             endpoint: endpoint.to_owned(),
             enabled: true,
             secrets_json: None,
+            employee_bound: false,
         }
     }
 
@@ -1816,6 +2030,82 @@ mod team_sync_tests {
         assert!(
             search.original_json.as_deref().unwrap_or("").contains("omcp_a"),
             "ownership marker stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn employee_bound_connectors_sit_outside_the_member_quota() {
+        let svc = svc();
+        let mut payloads: Vec<TeamMcpPayload> = (0..20)
+            .map(|i| {
+                payload(
+                    &format!("omcp_s{i}"),
+                    &format!("sel-{i}"),
+                    "sse",
+                    &format!("https://s{i}/sse"),
+                )
+            })
+            .collect();
+        for i in 0..3 {
+            let mut bound = payload(
+                &format!("omcp_b{i}"),
+                &format!("bound-{i}"),
+                "sse",
+                &format!("https://b{i}/sse"),
+            );
+            bound.employee_bound = true;
+            payloads.push(bound);
+        }
+        svc.sync_team_servers(TEST_USER_ID, &payloads, true).await.unwrap();
+
+        let rows = svc.repo.list(TEST_USER_ID).await.unwrap();
+        assert_eq!(rows.iter().filter(|r| r.enabled && !r.builtin).count(), 20);
+        assert_eq!(rows.iter().filter(|r| !r.enabled && !r.builtin).count(), 3);
+        // The employee run still resolves a bound connector although it is disabled.
+        assert!(
+            svc.team_server_transport(TEST_USER_ID, "omcp_b1")
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        // A plain disabled team row (not employee-bound) must not resolve.
+        let mut disabled = payload("omcp_plain", "plain", "sse", "https://plain/sse");
+        disabled.enabled = false;
+        svc.sync_team_servers(TEST_USER_ID, &[disabled], true).await.unwrap();
+        assert!(
+            svc.team_server_transport(TEST_USER_ID, "omcp_plain")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn employee_bound_bucket_has_its_own_twenty_entry_ceiling() {
+        let svc = svc();
+        let bound: Vec<TeamMcpPayload> = (0..21)
+            .map(|i| {
+                let mut p = payload(
+                    &format!("omcp_b{i}"),
+                    &format!("bound-{i}"),
+                    "sse",
+                    &format!("https://b{i}/sse"),
+                );
+                p.employee_bound = true;
+                p
+            })
+            .collect();
+        let err = svc.sync_team_servers(TEST_USER_ID, &bound, true).await.unwrap_err();
+        assert!(err.to_string().contains("MCP_LIMIT_EXCEEDED"), "got {err}");
+        assert!(
+            svc.repo
+                .list(TEST_USER_ID)
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| team_registry_id_of(r.original_json.as_deref()).is_none()),
+            "a rejected sync must write nothing"
         );
     }
 

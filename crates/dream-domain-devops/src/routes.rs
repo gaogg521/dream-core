@@ -62,6 +62,7 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
             axum::routing::post(breakdown_requirement),
         )
         .route("/api/one/devops/skills", get(list_skills).post(upsert_skill))
+        .route("/api/one/devops/skills/runtime", get(list_runtime_skills))
         .route("/api/one/devops/skills/{id}", axum::routing::delete(delete_skill))
         // P1-1 round 1: batch publish/unpublish + upload-a-SKILL.md.
         .route("/api/one/devops/skills/publish", axum::routing::put(publish_skills))
@@ -119,6 +120,14 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
             "/api/one/devops/market/sources/{id}/sync",
             axum::routing::post(sync_market_source),
         )
+        .route(
+            "/api/one/devops/mcp-selection",
+            get(get_mcp_selection).put(put_mcp_selection),
+        )
+        .route("/api/one/devops/mcp-active", get(active_mcp))
+        .route("/api/one/devops/mcp-bound", axum::routing::post(employee_bound_mcp))
+        .route("/api/one/devops/mcp-catalog", get(mcp_catalog))
+        .route("/api/one/devops/mcp-registry/management", get(list_mcp_management))
         .route("/api/one/devops/mcp-registry", get(list_mcp).post(upsert_mcp))
         .route("/api/one/devops/mcp-registry/upload", axum::routing::post(upload_mcp))
         .route("/api/one/devops/mcp-registry/{id}", axum::routing::delete(delete_mcp))
@@ -798,6 +807,21 @@ async fn reject_if_machine_blocked(
     Ok(())
 }
 
+/// Consumption view for local sync: enabled + published skills the caller may run,
+/// with `{{config.*}}` expanded. Unlike `list_skills`, administrators get no raw view here.
+async fn list_runtime_skills(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    headers: HeaderMap,
+) -> Result<Json<ApiResponse<Vec<SkillRegistryDto>>>, DevopsError> {
+    reject_if_machine_blocked(&state, &headers, &user.id).await?;
+    let mut skills = state.service.runtime_skills(&user.id).await?;
+    attach_skill_category_and_tags(&state, &mut skills).await;
+    let extra = extra_scan_needles(&state).await;
+    attach_pack_meta(&mut skills, &extra);
+    Ok(Json(ApiResponse::ok(skills)))
+}
+
 async fn list_skills(
     State(state): State<OneDevopsRouterState>,
     Extension(user): Extension<CurrentUser>,
@@ -1266,21 +1290,13 @@ async fn probe_api_asset(
 async fn publish_api_asset_mcp(
     State(state): State<OneDevopsRouterState>,
     Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-    Json(body): Json<PublishApiAssetBody>,
-) -> Result<Json<ApiResponse<crate::models::McpRegistryDto>>, DevopsError> {
+    Path(_id): Path<String>,
+    Json(_body): Json<PublishApiAssetBody>,
+) -> Result<Json<ApiResponse<McpRegistryDto>>, DevopsError> {
     require_registry_admin(&state, &user.id).await?;
-    let tenant = state.tenant_of(&user.id).await;
-    let dto = state
-        .service
-        .publish_api_asset_mcp(&tenant, &user.id, &id, body.base_url.as_deref())
-        .await?;
-    audit(&state, &user.id, "devops.api_asset.publish_mcp", Some(&dto.id)).await;
-    Ok(Json(ApiResponse::ok(dto)))
+    Err(DevopsError::BadRequest("REST_TO_MCP_ADAPTER_UNAVAILABLE: publish as a skill or register a real MCP endpoint; a REST base URL is not an SSE MCP server".into()))
 }
 
-/// Create an asset by hand (no OpenAPI document). Body is
-/// [`ApiAssetProfileInput`]; `name` and `code` are required, the rest default.
 async fn create_api_asset(
     State(state): State<OneDevopsRouterState>,
     Extension(user): Extension<CurrentUser>,
@@ -1337,6 +1353,20 @@ async fn list_mcp(
     Extension(user): Extension<CurrentUser>,
     headers: HeaderMap,
 ) -> Result<Json<ApiResponse<Vec<McpRegistryDto>>>, DevopsError> {
+    reject_if_machine_blocked(&state, &headers, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    let mut rows = state.service.selected_mcp_registry(&tenant, &user.id).await?;
+    let extra = extra_scan_needles(&state).await;
+    attach_mcp_pack_meta(&mut rows, &extra);
+    Ok(Json(ApiResponse::ok(rows)))
+}
+
+async fn list_mcp_management(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    headers: HeaderMap,
+) -> Result<Json<ApiResponse<Vec<McpRegistryDto>>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
     reject_if_machine_blocked(&state, &headers, &user.id).await?;
     let mut rows = state.service.list_mcp_registry(&user.id).await?;
     let extra = extra_scan_needles(&state).await;
@@ -3052,4 +3082,77 @@ async fn sync_market_source(
         )
         .await;
     Ok(Json(ApiResponse::ok(report)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpSelectionBody {
+    selected_ids: Vec<String>,
+}
+#[derive(Deserialize)]
+struct McpCatalogQuery {
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    offset: usize,
+}
+async fn get_mcp_selection(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<crate::mcp_selection::McpSelectionDto>>, DevopsError> {
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(
+        state.service.mcp_selection(&tenant, &user.id).await?,
+    )))
+}
+async fn put_mcp_selection(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<McpSelectionBody>,
+) -> Result<Json<ApiResponse<crate::mcp_selection::McpSelectionDto>>, DevopsError> {
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .replace_mcp_selection(&tenant, &user.id, &body.selected_ids)
+            .await?,
+    )))
+}
+async fn active_mcp(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    headers: HeaderMap,
+) -> Result<Json<ApiResponse<Vec<McpRegistryDto>>>, DevopsError> {
+    reject_if_machine_blocked(&state, &headers, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(
+        state.service.selected_mcp_registry(&tenant, &user.id).await?,
+    )))
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpBoundBody {
+    ids: Vec<String>,
+}
+/// Connectors bound by digital employees the caller can run; resolved against
+/// the authorized catalog, independent of the caller's own 20-connector selection.
+async fn employee_bound_mcp(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    headers: HeaderMap,
+    Json(body): Json<McpBoundBody>,
+) -> Result<Json<ApiResponse<Vec<McpRegistryDto>>>, DevopsError> {
+    reject_if_machine_blocked(&state, &headers, &user.id).await?;
+    Ok(Json(ApiResponse::ok(
+        state.service.employee_bound_mcp_registry(&user.id, &body.ids).await?,
+    )))
+}
+async fn mcp_catalog(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(query): Query<McpCatalogQuery>,
+) -> Result<Json<ApiResponse<Vec<crate::mcp_selection::McpCatalogItem>>>, DevopsError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.mcp_catalog_page(&user.id, &query.q, query.offset).await?,
+    )))
 }

@@ -41,6 +41,8 @@ pub struct DirectoryDepartmentInput {
 /// One person, as handed over by the fetch side.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectoryPersonInput {
+    pub employee_no: Option<String>,
+    pub enterprise_email: Option<String>,
     pub external_id: String,
     pub name: Option<String>,
     pub job_title: Option<String>,
@@ -203,6 +205,8 @@ impl EnterpriseService {
                     &person.external_id,
                     person.name.as_deref(),
                     person.job_title.as_deref(),
+                    person.employee_no.as_deref().filter(|v| !v.trim().is_empty()),
+                    person.enterprise_email.as_deref().filter(|v| !v.trim().is_empty()),
                     person.department_external_id.as_deref(),
                     i64::from(person.active),
                     now,
@@ -211,14 +215,14 @@ impl EnterpriseService {
                 match pool.backend() {
                     dream_core_db::DbBackend::Sqlite => {
                         tx.execute(
-                    "INSERT INTO one_directory_people                    (enterprise_id, external_id, name, job_title, department_external_id, active,                     first_seen_at, last_seen_at, missing_since)                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)                  ON CONFLICT(enterprise_id, external_id) DO UPDATE SET                    name = excluded.name,                    job_title = excluded.job_title,                    department_external_id = excluded.department_external_id,                    active = excluded.active,                    last_seen_at = excluded.last_seen_at",
+                    "INSERT INTO one_directory_people                    (enterprise_id, external_id, name, job_title, employee_no, enterprise_email, department_external_id, active,                     first_seen_at, last_seen_at, missing_since)                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)                  ON CONFLICT(enterprise_id, external_id) DO UPDATE SET                    name = excluded.name,                    job_title = excluded.job_title, employee_no = COALESCE(excluded.employee_no, one_directory_people.employee_no), enterprise_email = COALESCE(excluded.enterprise_email, one_directory_people.enterprise_email),                    department_external_id = excluded.department_external_id,                    active = excluded.active,                    last_seen_at = excluded.last_seen_at",
                     &params,
                 )
                 .await?;
                     }
                     dream_core_db::DbBackend::MySql => {
                         tx.execute(
-                    "INSERT INTO one_directory_people                    (enterprise_id, external_id, name, job_title, department_external_id, active,                     first_seen_at, last_seen_at, missing_since)                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL) AS new                  ON DUPLICATE KEY UPDATE                    name = new.name,                    job_title = new.job_title,                    department_external_id = new.department_external_id,                    active = new.active,                    last_seen_at = new.last_seen_at",
+                    "INSERT INTO one_directory_people                    (enterprise_id, external_id, name, job_title, employee_no, enterprise_email, department_external_id, active,                     first_seen_at, last_seen_at, missing_since)                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL) AS new                  ON DUPLICATE KEY UPDATE                    name = new.name,                    job_title = new.job_title, employee_no = COALESCE(new.employee_no, one_directory_people.employee_no), enterprise_email = COALESCE(new.enterprise_email, one_directory_people.enterprise_email),                    department_external_id = new.department_external_id,                    active = new.active,                    last_seen_at = new.last_seen_at",
                     &params,
                 )
                 .await?;
@@ -392,7 +396,7 @@ impl EnterpriseService {
         let rows = self
             .db
             .fetch_all_as::<DirectoryPersonDto>(
-                "SELECT p.external_id, p.name, p.job_title, d.name AS department, p.active \
+                "SELECT p.external_id, p.name, p.job_title, p.employee_no, p.enterprise_email, d.name AS department, p.active \
              FROM one_directory_people p \
              LEFT JOIN one_directory_departments d \
                ON d.enterprise_id = p.enterprise_id AND d.external_id = p.department_external_id \
@@ -503,6 +507,8 @@ pub struct DirectoryDepartmentDto {
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryPersonDto {
+    pub employee_no: Option<String>,
+    pub enterprise_email: Option<String>,
     pub external_id: String,
     pub name: Option<String>,
     pub job_title: Option<String>,
@@ -548,6 +554,8 @@ mod tests {
 
     fn person(external_id: &str, active: bool) -> DirectoryPersonInput {
         DirectoryPersonInput {
+            employee_no: None,
+            enterprise_email: None,
             external_id: external_id.into(),
             name: Some(format!("name-{external_id}")),
             job_title: None,

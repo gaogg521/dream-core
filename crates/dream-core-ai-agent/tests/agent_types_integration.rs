@@ -173,7 +173,7 @@ fn agent_session_kind_is_limited_to_runnable_runtimes() {
 }
 
 #[tokio::test]
-async fn collect_idle_ignores_dream_engine_agent_type() {
+async fn collect_idle_includes_idle_dream_engine_agent_type() {
     use futures_util::FutureExt;
     let old_ts = now_ms() - 600_000; // 10 min ago
 
@@ -249,10 +249,11 @@ async fn collect_idle_ignores_dream_engine_agent_type() {
 
     assert_eq!(mgr.active_count(), 2);
 
-    // Only ACP should be collected
-    let idle = mgr.collect_idle(300_000); // 5-min threshold
-    assert_eq!(idle.len(), 1);
-    assert_eq!(idle[0], "acp-1");
+    // An idle DreamEngine session is reclaimed like any other: it owns MCP
+    // child processes that nothing else would ever stop (MCP storm lifecycle fix).
+    let mut idle = mgr.collect_idle(300_000); // 5-min threshold
+    idle.sort();
+    assert_eq!(idle, vec!["acp-1".to_owned(), "dream-engine-1".to_owned()]);
 }
 
 // ---------------------------------------------------------------------------

@@ -83,6 +83,8 @@ pub struct FeishuUserInfo {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 struct FeishuContactUser {
+    employee_no: Option<String>,
+    enterprise_email: Option<String>,
     job_title: Option<String>,
     department_ids: Option<Vec<String>>,
 }
@@ -106,6 +108,8 @@ struct FeishuDepartmentWrapper {
 /// why every field is best-effort (`None` on any failure, never an error).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FeishuOrgProfile {
+    pub employee_no: Option<String>,
+    pub enterprise_email: Option<String>,
     pub job_title: Option<String>,
     pub department_name: Option<String>,
 }
@@ -168,6 +172,8 @@ struct FeishuListedDepartment {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 struct FeishuListedUser {
+    employee_no: Option<String>,
+    enterprise_email: Option<String>,
     open_id: Option<String>,
     union_id: Option<String>,
     name: Option<String>,
@@ -199,6 +205,8 @@ pub struct DirectoryDepartment {
 /// One person in the company directory, provider-neutral.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectoryPerson {
+    pub employee_no: Option<String>,
+    pub enterprise_email: Option<String>,
     /// The id this person is matched on. Same field the SSO identity binds by,
     /// so a directory row can be tied back to a local account.
     pub external_id: String,
@@ -359,6 +367,8 @@ impl FeishuProvider {
                 )
             });
         ProviderUserInfo {
+            employee_no: None,
+            enterprise_email: None,
             external_id: external_id.to_owned(),
             preferred_username: preferred,
             org_unit_path: None,
@@ -650,6 +660,11 @@ impl FeishuProvider {
                 // is a not-yet-onboarded account, not a departure.
                 let active = !u.status.as_ref().and_then(|s| s.is_resigned).unwrap_or(false);
                 Some(DirectoryPerson {
+                    employee_no: u.employee_no.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()),
+                    enterprise_email: u
+                        .enterprise_email
+                        .map(|v| v.trim().to_owned())
+                        .filter(|v| !v.is_empty()),
                     external_id,
                     name: u.name.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()),
                     job_title: u.job_title.map(|j| j.trim().to_owned()).filter(|j| !j.is_empty()),
@@ -764,6 +779,8 @@ impl FeishuProvider {
             None => None,
         };
         FeishuOrgProfile {
+            employee_no: user.employee_no,
+            enterprise_email: user.enterprise_email,
             job_title: user.job_title,
             department_name,
         }

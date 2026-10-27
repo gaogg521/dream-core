@@ -111,6 +111,14 @@ pub trait IAgentTask: Send + Sync {
 #[cfg(any(test, feature = "test-support"))]
 #[async_trait::async_trait]
 pub trait IMockAgent: IAgentTask {
+    /// Model asynchronous process/transport teardown in lifecycle regressions.
+    fn kill_and_wait(
+        &self,
+        reason: Option<AgentKillReason>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        let _ = self.kill(reason);
+        Box::pin(std::future::ready(()))
+    }
     fn get_confirmations(&self) -> Vec<Confirmation> {
         Vec::new()
     }
@@ -317,10 +325,7 @@ impl AgentInstance {
             // where the old Drop-only no-op silently failed (ELECTRON-3RW).
             Self::Session(m) => m.kill_and_wait(reason),
             #[cfg(any(test, feature = "test-support"))]
-            Self::Mock(m) => {
-                let _ = m.kill(reason);
-                Box::pin(std::future::ready(()))
-            }
+            Self::Mock(m) => m.kill_and_wait(reason),
         }
     }
 

@@ -1445,8 +1445,10 @@ async fn es1c_team_conversations_carry_assistant_bound_mcp_snapshot() {
     assert_eq!(worker_extra["mcp_servers"], json!([]));
     assert_eq!(worker_extra["mcp_statuses"], json!([]));
 
-    // Global enabled flags do not override an assistant's explicit binding.
-    // A runtime restart must resolve the same assistant-bound snapshot.
+    // Revocation wins over history: once a connector is disabled globally, a
+    // runtime restart must not bring it back from the assistant-bound snapshot
+    // (the MCP storm revived disabled rows through exactly this path). Inline
+    // built-ins are not registry rows and stay.
     sqlx::query("UPDATE mcp_servers SET enabled = 0 WHERE id = 'mcp-e2e-docs'")
         .execute(&pool)
         .await
@@ -1495,13 +1497,10 @@ async fn es1c_team_conversations_carry_assistant_bound_mcp_snapshot() {
         "member runtime restart should succeed: {restart_body}"
     );
     let extra = conversation_extra(&services, lead_conversation_id).await;
-    assert_eq!(extra["mcp_server_ids"], json!(["mcp-e2e-docs"]));
+    assert_eq!(extra["mcp_server_ids"], json!([]));
     assert_eq!(extra["session_mcp_servers"][0]["name"], json!("chrome-devtools"));
-    assert_eq!(
-        extra["mcp_servers"],
-        json!(["mcp-e2e-docs", "chrome-devtools", "broken-builtin"])
-    );
-    assert_eq!(extra["mcp_statuses"].as_array().unwrap().len(), 3);
+    assert_eq!(extra["mcp_servers"], json!(["chrome-devtools", "broken-builtin"]));
+    assert_eq!(extra["mcp_statuses"].as_array().unwrap().len(), 2);
 
     services
         .conversation_service
@@ -1526,12 +1525,9 @@ async fn es1c_team_conversations_carry_assistant_bound_mcp_snapshot() {
         "second member runtime restart should succeed: {restart_body}"
     );
     let extra = conversation_extra(&services, lead_conversation_id).await;
-    assert_eq!(extra["mcp_server_ids"], json!(["mcp-e2e-docs"]));
+    assert_eq!(extra["mcp_server_ids"], json!([]));
     assert_eq!(extra["session_mcp_servers"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        extra["mcp_servers"],
-        json!(["mcp-e2e-docs", "chrome-devtools", "broken-builtin"])
-    );
+    assert_eq!(extra["mcp_servers"], json!(["chrome-devtools", "broken-builtin"]));
 }
 
 #[tokio::test]

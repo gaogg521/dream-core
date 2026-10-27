@@ -42,6 +42,7 @@ pub(super) async fn build(
     ctx: FactoryContext,
 ) -> Result<AgentInstance, AgentError> {
     let mut overrides = build_context.config;
+    super::session_mcp::guard_mcp_selection(&mut overrides.mcp_server_ids, &mut overrides.session_mcp_servers);
     let resolved_skills = overrides.skills.clone();
 
     // Merge preset assistant rules into system_prompt (used as custom_prompt
@@ -72,7 +73,15 @@ pub(super) async fn build(
     let mut allowed_snapshots = Vec::new();
     for server in &overrides.session_mcp_servers {
         if super::session_mcp::snapshot_server_allowed(deps.mcp_server_repo.as_deref(), &ctx.user_id, server).await {
-            allowed_snapshots.push(server.clone());
+            let mut server = server.clone();
+            if let Some(repo) = deps.mcp_server_repo.as_deref()
+                && crate::mcp_resolve::authorize_session_server(repo, &ctx.user_id, &mut server)
+                    .await
+                    .is_err()
+            {
+                continue;
+            }
+            allowed_snapshots.push(server);
         }
     }
     merge_session_snapshot_mcp_servers(
@@ -792,6 +801,21 @@ async fn row_to_mcp_server_config(
     let value: serde_json::Value =
         serde_json::from_str(&row.transport_config).map_err(|e| format!("invalid transport_config JSON: {e}"))?;
 
+    if row.transport_type == "stdio" {
+        let command = value.get("command").and_then(|v| v.as_str()).unwrap_or_default();
+        let args: Vec<String> = value
+            .get("args")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect();
+        if dream_core_common::mcp_policy::is_browser_auth_proxy(command, &args) {
+            return Err(
+                "MCP_AUTH_REQUIRED: configure native HTTP transport; browser proxy auto-start is disabled".into(),
+            );
+        }
+    }
     match row.transport_type.as_str() {
         "stdio" => {
             let command = value
@@ -1447,7 +1471,7 @@ mod tests {
             "mcp-docs",
             "http",
             r#"{"url":"http://localhost:54321/mcp","headers":{"Authorization":"Bearer frozen"}}"#,
-            false,
+            true,
             false,
         );
         row.id = "mcp-docs".into();
@@ -2378,7 +2402,7 @@ mod tests {
         let mut assembled = resolve_mcp_servers(&overrides);
         for (name, config) in load_user_mcp_servers(
             &repo,
-            None,
+            Some(&["mcp_mcp-docs".into(), "mcp_dream-team".into()]),
             TEST_USER_ID,
             "conv-assembly",
             "/tmp/workspace",

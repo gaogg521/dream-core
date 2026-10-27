@@ -73,6 +73,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "023_knowledge_import_sources",
         include_str!("../migrations/023_knowledge_import_sources.sql"),
     ),
+    (
+        "024_mcp_user_selection",
+        include_str!("../migrations/024_mcp_user_selection.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -146,6 +150,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "023_knowledge_import_sources",
         include_str!("../migrations_mysql/023_knowledge_import_sources.sql"),
+    ),
+    (
+        "024_mcp_user_selection",
+        include_str!("../migrations_mysql/024_mcp_user_selection.sql"),
     ),
 ];
 

@@ -40,6 +40,13 @@ pub async fn resolve_session_mcp_servers(
     conversation_id: &str,
     _broadcaster: Arc<dyn EventBroadcaster>,
 ) -> Vec<SessionMcpServer> {
+    if selected_ids.is_some_and(|ids| ids.len() > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS) {
+        warn!(
+            conversation_id,
+            "Over-limit MCP selection blocked before command resolution"
+        );
+        return Vec::new();
+    }
     let rows_result = match selected_ids {
         Some(ids) => repo.list_by_ids_any(user_id, ids).await,
         None => repo.list(user_id).await,
@@ -53,14 +60,17 @@ pub async fn resolve_session_mcp_servers(
     };
 
     let mut servers = Vec::with_capacity(rows.len());
-    for row in rows {
+    for mut row in rows {
         let selected = selected_ids
             .map(|ids| ids.iter().any(|id| id == &row.id))
-            .unwrap_or(row.enabled);
+            .unwrap_or(false);
         // `dream-team` is a reserved wire-level name: the team coordination MCP
         // must win, so a user row that collides with it is skipped (never
         // injected), regardless of selection state.
-        if !selected || row.builtin || is_team_mcp_server_name(&row.name) {
+        if !selected || !row.enabled || row.builtin || row.deleted_at.is_some() || is_team_mcp_server_name(&row.name) {
+            continue;
+        }
+        if authorize_runtime_row(repo, user_id, &mut row).await.is_err() {
             continue;
         }
         match row_to_session_mcp_server(&row).await {
@@ -87,6 +97,53 @@ pub async fn resolve_session_mcp_servers(
     servers
 }
 
+/// Inject a user's current native-HTTP credential only into the runtime copy.
+pub(crate) async fn authorize_session_server(
+    repo: &dyn IMcpServerRepository,
+    user: &str,
+    server: &mut SessionMcpServer,
+) -> Result<(), String> {
+    let (url, headers) = match &mut server.transport {
+        SessionMcpTransport::StreamableHttp { url, headers } | SessionMcpTransport::Sse { url, headers } => {
+            (url, headers)
+        }
+        _ => return Ok(()),
+    };
+    if !headers.keys().any(|key| key.eq_ignore_ascii_case("authorization"))
+        && let Some(token) = repo.oauth_bearer_token(user, url).await.map_err(|e| e.to_string())?
+    {
+        headers.insert("Authorization".into(), format!("Bearer {token}"));
+    }
+    Ok(())
+}
+
+pub(crate) async fn authorize_runtime_row(
+    repo: &dyn IMcpServerRepository,
+    user: &str,
+    row: &mut McpServerRow,
+) -> Result<(), String> {
+    if !matches!(row.transport_type.as_str(), "http" | "streamable_http" | "sse") {
+        return Ok(());
+    }
+    let mut value: serde_json::Value = serde_json::from_str(&row.transport_config).map_err(|e| e.to_string())?;
+    let Some(url) = value.get("url").and_then(|v| v.as_str()) else {
+        return Ok(());
+    };
+    let token = repo.oauth_bearer_token(user, url).await.map_err(|e| e.to_string())?;
+    if let Some(token) = token {
+        if value.get("headers").is_none_or(|v| v.is_null()) {
+            value["headers"] = serde_json::json!({});
+        }
+        if let Some(headers) = value.get_mut("headers").and_then(|v| v.as_object_mut())
+            && !headers.keys().any(|key| key.eq_ignore_ascii_case("authorization"))
+        {
+            headers.insert("Authorization".into(), serde_json::json!(format!("Bearer {token}")));
+        }
+        row.transport_config = serde_json::to_string(&value).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Parse one `McpServerRow` into a neutral `SessionMcpServer`, resolving the stdio
 /// launch command. Mirrors `factory::acp::row_to_sdk_mcp_server` but emits the
 /// neutral type. Returns an error string when `transport_config` is malformed.
@@ -110,6 +167,9 @@ pub async fn row_to_session_mcp_server(row: &McpServerRow) -> Result<SessionMcpS
                 .and_then(|v| v.as_array())
                 .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
                 .unwrap_or_default();
+            if dream_core_common::mcp_policy::is_browser_auth_proxy(command, &args) {
+                return Err("MCP_AUTH_REQUIRED: configure native HTTP transport and authorize explicitly; browser proxy auto-start is disabled".into());
+            }
             let mut env: std::collections::HashMap<String, String> = value
                 .get("env")
                 .and_then(|v| v.as_object())
@@ -295,7 +355,19 @@ mod tests {
             rows: vec![make_row("docs", true), make_row(TEAM_MCP_SERVER_NAME, true)],
             fail: false,
         };
-        let servers = resolve_session_mcp_servers(&repo, TEST_USER_ID, None, "conv-1", test_broadcaster()).await;
+        let servers = resolve_session_mcp_servers(
+            &repo,
+            TEST_USER_ID,
+            Some(&[
+                "mcp_docs".into(),
+                "mcp_off".into(),
+                "mcp_builtin".into(),
+                TEAM_MCP_SERVER_NAME.into(),
+            ]),
+            "conv-1",
+            test_broadcaster(),
+        )
+        .await;
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].name, "docs");
     }
@@ -326,7 +398,19 @@ mod tests {
             ],
             fail: false,
         };
-        let servers = resolve_session_mcp_servers(&repo, TEST_USER_ID, None, "conv-1", test_broadcaster()).await;
+        let servers = resolve_session_mcp_servers(
+            &repo,
+            TEST_USER_ID,
+            Some(&[
+                "mcp_docs".into(),
+                "mcp_off".into(),
+                "mcp_builtin".into(),
+                TEAM_MCP_SERVER_NAME.into(),
+            ]),
+            "conv-1",
+            test_broadcaster(),
+        )
+        .await;
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].name, "docs");
     }

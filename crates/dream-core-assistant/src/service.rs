@@ -7001,7 +7001,7 @@ mod tests {
             .unwrap();
         assert!(fx.service.get_detail_for_user(&member, &local, None).await.is_ok());
         fx.service
-            .prune_team_assistants(&member, "server-a", &[local.clone()])
+            .prune_team_assistants(&member, "server-a", std::slice::from_ref(&local))
             .await
             .unwrap();
         assert!(fx.service.get_detail_for_user(&member, &local, None).await.is_ok());

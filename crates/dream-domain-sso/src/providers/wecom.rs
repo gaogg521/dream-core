@@ -23,6 +23,8 @@ pub struct WecomProviderConfig {
     pub secret: String,
     #[serde(default)]
     pub redirect_uri: Option<String>,
+    #[serde(default)]
+    pub employee_no_field: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -124,6 +126,8 @@ impl WecomProvider {
 
     pub fn to_provider_user_info(user_id: &str) -> ProviderUserInfo {
         ProviderUserInfo {
+            employee_no: None,
+            enterprise_email: None,
             external_id: user_id.to_owned(),
             preferred_username: format!("wecom_{}", crate::providers::synthetic_username_suffix(user_id, 16)),
             org_unit_path: None,
@@ -134,11 +138,22 @@ impl WecomProvider {
 
     /// OAuth identifies the member; the application Contact API supplies their
     /// enterprise profile. Missing Contact permissions must not prevent login.
-    pub async fn enrich_profile(access_token: &str, profile: &mut ProviderUserInfo) {
-        Self::enrich_profile_from("https://qyapi.weixin.qq.com/cgi-bin", access_token, profile).await;
+    pub async fn enrich_profile(access_token: &str, profile: &mut ProviderUserInfo, employee_no_field: Option<&str>) {
+        Self::enrich_profile_from(
+            "https://qyapi.weixin.qq.com/cgi-bin",
+            access_token,
+            profile,
+            employee_no_field,
+        )
+        .await;
     }
 
-    async fn enrich_profile_from(base: &str, access_token: &str, profile: &mut ProviderUserInfo) {
+    async fn enrich_profile_from(
+        base: &str,
+        access_token: &str,
+        profile: &mut ProviderUserInfo,
+        employee_no_field: Option<&str>,
+    ) {
         let result = tokio::time::timeout(HTTP_TIMEOUT, async {
             let client = http_client()?;
             let data: serde_json::Value = client
@@ -154,6 +169,7 @@ impl WecomProvider {
                 return Err(SsoError::IdentityMissing);
             }
             apply_contact_profile(profile, &data);
+            profile.employee_no = employee_number(&data, employee_no_field.unwrap_or("工号"));
             if let Some(dept) = data["main_department"]
                 .as_i64()
                 .or_else(|| data["department"].as_array()?.first()?.as_i64())
@@ -205,6 +221,13 @@ fn validate_contact_response(data: &serde_json::Value) -> Result<(), SsoError> {
 }
 
 fn apply_contact_profile(profile: &mut ProviderUserInfo, data: &serde_json::Value) {
+    profile.enterprise_email = data["biz_mail"]
+        .as_str()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned);
+    // WeCom has no standard employee-number field. Only an explicitly named custom attribute is eligible.
+    profile.employee_no = employee_number(data, "工号");
     if let Some(name) = data["name"].as_str().map(str::trim).filter(|name| !name.is_empty()) {
         profile.preferred_username = name.to_owned();
     }
@@ -213,6 +236,18 @@ fn apply_contact_profile(profile: &mut ProviderUserInfo, data: &serde_json::Valu
         .map(str::trim)
         .filter(|title| !title.is_empty())
         .map(str::to_owned);
+}
+
+fn employee_number(data: &serde_json::Value, field: &str) -> Option<String> {
+    data.pointer("/extattr/attrs")?
+        .as_array()?
+        .iter()
+        .find(|v| v["name"].as_str() == Some(field.trim()) && v["type"].as_i64() == Some(0))?
+        .pointer("/text/value")?
+        .as_str()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned)
 }
 
 fn department_path(nodes: &[serde_json::Value], mut id: i64) -> Option<String> {
@@ -277,7 +312,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"errcode":0,"department":[{"id":1,"parentid":0,"name":"公司"},{"id":2,"parentid":1,"name":"安全中心"}]})))
             .expect(1).mount(&server).await;
         let mut profile = WecomProvider::to_provider_user_info("member-1");
-        WecomProvider::enrich_profile_from(&server.uri(), "app-token", &mut profile).await;
+        WecomProvider::enrich_profile_from(&server.uri(), "app-token", &mut profile, None).await;
         assert_eq!(profile.external_id, "member-1");
         assert_eq!(profile.preferred_username, "赵高");
         assert_eq!(profile.job_title.as_deref(), Some("总监"));
@@ -292,10 +327,18 @@ mod tests {
             .mount(&server)
             .await;
         let mut fallback = WecomProvider::to_provider_user_info("member-1");
-        WecomProvider::enrich_profile_from(&server.uri(), "app-token", &mut fallback).await;
+        WecomProvider::enrich_profile_from(&server.uri(), "app-token", &mut fallback, None).await;
         assert_eq!(fallback.preferred_username, "wecom_member-1");
         assert_eq!(fallback.job_title, None);
         assert_eq!(fallback.org_unit_path, None);
+    }
+
+    #[test]
+    fn employee_number_uses_only_the_named_text_attribute() {
+        let data = serde_json::json!({"userid":"not-an-employee-number","extattr":{"attrs":[{"name":"Staff ID","type":0,"text":{"value":" E-1027 "}},{"name":"工号","type":1,"web":{"url":"https://example.test"}}]}});
+        assert_eq!(employee_number(&data, "Staff ID").as_deref(), Some("E-1027"));
+        assert!(employee_number(&data, "工号").is_none());
+        assert!(employee_number(&data, "Missing").is_none());
     }
 
     #[test]
@@ -345,6 +388,7 @@ mod tests {
     #[test]
     fn browser_qr_login_uses_web_endpoint_and_encodes_callback_and_state() {
         let cfg = WecomProviderConfig {
+            employee_no_field: None,
             corp_id: "ww_test".into(),
             agent_id: "1000002".into(),
             secret: "not-in-url".into(),
@@ -363,6 +407,7 @@ mod tests {
     #[test]
     fn build_authorize_url_contains_required_params() {
         let cfg = WecomProviderConfig {
+            employee_no_field: None,
             corp_id: "corp_abc".into(),
             agent_id: "1000002".into(),
             secret: "secret".into(),

@@ -213,6 +213,8 @@ impl From<InviteRow> for InviteDto {
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct UserOrgRow {
+    pub employee_no: Option<String>,
+    pub enterprise_email: Option<String>,
     pub user_id: String,
     pub tenant_id: String,
     pub role: String,
@@ -243,6 +245,8 @@ pub struct OrgContextDto {
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminUserDto {
+    pub employee_no: Option<String>,
+    pub enterprise_email: Option<String>,
     pub user_id: String,
     pub username: String,
     pub tenant_id: String,

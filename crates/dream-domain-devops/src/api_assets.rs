@@ -1432,11 +1432,7 @@ mod tests {
             summary: Some("List pets".into()),
             operation_id: Some("listPets".into()),
         }));
-        assert!(
-            endpoints
-                .iter()
-                .all(|e| e.path != "/pets/{petId}".to_owned() || e.method == "get")
-        );
+        assert!(endpoints.iter().all(|e| e.path != "/pets/{petId}" || e.method == "get"));
 
         // The raw spec round-trips verbatim through the detail endpoint.
         let detail = svc.get_api_asset("t1", &asset.id).await.unwrap();

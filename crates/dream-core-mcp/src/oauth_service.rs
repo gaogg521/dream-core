@@ -72,6 +72,7 @@ pub struct McpOAuthService {
     http_client: reqwest::Client,
     /// Mutex protecting pending login state by (user_id, oauth_state).
     pending: Arc<Mutex<HashMap<(String, String), PendingLogin>>>,
+    login_attempts: Arc<std::sync::Mutex<HashMap<(String, String), std::time::Instant>>>,
 }
 
 impl McpOAuthService {
@@ -80,6 +81,7 @@ impl McpOAuthService {
             token_repo,
             http_client,
             pending: Arc::new(Mutex::new(HashMap::new())),
+            login_attempts: Arc::default(),
         }
     }
 
@@ -98,44 +100,56 @@ impl McpOAuthService {
     /// 1. Discover authorization/token endpoints
     /// 2. Generate PKCE challenge
     /// 3. Start local callback server on a random port
-    /// 4. Build authorization URL and open it in the system browser
+    /// 4. Return the authorization URL for an explicit client-side Login click
     /// 5. Wait for the redirect with the authorization code
     /// 6. Exchange code for tokens and persist them
     pub async fn login(&self, user_id: &str, server_url: &str) -> Result<OAuthLoginResponse, McpError> {
-        let (authorize_url, listener) = self.prepare_login_flow(user_id, server_url).await?;
-
-        // Open browser.
-        debug!(url = %authorize_url, "Opening browser for OAuth authorization");
-        if let Err(e) = open::that(&authorize_url) {
-            warn!("Failed to open browser: {e}");
-        }
-
-        // Wait for callback.
-        let (code, state) = match self.wait_for_callback(user_id, listener).await {
-            Ok(callback) => callback,
-            Err(e) => {
-                self.clear_pending_for_user(user_id).await;
+        let key = (user_id.to_owned(), server_url.to_owned());
+        {
+            let mut attempts = self
+                .login_attempts
+                .lock()
+                .map_err(|_| McpError::OAuth("Login state unavailable".into()))?;
+            attempts.retain(|_, at| at.elapsed() < CALLBACK_TIMEOUT + Duration::from_secs(30));
+            if attempts.contains_key(&key) {
                 return Ok(OAuthLoginResponse {
                     success: false,
-                    error: Some(e.to_string()),
+                    pending: true,
+                    authorization_url: None,
+                    error: None,
                 });
             }
-        };
-
-        // Exchange code for tokens.
-        match self.exchange_code(user_id, server_url, code, state).await {
-            Ok(()) => Ok(OAuthLoginResponse {
-                success: true,
-                error: None,
-            }),
-            Err(e) => {
-                self.clear_pending_for_user(user_id).await;
-                Ok(OAuthLoginResponse {
-                    success: false,
-                    error: Some(e.to_string()),
-                })
-            }
+            attempts.insert(key, std::time::Instant::now());
         }
+        let (authorize_url, listener) = self.prepare_login_flow(user_id, server_url).await?;
+        let oauth_state = reqwest::Url::parse(&authorize_url).ok().and_then(|url| {
+            url.query_pairs()
+                .find(|(k, _)| k == "state")
+                .map(|(_, v)| v.into_owned())
+        });
+        let service = self.clone();
+        let user_id = user_id.to_owned();
+        let server_url = server_url.to_owned();
+        tokio::spawn(async move {
+            let result = match service.wait_for_callback(&user_id, listener).await {
+                Ok((code, state)) => service.exchange_code(&user_id, &server_url, code, state).await,
+                Err(error) => Err(error),
+            };
+            if let Some(state) = oauth_state {
+                service.pending.lock().await.remove(&(user_id.clone(), state));
+            }
+            if result.is_err() {
+                warn!("MCP OAuth login did not complete; explicit user retry required");
+            }
+        });
+        // The client opens this URL only in response to the user's Login click.
+        // A hosted Core must never open a browser on its server machine.
+        Ok(OAuthLoginResponse {
+            success: false,
+            pending: true,
+            authorization_url: Some(authorize_url),
+            error: None,
+        })
     }
 
     /// Logout from the given MCP server URL (delete stored token).
@@ -315,22 +329,12 @@ impl McpOAuthService {
 
     /// Wait for the OAuth callback redirect on the given listener.
     async fn wait_for_callback(&self, user_id: &str, listener: TcpListener) -> Result<(String, String), McpError> {
-        let (code_tx, code_rx) = tokio::sync::oneshot::channel::<Result<(String, String), McpError>>();
-        let pending = self.pending.clone();
-        let user_id = user_id.to_string();
-
-        tokio::spawn(async move {
-            let result = Self::handle_callback_connection(&user_id, listener, pending).await;
-            let _ = code_tx.send(result);
-        });
-
-        match tokio::time::timeout(CALLBACK_TIMEOUT, code_rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(McpError::OAuth("Callback channel closed unexpectedly".to_string())),
-            Err(_) => Err(McpError::OAuth(
-                "OAuth callback timed out — no redirect received within 120s".to_string(),
-            )),
-        }
+        tokio::time::timeout(
+            CALLBACK_TIMEOUT,
+            Self::handle_callback_connection(user_id, listener, self.pending.clone()),
+        )
+        .await
+        .map_err(|_| McpError::OAuth("OAuth callback timed out; explicit user retry required".into()))?
     }
 
     /// Handle a single HTTP connection on the callback server.
@@ -500,6 +504,7 @@ impl McpOAuthService {
     }
 
     /// Clear the pending login state.
+    #[cfg(test)]
     async fn clear_pending_for_user(&self, user_id: &str) {
         let mut guard = self.pending.lock().await;
         guard.retain(|(pending_user_id, _), _| pending_user_id != user_id);
@@ -877,6 +882,58 @@ mod tests {
         async fn list_authenticated_urls(&self, _: &str) -> Result<Vec<String>, dream_core_db::DbError> {
             Ok(vec!["https://example.com".to_string()])
         }
+    }
+
+    #[tokio::test]
+    async fn concurrent_login_returns_one_url_without_reopening_or_cross_user_deduplication() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let endpoint = base.clone();
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = requests.clone();
+        let fixture = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 4096];
+                let read = socket.read(&mut request).await.unwrap();
+                assert!(read > 0);
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let body = serde_json::json!({"authorization_endpoint":format!("{endpoint}/authorize"),"token_endpoint":format!("{endpoint}/token")}).to_string();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            }
+        });
+        let service = McpOAuthService::new(Arc::new(MockTokenRepo), reqwest::Client::new());
+        let mut calls = Vec::new();
+        for _ in 0..16 {
+            let service = service.clone();
+            let base = base.clone();
+            calls.push(tokio::spawn(
+                async move { service.login("alice", &base).await.unwrap() },
+            ));
+        }
+        let mut urls = Vec::new();
+        for call in calls {
+            let result = call.await.unwrap();
+            assert!(result.pending);
+            if let Some(url) = result.authorization_url {
+                urls.push(url);
+            }
+        }
+        assert_eq!(urls.len(), 1);
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(service.login("bob", &base).await.unwrap().authorization_url.is_some());
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let url = reqwest::Url::parse(&urls[0]).unwrap();
+        let redirect = url
+            .query_pairs()
+            .find(|(key, _)| key == "redirect_uri")
+            .unwrap()
+            .1
+            .into_owned();
+        let response = reqwest::get(format!("{redirect}?code=denied&state=wrong")).await;
+        assert!(response.map_or(true, |response| !response.status().is_success()));
+        assert!(service.login("alice", &base).await.unwrap().authorization_url.is_none());
+        fixture.abort();
     }
 
     // -- Service behavior tests ----------------------------------------------

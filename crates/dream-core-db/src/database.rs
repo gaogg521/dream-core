@@ -1166,7 +1166,6 @@ mod tests {
             &path,
             DatabaseInitOptions {
                 recover_corrupted_database: true,
-                ..Default::default()
             },
         )
         .await

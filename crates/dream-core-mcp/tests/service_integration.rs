@@ -386,7 +386,7 @@ async fn batch_import_creates_and_upserts() {
 }
 
 #[tokio::test]
-async fn batch_import_preserves_enabled_in_database() {
+async fn batch_import_requires_explicit_activation() {
     let svc = make_service().await;
     let mut req = stdio_import_req("enabled-db-mcp");
     req.enabled = Some(true);
@@ -398,9 +398,9 @@ async fn batch_import_preserves_enabled_in_database() {
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].name, "enabled-db-mcp");
-    assert!(result[0].enabled);
+    assert!(!result[0].enabled);
 
     let listed = svc.list_servers(TEST_USER_ID).await.unwrap();
     assert_eq!(listed.len(), 1);
-    assert!(listed[0].enabled);
+    assert!(!listed[0].enabled);
 }

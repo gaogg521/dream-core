@@ -29,14 +29,13 @@ pub trait CollaborationProvider: Send + Sync {
     /// Probe whether the configured collaboration backend can be reached.
     async fn probe(&self, settings: CollaborationSettings<'_>) -> CollaborationStatus;
 
-    /// Relay a lightweight realtime signal (mention, thread reply, presence).
-    /// Default accepts locally when the backend probe would succeed.
-    async fn relay_event(&self, settings: CollaborationSettings<'_>, event_type: &str) -> CollaborationStatus {
-        let mut status = self.probe(settings).await;
-        if status.status == "ok" {
-            status.message = format!("relayed {event_type}");
+    /// Relay a realtime signal only when a real delivery adapter is installed.
+    /// Endpoint reachability alone is never evidence that an event was sent.
+    async fn relay_event(&self, _settings: CollaborationSettings<'_>, _event_type: &str) -> CollaborationStatus {
+        CollaborationStatus {
+            status: "not_configured".into(),
+            message: "Realtime event delivery adapter is not implemented; endpoint probes do not send events".into(),
         }
-        status
     }
 }
 

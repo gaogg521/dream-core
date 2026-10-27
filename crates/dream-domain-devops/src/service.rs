@@ -1327,12 +1327,15 @@ impl DevopsService {
                 "Execution requires active enterprise membership".into(),
             ));
         }
-        let mut rows = self.list_mcp_registry_inner(viewer_user_id, true).await?;
-        rows.retain(|row| row.enabled && row.published);
-        Ok(rows)
+        let tenant: Option<String> = self.db.fetch_optional_scalar(
+            "SELECT uo.tenant_id FROM one_user_org uo WHERE uo.user_id = ? ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC, uo.created_at DESC, uo.tenant_id ASC LIMIT 1",
+            &db_params![viewer_user_id],
+        ).await?;
+        self.selected_mcp_registry(tenant.as_deref().unwrap_or("default"), viewer_user_id)
+            .await
     }
 
-    async fn list_mcp_registry_inner(
+    pub(crate) async fn list_mcp_registry_inner(
         &self,
         viewer_user_id: &str,
         runtime: bool,
@@ -1347,9 +1350,13 @@ impl DevopsService {
         // A matrix grant can only widen this predicate, never narrow it, so a
         // deployment with no matrix configured runs the identical query it ran
         // before the matrix existed.
-        let grants = self
+        let mut grants = self
             .extra_grants(viewer_user_id, crate::grants::resource_type::MCP)
             .await;
+        if self.grants.get().is_some() {
+            grants.restrictive = true;
+            grants.all = false;
+        }
         let (predicate, grant_ids) =
             Self::apply_grants(&Self::member_visibility_where(""), &grants, "", viewer_user_id);
         // P1-1 round 1: see list_skills's identical comment on why this is
@@ -3407,7 +3414,9 @@ mod tests {
             )
             .await
             .unwrap();
-        svc.set_skills_published(&[draft.id.clone()], false).await.unwrap();
+        svc.set_skills_published(std::slice::from_ref(&draft.id), false)
+            .await
+            .unwrap();
 
         let member_view = svc.list_skills("member1").await.unwrap();
         let names: Vec<&str> = member_view.iter().map(|s| s.name.as_str()).collect();
@@ -3475,8 +3484,12 @@ mod tests {
         assert_eq!(svc.list_skills("member1").await.unwrap().len(), 1);
         assert_eq!(svc.list_mcp_registry("member1").await.unwrap().len(), 1);
 
-        svc.set_skills_published(&[skill.id.clone()], false).await.unwrap();
-        svc.set_mcp_published(&[mcp.id.clone()], false).await.unwrap();
+        svc.set_skills_published(std::slice::from_ref(&skill.id), false)
+            .await
+            .unwrap();
+        svc.set_mcp_published(std::slice::from_ref(&mcp.id), false)
+            .await
+            .unwrap();
 
         // Unpublished: invisible to the member...
         assert!(svc.list_skills("member1").await.unwrap().is_empty());
@@ -3486,7 +3499,9 @@ mod tests {
         assert_eq!(svc.list_mcp_registry("admin1").await.unwrap().len(), 1);
 
         // Re-publishing restores member visibility.
-        svc.set_skills_published(&[skill.id.clone()], true).await.unwrap();
+        svc.set_skills_published(std::slice::from_ref(&skill.id), true)
+            .await
+            .unwrap();
         assert_eq!(svc.list_skills("member1").await.unwrap().len(), 1);
 
         // Updating the skill can also clear the category back to none.
@@ -3551,6 +3566,13 @@ mod tests {
                 .content
                 .contains("{{config.api.base_url}}")
         );
+        // Admin consuming the skill (local sync) must get the expanded value, once published.
+        let id = svc.list_skills("admin1").await.unwrap()[0].id.clone();
+        svc.set_skills_published(std::slice::from_ref(&id), true).await.unwrap();
+        assert_eq!(
+            svc.runtime_skills("admin1").await.unwrap()[0].content,
+            "hit https://resolved.example.com/v1"
+        );
     }
 
     /// Seed one skill members can reach and one only admins can.
@@ -3610,13 +3632,70 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(saved, secrets);
-        svc.set_mcp_published(&[mcp.id], true).await.unwrap();
+        svc.set_mcp_published(std::slice::from_ref(&mcp.id), true)
+            .await
+            .unwrap();
+        svc.replace_mcp_selection("t1", "member1", &[mcp.id]).await.unwrap();
         assert_eq!(
             svc.runtime_mcp_registry("member1").await.unwrap()[0]
                 .secrets_json
                 .as_deref(),
             Some(secrets)
         );
+    }
+
+    #[tokio::test]
+    async fn employee_bound_mcp_resolves_without_using_the_members_selection() {
+        let svc = service().await;
+        seed_org(&svc).await;
+        let mut ids = Vec::new();
+        for name in ["picked", "bound-only"] {
+            let mcp = svc
+                .upsert_mcp_registry(
+                    None,
+                    name,
+                    "sse",
+                    "http://localhost/sse",
+                    true,
+                    false,
+                    None,
+                    "org",
+                    None,
+                    "all",
+                    None,
+                    "admin1",
+                )
+                .await
+                .unwrap();
+            svc.set_mcp_published(std::slice::from_ref(&mcp.id), true)
+                .await
+                .unwrap();
+            ids.push(mcp.id);
+        }
+        svc.replace_mcp_selection("t1", "member1", &ids[..1]).await.unwrap();
+
+        // The member's own runtime view is still just their selection.
+        let runtime: Vec<_> = svc
+            .runtime_mcp_registry("member1")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(runtime, vec![ids[0].clone()]);
+        // An employee bound to the unselected connector still gets it.
+        let bound = svc.employee_bound_mcp_registry("member1", &ids[1..]).await.unwrap();
+        assert_eq!(bound.len(), 1);
+        assert_eq!(bound[0].id, ids[1]);
+        // Unknown ids are absent, and the ceiling is enforced.
+        assert!(
+            svc.employee_bound_mcp_registry("member1", &["nope".to_owned()])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let too_many: Vec<String> = (0..21).map(|i| format!("x{i}")).collect();
+        assert!(svc.employee_bound_mcp_registry("member1", &too_many).await.is_err());
     }
 
     #[tokio::test]
@@ -3636,9 +3715,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![&open]
         );
-        svc.set_skills_published(&[open.clone()], false).await.unwrap();
+        svc.set_skills_published(std::slice::from_ref(&open), false)
+            .await
+            .unwrap();
         assert!(svc.runtime_skills("admin1").await.unwrap().is_empty());
-        svc.set_skills_published(&[open.clone()], true).await.unwrap();
+        svc.set_skills_published(std::slice::from_ref(&open), true)
+            .await
+            .unwrap();
         svc.db
             .execute(
                 "UPDATE one_skill_registry SET enabled = 0 WHERE id = ?",

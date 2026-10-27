@@ -133,6 +133,10 @@ impl EnterpriseService {
         let seat_status = self
             .resolve_seat_status_and_upsert(user_id, &enterprise_id, display_name, department, job_title, now)
             .await?;
+        if let Ok(Some((employee_no, enterprise_email))) = self.db.fetch_optional_as::<(Option<String>, Option<String>)>(
+            "SELECT employee_no, enterprise_email FROM one_sso_identities WHERE user_id=? AND provider=? ORDER BY last_seen_at DESC LIMIT 1", &db_params![user_id, provider]).await {
+            self.db.execute("UPDATE one_enterprise_members SET employee_no=COALESCE(NULLIF(?, ''),employee_no), enterprise_email=COALESCE(NULLIF(?, ''),enterprise_email) WHERE user_id=? AND enterprise_id=?", &db_params![employee_no.as_deref(),enterprise_email.as_deref(),user_id,&enterprise_id]).await?;
+        }
         // Reconcile a pending invite for this exact person, if an admin sent
         // one — purely cleanup, never a gate: they already joined above
         // (auto-join on any SSO login is unchanged), this just clears their
@@ -729,7 +733,7 @@ impl EnterpriseService {
         let rows = self
             .db
             .fetch_all_as(
-                "SELECT m.user_id, u.username, m.display_name, m.department, m.job_title, m.role, m.seat_status \
+                "SELECT m.user_id, u.username, m.display_name, m.department, m.job_title, m.employee_no, m.enterprise_email, m.role, m.seat_status \
              FROM one_enterprise_members m LEFT JOIN users u ON u.id = m.user_id \
              WHERE m.enterprise_id = ? ORDER BY m.joined_at ASC",
                 &db_params![enterprise_id],
@@ -738,7 +742,19 @@ impl EnterpriseService {
         Ok(rows
             .into_iter()
             .map(
-                |(user_id, username, display_name, department, job_title, role, seat_status)| CompanyMemberDto {
+                |(
+                    user_id,
+                    username,
+                    display_name,
+                    department,
+                    job_title,
+                    employee_no,
+                    enterprise_email,
+                    role,
+                    seat_status,
+                )| CompanyMemberDto {
+                    employee_no,
+                    enterprise_email,
                     user_id,
                     username,
                     display_name,
@@ -1056,7 +1072,7 @@ impl EnterpriseService {
         let row = self
             .db
             .fetch_optional_as(
-                "SELECT e.provider, e.external_id, e.display_name, m.display_name, m.department, m.job_title, m.role \
+                "SELECT e.provider, e.external_id, e.display_name, m.display_name, m.department, m.job_title, m.employee_no, m.enterprise_email, m.role \
              FROM one_enterprise_members m \
              JOIN one_enterprises e ON e.id = m.enterprise_id \
              WHERE m.user_id = ?",
@@ -1064,7 +1080,19 @@ impl EnterpriseService {
             )
             .await?;
         let mut identity = row.map(
-            |(provider, company_id, company_name, display_name, department, job_title, role)| EnterpriseIdentityDto {
+            |(
+                provider,
+                company_id,
+                company_name,
+                display_name,
+                department,
+                job_title,
+                employee_no,
+                enterprise_email,
+                role,
+            )| EnterpriseIdentityDto {
+                employee_no,
+                enterprise_email,
                 provider,
                 company_id,
                 company_name,

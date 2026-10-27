@@ -319,6 +319,8 @@ impl DirectorySnapshot {
                 .people
                 .into_iter()
                 .map(|p| crate::enterprise::DirectoryPersonPayload {
+                    employee_no: p.employee_no,
+                    enterprise_email: p.enterprise_email,
                     external_id: p.external_id,
                     name: p.name,
                     job_title: p.job_title,
@@ -340,6 +342,8 @@ mod tests {
 
     fn person(id: &str, departments: &[&str], active: bool) -> DirectoryPerson {
         DirectoryPerson {
+            employee_no: None,
+            enterprise_email: None,
             external_id: id.into(),
             name: Some(format!("name-{id}")),
             job_title: None,

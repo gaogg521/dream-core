@@ -263,11 +263,8 @@ pub struct DreamEngineAgentManager {
     /// not wait behind an active `engine.run()` turn.
     slash_commands: Vec<SlashCommandItem>,
     /// Holds `Arc<McpManager>` instances alive for the duration of this agent's
-    /// lifetime. The managers are not accessed after construction — they exist
-    /// solely so their underlying MCP connections outlive the engine's event
-    /// loop. Rust drops them here, in field-declaration order, after `engine`
-    /// and `runtime` are dropped. See the explicit `Drop` impl below.
-    #[allow(dead_code)] // intentional: lifetime-extension only; see Drop impl
+    /// lifetime and explicitly closes their transports before replacement or
+    /// eviction. Drop provides cleanup for paths without an awaited teardown.
     mcp_managers: Vec<Arc<McpManager>>,
     approval_manager: Arc<ToolApprovalManager>,
     /// Questions raised by the engine's `AskUserQuestion` tool, waiting for
@@ -290,11 +287,9 @@ pub struct DreamEngineAgentManager {
 
 impl Drop for DreamEngineAgentManager {
     fn drop(&mut self) {
-        // McpManagers are held alive by the `mcp_managers` field specifically
-        // so they outlive the agent's event loop. No explicit cleanup is needed
-        // here — the Arc drop path releases each McpManager's underlying MCP
-        // connection. This impl exists to document the intentional Drop-order
-        // semantics rather than as a lint escape hatch.
+        // Tool proxies may still retain a manager. Explicitly close transports
+        // rather than relying on the final Arc release to terminate processes.
+        self.schedule_mcp_shutdown();
     }
 }
 
@@ -310,6 +305,17 @@ pub struct TurnMemory {
 }
 
 impl DreamEngineAgentManager {
+    fn schedule_mcp_shutdown(&self) {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let managers = self.mcp_managers.clone();
+            handle.spawn(async move {
+                for manager in managers {
+                    manager.shutdown().await;
+                }
+            });
+        }
+    }
+
     pub(crate) async fn install_team_mcp_guard(
         &self,
         repo: Arc<dyn dream_core_db::IMcpServerRepository>,
@@ -883,6 +889,7 @@ impl IAgentTask for DreamEngineAgentManager {
 
     fn kill(&self, reason: Option<AgentKillReason>) -> Result<(), AgentError> {
         self.request_stop(reason, "kill");
+        self.schedule_mcp_shutdown();
         Ok(())
     }
 }
@@ -970,6 +977,7 @@ impl DreamEngineAgentManager {
         let turn_finished_notify = Arc::clone(&self.turn_finished_notify);
         let runtime = self.runtime.clone();
         let conversation_id = self.runtime.conversation_id().to_owned();
+        let managers = self.mcp_managers.clone();
 
         Box::pin(async move {
             if was_running
@@ -985,6 +993,9 @@ impl DreamEngineAgentManager {
                     conversation_id,
                     "Timed out waiting for the DreamEngine turn to finish after kill"
                 );
+            }
+            for manager in managers {
+                manager.shutdown().await;
             }
         })
     }

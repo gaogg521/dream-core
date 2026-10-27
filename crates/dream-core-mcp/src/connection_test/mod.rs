@@ -79,7 +79,12 @@ impl McpConnectionTestService {
         user_id: Option<&str>,
         runtime_scope_id: Option<&str>,
     ) -> McpConnectionTestResult {
-        debug!(name, ?transport, "starting MCP connection test");
+        let transport = match crate::service::normalize_transport(transport.clone()) {
+            Ok(transport) => transport,
+            Err(error) => return error_result(McpConnectionTestErrorCode::ProtocolError, error.to_string(), None),
+        };
+        let transport = &transport;
+        debug!(name, "starting MCP connection test");
         let transport_type = mcp_transport_type(transport);
         let mcp_server_id = runtime_scope_id.unwrap_or(name);
         log_mcp_transport_start(mcp_server_id, transport_type);
@@ -741,5 +746,28 @@ mod tests {
     #[cfg(unix)]
     fn libc_sigkill() -> i32 {
         9
+    }
+    #[tokio::test]
+    async fn remote_authorization_proxy_is_tested_natively_without_spawning_a_browser() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut connection, _) = listener.accept().await.unwrap();
+            let mut buffer = [0u8; 4096];
+            let _ = connection.read(&mut buffer).await.unwrap();
+            connection.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nWWW-Authenticate: Bearer\r\nConnection: close\r\n\r\n").await.unwrap();
+        });
+        // The nonexistent launcher proves no stdio process was attempted.
+        let transport = McpServerTransport::Stdio {
+            command: "nonexistent-mcp-launcher".into(),
+            args: vec!["mcp-remote".into(), url],
+            env: Default::default(),
+        };
+        let service = McpConnectionTestService::new(reqwest::Client::new(), Arc::new(BroadcastEventBus::new(16)));
+        let result = service.test_connection("remote", &transport).await;
+        assert_eq!(result.needs_auth, Some(true));
+        assert!(!result.success);
+        server.await.unwrap();
     }
 }

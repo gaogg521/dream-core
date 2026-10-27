@@ -60,6 +60,8 @@ fn default_true() -> bool {
 
 #[derive(Debug, Clone)]
 pub struct LdapAuthSuccess {
+    pub employee_no: Option<String>,
+    pub enterprise_email: Option<String>,
     pub external_id: String,
     pub user_dn: String,
     pub org_unit_path: Option<String>,
@@ -103,6 +105,9 @@ impl LdapProvider {
             "displayName".into(),
             "cn".into(),
             "title".into(),
+            "employeeNumber".into(),
+            "employeeID".into(),
+            "mail".into(),
         ];
         let external_attr = config.external_id_attribute.trim();
         if !external_attr.is_empty() {
@@ -198,6 +203,8 @@ impl LdapProvider {
         }
 
         Ok(LdapAuthSuccess {
+            employee_no: pick_attr(&record, "employeeNumber").or_else(|| pick_attr(&record, "employeeID")),
+            enterprise_email: pick_attr(&record, "mail"),
             org_unit_path: resolve_org_unit_path(&user_dn, &record),
             display_name: resolve_display_name(&record),
             job_title: pick_attr(&record, "title"),

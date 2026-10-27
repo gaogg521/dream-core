@@ -59,6 +59,7 @@ fs2.workspace = true
 test-support = []
 
 [dev-dependencies]
+dream-engine-mcp = { workspace = true, features = ["test-utils"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["full"] }
 tracing-subscriber.workspace = true

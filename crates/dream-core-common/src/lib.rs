@@ -5,6 +5,7 @@ pub mod constants;
 pub mod data_paths;
 pub mod dlp;
 pub mod legacy_env;
+pub mod mcp_policy;
 pub mod upload_paths;
 pub mod user_paths;
 

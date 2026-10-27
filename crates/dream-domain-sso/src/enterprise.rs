@@ -79,6 +79,8 @@ pub struct DirectoryDepartmentPayload {
 
 #[derive(Debug, Clone)]
 pub struct DirectoryPersonPayload {
+    pub employee_no: Option<String>,
+    pub enterprise_email: Option<String>,
     pub external_id: String,
     pub name: Option<String>,
     pub job_title: Option<String>,

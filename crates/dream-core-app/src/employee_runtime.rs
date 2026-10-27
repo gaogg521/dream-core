@@ -110,8 +110,10 @@ impl EmployeeRuntime {
         }
         let servers = binding_ids(&config, "boundMcpIds")?;
         if !servers.is_empty() {
+            // Bound connectors are the administrator's choice for this employee;
+            // they must not depend on the member's own selected connectors.
             let available = devops
-                .runtime_mcp_registry(actor)
+                .employee_bound_mcp_registry(actor, &servers)
                 .await
                 .map_err(|e| AgentError::internal(e.to_string()))?;
             if servers.iter().any(|id| !available.iter().any(|row| &row.id == id)) {
@@ -227,7 +229,7 @@ impl EmployeeRuntime {
             let registry = match team {
                 Some(_) => Vec::new(),
                 None => devops
-                    .runtime_mcp_registry(&actor)
+                    .employee_bound_mcp_registry(&actor, &mcp_ids)
                     .await
                     .map_err(|e| AgentError::internal(e.to_string()))?,
             };

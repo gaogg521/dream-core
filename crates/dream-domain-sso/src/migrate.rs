@@ -34,6 +34,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "sso_007_sso_only_accounts",
         include_str!("../migrations/007_sso_only_accounts.sql"),
     ),
+    (
+        "sso_008_contact_fields",
+        include_str!("../migrations/008_contact_fields.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -58,6 +62,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "sso_007_sso_only_accounts",
         include_str!("../migrations_mysql/007_sso_only_accounts.sql"),
+    ),
+    (
+        "sso_008_contact_fields",
+        include_str!("../migrations_mysql/008_contact_fields.sql"),
     ),
 ];
 

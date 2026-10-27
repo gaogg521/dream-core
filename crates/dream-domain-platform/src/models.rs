@@ -744,3 +744,5 @@ pub struct PlatformVersionDto {
     pub version: String,
     pub edition: String,
 }
+
+pub use dream_core_api_types::LaboratorySettingsDto;

@@ -245,6 +245,8 @@ impl SamlProvider {
         let preferred_username =
             first_attribute(pending.config.name_attribute_or_default()).unwrap_or_else(|| external_id.clone());
         Ok(ProviderUserInfo {
+            employee_no: None,
+            enterprise_email: None,
             external_id,
             preferred_username,
             org_unit_path: None,

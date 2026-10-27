@@ -302,6 +302,9 @@ pub struct OAuthLoginRequest {
 #[derive(Debug, Serialize)]
 pub struct OAuthLoginResponse {
     pub success: bool,
+    pub pending: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authorization_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -673,6 +676,8 @@ mod tests {
     #[test]
     fn test_oauth_login_response() {
         let resp = OAuthLoginResponse {
+            pending: false,
+            authorization_url: None,
             success: false,
             error: Some("discovery failed".into()),
         };

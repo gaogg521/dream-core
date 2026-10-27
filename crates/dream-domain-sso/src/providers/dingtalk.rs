@@ -154,6 +154,8 @@ impl DingtalkProvider {
                 )
             });
         ProviderUserInfo {
+            employee_no: None,
+            enterprise_email: None,
             external_id: external_id.to_owned(),
             preferred_username: preferred,
             // NOT `info.mobile`. This field is the person's DEPARTMENT PATH:
@@ -336,6 +338,16 @@ async fn contact_request(
 }
 
 fn apply_contact_profile(profile: &mut ProviderUserInfo, data: &serde_json::Value) {
+    profile.enterprise_email = data["org_email"]
+        .as_str()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned);
+    profile.employee_no = data["job_number"]
+        .as_str()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned);
     if let Some(name) = data["name"].as_str().map(str::trim).filter(|name| !name.is_empty()) {
         profile.preferred_username = name.to_owned();
     }

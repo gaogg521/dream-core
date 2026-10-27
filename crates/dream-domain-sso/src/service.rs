@@ -534,8 +534,8 @@ impl SsoService {
             .execute(
                 "INSERT INTO one_sso_identities \
              (id, provider, external_id, user_id, tenant_id, display_name, org_unit_path, job_title, \
-              org_external_id, created_at, last_seen_at) \
-             VALUES (?, ?, ?, ?, 'default', ?, ?, ?, ?, ?, ?)",
+              org_external_id, employee_no, enterprise_email, created_at, last_seen_at) \
+             VALUES (?, ?, ?, ?, 'default', ?, ?, ?, ?, ?, ?, ?, ?)",
                 &db_params![
                     &id,
                     provider,
@@ -545,6 +545,8 @@ impl SsoService {
                     profile.org_unit_path.as_deref(),
                     profile.job_title.as_deref(),
                     profile.org_external_id.as_deref(),
+                    profile.employee_no.as_deref(),
+                    profile.enterprise_email.as_deref(),
                     now,
                     now
                 ],
@@ -558,7 +560,7 @@ impl SsoService {
             .db
             .execute(
                 "UPDATE one_sso_identities SET last_seen_at = ?, display_name = ?, org_unit_path = ?, job_title = ?, \
-             org_external_id = ? \
+             org_external_id = ?, employee_no = COALESCE(NULLIF(?, ''), employee_no), enterprise_email = COALESCE(NULLIF(?, ''), enterprise_email) \
              WHERE provider = ? AND external_id = ?",
                 &db_params![
                     now_ms(),
@@ -566,6 +568,8 @@ impl SsoService {
                     profile.org_unit_path.as_deref(),
                     profile.job_title.as_deref(),
                     profile.org_external_id.as_deref(),
+                    profile.employee_no.as_deref(),
+                    profile.enterprise_email.as_deref(),
                     provider,
                     external_id
                 ],
@@ -1358,6 +1362,8 @@ mod tests {
     async fn jit_provisioning_keeps_the_real_name_even_when_the_login_username_is_sanitized() {
         let (service, sqlite) = service_with_memory_db().await;
         let profile = ProviderUserInfo {
+            employee_no: None,
+            enterprise_email: None,
             external_id: "ou_zhang".into(),
             preferred_username: "张三".into(),
             org_unit_path: Some("研发中心".into()),
@@ -1384,6 +1390,8 @@ mod tests {
     async fn repeat_login_refreshes_the_stored_display_name_and_org_unit_path() {
         let (service, sqlite) = service_with_memory_db().await;
         let first = ProviderUserInfo {
+            employee_no: None,
+            enterprise_email: None,
             external_id: "ou_zhang".into(),
             preferred_username: "张三".into(),
             org_unit_path: Some("研发中心".into()),
@@ -1398,6 +1406,8 @@ mod tests {
         // Same external_id logs in again with an updated name/department —
         // e.g. the person got renamed or moved teams upstream.
         let second = ProviderUserInfo {
+            employee_no: None,
+            enterprise_email: None,
             external_id: "ou_zhang".into(),
             preferred_username: "张三丰".into(),
             org_unit_path: Some("产品中心".into()),
@@ -1430,6 +1440,8 @@ mod tests {
             SsoProviderKind::Ldap,
         ] {
             let profile = ProviderUserInfo {
+                employee_no: None,
+                enterprise_email: None,
                 external_id: provider.as_str().into(),
                 preferred_username: "真实姓名".into(),
                 org_unit_path: None,
@@ -1486,6 +1498,8 @@ mod tests {
     async fn jit_provisioning_leaves_org_unit_path_null_when_the_provider_has_none() {
         let (service, sqlite) = service_with_memory_db().await;
         let profile = ProviderUserInfo {
+            employee_no: None,
+            enterprise_email: None,
             external_id: "ou_bob".into(),
             preferred_username: "Bob".into(),
             org_unit_path: None,

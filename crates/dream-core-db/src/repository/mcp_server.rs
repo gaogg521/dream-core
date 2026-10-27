@@ -11,6 +11,18 @@ use crate::models::McpServerRow;
 /// Object-safe via `async_trait` to support `Arc<dyn IMcpServerRepository>`.
 #[async_trait::async_trait]
 pub trait IMcpServerRepository: Send + Sync {
+    /// Runtime-only OAuth lookup; credentials must never be copied into history snapshots.
+    async fn oauth_bearer_token(&self, _user_id: &str, _url: &str) -> Result<Option<String>, DbError> {
+        Ok(None)
+    }
+
+    /// Atomically replace the user's enabled non-builtin set. Never partially
+    /// disables old connectors if validation or persistence fails.
+    async fn replace_enabled_selection(&self, _user_id: &str, _ids: &[String]) -> Result<(), DbError> {
+        Err(DbError::Init(
+            "MCP selection transactions are not supported by this repository".into(),
+        ))
+    }
     /// Returns all MCP servers, ordered by creation time ascending.
     async fn list(&self, user_id: &str) -> Result<Vec<McpServerRow>, DbError>;
 

@@ -5249,6 +5249,12 @@ impl ConversationService {
         row: &dream_core_db::models::ConversationRow,
     ) -> Result<BuildTaskOptions, ConversationError> {
         reject_deprecated_runtime_row(row)?;
+        let mut row = row.clone();
+        let mut extra: serde_json::Value =
+            serde_json::from_str(&row.extra).map_err(|e| ConversationError::internal(e.to_string()))?;
+        self.backfill_extra_inplace(&row.user_id, &row.id, &mut extra).await;
+        row.extra = serde_json::to_string(&extra).map_err(|e| ConversationError::internal(e.to_string()))?;
+        let row = &row;
         let seed = self.load_dream_engine_permission_seed(row).await?;
         let options =
             SessionContextBuilder::new(&self.workspace_root, &self.agent_metadata_repo, &self.acp_session_repo)
@@ -5265,6 +5271,12 @@ impl ConversationService {
         workspace_override: Option<&str>,
     ) -> Result<BuildTaskOptions, ConversationError> {
         reject_deprecated_runtime_row(row)?;
+        let mut row = row.clone();
+        let mut extra: serde_json::Value =
+            serde_json::from_str(&row.extra).map_err(|e| ConversationError::internal(e.to_string()))?;
+        self.backfill_extra_inplace(&row.user_id, &row.id, &mut extra).await;
+        row.extra = serde_json::to_string(&extra).map_err(|e| ConversationError::internal(e.to_string()))?;
+        let row = &row;
         let seed = self.load_dream_engine_permission_seed(row).await?;
         let options =
             SessionContextBuilder::new(&self.workspace_root, &self.agent_metadata_repo, &self.acp_session_repo)
@@ -5591,6 +5603,13 @@ impl ConversationService {
         };
         let mut mutated = backfill_skills_if_missing(extra, &auto_inject);
         mutated |= backfill_cron_job_id_alias(extra);
+        if dream_core_common::mcp_policy::repair_oversized_mcp_snapshot(extra) {
+            warn!(
+                conversation_id,
+                "Historical over-limit MCP snapshot quarantined; user selection required"
+            );
+            mutated = true;
+        }
         if !mutated {
             return;
         }
@@ -5895,10 +5914,12 @@ impl ConversationService {
             };
             let selected_rows = rows
                 .into_iter()
-                .filter(|row| !row.builtin && row.name != TEAM_MCP_SERVER_NAME)
+                .filter(|row| {
+                    row.enabled && row.deleted_at.is_none() && !row.builtin && row.name != TEAM_MCP_SERVER_NAME
+                })
                 .filter(|row| match selected_ids {
                     Some(ids) => ids.iter().any(|id| id == &row.id),
-                    None => row.enabled,
+                    None => false,
                 })
                 .collect::<Vec<_>>();
             mcp_server_ids = selected_rows.iter().map(|row| row.id.clone()).collect();
@@ -5912,6 +5933,19 @@ impl ConversationService {
                     classify_repo_mcp_status(row, mcp_support),
                 );
             }
+        }
+        let unique: HashSet<&str> = mcp_server_ids
+            .iter()
+            .map(String::as_str)
+            .chain(
+                session_servers
+                    .iter()
+                    .filter(|s| !dream_core_common::mcp_policy::is_system_mcp(&s.name))
+                    .map(|s| s.id.as_str()),
+            )
+            .collect();
+        if unique.len() > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS {
+            return Err(ConversationError::BadRequest { reason: "MCP_LIMIT_EXCEEDED: choose at most 20 MCP servers; remove an existing selection before adding another".into() });
         }
         let mut selected_session_servers = Vec::with_capacity(session_servers.len());
         for server in session_servers {

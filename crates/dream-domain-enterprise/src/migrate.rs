@@ -33,6 +33,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "enterprise_005_invites",
         include_str!("../migrations/enterprise_005_invites.sql"),
     ),
+    (
+        "enterprise_006_contact_fields",
+        include_str!("../migrations/enterprise_006_contact_fields.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -55,6 +59,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "enterprise_005_invites",
         include_str!("../migrations_mysql/enterprise_005_invites.sql"),
+    ),
+    (
+        "enterprise_006_contact_fields",
+        include_str!("../migrations_mysql/enterprise_006_contact_fields.sql"),
     ),
 ];
 

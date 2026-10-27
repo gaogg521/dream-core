@@ -6,10 +6,12 @@ use std::sync::{Arc, Mutex};
 use super::*;
 use crate::run_one_devops_migrations;
 
+type StoredObjects = Arc<Mutex<BTreeMap<String, (Vec<u8>, i64)>>>;
+
 /// An in-memory file storage that counts nothing and breaks on request.
 #[derive(Clone, Default)]
 struct FakeStorage {
-    objects: Arc<Mutex<BTreeMap<String, (Vec<u8>, i64)>>>,
+    objects: StoredObjects,
     fail_under: Arc<Mutex<Option<String>>>,
     unreadable: Arc<AtomicBool>,
 }

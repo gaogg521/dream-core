@@ -449,6 +449,8 @@ impl dream_domain_sso::DirectorySink for DirectorySinkAdapter {
                 .people
                 .into_iter()
                 .map(|p| dream_domain_enterprise::directory::DirectoryPersonInput {
+                    employee_no: p.employee_no,
+                    enterprise_email: p.enterprise_email,
                     external_id: p.external_id,
                     name: p.name,
                     job_title: p.job_title,

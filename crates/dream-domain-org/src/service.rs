@@ -316,11 +316,21 @@ impl OrgService {
     /// `None` for locally-created members with no SSO identity at all — that
     /// query failing entirely (e.g. table not yet migrated in some odd test
     /// setup) degrades the same way, rather than blocking the join/create.
-    async fn sso_profile_for(&self, user_id: &str) -> Option<(Option<String>, Option<String>, Option<String>, String)> {
+    async fn sso_profile_for(
+        &self,
+        user_id: &str,
+    ) -> Option<(
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+    )> {
         self
             .db
-            .fetch_optional_as::<(Option<String>, Option<String>, Option<String>, String)>(
-                "SELECT display_name, org_unit_path, job_title, provider FROM one_sso_identities \n             WHERE user_id = ? ORDER BY last_seen_at DESC LIMIT 1",
+            .fetch_optional_as::<(Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, String)>(
+                "SELECT display_name, org_unit_path, job_title, employee_no, enterprise_email, provider FROM one_sso_identities \n             WHERE user_id = ? ORDER BY last_seen_at DESC LIMIT 1",
                 &db_params![user_id],
             )
             .await
@@ -527,26 +537,25 @@ impl OrgService {
         // provider at login has nowhere else to live once someone actually
         // becomes a tenant member. Locally-created members (no SSO identity)
         // get NULLs here, same as before this fix.
-        let (display_name, org_unit_path, job_title, org_profile_source) = match self.sso_profile_for(user_id).await {
-            Some((d, o, j, p)) => (d, o, j, Some(p)),
-            None => (None, None, None, None),
-        };
+        let (display_name, org_unit_path, job_title, employee_no, enterprise_email, org_profile_source) =
+            match self.sso_profile_for(user_id).await {
+                Some((d, o, j, n, e, p)) => (d, o, j, n, e, Some(p)),
+                None => (None, None, None, None, None, None),
+            };
         let org_profile_synced_at = org_profile_source.as_ref().map(|_| now);
 
         let mut tx = self.db.begin().await?;
         let user_org_sql = match tx.backend() {
             DbBackend::Sqlite => {
                 "INSERT INTO one_user_org \
-                 (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
-                  org_profile_synced_at, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 (user_id, tenant_id, role, display_name, org_unit_path, job_title, employee_no, enterprise_email, org_profile_source, org_profile_synced_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
                  ON CONFLICT(user_id, tenant_id) DO NOTHING"
             }
             DbBackend::MySql => {
                 "INSERT INTO one_user_org \
-                 (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
-                  org_profile_synced_at, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
+                 (user_id, tenant_id, role, display_name, org_unit_path, job_title, employee_no, enterprise_email, org_profile_source, org_profile_synced_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
                  ON DUPLICATE KEY UPDATE user_id = one_user_org.user_id"
             }
         };
@@ -568,6 +577,8 @@ impl OrgService {
                     &display_name,
                     &org_unit_path,
                     &job_title,
+                    &employee_no,
+                    &enterprise_email,
                     &org_profile_source,
                     org_profile_synced_at,
                     now,
@@ -854,22 +865,23 @@ impl OrgService {
         // so the roster shows "赵高 / 信息安全中心 / 信息安全总监" rather than
         // the `sso_…` ASCII placeholder that lives in `users.username`.
         let now = now_ms() as i64;
-        let (display_name, org_unit_path, job_title, org_profile_source) = match self.sso_profile_for(user_id).await {
-            Some((d, o, j, p)) => (d, o, j, Some(p)),
-            None => (None, None, None, None),
-        };
+        let (display_name, org_unit_path, job_title, employee_no, enterprise_email, org_profile_source) =
+            match self.sso_profile_for(user_id).await {
+                Some((d, o, j, n, e, p)) => (d, o, j, n, e, Some(p)),
+                None => (None, None, None, None, None, None),
+            };
         let org_profile_synced_at = org_profile_source.as_ref().map(|_| now);
 
         let mut tx = self.db.begin().await?;
         let user_org_sql = match tx.backend() {
             DbBackend::Sqlite => {
-                "INSERT INTO one_user_org (user_id, tenant_id, role, display_name, org_unit_path, job_title, department_id, org_profile_source, org_profile_synced_at, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                "INSERT INTO one_user_org (user_id, tenant_id, role, display_name, org_unit_path, job_title, employee_no, enterprise_email, department_id, org_profile_source, org_profile_synced_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
                  ON CONFLICT(user_id, tenant_id) DO UPDATE SET updated_at = excluded.updated_at"
             }
             DbBackend::MySql => {
-                "INSERT INTO one_user_org (user_id, tenant_id, role, display_name, org_unit_path, job_title, department_id, org_profile_source, org_profile_synced_at, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
+                "INSERT INTO one_user_org (user_id, tenant_id, role, display_name, org_unit_path, job_title, employee_no, enterprise_email, department_id, org_profile_source, org_profile_synced_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
                  ON DUPLICATE KEY UPDATE updated_at = new.updated_at"
             }
         };
@@ -882,6 +894,8 @@ impl OrgService {
                 display_name.as_deref(),
                 org_unit_path.as_deref(),
                 job_title.as_deref(),
+                employee_no.as_deref(),
+                enterprise_email.as_deref(),
                 department_id.as_deref(),
                 org_profile_source.as_deref(),
                 org_profile_synced_at,
@@ -978,10 +992,11 @@ impl OrgService {
             _ => None,
         };
 
-        let (display_name, org_unit_path, job_title, org_profile_source) = match self.sso_profile_for(user_id).await {
-            Some((d, o, j, p)) => (d, o, j, Some(p)),
-            None => (None, None, None, None),
-        };
+        let (display_name, org_unit_path, job_title, employee_no, enterprise_email, org_profile_source) =
+            match self.sso_profile_for(user_id).await {
+                Some((d, o, j, n, e, p)) => (d, o, j, n, e, Some(p)),
+                None => (None, None, None, None, None, None),
+            };
         // Nothing to say about this member — leave the row exactly as it is
         // rather than blanking a snapshot an admin may have curated.
         if department_id.is_none() && org_profile_source.is_none() {
@@ -991,13 +1006,15 @@ impl OrgService {
         let now = now_ms() as i64;
         self.db
             .execute(
-                "UPDATE one_user_org SET department_id = CASE WHEN ? THEN ? ELSE department_id END, display_name = COALESCE(?, display_name),                  org_unit_path = COALESCE(?, org_unit_path), job_title = COALESCE(?, job_title),                  org_profile_source = COALESCE(?, org_profile_source), org_profile_synced_at = ?, updated_at = ?                  WHERE user_id = ? AND tenant_id = ?",
+                "UPDATE one_user_org SET department_id = CASE WHEN ? THEN ? ELSE department_id END, display_name = COALESCE(?, display_name),                  org_unit_path = COALESCE(?, org_unit_path), job_title = COALESCE(?, job_title), employee_no = COALESCE(NULLIF(?, ''), employee_no), enterprise_email = COALESCE(NULLIF(?, ''), enterprise_email),                  org_profile_source = COALESCE(?, org_profile_source), org_profile_synced_at = ?, updated_at = ?                  WHERE user_id = ? AND tenant_id = ?",
                 &db_params![
                     has_department_mapping,
                     department_id.as_deref(),
                     display_name.as_deref(),
                     org_unit_path.as_deref(),
                     job_title.as_deref(),
+                employee_no.as_deref(),
+                enterprise_email.as_deref(),
                     org_profile_source.as_deref(),
                     now,
                     now,
@@ -1407,10 +1424,11 @@ impl OrgService {
         // Uncommon (the creator is usually already authenticated locally as
         // system_admin before creating the tenant) but cheap to keep
         // consistent.
-        let (display_name, org_unit_path, job_title, org_profile_source) = match self.sso_profile_for(user_id).await {
-            Some((d, o, j, p)) => (d, o, j, Some(p)),
-            None => (None, None, None, None),
-        };
+        let (display_name, org_unit_path, job_title, employee_no, enterprise_email, org_profile_source) =
+            match self.sso_profile_for(user_id).await {
+                Some((d, o, j, n, e, p)) => (d, o, j, n, e, Some(p)),
+                None => (None, None, None, None, None, None),
+            };
         let org_profile_synced_at = org_profile_source.as_ref().map(|_| now);
 
         // Creator keeps system_admin (instance-level governance) — same
@@ -1427,24 +1445,22 @@ impl OrgService {
         let user_org_sql = match tx.backend() {
             DbBackend::Sqlite => {
                 "INSERT INTO one_user_org \
-                 (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
-                  org_profile_synced_at, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 (user_id, tenant_id, role, display_name, org_unit_path, job_title, employee_no, enterprise_email, org_profile_source, org_profile_synced_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
                  ON CONFLICT(user_id, tenant_id) DO UPDATE SET \
                      role = excluded.role, updated_at = excluded.updated_at, \
                      display_name = excluded.display_name, org_unit_path = excluded.org_unit_path, \
-                     job_title = excluded.job_title, org_profile_source = excluded.org_profile_source, \
+                     job_title = excluded.job_title, employee_no = COALESCE(NULLIF(excluded.employee_no, ''), one_user_org.employee_no), enterprise_email = COALESCE(NULLIF(excluded.enterprise_email, ''), one_user_org.enterprise_email), org_profile_source = excluded.org_profile_source, \
                      org_profile_synced_at = excluded.org_profile_synced_at"
             }
             DbBackend::MySql => {
                 "INSERT INTO one_user_org \
-                 (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
-                  org_profile_synced_at, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
+                 (user_id, tenant_id, role, display_name, org_unit_path, job_title, employee_no, enterprise_email, org_profile_source, org_profile_synced_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
                  ON DUPLICATE KEY UPDATE \
                      role = new.role, updated_at = new.updated_at, \
                      display_name = new.display_name, org_unit_path = new.org_unit_path, \
-                     job_title = new.job_title, org_profile_source = new.org_profile_source, \
+                     job_title = new.job_title, employee_no = COALESCE(NULLIF(new.employee_no, ''), one_user_org.employee_no), enterprise_email = COALESCE(NULLIF(new.enterprise_email, ''), one_user_org.enterprise_email), org_profile_source = new.org_profile_source, \
                      org_profile_synced_at = new.org_profile_synced_at"
             }
         };
@@ -1457,6 +1473,8 @@ impl OrgService {
                 &display_name,
                 &org_unit_path,
                 &job_title,
+                &employee_no,
+                &enterprise_email,
                 &org_profile_source,
                 org_profile_synced_at,
                 now,
@@ -2503,7 +2521,7 @@ impl OrgService {
             .db
             .fetch_all_as::<AdminUserDto>(
                 "SELECT uo.user_id, u.username, uo.tenant_id, uo.role, uo.display_name, uo.org_unit_path, \
-                    uo.job_title, uo.department_id, u.last_login, uo.created_at, \
+                    uo.job_title, uo.employee_no, uo.enterprise_email, uo.department_id, u.last_login, uo.created_at, \
                     COALESCE(u.sso_provider, CASE WHEN u.user_type = 'local' AND u.sso_only = 0 THEN 'password' ELSE 'external' END) AS auth_provider, (u.user_type = 'local' AND u.sso_only = 0) AS can_reset_password, \
                     u.last_login_method, u.last_login_client, u.last_login_ip, u.last_login_user_agent \
              FROM one_user_org uo \
@@ -2642,6 +2660,8 @@ impl OrgService {
             .await;
 
         Ok(AdminUserDto {
+            employee_no: None,
+            enterprise_email: None,
             user_id,
             username: username.to_owned(),
             tenant_id: tenant_id.to_owned(),
@@ -3131,7 +3151,7 @@ impl OrgService {
                         &db_params![tenant_id, owner_root_id],
                     )
                     .await?
-                    .unwrap_or_else(|| owner_root);
+                    .unwrap_or(owner_root);
                 return Err(OrgError::BadRequest(format!(
                     "'{conflicting_name}' is already covered by the directory mapping rooted at '{owner_root_name}' \
                      in this project group; remove that mapping first, or map a branch that does not overlap it"
@@ -5320,7 +5340,7 @@ mod tests {
             "CREATE TABLE IF NOT EXISTS one_sso_identities (\
                  id TEXT PRIMARY KEY, provider TEXT NOT NULL, external_id TEXT NOT NULL, \
                  user_id TEXT NOT NULL, tenant_id TEXT NOT NULL DEFAULT 'default', \
-                 display_name TEXT, org_unit_path TEXT, job_title TEXT, org_external_id TEXT, \
+                 display_name TEXT, org_unit_path TEXT, job_title TEXT, employee_no TEXT, enterprise_email TEXT, org_external_id TEXT, \
                  last_seen_at INTEGER, created_at INTEGER NOT NULL)",
         )
         .execute(pool)
@@ -5367,14 +5387,29 @@ mod tests {
                 .execute(db.pool())
                 .await
                 .unwrap();
+            sqlx::query("UPDATE one_sso_identities SET employee_no='E-1027', enterprise_email='qa@example.test' WHERE user_id=?").bind(&user).execute(db.pool()).await.unwrap();
             for external in [None, Some("unmapped-department")] {
                 service.auto_join_after_sso(&user, external, &[]).await.unwrap();
-                let (department, name, title): (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
-                    "SELECT department_id, display_name, job_title FROM one_user_org WHERE user_id = ? AND tenant_id = ?"
+                type ProfileFields = (
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                );
+                let (department, name, title, employee_no, enterprise_email): ProfileFields = sqlx::query_as(
+                    "SELECT department_id, display_name, job_title, employee_no, enterprise_email FROM one_user_org WHERE user_id = ? AND tenant_id = ?"
                 ).bind(&user).bind(&tenant).fetch_one(db.pool()).await.unwrap();
                 assert_eq!(department.as_deref(), Some(dept.id.as_str()), "{provider}");
                 assert_eq!(name.as_deref(), Some("真实姓名"));
                 assert_eq!(title.as_deref(), Some("Director"));
+                assert_eq!(employee_no.as_deref(), Some("E-1027"));
+                assert_eq!(enterprise_email.as_deref(), Some("qa@example.test"));
+                sqlx::query("UPDATE one_sso_identities SET employee_no=NULL, enterprise_email='' WHERE user_id=?")
+                    .bind(&user)
+                    .execute(db.pool())
+                    .await
+                    .unwrap();
             }
         }
     }
@@ -5529,7 +5564,7 @@ mod tests {
             .unwrap();
 
         let member = create_user(&user_repo, "member1").await;
-        seed_sso_identity(&service.pool(), &member, "张三", "研发中心", "高级工程师").await;
+        seed_sso_identity(service.pool(), &member, "张三", "研发中心", "高级工程师").await;
 
         service.join_with_invite(&member, &display).await.unwrap();
 

@@ -287,6 +287,8 @@ impl OidcProvider {
             .filter(|s| !s.is_empty());
 
         ProviderUserInfo {
+            employee_no: None,
+            enterprise_email: None,
             external_id: external_id.to_owned(),
             preferred_username: preferred,
             // Standard OIDC claims carry neither department nor job title —

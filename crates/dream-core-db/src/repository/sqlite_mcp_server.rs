@@ -50,6 +50,53 @@ impl SqliteMcpServerRepository {
 
 #[async_trait::async_trait]
 impl IMcpServerRepository for SqliteMcpServerRepository {
+    async fn oauth_bearer_token(&self, user_id: &str, url: &str) -> Result<Option<String>, DbError> {
+        use crate::repository::oauth_token::IOAuthTokenRepository;
+        let repo = crate::repository::sqlite_oauth_token::SqliteOAuthTokenRepository::new(
+            self.pool.clone(),
+            self.encryption_key,
+        );
+        Ok(repo
+            .get_by_url(user_id, url)
+            .await?
+            .filter(|token| {
+                token
+                    .expires_at
+                    .is_none_or(|expiry| expiry > dream_core_common::now_ms())
+            })
+            .map(|token| token.access_token))
+    }
+
+    async fn replace_enabled_selection(&self, user_id: &str, ids: &[String]) -> Result<(), DbError> {
+        let ids: std::collections::HashSet<_> = ids.iter().collect();
+        if ids.len() > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS {
+            return Err(DbError::Conflict(
+                "MCP_LIMIT_EXCEEDED: remove an existing MCP before adding another (maximum 20)".into(),
+            ));
+        }
+        let mut tx = self.pool.begin().await?;
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT id FROM mcp_servers WHERE user_id=? AND builtin=0 AND deleted_at IS NULL")
+                .bind(user_id)
+                .fetch_all(&mut *tx)
+                .await?;
+        if ids.iter().any(|id| !rows.iter().any(|(existing,)| existing == *id)) {
+            return Err(DbError::NotFound("MCP selection includes an unavailable server".into()));
+        }
+        sqlx::query(
+            "UPDATE mcp_servers SET enabled=0,updated_at=? WHERE user_id=? AND builtin=0 AND deleted_at IS NULL",
+        )
+        .bind(dream_core_common::now_ms())
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+        for id in ids {
+            sqlx::query("UPDATE mcp_servers SET enabled=1,updated_at=? WHERE user_id=? AND id=? AND builtin=0 AND deleted_at IS NULL")
+                .bind(dream_core_common::now_ms()).bind(user_id).bind(id).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
     async fn list(&self, user_id: &str) -> Result<Vec<McpServerRow>, DbError> {
         let rows = sqlx::query_as::<_, McpServerRow>(
             "SELECT * FROM mcp_servers WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at ASC, rowid ASC",
@@ -810,7 +857,10 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert!(listed[0].transport_config.contains("tok-xyz"));
 
-        let by_ids = repo.list_by_ids_any(USER_A, &[created.id.clone()]).await.unwrap();
+        let by_ids = repo
+            .list_by_ids_any(USER_A, std::slice::from_ref(&created.id))
+            .await
+            .unwrap();
         assert_eq!(by_ids.len(), 1);
         assert!(by_ids[0].transport_config.contains("tok-xyz"));
     }
@@ -823,5 +873,70 @@ mod tests {
         let wrong_key_repo = SqliteMcpServerRepository::new(db.pool().clone(), [0xAA; 32]);
         let err = wrong_key_repo.find_by_id(USER_A, &created.id).await.unwrap_err();
         assert!(matches!(err, DbError::Crypto(_)));
+    }
+    #[tokio::test]
+    async fn mcp_quota_replacement_is_atomic_and_owner_scoped() {
+        let (repo, _db) = setup().await;
+        let mut ids = Vec::new();
+        for i in 0..21 {
+            let name = format!("quota-{i}");
+            let row = repo
+                .create(CreateMcpServerParams {
+                    name: &name,
+                    ..stdio_params()
+                })
+                .await
+                .unwrap();
+            ids.push(row.id);
+        }
+        repo.replace_enabled_selection(USER_A, &ids[..20]).await.unwrap();
+        assert!(matches!(
+            repo.replace_enabled_selection(USER_A, &ids).await,
+            Err(DbError::Conflict(_))
+        ));
+        assert_eq!(
+            repo.list(USER_A).await.unwrap().iter().filter(|r| r.enabled).count(),
+            20
+        );
+        let mut replacement = ids[1..].to_vec();
+        repo.replace_enabled_selection(USER_A, &replacement).await.unwrap();
+        assert!(!repo.find_by_id(USER_A, &ids[0]).await.unwrap().unwrap().enabled);
+        replacement[0] = "another-users-server".into();
+        assert!(matches!(
+            repo.replace_enabled_selection(USER_A, &replacement).await,
+            Err(DbError::NotFound(_))
+        ));
+        assert_eq!(
+            repo.list(USER_A).await.unwrap().iter().filter(|r| r.enabled).count(),
+            20
+        );
+    }
+    #[tokio::test]
+    async fn runtime_oauth_lookup_is_owner_scoped_and_rejects_expired_or_logged_out_tokens() {
+        use crate::repository::oauth_token::{IOAuthTokenRepository, UpsertOAuthTokenParams};
+        let (repo, db) = setup().await;
+        let tokens =
+            crate::repository::sqlite_oauth_token::SqliteOAuthTokenRepository::new(db.pool().clone(), TEST_KEY);
+        let url = "https://fixture.example/mcp";
+        for expiry in [None, Some(dream_core_common::now_ms() - 1)] {
+            tokens
+                .upsert(UpsertOAuthTokenParams {
+                    user_id: USER_A,
+                    server_url: url,
+                    access_token: "dummy-runtime-token",
+                    refresh_token: None,
+                    token_type: "bearer",
+                    expires_at: expiry,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                repo.oauth_bearer_token(USER_A, url).await.unwrap().is_some(),
+                expiry.is_none()
+            );
+            assert!(repo.oauth_bearer_token(USER_B, url).await.unwrap().is_none());
+        }
+        tokens.delete(USER_A, url).await.unwrap();
+        assert!(repo.oauth_bearer_token(USER_A, url).await.unwrap().is_none());
     }
 }
