@@ -317,6 +317,14 @@ pub struct DepartmentDto {
     /// but it will be overwritten on the next sync from upstream's name) and
     /// distinct from a department someone typed in by hand.
     pub source: Option<String>,
+    /// The directory node this row mirrors (`source = 'directory'` only);
+    /// `None` for manual rows. With `directory_map_root_external_id` below it
+    /// lets the console's mapping picker mark which directory branches are
+    /// already covered by an existing mapping, instead of letting the admin
+    /// pick one that is guaranteed to fail the overlap check.
+    pub directory_external_id: Option<String>,
+    /// The root this row was mapped under — which mapping "owns" it.
+    pub directory_map_root_external_id: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
