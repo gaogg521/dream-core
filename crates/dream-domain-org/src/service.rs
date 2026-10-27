@@ -3107,7 +3107,7 @@ impl OrgService {
         if !subtree_externals.is_empty() {
             let placeholders = vec!["?"; subtree_externals.len()].join(", ");
             let sql = format!(
-                "SELECT name FROM one_departments \
+                "SELECT name, directory_map_root_external_id FROM one_departments \
                  WHERE tenant_id = ? AND source = 'directory' \
                    AND directory_map_root_external_id != ? \
                    AND directory_external_id IN ({placeholders}) LIMIT 1"
@@ -3116,10 +3116,25 @@ impl OrgService {
             for ext in &subtree_externals {
                 params.push(DbValue::Text((*ext).to_owned()));
             }
-            if let Some(conflicting_name) = self.db.fetch_optional_scalar::<String>(&sql, &params).await? {
+            if let Some((conflicting_name, owner_root)) =
+                self.db.fetch_optional_as::<(String, String)>(&sql, &params).await?
+            {
+                // Name the mapping that already owns the node so the admin can
+                // find it in the mapping list, and say what unblocks the
+                // action — a bare "overlapping" verdict leaves them guessing.
+                let owner_root_id = owner_root.clone();
+                let owner_root_name = self
+                    .db
+                    .fetch_optional_scalar::<String>(
+                        "SELECT name FROM one_departments \
+                         WHERE tenant_id = ? AND source = 'directory' AND directory_external_id = ? LIMIT 1",
+                        &db_params![tenant_id, owner_root_id],
+                    )
+                    .await?
+                    .unwrap_or_else(|| owner_root);
                 return Err(OrgError::BadRequest(format!(
-                    "'{conflicting_name}' is already mapped by a different directory mapping in this project group; \
-                     overlapping mappings are not supported"
+                    "'{conflicting_name}' is already covered by the directory mapping rooted at '{owner_root_name}' \
+                     in this project group; remove that mapping first, or map a branch that does not overlap it"
                 )));
             }
         }
