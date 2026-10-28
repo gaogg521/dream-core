@@ -30,6 +30,7 @@ pub struct UpsertOAuthTokenParams<'a> {
     pub server_url: &'a str,
     pub access_token: &'a str,
     pub refresh_token: Option<&'a str>,
+    pub client_info: Option<&'a str>,
     pub token_type: &'a str,
     pub expires_at: Option<dream_core_common::TimestampMs>,
 }

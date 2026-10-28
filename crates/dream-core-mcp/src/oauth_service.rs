@@ -10,13 +10,13 @@ use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, RefreshToken,
     TokenResponse, TokenUrl,
 };
-use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use tokio::sync::{Mutex, Notify};
+use tracing::{debug, info, warn};
 
 use crate::error::McpError;
+use crate::oauth_discovery::{self, ClientInfo, Metadata};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -31,15 +31,24 @@ const DEFAULT_CLIENT_ID: &str = "one";
 /// Token expiry safety margin (refresh 5 minutes before expiration).
 const EXPIRY_MARGIN_MS: i64 = 5 * 60 * 1000;
 
-// ---------------------------------------------------------------------------
-// Discovery response
-// ---------------------------------------------------------------------------
+type LoginAttempts = Arc<std::sync::Mutex<HashMap<(String, String), std::time::Instant>>>;
+type ResourceLocks = Arc<Mutex<HashMap<(String, String), std::sync::Weak<Mutex<()>>>>>;
 
-/// OAuth Authorization Server Metadata (RFC 8414) — subset of fields we need.
-#[derive(Debug, Deserialize)]
-struct OAuthServerMetadata {
-    authorization_endpoint: String,
-    token_endpoint: String,
+/// Release on preparation errors, callback completion and cancellation alike.
+struct LoginAttempt {
+    attempts: LoginAttempts,
+    key: (String, String),
+    started: std::time::Instant,
+}
+
+impl Drop for LoginAttempt {
+    fn drop(&mut self) {
+        if let Ok(mut attempts) = self.attempts.lock()
+            && attempts.get(&self.key) == Some(&self.started)
+        {
+            attempts.remove(&self.key);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -56,6 +65,15 @@ struct PendingLogin {
     auth_url: String,
     token_url: String,
     redirect_url: String,
+    client_info: ClientInfo,
+    cancelled: Arc<Notify>,
+}
+
+struct PreparedLogin {
+    authorization_url: String,
+    listener: TcpListener,
+    state: String,
+    cancelled: Arc<Notify>,
 }
 
 // ---------------------------------------------------------------------------
@@ -69,19 +87,21 @@ struct PendingLogin {
 #[derive(Clone)]
 pub struct McpOAuthService {
     token_repo: Arc<dyn IOAuthTokenRepository>,
-    http_client: reqwest::Client,
     /// Mutex protecting pending login state by (user_id, oauth_state).
     pending: Arc<Mutex<HashMap<(String, String), PendingLogin>>>,
-    login_attempts: Arc<std::sync::Mutex<HashMap<(String, String), std::time::Instant>>>,
+    login_attempts: LoginAttempts,
+    resource_locks: ResourceLocks,
 }
 
 impl McpOAuthService {
-    pub fn new(token_repo: Arc<dyn IOAuthTokenRepository>, http_client: reqwest::Client) -> Self {
+    pub fn new(token_repo: Arc<dyn IOAuthTokenRepository>, _http_client: reqwest::Client) -> Self {
+        // OAuth uses dedicated bounded, no-redirect clients. Keep the argument
+        // for source compatibility with existing application composition.
         Self {
             token_repo,
-            http_client,
             pending: Arc::new(Mutex::new(HashMap::new())),
             login_attempts: Arc::default(),
+            resource_locks: Arc::default(),
         }
     }
 
@@ -105,12 +125,12 @@ impl McpOAuthService {
     /// 6. Exchange code for tokens and persist them
     pub async fn login(&self, user_id: &str, server_url: &str) -> Result<OAuthLoginResponse, McpError> {
         let key = (user_id.to_owned(), server_url.to_owned());
+        let started = std::time::Instant::now();
         {
             let mut attempts = self
                 .login_attempts
                 .lock()
                 .map_err(|_| McpError::OAuth("Login state unavailable".into()))?;
-            attempts.retain(|_, at| at.elapsed() < CALLBACK_TIMEOUT + Duration::from_secs(30));
             if attempts.contains_key(&key) {
                 return Ok(OAuthLoginResponse {
                     success: false,
@@ -119,27 +139,68 @@ impl McpOAuthService {
                     error: None,
                 });
             }
-            attempts.insert(key, std::time::Instant::now());
+            attempts.insert(key.clone(), started);
         }
-        let (authorize_url, listener) = self.prepare_login_flow(user_id, server_url).await?;
-        let oauth_state = reqwest::Url::parse(&authorize_url).ok().and_then(|url| {
-            url.query_pairs()
-                .find(|(k, _)| k == "state")
-                .map(|(_, v)| v.into_owned())
-        });
+        let attempt = LoginAttempt {
+            attempts: self.login_attempts.clone(),
+            key,
+            started,
+        };
+        let prepared = tokio::time::timeout(Duration::from_secs(35), self.prepare_login_flow(user_id, server_url))
+            .await
+            .map_err(|_| McpError::OAuth("OAuth discovery timed out; explicit user retry required".into()))??;
+        let still_current = self
+            .login_attempts
+            .lock()
+            .map_err(|_| McpError::OAuth("Login state unavailable".into()))?
+            .get(&(user_id.to_owned(), server_url.to_owned()))
+            == Some(&started);
+        if !still_current {
+            self.pending.lock().await.remove(&(user_id.to_owned(), prepared.state));
+            return Err(McpError::OAuth("OAuth login was cancelled".into()));
+        }
+        let authorize_url = prepared.authorization_url;
+        let oauth_state = prepared.state;
+        let listener = prepared.listener;
+        let cancelled = prepared.cancelled;
         let service = self.clone();
         let user_id = user_id.to_owned();
         let server_url = server_url.to_owned();
+        let resource_host = reqwest::Url::parse(&server_url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_owned))
+            .unwrap_or_default();
+        info!(
+            resource_host,
+            event = "mcp_oauth_explicit_login",
+            "MCP OAuth awaiting explicit browser authorization"
+        );
         tokio::spawn(async move {
-            let result = match service.wait_for_callback(&user_id, listener).await {
-                Ok((code, state)) => service.exchange_code(&user_id, &server_url, code, state).await,
-                Err(error) => Err(error),
+            let _attempt = attempt;
+            let flow = async {
+                match service.wait_for_callback(&user_id, &oauth_state, listener).await {
+                    Ok((code, state)) => service.exchange_code(&user_id, &server_url, code, state).await,
+                    Err(error) => Err(error),
+                }
             };
-            if let Some(state) = oauth_state {
-                service.pending.lock().await.remove(&(user_id.clone(), state));
-            }
+            let result = tokio::select! {
+                biased;
+                _ = cancelled.notified() => Err(McpError::OAuth("OAuth login cancelled".into())),
+                result = flow => result,
+            };
+            service.pending.lock().await.remove(&(user_id.clone(), oauth_state));
             if result.is_err() {
-                warn!("MCP OAuth login did not complete; explicit user retry required");
+                warn!(
+                    resource_host,
+                    event = "mcp_oauth_incomplete",
+                    "MCP OAuth login did not complete; explicit user retry required"
+                );
+            } else {
+                info!(
+                    resource_host,
+                    event = "mcp_oauth_authenticated",
+                    "MCP OAuth authorization completed"
+                );
             }
         });
         // The client opens this URL only in response to the user's Login click.
@@ -156,6 +217,21 @@ impl McpOAuthService {
     ///
     /// Idempotent: returns Ok even if no token was stored.
     pub async fn logout(&self, user_id: &str, server_url: &str) -> Result<(), McpError> {
+        let resource = self.resource_lock(user_id, server_url).await;
+        let _resource = resource.lock().await;
+        // Serialize with the final token write. A late callback cannot recreate
+        // credentials after logout, and its listener/request is cancelled.
+        let mut pending = self.pending.lock().await;
+        pending.retain(|(owner, _), login| {
+            let keep = owner != user_id || login.client_info.resource != server_url;
+            if !keep {
+                login.cancelled.notify_one();
+            }
+            keep
+        });
+        if let Ok(mut attempts) = self.login_attempts.lock() {
+            attempts.remove(&(user_id.to_owned(), server_url.to_owned()));
+        }
         match self.token_repo.delete(user_id, server_url).await {
             Ok(()) => {
                 debug!(server_url, "OAuth token deleted");
@@ -181,6 +257,8 @@ impl McpOAuthService {
     /// automatically refreshes before returning.
     /// Returns `None` if no token is stored for this URL.
     pub async fn get_token(&self, user_id: &str, server_url: &str) -> Result<Option<String>, McpError> {
+        let resource = self.resource_lock(user_id, server_url).await;
+        let _resource = resource.lock().await;
         let row = match self.token_repo.get_by_url(user_id, server_url).await? {
             Some(row) => row,
             None => return Ok(None),
@@ -189,19 +267,21 @@ impl McpOAuthService {
         // Check if token is expired (with safety margin).
         if let Some(expires_at) = row.expires_at {
             let now = now_ms();
-            if now >= expires_at - EXPIRY_MARGIN_MS
+            if now >= expires_at.saturating_sub(EXPIRY_MARGIN_MS)
                 && let Some(ref refresh_token) = row.refresh_token
             {
-                match self.refresh_token(user_id, server_url, refresh_token).await {
-                    Ok(new_token) => return Ok(Some(new_token)),
-                    Err(e) => {
-                        warn!(
-                            server_url,
-                            error = %e,
-                            "Token refresh failed, returning expired token"
-                        );
+                match self
+                    .refresh_token(user_id, server_url, refresh_token, row.client_info.as_deref())
+                    .await
+                {
+                    Ok(new_token) => return Ok(self.has_valid_token(user_id, server_url).await?.then_some(new_token)),
+                    Err(_) => {
+                        warn!("MCP OAuth token refresh failed; expired credentials will not be returned");
                     }
                 }
+            }
+            if now_ms() >= expires_at {
+                return Ok(None);
             }
         }
 
@@ -212,18 +292,30 @@ impl McpOAuthService {
     // Internal helpers
     // -----------------------------------------------------------------------
 
+    async fn resource_lock(&self, user_id: &str, server_url: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.resource_locks.lock().await;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        let key = (user_id.to_owned(), server_url.to_owned());
+        if let Some(lock) = locks.get(&key).and_then(std::sync::Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(key, Arc::downgrade(&lock));
+        lock
+    }
+
     /// Discover endpoints, build OAuth client, generate PKCE, bind callback
     /// server, store pending state, and return the authorization URL + listener.
-    async fn prepare_login_flow(&self, user_id: &str, server_url: &str) -> Result<(String, TcpListener), McpError> {
+    async fn prepare_login_flow(&self, user_id: &str, server_url: &str) -> Result<PreparedLogin, McpError> {
         let metadata = self.discover_endpoints(server_url).await?;
 
         let auth_url_str = metadata.authorization_endpoint.clone();
         let token_url_str = metadata.token_endpoint.clone();
 
-        let auth_url = AuthUrl::new(metadata.authorization_endpoint)
+        let auth_url = AuthUrl::new(metadata.authorization_endpoint.clone())
             .map_err(|e| McpError::OAuth(format!("Invalid auth URL: {e}")))?;
-        let token_url =
-            TokenUrl::new(metadata.token_endpoint).map_err(|e| McpError::OAuth(format!("Invalid token URL: {e}")))?;
+        let token_url = TokenUrl::new(metadata.token_endpoint.clone())
+            .map_err(|e| McpError::OAuth(format!("Invalid token URL: {e}")))?;
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -237,7 +329,10 @@ impl McpOAuthService {
         let redirect = RedirectUrl::new(redirect_url_str.clone())
             .map_err(|e| McpError::OAuth(format!("Invalid redirect URL: {e}")))?;
 
-        let client = BasicClient::new(ClientId::new(DEFAULT_CLIENT_ID.to_string()))
+        let client_info =
+            oauth_discovery::register(&Self::build_no_redirect_client()?, &metadata, &redirect_url_str).await?;
+        let client = BasicClient::new(ClientId::new(client_info.client_id.clone()))
+            .set_auth_type(oauth2::AuthType::RequestBody)
             .set_auth_uri(auth_url)
             .set_token_uri(token_url)
             .set_redirect_uri(redirect);
@@ -247,7 +342,10 @@ impl McpOAuthService {
         let (authorize_url, csrf_token) = client
             .authorize_url(CsrfToken::new_random)
             .set_pkce_challenge(pkce_challenge)
+            .add_extra_param("resource", server_url)
             .url();
+        let oauth_state = csrf_token.secret().clone();
+        let cancelled = Arc::new(Notify::new());
 
         {
             let mut pending = self.pending.lock().await;
@@ -260,11 +358,18 @@ impl McpOAuthService {
                     auth_url: auth_url_str,
                     token_url: token_url_str,
                     redirect_url: redirect_url_str,
+                    client_info,
+                    cancelled: cancelled.clone(),
                 },
             );
         }
 
-        Ok((authorize_url.to_string(), listener))
+        Ok(PreparedLogin {
+            authorization_url: authorize_url.to_string(),
+            listener,
+            state: oauth_state,
+            cancelled,
+        })
     }
 
     /// Check if a valid (non-expired) token exists for the URL.
@@ -283,55 +388,20 @@ impl McpOAuthService {
         Ok(true)
     }
 
-    /// Discover OAuth authorization server metadata.
-    ///
-    /// Tries `.well-known/oauth-authorization-server` first,
-    /// falls back to `.well-known/openid-configuration`.
-    async fn discover_endpoints(&self, server_url: &str) -> Result<OAuthServerMetadata, McpError> {
-        let base = server_url.trim_end_matches('/');
-
-        let well_known_url = format!("{base}/.well-known/oauth-authorization-server");
-        if let Ok(metadata) = self.fetch_metadata(&well_known_url).await {
-            debug!(server_url, "Discovered OAuth metadata via RFC 8414");
-            return Ok(metadata);
-        }
-
-        let oidc_url = format!("{base}/.well-known/openid-configuration");
-        if let Ok(metadata) = self.fetch_metadata(&oidc_url).await {
-            debug!(server_url, "Discovered OAuth metadata via OIDC");
-            return Ok(metadata);
-        }
-
-        Err(McpError::OAuth(format!(
-            "Failed to discover OAuth endpoints for '{server_url}': \
-             no .well-known/oauth-authorization-server or \
-             .well-known/openid-configuration found"
-        )))
-    }
-
-    /// Fetch and parse OAuth server metadata from a URL.
-    async fn fetch_metadata(&self, url: &str) -> Result<OAuthServerMetadata, McpError> {
-        let resp = self
-            .http_client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| McpError::OAuth(format!("HTTP request failed: {e}")))?;
-
-        if !resp.status().is_success() {
-            return Err(McpError::OAuth(format!("Metadata endpoint returned {}", resp.status())));
-        }
-
-        resp.json()
-            .await
-            .map_err(|e| McpError::OAuth(format!("Failed to parse metadata: {e}")))
+    async fn discover_endpoints(&self, server_url: &str) -> Result<Metadata, McpError> {
+        oauth_discovery::discover(&Self::build_no_redirect_client()?, server_url, None).await
     }
 
     /// Wait for the OAuth callback redirect on the given listener.
-    async fn wait_for_callback(&self, user_id: &str, listener: TcpListener) -> Result<(String, String), McpError> {
+    async fn wait_for_callback(
+        &self,
+        user_id: &str,
+        expected_state: &str,
+        listener: TcpListener,
+    ) -> Result<(String, String), McpError> {
         tokio::time::timeout(
             CALLBACK_TIMEOUT,
-            Self::handle_callback_connection(user_id, listener, self.pending.clone()),
+            Self::handle_callback_connection(user_id, expected_state, listener, self.pending.clone()),
         )
         .await
         .map_err(|_| McpError::OAuth("OAuth callback timed out; explicit user retry required".into()))?
@@ -340,50 +410,103 @@ impl McpOAuthService {
     /// Handle a single HTTP connection on the callback server.
     async fn handle_callback_connection(
         user_id: &str,
+        expected_state: &str,
         listener: TcpListener,
         pending: Arc<Mutex<HashMap<(String, String), PendingLogin>>>,
     ) -> Result<(String, String), McpError> {
-        let (mut stream, _) = listener
-            .accept()
-            .await
-            .map_err(|e| McpError::OAuth(format!("Failed to accept connection: {e}")))?;
+        loop {
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .map_err(|e| McpError::OAuth(format!("Failed to accept connection: {e}")))?;
 
-        let mut buf = vec![0u8; 4096];
-        let n = stream
-            .read(&mut buf)
-            .await
-            .map_err(|e| McpError::OAuth(format!("Failed to read request: {e}")))?;
+            let request = tokio::time::timeout(Duration::from_secs(5), async {
+                let mut buffer = Vec::new();
+                while buffer.len() < 8192 {
+                    let mut chunk = [0u8; 1024];
+                    let count = stream.read(&mut chunk).await.ok()?;
+                    if count == 0 {
+                        return None;
+                    }
+                    buffer.extend_from_slice(&chunk[..count]);
+                    if buffer.windows(4).any(|part| part == b"\r\n\r\n") {
+                        return String::from_utf8(buffer).ok();
+                    }
+                }
+                None
+            })
+            .await;
+            let request = match request {
+                Ok(Some(request)) => request,
+                _ => continue,
+            };
+            let target = request
+                .lines()
+                .next()
+                .and_then(|line| line.strip_prefix("GET "))
+                .and_then(|line| line.split_whitespace().next());
+            let parsed = target
+                .filter(|path| path.split('?').next() == Some("/callback"))
+                .and_then(|path| reqwest::Url::parse(&format!("http://127.0.0.1{path}")).ok())
+                .filter(|url| {
+                    let mut keys = std::collections::HashSet::new();
+                    url.query_pairs()
+                        .filter(|(key, _)| matches!(key.as_ref(), "code" | "state" | "error"))
+                        .all(|(key, value)| !value.is_empty() && keys.insert(key.into_owned()))
+                });
+            let denied = parsed.as_ref().is_some_and(|url| {
+                let pairs = url.query_pairs().collect::<Vec<_>>();
+                pairs
+                    .iter()
+                    .any(|(key, value)| key == "state" && value == expected_state)
+                    && pairs.iter().any(|(key, _)| key == "error")
+            });
+            if denied {
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nAuthorization cancelled. Return to One Work to retry.").await;
+                return Err(McpError::OAuth(
+                    "Authorization was declined; explicit user retry required".into(),
+                ));
+            }
+            let valid =
+                parsed.is_some() && parse_callback_query(&request).is_ok_and(|(_, state)| state == expected_state);
+            if !valid {
+                let _ = stream
+                    .write_all(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\nInvalid OAuth callback")
+                    .await;
+                continue;
+            }
+            let (code, state) = parse_callback_query(&request)?;
 
-        let request = String::from_utf8_lossy(&buf[..n]);
-        let (code, state) = parse_callback_query(&request)?;
+            // Validate CSRF state.
+            let guard = pending.lock().await;
+            let pending_login = guard
+                .get(&(user_id.to_string(), state.clone()))
+                .ok_or_else(|| McpError::OAuth("No pending login state".to_string()))?;
 
-        // Validate CSRF state.
-        let guard = pending.lock().await;
-        let pending_login = guard
-            .get(&(user_id.to_string(), state.clone()))
-            .ok_or_else(|| McpError::OAuth("No pending login state".to_string()))?;
+            if state != *pending_login.csrf_token.secret() || state != expected_state {
+                return Err(McpError::OAuth("CSRF state mismatch".to_string()));
+            }
+            drop(guard);
 
-        if state != *pending_login.csrf_token.secret() {
-            return Err(McpError::OAuth("CSRF state mismatch".to_string()));
-        }
-
-        // Send a success response to the browser.
-        let response = "HTTP/1.1 200 OK\r\n\
+            // Acknowledge receipt; the UI reports success only after token exchange.
+            let response = "HTTP/1.1 200 OK\r\n\
             Content-Type: text/html; charset=utf-8\r\n\
             Connection: close\r\n\r\n\
-            <html><body><h1>Authorization successful!</h1>\
-            <p>You can close this window and return to One Work.</p>\
+            <html><body><h1>Authorization received</h1>\
+            <p>Return to One Work to check the connection status.</p>\
             </body></html>";
 
-        let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.write_all(response.as_bytes()).await;
 
-        Ok((code, state))
+            return Ok((code, state));
+        }
     }
 
     /// Build a no-redirect reqwest client for OAuth token exchange.
     fn build_no_redirect_client() -> Result<reqwest::Client, McpError> {
         reqwest::ClientBuilder::new()
             .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(15))
             .build()
             .map_err(|e| McpError::OAuth(format!("Failed to build HTTP client: {e}")))
     }
@@ -396,16 +519,17 @@ impl McpOAuthService {
         code: String,
         state: String,
     ) -> Result<(), McpError> {
-        let (auth_url_str, token_url_str, redirect_url_str, pkce_verifier) = {
-            let mut guard = self.pending.lock().await;
+        let (auth_url_str, token_url_str, redirect_url_str, pkce_verifier, client_info) = {
+            let guard = self.pending.lock().await;
             let pending = guard
-                .remove(&(user_id.to_string(), state))
+                .get(&(user_id.to_string(), state.clone()))
                 .ok_or_else(|| McpError::OAuth("No pending login state".to_string()))?;
             (
-                pending.auth_url,
-                pending.token_url,
-                pending.redirect_url,
-                pending.pkce_verifier,
+                pending.auth_url.clone(),
+                pending.token_url.clone(),
+                pending.redirect_url.clone(),
+                PkceCodeVerifier::new(pending.pkce_verifier.secret().clone()),
+                pending.client_info.clone(),
             )
         };
 
@@ -414,7 +538,8 @@ impl McpOAuthService {
         let redirect =
             RedirectUrl::new(redirect_url_str).map_err(|e| McpError::OAuth(format!("Invalid redirect URL: {e}")))?;
 
-        let client = BasicClient::new(ClientId::new(DEFAULT_CLIENT_ID.to_string()))
+        let client = BasicClient::new(ClientId::new(client_info.client_id.clone()))
+            .set_auth_type(oauth2::AuthType::RequestBody)
             .set_auth_uri(auth_url)
             .set_token_uri(token_url)
             .set_redirect_uri(redirect);
@@ -424,11 +549,20 @@ impl McpOAuthService {
         let token_result = client
             .exchange_code(AuthorizationCode::new(code))
             .set_pkce_verifier(pkce_verifier)
+            .add_extra_param("resource", server_url)
             .request_async(&http_client)
             .await
-            .map_err(|e| McpError::OAuth(format!("Token exchange failed: {e}")))?;
+            .map_err(|_| McpError::OAuth("OAuth token exchange failed".into()))?;
 
-        self.persist_token(user_id, server_url, &token_result).await?;
+        let resource = self.resource_lock(user_id, server_url).await;
+        let _resource = resource.lock().await;
+        let mut pending = self.pending.lock().await;
+        if !pending.contains_key(&(user_id.to_owned(), state.clone())) {
+            return Err(McpError::OAuth("OAuth login was cancelled".into()));
+        }
+        self.persist_token(user_id, server_url, &token_result, &client_info)
+            .await?;
+        pending.remove(&(user_id.to_owned(), state));
         debug!(server_url, "OAuth tokens stored successfully");
         Ok(())
     }
@@ -439,21 +573,48 @@ impl McpOAuthService {
         user_id: &str,
         server_url: &str,
         refresh_token_value: &str,
+        client_info_json: Option<&str>,
     ) -> Result<String, McpError> {
-        let metadata = self.discover_endpoints(server_url).await?;
+        let registration: Option<ClientInfo> = client_info_json
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|_| McpError::OAuth("Invalid saved OAuth client binding; explicit login required".into()))?;
+        if registration.as_ref().is_some_and(|info| info.resource != server_url) {
+            return Err(McpError::OAuth(
+                "Saved OAuth client is bound to another MCP resource".into(),
+            ));
+        }
+        let http_client = Self::build_no_redirect_client()?;
+        let metadata = oauth_discovery::discover(
+            &http_client,
+            server_url,
+            registration.as_ref().and_then(|info| info.issuer.as_deref()),
+        )
+        .await?;
+        if metadata.issuer.as_deref() != registration.as_ref().and_then(|info| info.issuer.as_deref()) {
+            return Err(McpError::OAuth(
+                "Authorization server changed; explicit login required".into(),
+            ));
+        }
         let token_url =
             TokenUrl::new(metadata.token_endpoint).map_err(|e| McpError::OAuth(format!("Invalid token URL: {e}")))?;
 
-        let client = BasicClient::new(ClientId::new(DEFAULT_CLIENT_ID.to_string())).set_token_uri(token_url);
-
-        let http_client = Self::build_no_redirect_client()?;
+        let client = BasicClient::new(ClientId::new(
+            registration
+                .as_ref()
+                .map_or(DEFAULT_CLIENT_ID, |info| info.client_id.as_str())
+                .to_owned(),
+        ))
+        .set_auth_type(oauth2::AuthType::RequestBody)
+        .set_token_uri(token_url);
 
         let refresh_token = RefreshToken::new(refresh_token_value.to_string());
         let token_result = client
             .exchange_refresh_token(&refresh_token)
+            .add_extra_param("resource", server_url)
             .request_async(&http_client)
             .await
-            .map_err(|e| McpError::OAuth(format!("Token refresh failed: {e}")))?;
+            .map_err(|_| McpError::OAuth("OAuth token refresh failed".into()))?;
 
         let new_access_token = token_result.access_token().secret().clone();
 
@@ -471,6 +632,7 @@ impl McpOAuthService {
                 server_url,
                 access_token: &new_access_token,
                 refresh_token: Some(new_refresh),
+                client_info: client_info_json,
                 token_type: "bearer",
                 expires_at,
             })
@@ -486,8 +648,11 @@ impl McpOAuthService {
         user_id: &str,
         server_url: &str,
         token_result: &TR,
+        client_info: &ClientInfo,
     ) -> Result<(), McpError> {
         let expires_at: Option<TimestampMs> = token_result.expires_in().map(|d| now_ms() + d.as_millis() as i64);
+        let client_info = serde_json::to_string(client_info)
+            .map_err(|_| McpError::OAuth("Could not encode OAuth client binding".into()))?;
 
         self.token_repo
             .upsert(UpsertOAuthTokenParams {
@@ -495,6 +660,7 @@ impl McpOAuthService {
                 server_url,
                 access_token: token_result.access_token().secret(),
                 refresh_token: token_result.refresh_token().map(|t| t.secret().as_str()),
+                client_info: Some(&client_info),
                 token_type: "bearer",
                 expires_at,
             })
@@ -711,6 +877,12 @@ mod tests {
                 auth_url: "https://auth.example.com/authorize".to_string(),
                 token_url: "https://auth.example.com/token".to_string(),
                 redirect_url: "http://127.0.0.1/callback".to_string(),
+                client_info: ClientInfo {
+                    client_id: "one".into(),
+                    issuer: None,
+                    resource: "https://example.com".into(),
+                },
+                cancelled: Arc::new(Notify::new()),
             },
         );
     }
@@ -787,6 +959,7 @@ mod tests {
                 server_url: "https://example.com".to_string(),
                 access_token: "valid_access_token".to_string(),
                 refresh_token: None,
+                client_info: None,
                 token_type: "bearer".to_string(),
                 expires_at: Some(now_ms() + 3_600_000),
                 created_at: now_ms(),
@@ -824,6 +997,7 @@ mod tests {
                 server_url: "https://example.com".to_string(),
                 access_token: "expired_token".to_string(),
                 refresh_token: None,
+                client_info: None,
                 token_type: "bearer".to_string(),
                 expires_at: Some(1000),
                 created_at: 500,
@@ -861,6 +1035,7 @@ mod tests {
                 server_url: "https://example.com".to_string(),
                 access_token: "no_expiry_token".to_string(),
                 refresh_token: None,
+                client_info: None,
                 token_type: "bearer".to_string(),
                 expires_at: None,
                 created_at: now_ms(),
@@ -897,6 +1072,13 @@ mod tests {
                 let mut request = [0u8; 4096];
                 let read = socket.read(&mut request).await.unwrap();
                 assert!(read > 0);
+                if !String::from_utf8_lossy(&request[..read]).contains("/.well-known/oauth-authorization-server ") {
+                    socket
+                        .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        .await
+                        .unwrap();
+                    continue;
+                }
                 seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let body = serde_json::json!({"authorization_endpoint":format!("{endpoint}/authorize"),"token_endpoint":format!("{endpoint}/token")}).to_string();
                 socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
@@ -1015,10 +1197,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_token_returns_expired_when_no_refresh() {
+    async fn get_token_rejects_expired_when_no_refresh() {
         let svc = McpOAuthService::new(Arc::new(ExpiredTokenRepo), reqwest::Client::new());
-        // Expired token with no refresh_token: returns the expired token as-is.
+        // An expired credential must never be sent to the MCP server.
         let token = svc.get_token(TEST_USER_ID, "https://example.com").await.unwrap();
-        assert_eq!(token.as_deref(), Some("expired_token"));
+        assert!(token.is_none());
+    }
+
+    #[tokio::test]
+    async fn discovery_failure_can_be_explicitly_retried_immediately() {
+        let service = McpOAuthService::new(Arc::new(MockTokenRepo), reqwest::Client::new());
+        assert!(service.login(TEST_USER_ID, "not a URL").await.is_err());
+        assert!(service.login(TEST_USER_ID, "not a URL").await.is_err());
+        assert!(service.login_attempts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelling_discovery_releases_the_login_attempt() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let service = McpOAuthService::new(Arc::new(MockTokenRepo), reqwest::Client::new());
+        let task_service = service.clone();
+        let task = tokio::spawn(async move { task_service.login(TEST_USER_ID, &url).await });
+        let (_connection, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(service.login_attempts.lock().unwrap().is_empty());
     }
 }

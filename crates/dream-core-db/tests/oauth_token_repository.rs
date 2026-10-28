@@ -23,6 +23,7 @@ fn sample_params() -> UpsertOAuthTokenParams<'static> {
         server_url: "https://mcp.example.com",
         access_token: "enc_access_token_123",
         refresh_token: Some("enc_refresh_token_456"),
+        client_info: None,
         token_type: "bearer",
         expires_at: Some(1700000000000),
     }
@@ -67,6 +68,7 @@ async fn upsert_updates_existing_token() {
             server_url: "https://mcp.example.com",
             access_token: "new_access_token",
             refresh_token: None,
+            client_info: None,
             token_type: "bearer",
             expires_at: Some(1800000000000),
         })
@@ -92,6 +94,7 @@ async fn upsert_without_refresh_token_or_expires_at() {
             server_url: "https://simple.example.com",
             access_token: "simple_token",
             refresh_token: None,
+            client_info: None,
             token_type: "bearer",
             expires_at: None,
         })
@@ -145,6 +148,7 @@ async fn list_authenticated_urls_returns_all() {
         server_url: "https://other.example.com",
         access_token: "token2",
         refresh_token: None,
+        client_info: None,
         token_type: "bearer",
         expires_at: None,
     })
@@ -168,6 +172,7 @@ async fn delete_one_does_not_affect_others() {
         server_url: "https://other.example.com",
         access_token: "token2",
         refresh_token: None,
+        client_info: None,
         token_type: "bearer",
         expires_at: None,
     })
@@ -211,6 +216,7 @@ async fn full_oauth_lifecycle() {
             server_url: "https://mcp.example.com",
             access_token: "refreshed_token",
             refresh_token: Some("new_refresh"),
+            client_info: None,
             token_type: "bearer",
             expires_at: Some(1900000000000),
         })

@@ -981,6 +981,7 @@ mod tests {
                     server_url: url,
                     access_token: "dummy-runtime-token",
                     refresh_token: None,
+                    client_info: None,
                     token_type: "bearer",
                     expires_at: expiry,
                 })

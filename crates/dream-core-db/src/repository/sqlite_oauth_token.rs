@@ -59,12 +59,13 @@ impl IOAuthTokenRepository for SqliteOAuthTokenRepository {
 
         sqlx::query(
             "INSERT INTO oauth_tokens \
-                (user_id, server_url, access_token, refresh_token, token_type, \
+                (user_id, server_url, access_token, refresh_token, client_info, token_type, \
                  expires_at, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(user_id, server_url) DO UPDATE SET \
                 access_token = excluded.access_token, \
                 refresh_token = excluded.refresh_token, \
+                client_info = excluded.client_info, \
                 token_type = excluded.token_type, \
                 expires_at = excluded.expires_at, \
                 updated_at = excluded.updated_at",
@@ -73,6 +74,7 @@ impl IOAuthTokenRepository for SqliteOAuthTokenRepository {
         .bind(params.server_url)
         .bind(&encrypted_access_token)
         .bind(&encrypted_refresh_token)
+        .bind(params.client_info)
         .bind(params.token_type)
         .bind(params.expires_at)
         .bind(now)
@@ -144,6 +146,7 @@ mod tests {
             server_url: "https://mcp.example.com",
             access_token: "enc_access_token_123",
             refresh_token: Some("enc_refresh_token_456"),
+            client_info: None,
             token_type: "bearer",
             expires_at: Some(1700000000000),
         }
@@ -180,6 +183,7 @@ mod tests {
                 server_url: "https://mcp.example.com",
                 access_token: "new_access_token",
                 refresh_token: None,
+                client_info: None,
                 token_type: "bearer",
                 expires_at: Some(1800000000000),
             })
@@ -244,6 +248,7 @@ mod tests {
             server_url: "https://other.example.com",
             access_token: "token2",
             refresh_token: None,
+            client_info: None,
             token_type: "bearer",
             expires_at: None,
         })
@@ -322,6 +327,7 @@ mod tests {
             server_url: "https://mcp.example.com",
             access_token: "sk-live-access-secret",
             refresh_token: Some("sk-live-refresh-secret"),
+            client_info: None,
             token_type: "bearer",
             expires_at: None,
         })
@@ -353,6 +359,7 @@ mod tests {
             server_url: "https://no-refresh.example.com",
             access_token: "access-only",
             refresh_token: None,
+            client_info: None,
             token_type: "bearer",
             expires_at: None,
         })

@@ -15,6 +15,9 @@ pub struct OAuthTokenRow {
     pub access_token: String,
     /// Encrypted OAuth refresh token (optional).
     pub refresh_token: Option<String>,
+    /// Public client registration binding; never a client secret.
+    #[serde(default)]
+    pub client_info: Option<String>,
     /// Token type, typically "bearer".
     pub token_type: String,
     /// Token expiration timestamp (milliseconds).
