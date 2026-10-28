@@ -35,18 +35,56 @@ impl DevopsService {
         user: &str,
         ids: &[String],
     ) -> Result<McpSelectionDto, DevopsError> {
+        self.replace_mcp_selection_with_bindings(tenant, user, ids, &[]).await
+    }
+
+    pub async fn replace_mcp_selection_with_bindings(
+        &self,
+        tenant: &str,
+        user: &str,
+        ids: &[String],
+        bound: &[String],
+    ) -> Result<McpSelectionDto, DevopsError> {
+        let _selection_guard = self.mcp_selection_mutation.lock().await;
         let mut ids = ids.to_vec();
         ids.sort();
         ids.dedup();
         if ids.len() > MAX_USER_MCP_SERVERS {
             return Err(DevopsError::BadRequest(
-                "MCP_LIMIT_EXCEEDED: remove an existing MCP before selecting another (maximum 20)".into(),
+                "MCP_LIMIT_EXCEEDED: enterprise distribution maximum 50".into(),
             ));
         }
         let allowed = self.allowed_mcp_catalog(user).await?;
+        let total: std::collections::HashSet<_> = ids
+            .iter()
+            .chain(bound.iter().filter(|id| allowed.iter().any(|row| &row.id == *id)))
+            .collect();
+        if total.len() > MAX_USER_MCP_SERVERS {
+            return Err(DevopsError::BadRequest(
+                "MCP_LIMIT_EXCEEDED: total enterprise distribution maximum 50, including employee dependencies".into(),
+            ));
+        }
         if ids.iter().any(|id| !allowed.iter().any(|row| &row.id == id)) {
             return Err(DevopsError::Forbidden(
                 "MCP selection contains an unavailable or ungranted server".into(),
+            ));
+        }
+        let previous_json: Option<String> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT server_ids_json FROM one_mcp_user_selection WHERE tenant_id = ? AND user_id = ?",
+                &db_params![tenant, user],
+            )
+            .await?;
+        let previous: Vec<String> = previous_json
+            .map(|json| serde_json::from_str(&json))
+            .transpose()
+            .map_err(|error| DevopsError::Internal(error.to_string()))?
+            .unwrap_or_default();
+        let additions = ids.iter().filter(|id| !previous.contains(id)).count();
+        if additions > dream_core_common::mcp_policy::MAX_ENTERPRISE_MCP_ADDITIONS {
+            return Err(DevopsError::BadRequest(
+                "MCP_BATCH_LIMIT_EXCEEDED: add at most 10 enterprise connectors per save".into(),
             ));
         }
         let json = serde_json::to_string(&ids).map_err(|e| DevopsError::Internal(e.to_string()))?;
@@ -72,7 +110,7 @@ impl DevopsService {
         Ok(rows)
     }
 
-    /// Only selected connectors (at most 20) carry transport/credentials to clients.
+    /// Only explicitly selected connectors carry transport/credentials to clients.
     pub async fn selected_mcp_registry(&self, tenant: &str, user: &str) -> Result<Vec<McpRegistryDto>, DevopsError> {
         let mut rows = self.allowed_mcp_catalog(user).await?;
         let selection = self.mcp_selection(tenant, user).await?;
@@ -82,9 +120,9 @@ impl DevopsService {
 
     /// Connectors a digital employee binds, resolved against the caller's
     /// authorized catalog (ACL, published, enabled) — NOT against the member's
-    /// own 20 selected connectors: the administrator chose these for the
-    /// employee, so they are independent of the member's quota. Ids the caller
-    /// may not use are simply absent from the result.
+    /// own selected connectors. Employee dependencies have their own resolution
+    /// path; distribution still checks the combined enterprise limit. Ids the
+    /// caller may not use are simply absent from the result.
     pub async fn employee_bound_mcp_registry(
         &self,
         user: &str,
@@ -97,6 +135,31 @@ impl DevopsService {
         }
         let mut rows = self.allowed_mcp_catalog(user).await?;
         rows.retain(|row| ids.contains(&row.id));
+        Ok(rows)
+    }
+
+    /// Distribution additionally requires a binding from a visible employee.
+    pub async fn visible_employee_bound_mcp_registry(
+        &self,
+        tenant: &str,
+        user: &str,
+        requested: &[String],
+        bound: &[String],
+    ) -> Result<Vec<McpRegistryDto>, DevopsError> {
+        let _selection_guard = self.mcp_selection_mutation.lock().await;
+        let mut rows = self.employee_bound_mcp_registry(user, requested).await?;
+        rows.retain(|row| bound.contains(&row.id));
+        let selection = self.mcp_selection(tenant, user).await?;
+        let total: std::collections::HashSet<_> = selection
+            .selected_ids
+            .iter()
+            .chain(rows.iter().map(|row| &row.id))
+            .collect();
+        if total.len() > MAX_USER_MCP_SERVERS {
+            return Err(DevopsError::BadRequest(
+                "MCP_LIMIT_EXCEEDED: total enterprise distribution maximum 50".into(),
+            ));
+        }
         Ok(rows)
     }
 
@@ -127,7 +190,7 @@ impl DevopsService {
 mod tests {
     use super::*;
     #[tokio::test]
-    async fn selection_defaults_empty_and_replaces_twenty_without_partial_writes() {
+    async fn selection_adds_ten_per_save_up_to_fifty_without_partial_writes() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -156,7 +219,7 @@ mod tests {
                 .is_empty()
         );
         let mut ids = Vec::new();
-        for i in 0..21 {
+        for i in 0..51 {
             let row = service
                 .upsert_mcp_registry(
                     None,
@@ -176,10 +239,26 @@ mod tests {
                 .unwrap();
             ids.push(row.id);
         }
-        service
-            .replace_mcp_selection("default", "alice", &ids[..20])
-            .await
-            .unwrap();
+        assert!(
+            matches!(service.replace_mcp_selection("default", "alice", &ids[..11]).await, Err(DevopsError::BadRequest(message)) if message.contains("MCP_BATCH_LIMIT_EXCEEDED"))
+        );
+        assert!(
+            service
+                .mcp_selection("default", "alice")
+                .await
+                .unwrap()
+                .selected_ids
+                .is_empty()
+        );
+        for count in [10, 20, 30, 40, 50] {
+            service
+                .replace_mcp_selection("default", "alice", &ids[..count])
+                .await
+                .unwrap();
+        }
+        assert!(
+            matches!(service.replace_mcp_selection_with_bindings("default", "alice", &ids[..50], &ids[50..]).await, Err(DevopsError::BadRequest(message)) if message.contains("total enterprise distribution"))
+        );
         assert!(matches!(
             service.replace_mcp_selection("default", "alice", &ids).await,
             Err(DevopsError::BadRequest(_))
@@ -191,14 +270,14 @@ mod tests {
                 .unwrap()
                 .selected_ids
                 .len(),
-            20
+            50
         );
         service
             .replace_mcp_selection("default", "alice", &ids[1..])
             .await
             .unwrap();
         let selected = service.selected_mcp_registry("default", "alice").await.unwrap();
-        assert_eq!(selected.len(), 20);
+        assert_eq!(selected.len(), 50);
         assert!(!selected.iter().any(|row| row.id == ids[0]));
         assert!(
             service

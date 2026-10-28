@@ -40,24 +40,30 @@ pub async fn resolve_session_mcp_servers(
     conversation_id: &str,
     _broadcaster: Arc<dyn EventBroadcaster>,
 ) -> Vec<SessionMcpServer> {
-    if selected_ids.is_some_and(|ids| ids.len() > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS) {
-        warn!(
-            conversation_id,
-            "Over-limit MCP selection blocked before command resolution"
-        );
-        return Vec::new();
-    }
     let rows_result = match selected_ids {
         Some(ids) => repo.list_by_ids_any(user_id, ids).await,
         None => repo.list(user_id).await,
     };
-    let rows = match rows_result {
+    let mut rows = match rows_result {
         Ok(r) => r,
         Err(err) => {
             warn!(conversation_id, error = %err, "mcp_resolve: list() failed; skipping injection");
             return Vec::new();
         }
     };
+
+    if rows
+        .iter()
+        .filter(|row| row.enabled && dream_core_common::mcp_policy::is_enterprise_mcp(row.original_json.as_deref()))
+        .count()
+        > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS
+    {
+        warn!(
+            conversation_id,
+            "Over-limit enterprise MCP selection blocked before command resolution"
+        );
+        rows.retain(|row| !dream_core_common::mcp_policy::is_enterprise_mcp(row.original_json.as_deref()));
+    }
 
     let mut servers = Vec::with_capacity(rows.len());
     for mut row in rows {
@@ -347,6 +353,32 @@ mod tests {
 
     fn test_broadcaster() -> Arc<dyn EventBroadcaster> {
         Arc::new(dream_core_realtime::BroadcastEventBus::new(16))
+    }
+
+    #[tokio::test]
+    async fn resolves_more_than_fifty_local_connectors_and_blocks_only_enterprise_overflow() {
+        let mut rows: Vec<_> = (0..100).map(|i| make_row(&format!("local-{i}"), true)).collect();
+        let local_ids: Vec<_> = rows.iter().map(|row| row.id.clone()).collect();
+        let local = MockRepo {
+            rows: rows.clone(),
+            fail: false,
+        };
+        assert_eq!(
+            resolve_session_mcp_servers(&local, TEST_USER_ID, Some(&local_ids), "c", test_broadcaster())
+                .await
+                .len(),
+            100
+        );
+        for i in 0..51 {
+            let mut row = make_row(&format!("enterprise-{i}"), true);
+            row.original_json = Some(format!(r#"{{"teamRegistryId":"team-{i}"}}"#));
+            rows.push(row);
+        }
+        let ids: Vec<_> = rows.iter().map(|row| row.id.clone()).collect();
+        let mixed = MockRepo { rows, fail: false };
+        let actual = resolve_session_mcp_servers(&mixed, TEST_USER_ID, Some(&ids), "c", test_broadcaster()).await;
+        assert_eq!(actual.len(), 100);
+        assert!(actual.iter().all(|row| row.name.starts_with("local-")));
     }
 
     #[tokio::test]

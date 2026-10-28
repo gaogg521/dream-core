@@ -178,12 +178,19 @@ pub(crate) async fn load_session_mcp_rows(
             selected_ids.is_some_and(|ids| ids.iter().any(|id| id == &row.id))
         })
         .collect();
-    if selected.iter().filter(|row| !row.builtin).count() > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS {
+    if selected
+        .iter()
+        .filter(|row| !row.builtin && dream_core_common::mcp_policy::is_enterprise_mcp(row.original_json.as_deref()))
+        .count()
+        > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS
+    {
         warn!(
             conversation_id,
             "Over-limit MCP snapshot blocked before runtime preparation; selection required"
         );
-        selected.retain(|row| row.builtin);
+        selected.retain(|row| {
+            row.builtin || !dream_core_common::mcp_policy::is_enterprise_mcp(row.original_json.as_deref())
+        });
     }
     let mut authorized = Vec::with_capacity(selected.len());
     for mut row in selected {
@@ -199,35 +206,20 @@ pub(crate) async fn load_session_mcp_rows(
 
 /// Apply the combined repo/inline bound before any per-server command preparation.
 pub(crate) fn guard_mcp_selection(
-    ids: &mut Option<Vec<String>>,
+    _ids: &mut Option<Vec<String>>,
     inline: &mut Vec<dream_core_api_types::SessionMcpServer>,
 ) {
-    use dream_core_common::mcp_policy::{MAX_USER_MCP_SERVERS, is_employee_bound_mcp, is_system_mcp};
-    let unique: std::collections::HashSet<&str> = ids.iter().flatten().map(String::as_str).collect();
-    // Every inline entry is its own process, whatever id it claims (ids may be
-    // empty or repeated), so each one counts; overlap with `ids` errs strict.
-    // Connectors a digital employee binds are the administrator's choice, not
-    // the member's: they get their own bucket instead of eating the member's 20.
+    use dream_core_common::mcp_policy::{MAX_USER_MCP_SERVERS, is_employee_bound_mcp};
+    // Every employee inline entry is its own process, even with repeated ids.
+    // Local definitions are unlimited; the enterprise distribution path checks
+    // the combined selected/dependency quota before materializing these entries.
     let employee_inline = inline.iter().filter(|s| is_employee_bound_mcp(&s.name)).count();
-    let inline_user = inline
-        .iter()
-        .filter(|s| !is_system_mcp(&s.name) && !is_employee_bound_mcp(&s.name))
-        .count();
-    let count = unique.len() + inline_user;
     if employee_inline > MAX_USER_MCP_SERVERS {
         warn!(
             employee_inline,
-            "Over-limit employee-bound MCP set quarantined; an employee may bind at most 20 connectors"
+            "Over-limit employee-bound MCP set quarantined; an employee may bind at most 50 connectors"
         );
         inline.retain(|s| !is_employee_bound_mcp(&s.name));
-    }
-    if count > MAX_USER_MCP_SERVERS {
-        warn!(
-            count,
-            "Over-limit MCP selection quarantined; select at most 20 user MCP servers"
-        );
-        *ids = Some(Vec::new());
-        inline.retain(|s| is_system_mcp(&s.name) || is_employee_bound_mcp(&s.name));
     }
 }
 
@@ -352,23 +344,22 @@ mod tests {
     }
 
     #[test]
-    fn guard_counts_inline_servers_with_empty_or_repeated_ids_individually() {
+    fn guard_does_not_limit_local_inline_servers() {
         // 21 distinct servers all claiming the same (empty) id must not collapse to one.
         let mut ids = None;
         let mut servers: Vec<_> = (0..21).map(|i| inline("", &format!("srv-{i}"))).collect();
         servers.push(inline("", "one-browser"));
         guard_mcp_selection(&mut ids, &mut servers);
-        assert_eq!(ids, Some(Vec::new()));
-        assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].name, "one-browser");
+        assert_eq!(ids, None);
+        assert_eq!(servers.len(), 22);
 
         // Repeated non-empty id across different definitions is also counted per entry.
         let mut ids = None;
         let mut servers: Vec<_> = (0..21).map(|i| inline("same", &format!("srv-{i}"))).collect();
         guard_mcp_selection(&mut ids, &mut servers);
-        assert!(servers.is_empty());
+        assert_eq!(servers.len(), 21);
 
-        // Exactly 20 stays untouched; repo ids and inline entries add up.
+        // Local repository ids and inline definitions are both retained.
         let mut ids = Some((0..10).map(|i| format!("r{i}")).collect::<Vec<_>>());
         let mut servers: Vec<_> = (0..10).map(|i| inline("", &format!("srv-{i}"))).collect();
         guard_mcp_selection(&mut ids, &mut servers);
@@ -376,12 +367,12 @@ mod tests {
         assert_eq!(ids.as_ref().map(Vec::len), Some(10));
         servers.push(inline("", "srv-extra"));
         guard_mcp_selection(&mut ids, &mut servers);
-        assert!(servers.is_empty());
+        assert_eq!(servers.len(), 11);
     }
 
     #[test]
     fn guard_keeps_employee_bound_connectors_out_of_the_member_quota() {
-        // A member at their full 20 plus an employee binding two more must keep all of them.
+        // Twenty local selections and two employee dependencies are all retained.
         let mut ids = Some((0..20).map(|i| format!("r{i}")).collect::<Vec<_>>());
         let mut servers = vec![
             inline("omcp_a", "enterprise_omcp_a"),
@@ -393,7 +384,7 @@ mod tests {
 
         // The employee bucket has its own ceiling; overflow drops only that bucket.
         let mut ids = Some(vec!["r0".to_owned()]);
-        let mut servers: Vec<_> = (0..21)
+        let mut servers: Vec<_> = (0..51)
             .map(|i| inline(&format!("omcp_{i}"), &format!("enterprise_omcp_{i}")))
             .collect();
         servers.push(inline("one-browser-id", "one-browser"));
@@ -406,7 +397,7 @@ mod tests {
         let mut ids = Some((0..21).map(|i| format!("r{i}")).collect::<Vec<_>>());
         let mut servers = vec![inline("omcp_a", "enterprise_omcp_a")];
         guard_mcp_selection(&mut ids, &mut servers);
-        assert_eq!(ids, Some(Vec::new()));
+        assert_eq!(ids.as_ref().map(Vec::len), Some(21));
         assert_eq!(servers.len(), 1);
     }
 
@@ -654,14 +645,25 @@ mod tests {
         assert_eq!(names(&rows), vec!["one-image-generation"]);
     }
     #[tokio::test]
-    async fn twenty_one_snapshot_entries_are_quarantined_before_command_resolution() {
-        let ids: Vec<String> = (0..21).map(|i| format!("mcp-{i}")).collect();
+    async fn fifty_one_enterprise_entries_are_quarantined_before_command_resolution() {
+        let ids: Vec<String> = (0..51).map(|i| format!("mcp-{i}")).collect();
         let mut rows: Vec<_> = ids.iter().map(|id| row(id, id, true, false)).collect();
+        for row in &mut rows {
+            row.original_json = Some(format!(r#"{{"teamRegistryId":"{}"}}"#, row.id));
+        }
         rows.push(row("system", "one-browser", true, true));
         let repo = FakeRepo { rows };
         let actual = load_session_mcp_rows(&repo, Some(&ids), "u", "c").await;
         assert_eq!(names(&actual), vec!["one-browser"]);
         assert!(load_session_mcp_rows(&repo, Some(&ids[..20]), "u", "c").await.len() <= 21);
+    }
+
+    #[tokio::test]
+    async fn local_snapshot_can_exceed_fifty_without_enterprise_membership() {
+        let ids: Vec<String> = (0..100).map(|i| format!("local-{i}")).collect();
+        let rows = ids.iter().map(|id| row(id, id, true, false)).collect();
+        let actual = load_session_mcp_rows(&FakeRepo { rows }, Some(&ids), "u", "c").await;
+        assert_eq!(actual.len(), 100);
     }
     #[tokio::test]
     async fn no_selection_does_not_mean_the_entire_enabled_catalog() {

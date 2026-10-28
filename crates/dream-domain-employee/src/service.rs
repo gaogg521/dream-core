@@ -282,6 +282,17 @@ async fn select_available_agents(
     Ok(visible)
 }
 
+async fn visible_bound_mcp_ids(pool: &DbPool, user: &str, tenant: &str) -> Result<Vec<String>, sqlx::Error> {
+    let mut ids = std::collections::BTreeSet::new();
+    for agent in select_available_agents(pool, user, tenant).await? {
+        let config: serde_json::Value = serde_json::from_str(&agent.automation_config).unwrap_or_default();
+        if let Some(bound) = config.get("boundMcpIds").and_then(serde_json::Value::as_array) {
+            ids.extend(bound.iter().filter_map(serde_json::Value::as_str).map(str::to_owned));
+        }
+    }
+    Ok(ids.into_iter().collect())
+}
+
 /// Ordered so `Manage > Use` — a manager may also run/converse with the
 /// employee (`EMPLOYEE_PERMISSION_MANAGE`'s own doc comment: "implied by").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1212,6 +1223,11 @@ impl EmployeeService {
     pub async fn list_available(&self, user_id: &str, tenant_id: &str) -> Result<Vec<PersonalAgentDto>, EmployeeError> {
         let rows = select_available_agents(&self.db, user_id, tenant_id).await?;
         Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// Binding authority comes from visible employees, never caller-supplied ids.
+    pub async fn visible_bound_mcp_ids(&self, user: &str, tenant: &str) -> Result<Vec<String>, EmployeeError> {
+        Ok(visible_bound_mcp_ids(&self.db, user, tenant).await?)
     }
 
     /// Resolve an employee the user is allowed to *use* (dispatch/breakdown):
@@ -2950,6 +2966,39 @@ mod tests {
             .map(|r| r.id)
             .collect();
         assert_eq!(ids, ["a2".to_owned(), "b1".to_owned()].into_iter().collect());
+    }
+
+    #[tokio::test]
+    async fn visible_mcp_bindings_follow_employee_grants_and_tenant_isolation() {
+        let db = dream_core_db::init_database_memory().await.unwrap();
+        let pool = dream_core_db::DbPool::Sqlite(db.pool().clone());
+        run_one_employee_migrations(&pool).await.unwrap();
+        seed_unified_resource_grants(db.pool()).await;
+        for (id, owner, tenant, visibility) in [
+            ("own", "B", "t1", "private"),
+            ("granted", "A", "t1", "shared"),
+            ("private", "A", "t1", "private"),
+            ("foreign", "C", "t2", "shared"),
+        ] {
+            insert_agent(&pool, id, owner, tenant, visibility).await;
+            let config = serde_json::json!({"boundMcpIds":[id]}).to_string();
+            pool.execute(
+                "UPDATE one_personal_agents SET automation_config=?,published=1 WHERE id=?",
+                &db_params![config, id],
+            )
+            .await
+            .unwrap();
+        }
+        insert_employee_grant(&pool, "t1", "member", "B", "granted", "use").await;
+        insert_employee_grant(&pool, "t1", "member", "B", "foreign", "use").await;
+        assert_eq!(
+            visible_bound_mcp_ids(&pool, "B", "t1").await.unwrap(),
+            vec!["granted", "own"]
+        );
+        pool.execute("DELETE FROM one_resource_grants WHERE resource_id='granted'", &[])
+            .await
+            .unwrap();
+        assert_eq!(visible_bound_mcp_ids(&pool, "B", "t1").await.unwrap(), vec!["own"]);
     }
 
     #[tokio::test]

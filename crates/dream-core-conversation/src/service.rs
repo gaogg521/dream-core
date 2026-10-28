@@ -5603,7 +5603,50 @@ impl ConversationService {
         };
         let mut mutated = backfill_skills_if_missing(extra, &auto_inject);
         mutated |= backfill_cron_job_id_alias(extra);
-        if dream_core_common::mcp_policy::repair_oversized_mcp_snapshot(extra) {
+        let mut enterprise_mcp = HashSet::new();
+        let oversized = ["mcp_server_ids", "mcp_servers", "session_mcp_servers"]
+            .iter()
+            .any(|key| {
+                extra
+                    .get(*key)
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|items| items.len() > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS)
+            });
+        if oversized {
+            let repo = self
+                .mcp_server_repo
+                .read()
+                .ok()
+                .and_then(|guard| guard.as_ref().cloned());
+            if let Some(repo) = repo {
+                let ids: Vec<_> = extra
+                    .get("mcp_server_ids")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect();
+                let rows = if ids.is_empty() {
+                    repo.list(user_id).await
+                } else {
+                    repo.list_by_ids_any(user_id, &ids).await
+                };
+                match rows {
+                    Ok(rows) => {
+                        for row in rows {
+                            if dream_core_common::mcp_policy::is_enterprise_mcp(row.original_json.as_deref()) {
+                                enterprise_mcp.insert(row.id);
+                                enterprise_mcp.insert(row.name);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        warn!(conversation_id, error = %ErrorChain(&error), "Enterprise MCP snapshot classification unavailable")
+                    }
+                }
+            }
+        }
+        if dream_core_common::mcp_policy::repair_oversized_mcp_snapshot(extra, &enterprise_mcp) {
             warn!(
                 conversation_id,
                 "Historical over-limit MCP snapshot quarantined; user selection required"
@@ -5922,6 +5965,16 @@ impl ConversationService {
                     None => false,
                 })
                 .collect::<Vec<_>>();
+            if selected_rows
+                .iter()
+                .filter(|row| dream_core_common::mcp_policy::is_enterprise_mcp(row.original_json.as_deref()))
+                .count()
+                > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS
+            {
+                return Err(ConversationError::BadRequest {
+                    reason: "MCP_LIMIT_EXCEEDED: enterprise selection maximum 50".into(),
+                });
+            }
             mcp_server_ids = selected_rows.iter().map(|row| row.id.clone()).collect();
             for row in &selected_rows {
                 if seen_mcp_names.insert(row.name.clone()) {
@@ -5933,19 +5986,6 @@ impl ConversationService {
                     classify_repo_mcp_status(row, mcp_support),
                 );
             }
-        }
-        let unique: HashSet<&str> = mcp_server_ids
-            .iter()
-            .map(String::as_str)
-            .chain(
-                session_servers
-                    .iter()
-                    .filter(|s| !dream_core_common::mcp_policy::is_system_mcp(&s.name))
-                    .map(|s| s.id.as_str()),
-            )
-            .collect();
-        if unique.len() > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS {
-            return Err(ConversationError::BadRequest { reason: "MCP_LIMIT_EXCEEDED: choose at most 20 MCP servers; remove an existing selection before adding another".into() });
         }
         let mut selected_session_servers = Vec::with_capacity(session_servers.len());
         for server in session_servers {

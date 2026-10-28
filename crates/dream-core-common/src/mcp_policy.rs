@@ -1,6 +1,20 @@
 //! Safety boundaries shared by persistence, selection and agent startup.
 
-pub const MAX_USER_MCP_SERVERS: usize = 20;
+pub const MAX_USER_MCP_SERVERS: usize = 50;
+pub const MAX_ENTERPRISE_MCP_ADDITIONS: usize = 10;
+
+/// Only enterprise-distributed connectors consume the enterprise selection quota.
+pub fn is_enterprise_mcp(original_json: Option<&str>) -> bool {
+    original_json
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| {
+            value
+                .get("teamRegistryId")
+                .and_then(|id| id.as_str())
+                .map(|id| !id.is_empty())
+        })
+        .unwrap_or(false)
+}
 
 /// These built-ins are owned by the application, never user quota entries.
 pub fn is_system_mcp(name: &str) -> bool {
@@ -23,8 +37,7 @@ pub fn is_system_mcp(name: &str) -> bool {
 /// Prefix `employee_runtime` gives the connectors a digital employee binds.
 pub const EMPLOYEE_BOUND_MCP_PREFIX: &str = "enterprise_";
 
-/// Connectors injected for a digital employee run; counted in their own bucket,
-/// not against the member's 20 selected connectors.
+/// Connectors injected for a digital employee run, distinct from local selections.
 pub fn is_employee_bound_mcp(name: &str) -> bool {
     name.starts_with(EMPLOYEE_BOUND_MCP_PREFIX)
 }
@@ -44,14 +57,22 @@ pub fn is_browser_auth_proxy(command: &str, args: &[String]) -> bool {
         })
 }
 
-/// Legacy implicit full-catalog snapshots are unsafe. Clear their user selection
-/// as a whole, retaining messages and system tools; never choose an arbitrary 20.
-pub fn repair_oversized_mcp_snapshot(extra: &mut serde_json::Value) -> bool {
+/// Legacy implicit full-catalog snapshots are unsafe. Clear the oversized
+/// enterprise selection, retaining local selections, messages and system tools.
+pub fn repair_oversized_mcp_snapshot(
+    extra: &mut serde_json::Value,
+    enterprise: &std::collections::HashSet<String>,
+) -> bool {
     let Some(obj) = extra.as_object_mut() else { return false };
     let ids = obj.get("mcp_server_ids").and_then(|v| v.as_array());
     let names = obj.get("mcp_servers").and_then(|v| v.as_array());
     let mut unique = std::collections::HashSet::new();
-    for id in ids.into_iter().flatten().filter_map(|v| v.as_str()) {
+    for id in ids
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .filter(|id| enterprise.contains(*id))
+    {
         unique.insert(id);
     }
     // Inline entries are separate processes whatever id they claim (missing or
@@ -63,16 +84,16 @@ pub fn repair_oversized_mcp_snapshot(extra: &mut serde_json::Value) -> bool {
         .flatten()
         .filter(|item| {
             let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            !is_system_mcp(name) && !is_employee_bound_mcp(name)
+            enterprise.contains(name) && !is_employee_bound_mcp(name)
         })
         .count();
     let names_count = names.map_or(0, |items| {
         items
             .iter()
-            .filter(|v| !is_system_mcp(v.as_str().unwrap_or("")))
+            .filter(|v| enterprise.contains(v.as_str().unwrap_or("")))
             .count()
     });
-    let count = (unique.len().max(ids.map_or(0, Vec::len)) + inline_count).max(names_count);
+    let count = (unique.len() + inline_count).max(names_count);
     if count <= MAX_USER_MCP_SERVERS {
         return false;
     }
@@ -82,13 +103,22 @@ pub fn repair_oversized_mcp_snapshot(extra: &mut serde_json::Value) -> bool {
         "mcp_statuses",
         "selected_mcp_server_ids",
     ] {
-        obj.insert(key.into(), serde_json::json!([]));
+        if let Some(items) = obj.get_mut(key).and_then(|v| v.as_array_mut()) {
+            items.retain(|v| {
+                let id = v
+                    .as_str()
+                    .or_else(|| v.get("id").and_then(|v| v.as_str()))
+                    .unwrap_or("");
+                let name = v.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                !enterprise.contains(id) && !enterprise.contains(name)
+            });
+        }
     }
     for key in ["session_mcp_servers", "selected_session_mcp_servers"] {
         if let Some(items) = obj.get_mut(key).and_then(|v| v.as_array_mut()) {
             items.retain(|v| {
                 let name = v.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                is_system_mcp(name) || is_employee_bound_mcp(name)
+                !enterprise.contains(name) || is_employee_bound_mcp(name)
             });
         }
     }
@@ -104,35 +134,53 @@ mod tests {
     #[test]
     fn repairs_legacy_catalog_without_losing_history_or_selecting_random_tools() {
         let mut value = serde_json::json!({"mcp_server_ids": (0..2692).map(|i| i.to_string()).collect::<Vec<_>>(), "workspace":"keep", "skills":["keep"], "session_mcp_servers":[{"name":"one-browser"},{"name":"arbitrary"}]});
-        assert!(repair_oversized_mcp_snapshot(&mut value));
+        let enterprise = (0..2692).map(|i| i.to_string()).collect();
+        assert!(repair_oversized_mcp_snapshot(&mut value, &enterprise));
         assert_eq!(value["mcp_server_ids"], serde_json::json!([]));
         assert_eq!(value["workspace"], "keep");
         assert_eq!(
             value["session_mcp_servers"],
-            serde_json::json!([{"name":"one-browser"}])
+            serde_json::json!([{"name":"one-browser"},{"name":"arbitrary"}])
         );
-        assert!(!repair_oversized_mcp_snapshot(&mut value));
+        assert!(!repair_oversized_mcp_snapshot(&mut value, &enterprise));
     }
 
     #[test]
     fn repairs_inline_snapshots_whose_servers_share_or_lack_ids() {
-        let inline: Vec<_> = (0..21)
+        let inline: Vec<_> = (0..51)
             .map(|i| serde_json::json!({"name": format!("srv-{i}"), "id": ""}))
             .collect();
         let mut value = serde_json::json!({"session_mcp_servers": inline});
-        assert!(repair_oversized_mcp_snapshot(&mut value));
+        let enterprise = (0..51).map(|i| format!("srv-{i}")).collect();
+        assert!(repair_oversized_mcp_snapshot(&mut value, &enterprise));
         assert_eq!(value["session_mcp_servers"], serde_json::json!([]));
         assert_eq!(value["mcp_selection_required"], true);
 
-        let no_id: Vec<_> = (0..21).map(|i| serde_json::json!({"name": format!("s{i}")})).collect();
+        let no_id: Vec<_> = (0..51).map(|i| serde_json::json!({"name": format!("s{i}")})).collect();
         let mut value = serde_json::json!({"session_mcp_servers": no_id});
-        assert!(repair_oversized_mcp_snapshot(&mut value));
+        let enterprise = (0..51).map(|i| format!("s{i}")).collect();
+        assert!(repair_oversized_mcp_snapshot(&mut value, &enterprise));
     }
 
     #[test]
-    fn boundary_twenty_is_preserved() {
-        let mut value = serde_json::json!({"mcp_server_ids": (0..20).collect::<Vec<_>>()});
-        assert!(!repair_oversized_mcp_snapshot(&mut value));
+    fn boundary_fifty_is_preserved() {
+        let enterprise: std::collections::HashSet<String> = (0..50).map(|i| i.to_string()).collect();
+        let mut value = serde_json::json!({"mcp_server_ids": enterprise.iter().collect::<Vec<_>>()});
+        assert!(!repair_oversized_mcp_snapshot(&mut value, &enterprise));
+    }
+
+    #[test]
+    fn local_snapshots_are_unlimited_and_survive_enterprise_repair() {
+        let mut value =
+            serde_json::json!({"mcp_server_ids": (0..100).map(|i| format!("local-{i}")).collect::<Vec<_>>()});
+        assert!(!repair_oversized_mcp_snapshot(&mut value, &Default::default()));
+        let enterprise: std::collections::HashSet<String> = (0..51).map(|i| format!("team-{i}")).collect();
+        value["mcp_server_ids"]
+            .as_array_mut()
+            .unwrap()
+            .extend(enterprise.iter().map(|id| serde_json::json!(id)));
+        assert!(repair_oversized_mcp_snapshot(&mut value, &enterprise));
+        assert_eq!(value["mcp_server_ids"].as_array().unwrap().len(), 100);
     }
 
     #[test]

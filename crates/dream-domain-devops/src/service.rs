@@ -22,6 +22,7 @@ use crate::models::{
 };
 
 pub struct DevopsService {
+    pub(crate) mcp_selection_mutation: tokio::sync::Mutex<()>,
     pub(crate) db: DbPool,
     /// In-memory dense index for knowledge search; see `vector_index`.
     pub(crate) vectors: crate::vector_index::VectorIndex,
@@ -103,6 +104,7 @@ impl DevopsService {
     pub fn new(db: DbPool) -> Self {
         Self {
             db,
+            mcp_selection_mutation: tokio::sync::Mutex::new(()),
             indexing_jobs: std::sync::Mutex::new(HashMap::new()),
             indexing_slots: tokio::sync::Semaphore::new(2),
             external_source: std::sync::OnceLock::new(),
@@ -3687,6 +3689,18 @@ mod tests {
         let bound = svc.employee_bound_mcp_registry("member1", &ids[1..]).await.unwrap();
         assert_eq!(bound.len(), 1);
         assert_eq!(bound[0].id, ids[1]);
+        let visible = svc
+            .visible_employee_bound_mcp_registry("t1", "member1", &ids, &ids[1..])
+            .await
+            .unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].id, ids[1]);
+        assert!(
+            svc.visible_employee_bound_mcp_registry("t1", "member1", &ids, &[])
+                .await
+                .unwrap()
+                .is_empty()
+        );
         // Unknown ids are absent, and the ceiling is enforced.
         assert!(
             svc.employee_bound_mcp_registry("member1", &["nope".to_owned()])
@@ -3694,7 +3708,7 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let too_many: Vec<String> = (0..21).map(|i| format!("x{i}")).collect();
+        let too_many: Vec<String> = (0..51).map(|i| format!("x{i}")).collect();
         assert!(svc.employee_bound_mcp_registry("member1", &too_many).await.is_err());
     }
 

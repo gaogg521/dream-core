@@ -69,19 +69,25 @@ impl IMcpServerRepository for SqliteMcpServerRepository {
 
     async fn replace_enabled_selection(&self, user_id: &str, ids: &[String]) -> Result<(), DbError> {
         let ids: std::collections::HashSet<_> = ids.iter().collect();
-        if ids.len() > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS {
-            return Err(DbError::Conflict(
-                "MCP_LIMIT_EXCEEDED: remove an existing MCP before adding another (maximum 20)".into(),
-            ));
-        }
         let mut tx = self.pool.begin().await?;
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT id FROM mcp_servers WHERE user_id=? AND builtin=0 AND deleted_at IS NULL")
-                .bind(user_id)
-                .fetch_all(&mut *tx)
-                .await?;
-        if ids.iter().any(|id| !rows.iter().any(|(existing,)| existing == *id)) {
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT id, original_json FROM mcp_servers WHERE user_id=? AND builtin=0 AND deleted_at IS NULL",
+        )
+        .bind(user_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        if ids.iter().any(|id| !rows.iter().any(|(existing, _)| existing == *id)) {
             return Err(DbError::NotFound("MCP selection includes an unavailable server".into()));
+        }
+        if rows
+            .iter()
+            .filter(|(id, json)| ids.contains(id) && dream_core_common::mcp_policy::is_enterprise_mcp(json.as_deref()))
+            .count()
+            > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS
+        {
+            return Err(DbError::Conflict(
+                "MCP_LIMIT_EXCEEDED: enterprise selection maximum 50".into(),
+            ));
         }
         sqlx::query(
             "UPDATE mcp_servers SET enabled=0,updated_at=? WHERE user_id=? AND builtin=0 AND deleted_at IS NULL",
@@ -878,25 +884,27 @@ mod tests {
     async fn mcp_quota_replacement_is_atomic_and_owner_scoped() {
         let (repo, _db) = setup().await;
         let mut ids = Vec::new();
-        for i in 0..21 {
+        for i in 0..51 {
             let name = format!("quota-{i}");
+            let original_json = format!(r#"{{"teamRegistryId":"team-{i}"}}"#);
             let row = repo
                 .create(CreateMcpServerParams {
                     name: &name,
+                    original_json: Some(&original_json),
                     ..stdio_params()
                 })
                 .await
                 .unwrap();
             ids.push(row.id);
         }
-        repo.replace_enabled_selection(USER_A, &ids[..20]).await.unwrap();
+        repo.replace_enabled_selection(USER_A, &ids[..50]).await.unwrap();
         assert!(matches!(
             repo.replace_enabled_selection(USER_A, &ids).await,
             Err(DbError::Conflict(_))
         ));
         assert_eq!(
             repo.list(USER_A).await.unwrap().iter().filter(|r| r.enabled).count(),
-            20
+            50
         );
         let mut replacement = ids[1..].to_vec();
         repo.replace_enabled_selection(USER_A, &replacement).await.unwrap();
@@ -908,7 +916,55 @@ mod tests {
         ));
         assert_eq!(
             repo.list(USER_A).await.unwrap().iter().filter(|r| r.enabled).count(),
-            20
+            50
+        );
+    }
+    #[tokio::test]
+    async fn local_selection_is_unlimited_even_alongside_enterprise_connectors() {
+        let (repo, _db) = setup().await;
+        let mut ids = Vec::new();
+        for i in 0..100 {
+            let name = format!("local-{i}");
+            ids.push(
+                repo.create(CreateMcpServerParams {
+                    name: &name,
+                    ..stdio_params()
+                })
+                .await
+                .unwrap()
+                .id,
+            );
+        }
+        repo.replace_enabled_selection(USER_A, &ids).await.unwrap();
+        assert_eq!(
+            repo.list(USER_A)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|row| row.enabled)
+                .count(),
+            100
+        );
+        let json = r#"{"teamRegistryId":"enterprise-one"}"#;
+        ids.push(
+            repo.create(CreateMcpServerParams {
+                name: "enterprise-one",
+                original_json: Some(json),
+                ..stdio_params()
+            })
+            .await
+            .unwrap()
+            .id,
+        );
+        repo.replace_enabled_selection(USER_A, &ids).await.unwrap();
+        assert_eq!(
+            repo.list(USER_A)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|row| row.enabled)
+                .count(),
+            101
         );
     }
     #[tokio::test]

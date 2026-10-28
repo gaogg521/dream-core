@@ -3108,13 +3108,23 @@ async fn get_mcp_selection(
 async fn put_mcp_selection(
     State(state): State<OneDevopsRouterState>,
     Extension(user): Extension<CurrentUser>,
+    headers: HeaderMap,
     Json(body): Json<McpSelectionBody>,
 ) -> Result<Json<ApiResponse<crate::mcp_selection::McpSelectionDto>>, DevopsError> {
+    reject_if_machine_blocked(&state, &headers, &user.id).await?;
     let tenant = state.tenant_of(&user.id).await;
+    let bound = if let Some(employee) = &state.employee {
+        employee
+            .visible_bound_mcp_ids(&user.id, &tenant)
+            .await
+            .map_err(|error| DevopsError::Internal(error.to_string()))?
+    } else {
+        Vec::new()
+    };
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .replace_mcp_selection(&tenant, &user.id, &body.selected_ids)
+            .replace_mcp_selection_with_bindings(&tenant, &user.id, &body.selected_ids, &bound)
             .await?,
     )))
 }
@@ -3143,8 +3153,20 @@ async fn employee_bound_mcp(
     Json(body): Json<McpBoundBody>,
 ) -> Result<Json<ApiResponse<Vec<McpRegistryDto>>>, DevopsError> {
     reject_if_machine_blocked(&state, &headers, &user.id).await?;
+    let employee = state
+        .employee
+        .as_ref()
+        .ok_or_else(|| DevopsError::Internal("employee runtime not wired".into()))?;
+    let tenant = state.tenant_of(&user.id).await;
+    let bound = employee
+        .visible_bound_mcp_ids(&user.id, &tenant)
+        .await
+        .map_err(|error| DevopsError::Internal(error.to_string()))?;
     Ok(Json(ApiResponse::ok(
-        state.service.employee_bound_mcp_registry(&user.id, &body.ids).await?,
+        state
+            .service
+            .visible_employee_bound_mcp_registry(&tenant, &user.id, &body.ids, &bound)
+            .await?,
     )))
 }
 async fn mcp_catalog(

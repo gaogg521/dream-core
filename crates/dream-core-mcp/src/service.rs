@@ -91,9 +91,24 @@ impl McpConfigService {
     // a stale over-limit read must not clear a newly saved valid selection.
     async fn list_servers_locked(&self, user_id: &str) -> Result<Vec<McpServerResponse>, McpError> {
         let mut rows = self.repo.list(user_id).await?;
-        if rows.iter().filter(|r| r.enabled && !r.builtin).count() > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS
+        if rows
+            .iter()
+            .filter(|r| {
+                r.enabled && !r.builtin && dream_core_common::mcp_policy::is_enterprise_mcp(r.original_json.as_deref())
+            })
+            .count()
+            > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS
         {
-            self.repo.replace_enabled_selection(user_id, &[]).await?;
+            let local_ids: Vec<_> = rows
+                .iter()
+                .filter(|r| {
+                    r.enabled
+                        && !r.builtin
+                        && !dream_core_common::mcp_policy::is_enterprise_mcp(r.original_json.as_deref())
+                })
+                .map(|r| r.id.clone())
+                .collect();
+            self.repo.replace_enabled_selection(user_id, &local_ids).await?;
             warn!(
                 user_id,
                 "Historical oversized MCP activation quarantined; explicit selection required"
@@ -287,13 +302,6 @@ impl McpConfigService {
         ids: &[String],
     ) -> Result<Vec<McpServerResponse>, McpError> {
         let _guard = self.selection_mutation.lock().await;
-        if ids.iter().collect::<std::collections::HashSet<_>>().len()
-            > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS
-        {
-            return Err(McpError::InvalidEdit(
-                "MCP_LIMIT_EXCEEDED: remove an existing MCP before adding another (maximum 20)".into(),
-            ));
-        }
         self.repo.replace_enabled_selection(user_id, ids).await?;
         self.list_servers_locked(user_id).await
     }
@@ -567,7 +575,7 @@ pub struct TeamMcpPayload {
     /// or sse `headers` so the connector authenticates locally (offline).
     pub secrets_json: Option<String>,
     /// Bound by a distributed digital employee but not selected by the member.
-    /// Stored disabled and outside the member's 20-connector quota; only an
+    /// Stored disabled rather than activated as a member selection; only an
     /// employee run resolves it (see [`McpConfigService::team_server_transport`]).
     pub employee_bound: bool,
 }
@@ -661,35 +669,32 @@ impl McpConfigService {
         authoritative: bool,
     ) -> Result<TeamMcpSyncReport, McpError> {
         let _guard = self.selection_mutation.lock().await;
-        // Two separate buckets: what the member selected (their 20) and what
-        // distributed employees bind (admin-governed, own 20-entry ceiling).
+        // Resolve member selections and employee dependencies separately, while
+        // enforcing the total enterprise limit across their deduplicated union.
+        if payloads
+            .iter()
+            .map(|p| &p.registry_id)
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS
+        {
+            return Err(McpError::InvalidEdit(
+                "MCP_LIMIT_EXCEEDED: total enterprise distribution maximum 50".into(),
+            ));
+        }
         let bound_count = payloads.iter().filter(|p| p.employee_bound).count();
         if payloads.len() - bound_count > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS {
             return Err(McpError::InvalidEdit(
-                "MCP_LIMIT_EXCEEDED: enterprise distribution must contain at most 20 explicitly selected connectors"
+                "MCP_LIMIT_EXCEEDED: enterprise distribution must contain at most 50 explicitly selected connectors"
                     .into(),
             ));
         }
         if bound_count > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS {
             return Err(McpError::InvalidEdit(
-                "MCP_LIMIT_EXCEEDED: digital employees may bind at most 20 connectors per member".into(),
+                "MCP_LIMIT_EXCEEDED: digital employees may bind at most 50 connectors per member".into(),
             ));
         }
         let _ = self.list_servers_locked(user_id).await?;
-        let personal_count = self
-            .repo
-            .list(user_id)
-            .await?
-            .iter()
-            .filter(|r| r.enabled && !r.builtin && team_registry_id_of(r.original_json.as_deref()).is_none())
-            .count();
-        if personal_count + payloads.iter().filter(|p| p.enabled && !p.employee_bound).count()
-            > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS
-        {
-            return Err(McpError::InvalidEdit(
-                "MCP_LIMIT_EXCEEDED: replace personal connectors before enabling company connectors".into(),
-            ));
-        }
         let digest = team_sync_digest(payloads, authoritative);
         if let Ok(recent) = self.recent_team_sync.lock()
             && let Some(last) = recent.get(user_id)
@@ -880,10 +885,19 @@ mod tests {
     #[async_trait::async_trait]
     impl IMcpServerRepository for MockMcpServerRepo {
         async fn replace_enabled_selection(&self, user_id: &str, ids: &[String]) -> Result<(), DbError> {
-            if ids.len() > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS {
+            let mut rows = self.servers.lock().unwrap();
+            if rows
+                .iter()
+                .filter(|row| {
+                    row.user_id == user_id
+                        && ids.contains(&row.id)
+                        && dream_core_common::mcp_policy::is_enterprise_mcp(row.original_json.as_deref())
+                })
+                .count()
+                > dream_core_common::mcp_policy::MAX_USER_MCP_SERVERS
+            {
                 return Err(DbError::Conflict("MCP_LIMIT_EXCEEDED".into()));
             }
-            let mut rows = self.servers.lock().unwrap();
             if ids.iter().any(|id| {
                 !rows
                     .iter()
@@ -2082,9 +2096,9 @@ mod team_sync_tests {
     }
 
     #[tokio::test]
-    async fn employee_bound_bucket_has_its_own_twenty_entry_ceiling() {
+    async fn employee_bound_bucket_obeys_the_fifty_entry_distribution_ceiling() {
         let svc = svc();
-        let bound: Vec<TeamMcpPayload> = (0..21)
+        let bound: Vec<TeamMcpPayload> = (0..51)
             .map(|i| {
                 let mut p = payload(
                     &format!("omcp_b{i}"),
