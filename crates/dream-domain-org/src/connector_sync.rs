@@ -4,27 +4,18 @@
 //! host answers: an HTTP 401, a rate-limited 403 or an empty answer to an
 //! unauthenticated call is not a working connector, and reporting it as one
 //! sends an administrator off to debug something that was never connected.
-//! Feishu keeps the older reachability-only check (its token endpoint is a
-//! POST, so a bare GET cannot tell a good credential from a bad one).
+//! Feishu validates App ID/Secret using its actual POST token protocol.
+//! None of these sample reads is a business-resource import.
 
 use async_trait::async_trait;
 
-use crate::integration::{
-    IntegrationCredentials, IntegrationProvider, IntegrationSyncResult, IntegrationTestResult, StubIntegrationProvider,
-};
+use crate::integration::{IntegrationCredentials, IntegrationProvider, IntegrationSyncResult, IntegrationTestResult};
 
 const USER_AGENT: &str = "one-work-enterprise-connector";
 
+#[derive(Default)]
 pub struct HttpConnectorProvider {
-    inner: StubIntegrationProvider,
-}
-
-impl Default for HttpConnectorProvider {
-    fn default() -> Self {
-        Self {
-            inner: StubIntegrationProvider,
-        }
-    }
+    _private: (),
 }
 
 /// What one authenticated call to a provider told us.
@@ -58,7 +49,7 @@ impl HttpConnectorProvider {
 
     /// Providers whose verdict depends on the token being accepted.
     fn needs_token(provider: &str) -> bool {
-        matches!(provider, "github" | "gitlab" | "jira")
+        matches!(provider, "github" | "gitlab" | "jira" | "feishu")
     }
 
     /// What is still missing before a token connector can be tested at all.
@@ -66,8 +57,21 @@ impl HttpConnectorProvider {
         if creds.base_url.map(str::trim).filter(|s| !s.is_empty()).is_none() {
             return Some("请先保存服务地址，再测试");
         }
+        if creds.provider == "feishu"
+            && creds
+                .config
+                .get("appId")
+                .and_then(|v| v.as_str())
+                .is_none_or(|v| v.trim().is_empty())
+        {
+            return Some("请在扩展配置中填写 appId，再测试");
+        }
         if creds.secret.map(str::trim).filter(|s| !s.is_empty()).is_none() {
-            return Some("请先保存访问令牌，再测试");
+            return Some(if creds.provider == "feishu" {
+                "请先保存 App Secret，再测试"
+            } else {
+                "请先保存访问令牌，再测试"
+            });
         }
         None
     }
@@ -75,6 +79,30 @@ impl HttpConnectorProvider {
     /// Turn an HTTP answer into a verdict. Pure, so every branch is testable
     /// without a network.
     fn judge(provider: &str, code: u16, rate_remaining_zero: bool, body: &str) -> Verdict {
+        if provider == "feishu" {
+            if !(200..=299).contains(&code) {
+                return Verdict::Rejected(format!("飞书应用凭据校验失败（HTTP {code}）"));
+            }
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+                return Verdict::Rejected("飞书返回的凭据校验结果无效".into());
+            };
+            if value.get("code").and_then(|v| v.as_i64()) == Some(0)
+                && value
+                    .get("tenant_access_token")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|v| !v.trim().is_empty())
+                && value.get("expire").and_then(|v| v.as_u64()).is_some_and(|v| v > 0)
+            {
+                return Verdict::Ok { items: 0 };
+            }
+            let code = value
+                .get("code")
+                .and_then(|v| v.as_i64())
+                .map_or("未知".into(), |v| v.to_string());
+            return Verdict::Rejected(format!(
+                "飞书应用凭据被拒绝或响应不完整（错误码 {code}），请核对 App ID、App Secret 及应用状态"
+            ));
+        }
         match code {
             200..=299 => {
                 let items = serde_json::from_str::<serde_json::Value>(body)
@@ -111,9 +139,25 @@ impl HttpConnectorProvider {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .user_agent(USER_AGENT)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| e.to_string())?;
-        let mut request = client.get(&url).bearer_auth(token);
+        let mut request = if creds.provider == "feishu" {
+            let parsed = reqwest::Url::parse(&url).map_err(|_| "飞书服务地址无效".to_string())?;
+            let loopback = parsed.host_str().is_some_and(|host| {
+                host == "localhost"
+                    || host
+                        .trim_matches(['[', ']'])
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| ip.is_loopback())
+            });
+            if parsed.scheme() != "https" && !(parsed.scheme() == "http" && loopback) {
+                return Err("飞书应用凭据只允许通过 HTTPS 发送（本机回环测试除外）".into());
+            }
+            client.post(&url).json(&serde_json::json!({"app_id":creds.config["appId"].as_str().unwrap_or_default().trim(), "app_secret":token}))
+        } else {
+            client.get(&url).bearer_auth(token)
+        };
         if creds.provider == "github" {
             request = request.header("Accept", "application/vnd.github+json");
         }
@@ -133,7 +177,10 @@ impl HttpConnectorProvider {
 impl IntegrationProvider for HttpConnectorProvider {
     async fn test_connection(&self, creds: IntegrationCredentials<'_>) -> IntegrationTestResult {
         if !Self::needs_token(creds.provider) {
-            return self.inner.test_connection(creds).await;
+            return IntegrationTestResult {
+                status: "not_supported".into(),
+                message: "该连接器尚未实现凭据校验".into(),
+            };
         }
         if let Some(missing) = Self::missing_setup(&creds) {
             return IntegrationTestResult {
@@ -144,7 +191,11 @@ impl IntegrationProvider for HttpConnectorProvider {
         match self.call(&creds).await {
             Ok(Verdict::Ok { items }) => IntegrationTestResult {
                 status: "ok".into(),
-                message: format!("连接正常，令牌有效（读取到 {items} 项）"),
+                message: if creds.provider == "feishu" {
+                    "飞书应用凭据有效；仅代表令牌获取成功，不代表机器人已连接或业务资源已同步".into()
+                } else {
+                    format!("连接正常，令牌有效（读取到 {items} 项）")
+                },
             },
             Ok(Verdict::Rejected(reason)) => IntegrationTestResult {
                 status: "error".into(),
@@ -159,8 +210,13 @@ impl IntegrationProvider for HttpConnectorProvider {
 
     async fn sync(&self, creds: IntegrationCredentials<'_>, cursor: Option<&str>) -> IntegrationSyncResult {
         let cursor = cursor.map(str::to_owned);
-        if !Self::needs_token(creds.provider) {
-            return self.legacy_sync(creds, cursor).await;
+        if creds.provider == "feishu" || !Self::needs_token(creds.provider) {
+            return IntegrationSyncResult {
+                status: "not_supported".into(),
+                message: "该连接器尚未实现业务资源同步；凭据检测请使用测试连接，机器人接入请使用客户端频道".into(),
+                items_synced: 0,
+                cursor,
+            };
         }
         if let Some(missing) = Self::missing_setup(&creds) {
             return IntegrationSyncResult {
@@ -173,7 +229,7 @@ impl IntegrationProvider for HttpConnectorProvider {
         match self.call(&creds).await {
             Ok(Verdict::Ok { items }) => IntegrationSyncResult {
                 status: "ok".into(),
-                message: format!("{} 同步完成，读取到 {items} 项", creds.provider),
+                message: format!("{} 样本读取完成（{items} 项），尚未导入业务资源", creds.provider),
                 items_synced: items,
                 cursor,
             },
@@ -193,61 +249,104 @@ impl IntegrationProvider for HttpConnectorProvider {
     }
 }
 
-impl HttpConnectorProvider {
-    /// The reachability-only pull Feishu (and any unknown provider) still uses.
-    async fn legacy_sync(&self, creds: IntegrationCredentials<'_>, cursor: Option<String>) -> IntegrationSyncResult {
-        let Some(url) = Self::sync_url(&creds) else {
-            return IntegrationSyncResult {
-                status: "error".into(),
-                message: format!("Unknown provider {}", creds.provider),
-                items_synced: 0,
-                cursor,
-            };
-        };
-        let client = match reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .user_agent(USER_AGENT)
-            .build()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                return IntegrationSyncResult {
-                    status: "error".into(),
-                    message: e.to_string(),
-                    items_synced: 0,
-                    cursor,
-                };
-            }
-        };
-        let mut req = client.get(&url);
-        if let Some(token) = creds.secret.map(str::trim).filter(|s| !s.is_empty()) {
-            req = req.bearer_auth(token);
-        }
-        match req.send().await {
-            Ok(resp) => {
-                let code = resp.status().as_u16();
-                let ok = resp.status().is_success() || matches!(code, 401 | 403);
-                IntegrationSyncResult {
-                    status: if ok { "ok" } else { "error" }.into(),
-                    message: format!("{} sync GET {url} (HTTP {code})", creds.provider),
-                    items_synced: if ok { 1 } else { 0 },
-                    cursor,
-                }
-            }
-            Err(e) => IntegrationSyncResult {
-                status: "error".into(),
-                message: format!("sync failed: {e}"),
-                items_synced: 0,
-                cursor,
-            },
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn feishu_uses_post_credentials_and_does_not_claim_business_sync() {
+        use axum::{Json, Router, http::HeaderMap, routing::post};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new().route(
+            "/open-apis/auth/v3/tenant_access_token/internal",
+            post(|headers: HeaderMap, Json(body): Json<serde_json::Value>| async move {
+                assert!(headers.get("authorization").is_none());
+                assert_eq!(body["app_id"], "cli_fixture");
+                Json(if body["app_secret"] == "correct-secret" {
+                    json!({"code":0,"tenant_access_token":"fixture-token","expire":7200})
+                } else {
+                    json!({"code":10003,"msg":"credentials rejected"})
+                })
+            }),
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let provider = HttpConnectorProvider::default();
+        let config = json!({"appId":"cli_fixture"});
+        for (secret, expected) in [("correct-secret", "ok"), ("incorrect-secret", "error")] {
+            let result = provider
+                .test_connection(IntegrationCredentials {
+                    provider: "feishu",
+                    base_url: Some(&base),
+                    config: &config,
+                    secret: Some(secret),
+                })
+                .await;
+            assert_eq!(result.status, expected);
+            assert!(!result.message.contains(secret));
+            assert!(!result.message.contains("fixture-token"));
+        }
+        let sync = provider
+            .sync(
+                IntegrationCredentials {
+                    provider: "feishu",
+                    base_url: Some(&base),
+                    config: &config,
+                    secret: Some("correct-secret"),
+                },
+                Some("keep-cursor"),
+            )
+            .await;
+        assert_eq!(sync.status, "not_supported");
+        assert_eq!(sync.items_synced, 0);
+        assert_eq!(sync.cursor.as_deref(), Some("keep-cursor"));
+        task.abort();
+    }
+
+    #[test]
+    fn feishu_does_not_treat_a_reachable_or_malformed_token_response_as_authenticated() {
+        for (status, body) in [
+            (200, r#"{"code":10003,"msg":"denied"}"#),
+            (200, r#"{"code":0}"#),
+            (200, r#"{"code":0,"tenant_access_token":"token","expire":0}"#),
+            (200, "not JSON"),
+            (401, ""),
+            (403, ""),
+        ] {
+            assert!(matches!(
+                HttpConnectorProvider::judge("feishu", status, false, body),
+                Verdict::Rejected(_)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn feishu_requires_app_id_and_secret_before_sending_credentials() {
+        let provider = HttpConnectorProvider::default();
+        let no_app = provider
+            .test_connection(IntegrationCredentials {
+                provider: "feishu",
+                base_url: Some("https://open.feishu.cn"),
+                config: &json!({}),
+                secret: Some("secret"),
+            })
+            .await;
+        assert_eq!(no_app.status, "not_configured");
+        assert!(no_app.message.contains("appId"));
+        let no_secret = provider
+            .test_connection(IntegrationCredentials {
+                provider: "feishu",
+                base_url: Some("https://open.feishu.cn"),
+                config: &json!({"appId":"cli_fixture"}),
+                secret: None,
+            })
+            .await;
+        assert_eq!(no_secret.status, "not_configured");
+        assert!(no_secret.message.contains("App Secret"));
+    }
 
     #[test]
     fn github_sync_url_is_repo_list() {
