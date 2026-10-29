@@ -836,6 +836,13 @@ fn redact_secret_fields(provider: &str, config_json: &str) -> serde_json::Value 
 /// Parse a Feishu config row into a typed config, applying env-var fallbacks
 /// the way the TS reference does. Returns `None` when the row is missing or
 /// has no appId.
+/// The DingTalk row's stored config. The struct deserializes itself
+/// (camelCase `appKey`/`appSecret`); the mask check happens at the caller,
+/// same convention as the Feishu path.
+pub fn parse_dingtalk_config(row: &SsoProviderRow) -> Option<crate::providers::dingtalk::DingtalkProviderConfig> {
+    serde_json::from_str(&row.config).ok()
+}
+
 pub fn parse_feishu_config(row: &SsoProviderRow) -> Option<FeishuProviderConfig> {
     let value: serde_json::Value = serde_json::from_str(&row.config).unwrap_or_default();
     let app_id = value

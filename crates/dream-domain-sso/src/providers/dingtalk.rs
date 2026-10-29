@@ -176,6 +176,30 @@ impl DingtalkProvider {
         }
     }
 
+    /// Mint the application-level token (legacy `gettoken`). One per bulk
+    /// directory run — the per-call minting in `enrich_profile` is fine for a
+    /// single login and wrong for hundreds of paged requests.
+    pub async fn fetch_app_token(base: &str, config: &DingtalkProviderConfig) -> Result<String, SsoError> {
+        let client = http_client()?;
+        let token: serde_json::Value = client
+            .get(format!("{base}/gettoken"))
+            .query(&[
+                ("appkey", config.app_key.as_str()),
+                ("appsecret", config.app_secret.as_str()),
+            ])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        validate_contact_response(&token)?;
+        token["access_token"]
+            .as_str()
+            .filter(|t| !t.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| SsoError::Internal("DingTalk app token missing".into()))
+    }
+
     pub async fn test_credentials(app_key: &str, app_secret: &str) -> Result<(), SsoError> {
         let key = app_key.trim();
         let secret = app_secret.trim();
@@ -365,6 +389,208 @@ fn http_client() -> Result<reqwest::Client, SsoError> {
         .map_err(|e| SsoError::Internal(format!("http client: {e}")))
 }
 
+// --- T6 bulk directory pull -------------------------------------------------
+//
+// The directory row types live in `feishu.rs` for historical reasons but are
+// provider-neutral; DingTalk reuses them so the snapshot seam downstream stays
+// one shape. Permissions actually required from the DingTalk application:
+// the legacy Contact read scopes behind `gettoken` (department listing, user
+// listing and per-user detail). The app token here is the same one
+// `enrich_profile` mints.
+
+/// Walk the whole department tree below the root, plus the root itself.
+///
+/// `listsub` answers one level per call, so this is a breadth-first walk. A
+/// level that fails is logged and skipped — its subtree stays flat rather than
+/// failing the whole pull, the same trade `fetch_all_departments` makes.
+pub async fn fetch_directory_departments(
+    base: &str,
+    _config: &DingtalkProviderConfig,
+    token: &str,
+) -> Result<Vec<super::feishu::DirectoryDepartment>, SsoError> {
+    const MAX_DEPARTMENTS: usize = 500;
+    let client = http_client()?;
+    let mut out = vec![super::feishu::DirectoryDepartment {
+        external_id: "1".to_owned(),
+        parent_external_id: None,
+        // Replaced by the department/get name when that call answers; keeping
+        // the root in the mirror matters more than what it is called.
+        name: "公司".to_owned(),
+    }];
+    if let Ok(root) = contact_request(
+        &client,
+        base,
+        token,
+        "v2/department/get",
+        serde_json::json!({"dept_id": 1}),
+    )
+    .await
+        && let Some(name) = root["name"].as_str().map(str::trim).filter(|n| !n.is_empty())
+    {
+        out[0].name = name.to_owned();
+    }
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back(1i64);
+    let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    while let Some(parent) = queue.pop_front() {
+        if out.len() >= MAX_DEPARTMENTS {
+            tracing::warn!("dingtalk directory: department cap reached; tree truncated");
+            break;
+        }
+        let children = match contact_request(
+            &client,
+            base,
+            token,
+            "v2/department/listsub",
+            serde_json::json!({ "dept_id": parent }),
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(parent, %error, "dingtalk directory: level listing failed; subtree stays flat");
+                continue;
+            }
+        };
+        for child in children.as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+            let Some(dept_id) = child["dept_id"].as_i64() else {
+                continue;
+            };
+            if !seen.insert(dept_id) {
+                continue;
+            }
+            let name = child["name"].as_str().map(str::trim).filter(|n| !n.is_empty());
+            if let Some(name) = name {
+                out.push(super::feishu::DirectoryDepartment {
+                    external_id: dept_id.to_string(),
+                    parent_external_id: Some(parent.to_string()),
+                    name: name.to_owned(),
+                });
+            }
+            queue.push_back(dept_id);
+        }
+    }
+    Ok(out)
+}
+
+/// Pull every active member, with the detail fields the listing endpoint does
+/// not carry (`title`, `job_number`, `email`/`org_email`).
+///
+/// The external id follows `external_id_field` — `unionId` (the default, and
+/// what the SSO identity binds by) or `userid`. One detail call per person; a
+/// person past the cap still appears with listing-level fields, but the
+/// snapshot is then marked incomplete by the caller via the returned flag.
+pub async fn fetch_directory_people(
+    base: &str,
+    config: &DingtalkProviderConfig,
+    token: &str,
+    department_external_ids: &[String],
+) -> Result<Vec<super::feishu::DirectoryPerson>, SsoError> {
+    const MAX_PEOPLE: usize = 2000;
+    const PAGE_SIZE: i64 = 100;
+    let client = http_client()?;
+    let use_union_id = config.external_id_field.trim().eq_ignore_ascii_case("unionId");
+    let mut people: std::collections::HashMap<String, super::feishu::DirectoryPerson> =
+        std::collections::HashMap::new();
+    let mut detail_failures = 0usize;
+    for dept in department_external_ids {
+        let Ok(dept_id) = dept.parse::<i64>() else { continue };
+        let mut cursor = 0i64;
+        loop {
+            let page = match contact_request(
+                &client,
+                base,
+                token,
+                "v2/user/list",
+                serde_json::json!({ "dept_id": dept_id, "cursor": cursor, "size": PAGE_SIZE }),
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::warn!(dept_id, %error, "dingtalk directory: user listing failed; department skipped");
+                    break;
+                }
+            };
+            for user in page["list"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+                let Some(userid) = user["userid"].as_str().map(str::to_owned).filter(|s| !s.is_empty()) else {
+                    continue;
+                };
+                let external_id = if use_union_id {
+                    user["unionid"].as_str().unwrap_or(&userid).to_owned()
+                } else {
+                    userid.clone()
+                };
+                if people.contains_key(&external_id) {
+                    continue;
+                }
+                if people.len() >= MAX_PEOPLE {
+                    tracing::warn!("dingtalk directory: people cap reached; snapshot truncated");
+                    break;
+                }
+                let detail = match contact_request(
+                    &client,
+                    base,
+                    token,
+                    "v2/user/get",
+                    serde_json::json!({"userid": userid}),
+                )
+                .await
+                {
+                    Ok(value) => value,
+                    Err(error) => {
+                        detail_failures += 1;
+                        tracing::warn!(%userid, %error, "dingtalk directory: user detail failed; listing fields only");
+                        serde_json::Value::Null
+                    }
+                };
+                let pick_str = |v: &serde_json::Value, keys: &[&str]| -> Option<String> {
+                    keys.iter().find_map(|k| {
+                        v[*k]
+                            .as_str()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                    })
+                };
+                let name = pick_str(&detail, &["name"]).or_else(|| pick_str(user, &["name"]));
+                let department_external_ids: Vec<String> = detail["dept_id_list"]
+                    .as_array()
+                    .map(|ids| ids.iter().filter_map(|id| id.as_i64().map(|n| n.to_string())).collect())
+                    .unwrap_or_default();
+                people.insert(
+                    external_id.clone(),
+                    super::feishu::DirectoryPerson {
+                        employee_no: pick_str(&detail, &["job_number"]),
+                        // The org_email field is the company-issued mailbox;
+                        // `email` is the personal one an admin may have filled.
+                        enterprise_email: pick_str(&detail, &["org_email", "email"]),
+                        external_id,
+                        name,
+                        job_title: pick_str(&detail, &["title"]),
+                        department_external_ids,
+                        active: detail["active"]
+                            .as_bool()
+                            .unwrap_or_else(|| user["active"].as_bool().unwrap_or(true)),
+                    },
+                );
+            }
+            let has_more = page["has_more"].as_bool().unwrap_or(false);
+            if !has_more {
+                break;
+            }
+            match page["next_cursor"].as_i64() {
+                Some(next) if next > cursor => cursor = next,
+                _ => break,
+            }
+        }
+    }
+    if detail_failures > 0 {
+        tracing::warn!(detail_failures, "dingtalk directory: some members lack detail fields");
+    }
+    Ok(people.into_values().collect())
+}
+
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for &b in s.as_bytes() {
@@ -381,6 +607,180 @@ fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn directory_pull_maps_job_number_title_and_email_from_detail() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, method, path},
+        };
+        let server = MockServer::start().await;
+        let cfg = DingtalkProviderConfig {
+            app_key: "app".into(),
+            app_secret: "secret".into(),
+            corp_id: None,
+            redirect_uri: None,
+            external_id_field: "unionId".into(),
+        };
+        Mock::given(method("GET"))
+            .and(path("/gettoken"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"errcode":0,"access_token":"t"})))
+            .mount(&server)
+            .await;
+        // Root + one child department.
+        Mock::given(method("POST"))
+            .and(path("/topapi/v2/department/get"))
+            .and(body_json(serde_json::json!({"dept_id": 1})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({"errcode":0,"result":{"dept_id":1,"name":"测试公司","parent_id":0}}),
+                ),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/topapi/v2/department/listsub"))
+            .and(body_json(serde_json::json!({"dept_id": 1})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"errcode":0,"result":[
+                    {"dept_id": 7, "name": "技术部", "parent_id": 1}
+                ]})),
+            )
+            .mount(&server)
+            .await;
+        // The child has no sub-departments.
+        Mock::given(method("POST"))
+            .and(path("/topapi/v2/department/listsub"))
+            .and(body_json(serde_json::json!({"dept_id": 7})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"errcode":0,"result":[]})))
+            .mount(&server)
+            .await;
+        // One member of the child department.
+        Mock::given(method("POST"))
+            .and(path("/topapi/v2/user/list"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"errcode":0,"result":{
+                    "has_more": false,
+                    "list": [
+                        {"userid": "u-1", "unionid": "un-1", "name": "甲", "active": true}
+                    ]
+                }})),
+            )
+            .mount(&server)
+            .await;
+        // The detail call carries the fields the listing omits.
+        Mock::given(method("POST"))
+            .and(path("/topapi/v2/user/get"))
+            .and(body_json(serde_json::json!({"userid": "u-1"})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"errcode":0,"result":{
+                    "userid": "u-1", "unionid": "un-1", "name": "甲", "active": true,
+                    "title": "资深工程师", "job_number": "0007",
+                    "org_email": "jia@corp.example", "dept_id_list": [7]
+                }})),
+            )
+            .mount(&server)
+            .await;
+
+        let token = DingtalkProvider::fetch_app_token(&server.uri(), &cfg).await.unwrap();
+        let departments = fetch_directory_departments(&server.uri(), &cfg, &token).await.unwrap();
+        assert_eq!(
+            departments,
+            vec![
+                super::super::feishu::DirectoryDepartment {
+                    external_id: "1".into(),
+                    parent_external_id: None,
+                    name: "测试公司".into()
+                },
+                super::super::feishu::DirectoryDepartment {
+                    external_id: "7".into(),
+                    parent_external_id: Some("1".into()),
+                    name: "技术部".into()
+                },
+            ]
+        );
+        let people = fetch_directory_people(
+            &server.uri(),
+            &cfg,
+            &token,
+            &departments.iter().map(|d| d.external_id.clone()).collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(people.len(), 1);
+        let person = &people[0];
+        assert_eq!(person.external_id, "un-1", "external id follows the SSO binding field");
+        assert_eq!(person.employee_no.as_deref(), Some("0007"));
+        assert_eq!(person.enterprise_email.as_deref(), Some("jia@corp.example"));
+        assert_eq!(person.job_title.as_deref(), Some("资深工程师"));
+        assert_eq!(person.name.as_deref(), Some("甲"));
+        assert_eq!(person.department_external_ids, vec!["7".to_string()]);
+        assert!(person.active);
+    }
+
+    #[tokio::test]
+    async fn directory_pull_survives_a_failing_detail_call() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        let cfg = DingtalkProviderConfig {
+            app_key: "app".into(),
+            app_secret: "secret".into(),
+            corp_id: None,
+            redirect_uri: None,
+            external_id_field: "unionId".into(),
+        };
+        Mock::given(method("GET"))
+            .and(path("/gettoken"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"errcode":0,"access_token":"t"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/topapi/v2/department/get"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"errcode":0,"result":{"dept_id":1,"name":"公司","parent_id":0}})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/topapi/v2/department/listsub"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"errcode":0,"result":[]})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/topapi/v2/user/list"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"errcode":0,"result":{
+                    "has_more": false,
+                    "list": [{"userid": "u-1", "unionid": "un-1", "name": "乙", "active": true}]
+                }})),
+            )
+            .mount(&server)
+            .await;
+        // Detail endpoint errors: the person stays on listing fields, not dropped.
+        Mock::given(method("POST"))
+            .and(path("/topapi/v2/user/get"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"errcode":60011,"errmsg":"no privilege"})),
+            )
+            .mount(&server)
+            .await;
+
+        let token = DingtalkProvider::fetch_app_token(&server.uri(), &cfg).await.unwrap();
+        let people = fetch_directory_people(&server.uri(), &cfg, &token, &["1".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(people.len(), 1);
+        let person = &people[0];
+        assert_eq!(person.external_id, "un-1");
+        assert_eq!(person.name.as_deref(), Some("乙"));
+        assert!(person.employee_no.is_none());
+        assert!(person.enterprise_email.is_none());
+        assert!(person.active);
+    }
 
     #[tokio::test]
     async fn contact_http_chain_and_permission_denied_fallback() {

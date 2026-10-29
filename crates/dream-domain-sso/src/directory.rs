@@ -29,24 +29,31 @@
 //!
 //! # Provider coverage
 //!
-//! Feishu only, deliberately. It is the one provider with an app-level token,
-//! Contact API plumbing, and a `base_url` override that lets a test point it at
-//! a mock server. DingTalk and WeCom have absolute hardcoded URLs and no
-//! override, so nothing about them could be verified — [`DirectorySource`] is
-//! shaped to take them later without changing callers.
+//! Feishu first (the original source), DingTalk second. Feishu has an
+//! app-level token, Contact API plumbing and a `base_url` override for tests.
+//! DingTalk's Contact endpoints have absolute URLs, but the app-token +
+//! `topapi` plumbing already existed for the login path and a live probe
+//! confirmed the department/user scopes, so the bulk pull rides it too — the
+//! per-user detail round-trip carries the fields the listing endpoint omits
+//! (job number, title, company email). WeCom still has neither an override nor
+//! verified scopes, so nothing about it could be verified; `DirectorySource`
+//! is shaped to take it later without changing callers.
 
+use crate::providers::dingtalk::{DingtalkProvider, DingtalkProviderConfig};
 use crate::providers::feishu::{DirectoryDepartment, DirectoryPerson, FeishuProvider, FeishuProviderConfig};
 
 /// Which IdP a snapshot came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DirectorySource {
     Feishu,
+    Dingtalk,
 }
 
 impl DirectorySource {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Feishu => "feishu",
+            Self::Dingtalk => "dingtalk",
         }
     }
 }
@@ -146,6 +153,43 @@ pub async fn fetch_feishu_directory(config: &FeishuProviderConfig, external_id_f
             }
         }
     }
+
+    DirectorySnapshot {
+        source,
+        departments,
+        people,
+        complete: true,
+        error: None,
+    }
+}
+
+/// Pull the whole DingTalk directory.
+///
+/// Same contract as [`fetch_feishu_directory`]: never `Err`, a failed pull is
+/// an *incomplete* snapshot the storage side refuses to draw departures from.
+/// The token is minted once for the whole run (the legacy `gettoken` endpoint,
+/// the same app token the login path uses). One detail call per person — a
+/// failing detail keeps that person on listing-level fields instead of
+/// dropping them, which is why this degrades fields, not people.
+pub async fn fetch_dingtalk_directory(config: &DingtalkProviderConfig, _external_id_field: &str) -> DirectorySnapshot {
+    let source = DirectorySource::Dingtalk;
+    const BASE: &str = "https://oapi.dingtalk.com";
+
+    let token = match DingtalkProvider::fetch_app_token(BASE, config).await {
+        Ok(token) => token,
+        Err(e) => return DirectorySnapshot::incomplete(source, format!("app token: {e}")),
+    };
+
+    let departments = match crate::providers::dingtalk::fetch_directory_departments(BASE, config, &token).await {
+        Ok(departments) => departments,
+        Err(e) => return DirectorySnapshot::incomplete(source, format!("departments: {e}")),
+    };
+
+    let department_ids: Vec<String> = departments.iter().map(|d| d.external_id.clone()).collect();
+    let people = match crate::providers::dingtalk::fetch_directory_people(BASE, config, &token, &department_ids).await {
+        Ok(people) => people,
+        Err(e) => return DirectorySnapshot::incomplete(source, format!("people: {e}")),
+    };
 
     DirectorySnapshot {
         source,
@@ -264,37 +308,62 @@ pub async fn run_directory_sync(
 ) -> DirectorySyncRun {
     use DirectorySyncSkipped::*;
 
-    let row = match sso.get_provider_row(crate::models::SsoProviderKind::Feishu).await {
-        Ok(Some(row)) if row.enabled => row,
-        _ => return DirectorySyncRun::Skipped(ProviderNotConfigured),
-    };
-    let Some(mut config) = crate::service::parse_feishu_config(&row) else {
-        return DirectorySyncRun::Skipped(ProviderNotConfigured);
-    };
-    // A secret is required to mint the app-level token; without one there is
-    // nothing to try.
-    if config.app_secret.trim().is_empty() || config.app_secret == "******" {
-        return DirectorySyncRun::Skipped(ProviderNotConfigured);
+    // Feishu first — the original source. When it is not configured (no
+    // enabled row, no unmasked secret) fall through to DingTalk; only when
+    // neither provider is ready does the run skip.
+    let feishu_config = sso
+        .get_provider_row(crate::models::SsoProviderKind::Feishu)
+        .await
+        .ok()
+        .flatten()
+        .filter(|row| row.enabled)
+        .and_then(|row| crate::service::parse_feishu_config(&row))
+        // A secret is required to mint the app-level token; without one there
+        // is nothing to try.
+        .filter(|config| !config.app_secret.trim().is_empty() && config.app_secret != "******");
+    if let Some(mut config) = feishu_config {
+        // Development-only host override, so a run can be pointed at a stand-in
+        // Feishu. Deliberately an env var rather than a stored config field:
+        // `parse_feishu_config` keeps `base_url` out of admin-editable config on
+        // purpose, and turning it into a saved setting would make "where do our
+        // company credentials get sent" something an API call can change.
+        if let Ok(base) = std::env::var("ONE_FEISHU_BASE_URL")
+            && !base.trim().is_empty()
+        {
+            tracing::warn!(base = %base, "directory sync using ONE_FEISHU_BASE_URL override (development only)");
+            config.base_url = Some(base);
+        }
+
+        let Some(enterprise_id) = sink.enterprise_id().await else {
+            return DirectorySyncRun::Skipped(NoCompany);
+        };
+
+        let external_id_field = config.external_id_field.clone();
+        let snapshot = fetch_feishu_directory(&config, &external_id_field).await;
+        sink.apply_snapshot(&enterprise_id, snapshot.clone().into_payload(&external_id_field))
+            .await;
+        return DirectorySyncRun::Ran(snapshot);
     }
 
-    // Development-only host override, so a run can be pointed at a stand-in
-    // Feishu. Deliberately an env var rather than a stored config field:
-    // `parse_feishu_config` keeps `base_url` out of admin-editable config on
-    // purpose, and turning it into a saved setting would make "where do our
-    // company credentials get sent" something an API call can change.
-    if let Ok(base) = std::env::var("ONE_FEISHU_BASE_URL")
-        && !base.trim().is_empty()
-    {
-        tracing::warn!(base = %base, "directory sync using ONE_FEISHU_BASE_URL override (development only)");
-        config.base_url = Some(base);
-    }
+    // DingTalk second (T6): same gate — enabled row + unmasked secret.
+    let dingtalk_config = sso
+        .get_provider_row(crate::models::SsoProviderKind::Dingtalk)
+        .await
+        .ok()
+        .flatten()
+        .filter(|row| row.enabled)
+        .and_then(|row| crate::service::parse_dingtalk_config(&row))
+        .filter(|config| !config.app_secret.trim().is_empty() && config.app_secret != "******");
+    let Some(config) = dingtalk_config else {
+        return DirectorySyncRun::Skipped(ProviderNotConfigured);
+    };
 
     let Some(enterprise_id) = sink.enterprise_id().await else {
         return DirectorySyncRun::Skipped(NoCompany);
     };
 
     let external_id_field = config.external_id_field.clone();
-    let snapshot = fetch_feishu_directory(&config, &external_id_field).await;
+    let snapshot = fetch_dingtalk_directory(&config, &external_id_field).await;
     sink.apply_snapshot(&enterprise_id, snapshot.clone().into_payload(&external_id_field))
         .await;
     DirectorySyncRun::Ran(snapshot)
