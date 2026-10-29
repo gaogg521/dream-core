@@ -125,6 +125,10 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
             get(get_mcp_selection).put(put_mcp_selection),
         )
         .route("/api/one/devops/mcp-active", get(active_mcp))
+        .route(
+            "/api/one/devops/mcp-selection/scene",
+            axum::routing::post(activate_scene_mcp),
+        )
         .route("/api/one/devops/mcp-bound", axum::routing::post(employee_bound_mcp))
         .route("/api/one/devops/mcp-catalog", get(mcp_catalog))
         .route("/api/one/devops/mcp-registry/management", get(list_mcp_management))
@@ -3137,6 +3141,29 @@ async fn active_mcp(
     let tenant = state.tenant_of(&user.id).await;
     Ok(Json(ApiResponse::ok(
         state.service.selected_mcp_registry(&tenant, &user.id).await?,
+    )))
+}
+async fn activate_scene_mcp(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    headers: HeaderMap,
+    Json(body): Json<dream_core_api_types::ActivateSceneMcpRequest>,
+) -> Result<Json<ApiResponse<crate::mcp_selection::McpSelectionDto>>, DevopsError> {
+    reject_if_machine_blocked(&state, &headers, &user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    let bound = if let Some(employee) = &state.employee {
+        employee
+            .visible_bound_mcp_ids(&user.id, &tenant)
+            .await
+            .map_err(|e| DevopsError::Internal(e.to_string()))?
+    } else {
+        Vec::new()
+    };
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .activate_scene_mcp(&tenant, &user.id, &body.scene_id, &bound)
+            .await?,
     )))
 }
 #[derive(Deserialize)]

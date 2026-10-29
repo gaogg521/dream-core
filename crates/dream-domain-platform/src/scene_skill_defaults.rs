@@ -284,6 +284,35 @@ pub fn recommend(scene_name: &str, candidates: &[SkillCandidate]) -> Vec<String>
     picked.into_iter().map(|c| c.id.clone()).collect()
 }
 
+/// Keywords derive from the scene identity and its standing prompt, not all tools.
+pub(crate) fn mcp_terms(name: &str, prompt: &str) -> Vec<String> {
+    let text = format!("{name} {prompt}").to_lowercase();
+    let mut terms = std::collections::BTreeSet::new();
+    for profile in &PROFILES {
+        for keyword in profile.keywords {
+            if name.contains(profile.scene) || text.contains(keyword) {
+                terms.insert((*keyword).to_owned());
+            }
+        }
+    }
+    for word in text.split(|c: char| !c.is_ascii_alphanumeric()) {
+        if word.len() >= 3
+            && ![
+                "the", "and", "you", "for", "with", "this", "that", "are", "your", "use", "will", "from",
+            ]
+            .contains(&word)
+        {
+            terms.insert(word.into());
+        }
+    }
+    for word in ["数据库", "搜索", "浏览器", "文件", "财务", "客户", "邮件"] {
+        if text.contains(word) {
+            terms.insert(word.into());
+        }
+    }
+    terms.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -45,8 +45,70 @@ impl DevopsService {
         ids: &[String],
         bound: &[String],
     ) -> Result<McpSelectionDto, DevopsError> {
+        self.save_mcp_selection(tenant, user, ids, bound, false).await
+    }
+
+    pub async fn activate_scene_mcp(
+        &self,
+        tenant: &str,
+        user: &str,
+        scene: &str,
+        bound: &[String],
+    ) -> Result<McpSelectionDto, DevopsError> {
+        let source = self
+            .grants
+            .get()
+            .ok_or_else(|| DevopsError::Forbidden("Scene membership is required".into()))?;
+        let ids = source
+            .scene_mcp_ids(user, scene)
+            .await
+            .ok_or_else(|| DevopsError::Forbidden("Scene is unavailable or not granted".into()))?;
+        let result = self.save_mcp_selection(tenant, user, &ids, bound, true).await?;
+        tracing::info!(
+            scene_id = scene,
+            user_id = user,
+            selected_count = result.selected_ids.len(),
+            "Activated authorized scene MCP dependencies"
+        );
+        Ok(result)
+    }
+
+    async fn save_mcp_selection(
+        &self,
+        tenant: &str,
+        user: &str,
+        ids: &[String],
+        bound: &[String],
+        scene_activation: bool,
+    ) -> Result<McpSelectionDto, DevopsError> {
         let _selection_guard = self.mcp_selection_mutation.lock().await;
+        let allowed = self.allowed_mcp_catalog(user).await?;
+        let prior_scene: Option<Option<String>> = self
+            .db
+            .fetch_optional_scalar(
+                "SELECT scene_ids_json FROM one_mcp_user_selection WHERE tenant_id=? AND user_id=?",
+                &db_params![tenant, user],
+            )
+            .await?;
+        let prior_scene: Vec<String> = prior_scene
+            .flatten()
+            .map(|json| serde_json::from_str(&json))
+            .transpose()
+            .map_err(|e| DevopsError::Internal(e.to_string()))?
+            .unwrap_or_default();
         let mut ids = ids.to_vec();
+        let mut scene_ids = Vec::new();
+        if scene_activation {
+            let manual: Vec<_> = self
+                .mcp_selection(tenant, user)
+                .await?
+                .selected_ids
+                .into_iter()
+                .filter(|id| !prior_scene.contains(id) && allowed.iter().any(|row| &row.id == id))
+                .collect();
+            scene_ids = ids.iter().filter(|id| !manual.contains(id)).cloned().collect();
+            ids.extend(manual);
+        }
         ids.sort();
         ids.dedup();
         if ids.len() > MAX_USER_MCP_SERVERS {
@@ -54,7 +116,6 @@ impl DevopsService {
                 "MCP_LIMIT_EXCEEDED: enterprise distribution maximum 50".into(),
             ));
         }
-        let allowed = self.allowed_mcp_catalog(user).await?;
         let total: std::collections::HashSet<_> = ids
             .iter()
             .chain(bound.iter().filter(|id| allowed.iter().any(|row| &row.id == *id)))
@@ -82,16 +143,17 @@ impl DevopsService {
             .map_err(|error| DevopsError::Internal(error.to_string()))?
             .unwrap_or_default();
         let additions = ids.iter().filter(|id| !previous.contains(id)).count();
-        if additions > dream_core_common::mcp_policy::MAX_ENTERPRISE_MCP_ADDITIONS {
+        if !scene_activation && additions > dream_core_common::mcp_policy::MAX_ENTERPRISE_MCP_ADDITIONS {
             return Err(DevopsError::BadRequest(
                 "MCP_BATCH_LIMIT_EXCEEDED: add at most 10 enterprise connectors per save".into(),
             ));
         }
         let json = serde_json::to_string(&ids).map_err(|e| DevopsError::Internal(e.to_string()))?;
+        let scene_json = serde_json::to_string(&scene_ids).map_err(|e| DevopsError::Internal(e.to_string()))?;
         self.upsert(
-            "INSERT INTO one_mcp_user_selection (tenant_id,user_id,server_ids_json,updated_at) VALUES (?,?,?,?) ON CONFLICT(tenant_id,user_id) DO UPDATE SET server_ids_json=excluded.server_ids_json,updated_at=excluded.updated_at",
-            "INSERT INTO one_mcp_user_selection (tenant_id,user_id,server_ids_json,updated_at) VALUES (?,?,?,?) AS new ON DUPLICATE KEY UPDATE server_ids_json=new.server_ids_json,updated_at=new.updated_at",
-            &db_params![tenant,user,&json,now_ms()],
+            "INSERT INTO one_mcp_user_selection (tenant_id,user_id,server_ids_json,updated_at,scene_ids_json) VALUES (?,?,?,?,?) ON CONFLICT(tenant_id,user_id) DO UPDATE SET server_ids_json=excluded.server_ids_json,updated_at=excluded.updated_at,scene_ids_json=excluded.scene_ids_json",
+            "INSERT INTO one_mcp_user_selection (tenant_id,user_id,server_ids_json,updated_at,scene_ids_json) VALUES (?,?,?,?,?) AS new ON DUPLICATE KEY UPDATE server_ids_json=new.server_ids_json,updated_at=new.updated_at,scene_ids_json=new.scene_ids_json",
+            &db_params![tenant,user,&json,now_ms(),&scene_json],
         ).await?;
         Ok(McpSelectionDto {
             selected_ids: ids,
@@ -189,6 +251,125 @@ impl DevopsService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct SceneGrants {
+        ids: Vec<String>,
+    }
+    #[async_trait::async_trait]
+    impl crate::grants::ResourceGrantSource for SceneGrants {
+        async fn extra_grants(&self, _: &str, _: &str) -> crate::grants::ExtraGrants {
+            crate::grants::ExtraGrants {
+                ids: self.ids.clone(),
+                restrictive: true,
+                all: false,
+            }
+        }
+        async fn scene_mcp_ids(&self, user: &str, scene: &str) -> Option<Vec<String>> {
+            if user != "alice" {
+                return None;
+            }
+            match scene {
+                "first" => Some(self.ids[1..12].to_vec()),
+                "next" => Some(self.ids[12..22].to_vec()),
+                "overflow" => Some(self.ids[1..51].to_vec()),
+                _ => None,
+            }
+        }
+    }
+    #[tokio::test]
+    async fn scene_activation_is_authorized_atomic_replaces_only_auto_items_and_preserves_manual() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::run_one_devops_migrations(&dream_core_db::DbPool::Sqlite(pool.clone()))
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE one_user_org (user_id TEXT, tenant_id TEXT, role TEXT, department_id TEXT, created_at INTEGER)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE one_active_tenant (user_id TEXT, tenant_id TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO one_user_org VALUES ('alice','default','member',NULL,0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let service = DevopsService::new(dream_core_db::DbPool::Sqlite(pool));
+        let mut ids = Vec::new();
+        for i in 0..51 {
+            let row = service
+                .upsert_mcp_registry(
+                    None,
+                    &format!("scene-test-{i}"),
+                    "stdio",
+                    "node server.js",
+                    true,
+                    false,
+                    None,
+                    "org",
+                    None,
+                    "all",
+                    None,
+                    "alice",
+                )
+                .await
+                .unwrap();
+            service
+                .set_mcp_published(std::slice::from_ref(&row.id), true)
+                .await
+                .unwrap();
+            ids.push(row.id);
+        }
+        service.set_grants(std::sync::Arc::new(SceneGrants { ids: ids.clone() }));
+        service
+            .replace_mcp_selection("default", "alice", &ids[..1])
+            .await
+            .unwrap();
+        // Eleven admin-selected dependencies do not hit the manual 10-checkbox rule.
+        let first = service
+            .activate_scene_mcp("default", "alice", "first", &[])
+            .await
+            .unwrap();
+        assert_eq!(first.selected_ids.len(), 12);
+        assert!(first.selected_ids.contains(&ids[0]));
+        let next = service
+            .activate_scene_mcp("default", "alice", "next", &[])
+            .await
+            .unwrap();
+        assert_eq!(next.selected_ids.len(), 11);
+        assert!(next.selected_ids.contains(&ids[0]));
+        assert!(!next.selected_ids.contains(&ids[1]));
+        assert!(
+            service
+                .activate_scene_mcp("default", "alice", "overflow", &[])
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            service.mcp_selection("default", "alice").await.unwrap().selected_ids,
+            next.selected_ids
+        );
+        assert!(
+            service
+                .activate_scene_mcp("default", "alice", "unjoined", &[])
+                .await
+                .is_err()
+        );
+        assert!(
+            service
+                .activate_scene_mcp("default", "bob", "first", &[])
+                .await
+                .is_err()
+        );
+        // Manual edits keep their normal limit even after automatic activation.
+        assert!(
+            service
+                .replace_mcp_selection("default", "alice", &ids[..25])
+                .await
+                .is_err()
+        );
+    }
+
     #[tokio::test]
     async fn selection_adds_ten_per_save_up_to_fifty_without_partial_writes() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()

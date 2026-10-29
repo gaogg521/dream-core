@@ -3,6 +3,12 @@ use std::collections::HashMap;
 use dream_core_common::{McpServerStatus, McpSource, TimestampMs};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActivateSceneMcpRequest {
+    pub scene_id: String,
+}
+
 // ---------------------------------------------------------------------------
 // A. Transport types
 // ---------------------------------------------------------------------------

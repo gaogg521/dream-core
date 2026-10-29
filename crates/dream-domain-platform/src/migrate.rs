@@ -81,6 +81,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "027_scene_skill_defaults",
         include_str!("../migrations/027_scene_skill_defaults.sql"),
     ),
+    (
+        "028_scene_mcp_defaults",
+        include_str!("../migrations/028_scene_mcp_defaults.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -174,6 +178,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "027_scene_skill_defaults",
         include_str!("../migrations_mysql/027_scene_skill_defaults.sql"),
+    ),
+    (
+        "028_scene_mcp_defaults",
+        include_str!("../migrations_mysql/028_scene_mcp_defaults.sql"),
     ),
 ];
 

@@ -1295,7 +1295,7 @@ impl PlatformService {
     /// an admin sees in the grant matrix: rows attributed to `builtin-scene`
     /// came with the scene, everything else was added by a human. Regular
     /// grants carry the acting admin's user id, so the value cannot collide.
-    const BUILTIN_SCENE_GRANTOR: &str = "builtin-scene";
+    pub(crate) const BUILTIN_SCENE_GRANTOR: &str = "builtin-scene";
 
     /// Idempotent: `(tenant_id, name)` is UNIQUE, so calling this on a tenant
     /// that already has its built-ins is a no-op. Called from `list_scenes`
@@ -1426,6 +1426,9 @@ impl PlatformService {
 
     /// Listing must never fail because a default could not be applied.
     async fn apply_scene_skill_defaults_best_effort(&self, tenant_id: &str) {
+        if let Err(error) = self.apply_scene_mcp_defaults(tenant_id).await {
+            tracing::warn!(%error,tenant_id,"scene MCP defaults: could not apply");
+        }
         if let Err(error) = self.apply_scene_skill_defaults(tenant_id).await {
             tracing::warn!(%error, tenant_id, "scene skill defaults: could not apply");
         }
@@ -2157,6 +2160,13 @@ impl PlatformService {
             &db_params![scene_id],
         )
         .await?;
+        for table in ["one_scene_skill_defaults", "one_scene_mcp_defaults"] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE tenant_id = ? AND scene_id = ?"),
+                &db_params![tenant_id, scene_id],
+            )
+            .await?;
+        }
         tx.execute(
             "DELETE FROM one_resource_grants WHERE tenant_id = ? AND subject_type = 'scene' AND subject_id = ?",
             &db_params![tenant_id, scene_id],

@@ -15,6 +15,7 @@ pub mod models;
 pub mod object_storage;
 pub mod rbac;
 pub mod routes;
+mod scene_mcp_defaults;
 mod scene_skill_defaults;
 pub mod secure_export;
 mod secure_export_routes;

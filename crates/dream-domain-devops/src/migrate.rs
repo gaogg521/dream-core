@@ -77,6 +77,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "024_mcp_user_selection",
         include_str!("../migrations/024_mcp_user_selection.sql"),
     ),
+    (
+        "025_mcp_scene_selection",
+        include_str!("../migrations/025_mcp_scene_selection.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -154,6 +158,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "024_mcp_user_selection",
         include_str!("../migrations_mysql/024_mcp_user_selection.sql"),
+    ),
+    (
+        "025_mcp_scene_selection",
+        include_str!("../migrations_mysql/025_mcp_scene_selection.sql"),
     ),
 ];
 

@@ -77,6 +77,10 @@ impl ExtraGrants {
 /// edition; absent everywhere else.
 #[async_trait]
 pub trait ResourceGrantSource: Send + Sync {
+    /// Explicit connectors of a scene this member may enter. None denies access.
+    async fn scene_mcp_ids(&self, _viewer_user_id: &str, _scene_id: &str) -> Option<Vec<String>> {
+        None
+    }
     /// The interface cannot return errors. On an enterprise policy read
     /// failure, implementations log and return restrictive empty grants;
     /// falling back to additive scope would bypass a configured whitelist.

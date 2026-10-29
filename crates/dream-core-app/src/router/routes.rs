@@ -2759,6 +2759,16 @@ impl dream_domain_devops::config_resolver::ConfigResolver for PlatformConfigReso
 #[async_trait::async_trait]
 #[cfg(feature = "enterprise")]
 impl dream_domain_devops::grants::ResourceGrantSource for MatrixGrantSource {
+    async fn scene_mcp_ids(&self, user: &str, scene: &str) -> Option<Vec<String>> {
+        let tenant = self.org.tenant_of(user).await.ok()?;
+        self.platform
+            .list_my_scenes(&tenant, user)
+            .await
+            .ok()?
+            .into_iter()
+            .find(|row| row.id == scene)
+            .map(|row| row.mcp_ids)
+    }
     async fn extra_grants(
         &self,
         viewer_user_id: &str,
