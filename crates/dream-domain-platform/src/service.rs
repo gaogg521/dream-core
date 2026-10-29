@@ -1273,20 +1273,21 @@ impl PlatformService {
     /// — are the admin's business now.)
     ///
     /// Why a `'*'` wildcard per type instead of an itemized list of resource
-    /// ids: every skill / MCP server / model channel / knowledge document in
-    /// this product is tenant-created at runtime — there is no shipped catalog
-    /// to enumerate, so a "preset package" of concrete ids would have to
-    /// invent rows for resources that do not exist. The wildcard is the honest
-    /// equivalent of the reference product's per-scene preset bundles: members
-    /// of 办公 reach every model channel and skill the tenant has created, and
-    /// every one they create later, with no admin upkeep — which is precisely
-    /// the practical effect those bundles deliver.
+    /// ids: model channels and knowledge documents are tenant-created at
+    /// runtime, so there is nothing to enumerate for them.
+    ///
+    /// **Skills are deliberately NOT in this list.** A skill wildcard names no
+    /// skill a scene conversation can select (the client only turns explicit
+    /// skill ids into the conversation's skills) and "everything" is not what a
+    /// scene is for. A scene's default skills are the few that best fit it,
+    /// chosen by [`crate::scene_skill_defaults`] and applied by
+    /// `apply_scene_skill_defaults`.
     const BUILTIN_SCENE_GRANTS: [(&'static str, &'static [&'static str]); 5] = [
-        ("办公", &["skill", "model_channel"]),
-        ("IT运维", &["skill", "model_channel"]),
+        ("办公", &["model_channel"]),
+        ("IT运维", &["model_channel"]),
         ("网络安全", &["knowledge"]),
-        ("新媒体运营", &["skill"]),
-        ("市场营销", &["skill", "model_channel"]),
+        ("新媒体运营", &[]),
+        ("市场营销", &["model_channel"]),
     ];
 
     /// `granted_by` stamped on every seeded package row. Doubles as the
@@ -1315,7 +1316,119 @@ impl PlatformService {
             &db_params![generate_prefixed_id("scene"), tenant_id, name, description, &job_functions_json, now, now])
             .await?;
         }
-        self.seed_builtin_scene_grants(tenant_id).await
+        self.seed_builtin_scene_grants(tenant_id).await?;
+        self.apply_scene_skill_defaults_best_effort(tenant_id).await;
+        Ok(())
+    }
+
+    /// Candidates for a scene's default skills: published, enabled and visible to
+    /// every member. A failed read (the skill registry belongs to another crate's
+    /// migrations) is "nothing to recommend yet", never an error for the caller.
+    async fn scene_skill_candidates(&self) -> Vec<crate::scene_skill_defaults::SkillCandidate> {
+        let rows = self
+            .db
+            .fetch_all_as::<(String, String, String, String, String)>(
+                "SELECT s.id, s.name, COALESCE(s.description, ''), COALESCE(k.name, ''), COALESCE(s.origin, '') \
+                 FROM one_skill_registry s LEFT JOIN one_content_categories k ON k.id = s.category_id \
+                 WHERE s.published = 1 AND s.enabled = 1 AND s.scope = 'org' AND s.visibility IN ('all', 'shared')",
+                &[],
+            )
+            .await;
+        match rows {
+            Ok(rows) => rows
+                .into_iter()
+                .map(
+                    |(id, name, description, category, origin)| crate::scene_skill_defaults::SkillCandidate {
+                        id,
+                        name,
+                        description,
+                        category,
+                        origin,
+                    },
+                )
+                .collect(),
+            Err(error) => {
+                tracing::warn!(%error, "scene skill defaults: could not read the skill registry");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Give every built-in scene its default skill package, once.
+    ///
+    /// Replaces the old `'*'` skill grant the seeder wrote (rows whose `granted_by`
+    /// is [`Self::BUILTIN_SCENE_GRANTOR`]) with the recommended skills, at most
+    /// [`crate::scene_skill_defaults::MAX_DEFAULT_SCENE_SKILLS`]. A scene whose skill grants
+    /// include anything an administrator added keeps exactly what they added (only
+    /// the seeded rows are removed, nothing is recommended on top). `one_scene_skill_defaults` records "applied" per scene, so
+    /// an admin who later empties or changes the package is never overridden.
+    /// While the tenant has no skills to choose from nothing is marked, so the
+    /// package is filled in as soon as the first skills are synced.
+    async fn apply_scene_skill_defaults(&self, tenant_id: &str) -> Result<(), PlatformError> {
+        let pending: Vec<(String, String)> = self
+            .db
+            .fetch_all_as::<(String, String)>(
+                "SELECT s.id, s.name FROM one_scenes s WHERE s.tenant_id = ? AND s.built_in = 1 \
+                 AND NOT EXISTS (SELECT 1 FROM one_scene_skill_defaults d \
+                                 WHERE d.tenant_id = s.tenant_id AND d.scene_id = s.id)",
+                &db_params![tenant_id],
+            )
+            .await?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let candidates = self.scene_skill_candidates().await;
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        let now = now_ms();
+        for (scene_id, name) in pending {
+            let customised: i64 = self
+                .db
+                .fetch_one_scalar(
+                    "SELECT COUNT(*) FROM one_resource_grants WHERE tenant_id = ? AND subject_type = 'scene' \
+                     AND subject_id = ? AND resource_type = 'skill' AND granted_by <> ?",
+                    &db_params![tenant_id, &scene_id, Self::BUILTIN_SCENE_GRANTOR],
+                )
+                .await?;
+            // The seeded rows (the old `'*'`) always go; what an administrator added stays.
+            self.db
+                .execute(
+                    "DELETE FROM one_resource_grants WHERE tenant_id = ? AND subject_type = 'scene' \
+                     AND subject_id = ? AND resource_type = 'skill' AND granted_by = ?",
+                    &db_params![tenant_id, &scene_id, Self::BUILTIN_SCENE_GRANTOR],
+                )
+                .await?;
+            if customised == 0 {
+                for skill_id in crate::scene_skill_defaults::recommend(&name, &candidates) {
+                    self.grant_resource(
+                        tenant_id,
+                        "scene",
+                        &scene_id,
+                        "skill",
+                        &skill_id,
+                        "use",
+                        Self::BUILTIN_SCENE_GRANTOR,
+                    )
+                    .await?;
+                }
+            }
+            self.upsert(
+                "INSERT INTO one_scene_skill_defaults (tenant_id, scene_id, applied_at) VALUES (?, ?, ?) \
+                 ON CONFLICT(tenant_id, scene_id) DO NOTHING",
+                "INSERT IGNORE INTO one_scene_skill_defaults (tenant_id, scene_id, applied_at) VALUES (?, ?, ?)",
+                &db_params![tenant_id, &scene_id, now],
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Listing must never fail because a default could not be applied.
+    async fn apply_scene_skill_defaults_best_effort(&self, tenant_id: &str) {
+        if let Err(error) = self.apply_scene_skill_defaults(tenant_id).await {
+            tracing::warn!(%error, tenant_id, "scene skill defaults: could not apply");
+        }
     }
 
     /// Seed each built-in scene's wildcard package (`BUILTIN_SCENE_GRANTS`)
@@ -2134,6 +2247,9 @@ impl PlatformService {
     /// `RequirePlatformAdmin`; membership is the access control here — a
     /// member never sees a scene they are not on the roster of.
     pub async fn list_my_scenes(&self, tenant_id: &str, user_id: &str) -> Result<Vec<MySceneDto>, PlatformError> {
+        // Tenants seeded before skills stopped being a wildcard get repaired here too,
+        // without waiting for an administrator to open the scene page.
+        self.apply_scene_skill_defaults_best_effort(tenant_id).await;
         let rows: Vec<MySceneRow> = self
             .db
             .fetch_all_as::<MySceneRow>(
@@ -6914,13 +7030,14 @@ mod tests {
     async fn builtin_package_seeding_is_idempotent_across_relists() {
         let (_db, service) = setup().await;
         service.list_scenes("t1").await.unwrap();
-        // MCP requires explicit grants; the remaining built-in packages contain eight entries.
+        // MCP requires explicit grants and skills are chosen per scene (not a wildcard),
+        // so the wildcard packages left are the model-channel and knowledge ones.
         let before = service
             .list_grants("t1", Some("scene"), None, None)
             .await
             .unwrap()
             .len();
-        assert_eq!(before, 8);
+        assert_eq!(before, 4);
 
         service.list_scenes("t1").await.unwrap();
         service.list_scenes("t1").await.unwrap();
@@ -6962,7 +7079,7 @@ mod tests {
                 .await
                 .unwrap()
                 .len(),
-            2,
+            1,
             "other scenes' packages are untouched"
         );
     }
@@ -6995,7 +7112,7 @@ mod tests {
                 .await
                 .unwrap()
                 .len(),
-            2,
+            1,
             "the old tenant's built-in scene is backfilled with its package"
         );
 
@@ -7021,16 +7138,209 @@ mod tests {
         let office = scenes.iter().find(|s| s.name == "办公").unwrap().id.clone();
         service.add_scene_member("t1", &office, "alice").await.unwrap();
 
-        for rt in ["skill", "model_channel"] {
-            let eff = service.effective_resource_ids("t1", "alice", rt).await.unwrap();
-            assert!(eff.all, "an 办公 member must reach every {rt} via the wildcard package");
-            assert!(eff.resource_ids.is_empty(), "all=true makes the id list irrelevant");
-        }
-        for rt in ["mcp", "knowledge"] {
+        let eff = service
+            .effective_resource_ids("t1", "alice", "model_channel")
+            .await
+            .unwrap();
+        assert!(
+            eff.all,
+            "an 办公 member must reach every model channel via the wildcard package"
+        );
+        assert!(eff.resource_ids.is_empty(), "all=true makes the id list irrelevant");
+        for rt in ["skill", "mcp", "knowledge"] {
             let eff = service.effective_resource_ids("t1", "alice", rt).await.unwrap();
             assert!(!eff.all, "alice is not in a scene carrying the {rt} package");
             assert!(eff.resource_ids.is_empty());
         }
+    }
+
+    // --- default skills of the built-in scenes ---
+
+    /// The skill registry belongs to the devops crate; the tests create just the
+    /// columns the recommender reads.
+    async fn seed_scene_skill_catalogue(pool: &sqlx::SqlitePool, skills: &[(&str, &str, &str, &str)]) {
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS one_skill_registry (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT, \
+                 enabled INTEGER NOT NULL DEFAULT 1, scope TEXT NOT NULL DEFAULT 'org', visibility TEXT NOT NULL DEFAULT 'all', \
+                 origin TEXT NOT NULL DEFAULT 'market', category_id TEXT, published INTEGER NOT NULL DEFAULT 1);
+             CREATE TABLE IF NOT EXISTS one_content_categories (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+             INSERT OR IGNORE INTO one_content_categories (id, name) VALUES ('cat_k8s', 'Kubernetes');",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        for (id, name, origin, category) in skills {
+            sqlx::query(
+                "INSERT INTO one_skill_registry (id, name, description, origin, category_id) VALUES (?, ?, '', ?, ?)",
+            )
+            .bind(id)
+            .bind(name)
+            .bind(origin)
+            .bind(if category.is_empty() { None } else { Some(*category) })
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+    }
+
+    async fn scene_skill_grants(service: &PlatformService, scene_id: &str) -> Vec<(String, String)> {
+        let mut rows: Vec<(String, String)> = service
+            .list_grants("t1", Some("scene"), Some(scene_id), Some("skill"))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|g| (g.resource_id, g.granted_by))
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    /// A scene's default skills are the few that fit it, never "all" and never
+    /// more than ten, however large the tenant's catalogue is.
+    #[tokio::test]
+    async fn builtin_scene_default_skills_are_the_recommended_few_not_a_wildcard() {
+        let (db, service) = setup().await;
+        let mut skills: Vec<(String, String, &str, &str)> = (0..300)
+            .map(|i| (format!("m{i}"), format!("k8s-ops-{i:03}"), "market", "cat_k8s"))
+            .collect();
+        skills.push(("c_k8s".into(), "onework-k8s-ops-guide".into(), "catalog", ""));
+        skills.push(("c_mn".into(), "onework-meeting-notes-guide".into(), "catalog", ""));
+        let refs: Vec<(&str, &str, &str, &str)> = skills
+            .iter()
+            .map(|(a, b, c, d)| (a.as_str(), b.as_str(), *c, *d))
+            .collect();
+        seed_scene_skill_catalogue(db.pool(), &refs).await;
+
+        let scenes = service.list_scenes("t1").await.unwrap();
+        let itops = scenes.iter().find(|s| s.name == "IT运维").unwrap();
+        let office = scenes.iter().find(|s| s.name == "办公").unwrap();
+
+        let it = scene_skill_grants(&service, &itops.id).await;
+        assert!(!it.is_empty() && it.len() <= 10, "got {} skills for IT运维", it.len());
+        assert!(
+            it.iter()
+                .all(|(id, by)| id != GRANT_ALL_RESOURCES && by == "builtin-scene")
+        );
+        assert!(!it[0].0.is_empty());
+        assert!(
+            it.iter().any(|(id, _)| id == "c_k8s"),
+            "the official K8s guide leads IT运维"
+        );
+        assert!(
+            !it.iter().any(|(id, _)| id == "c_mn"),
+            "an office skill must not land in IT运维"
+        );
+
+        let of = scene_skill_grants(&service, &office.id).await;
+        assert_eq!(of, vec![("c_mn".to_string(), "builtin-scene".to_string())]);
+    }
+
+    /// Tenants seeded before this change carry the old `'*'` skill row; it is replaced
+    /// by the recommended few, but only the row the seeder itself wrote.
+    #[tokio::test]
+    async fn legacy_wildcard_skill_package_is_replaced_by_the_recommended_skills() {
+        let (db, service) = setup().await;
+        let scenes = service.list_scenes("t1").await.unwrap();
+        let itops = scenes.iter().find(|s| s.name == "IT运维").unwrap().id.clone();
+        service
+            .grant_resource(
+                "t1",
+                "scene",
+                &itops,
+                "skill",
+                GRANT_ALL_RESOURCES,
+                "use",
+                "builtin-scene",
+            )
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM one_scene_skill_defaults")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        seed_scene_skill_catalogue(db.pool(), &[("c_k8s", "onework-k8s-ops-guide", "catalog", "")]).await;
+
+        service.list_scenes("t1").await.unwrap();
+        assert_eq!(
+            scene_skill_grants(&service, &itops).await,
+            vec![("c_k8s".to_string(), "builtin-scene".to_string())]
+        );
+    }
+
+    /// A scene an administrator already shaped is theirs: their grants stay, nothing is
+    /// added, and the seeded `'*'` that used to sit next to them is gone.
+    #[tokio::test]
+    async fn administrator_chosen_scene_skills_are_never_overridden() {
+        let (db, service) = setup().await;
+        let scenes = service.list_scenes("t1").await.unwrap();
+        let office = scenes.iter().find(|s| s.name == "办公").unwrap().id.clone();
+        service
+            .grant_resource(
+                "t1",
+                "scene",
+                &office,
+                "skill",
+                GRANT_ALL_RESOURCES,
+                "use",
+                "builtin-scene",
+            )
+            .await
+            .unwrap();
+        service
+            .grant_resource("t1", "scene", &office, "skill", "sk_mine", "use", "admin1")
+            .await
+            .unwrap();
+        seed_scene_skill_catalogue(db.pool(), &[("c_mn", "onework-meeting-notes-guide", "catalog", "")]).await;
+
+        service.list_scenes("t1").await.unwrap();
+        assert_eq!(
+            scene_skill_grants(&service, &office).await,
+            vec![("sk_mine".to_string(), "admin1".to_string())]
+        );
+    }
+
+    /// Emptying the package is the administrator saying no; the next list must not refill it.
+    #[tokio::test]
+    async fn emptying_the_default_skills_is_sticky() {
+        let (db, service) = setup().await;
+        seed_scene_skill_catalogue(db.pool(), &[("c_k8s", "onework-k8s-ops-guide", "catalog", "")]).await;
+        let scenes = service.list_scenes("t1").await.unwrap();
+        let itops = scenes.iter().find(|s| s.name == "IT运维").unwrap().id.clone();
+        let grants = service
+            .list_grants("t1", Some("scene"), Some(&itops), Some("skill"))
+            .await
+            .unwrap();
+        assert_eq!(grants.len(), 1);
+        for g in grants {
+            service.revoke_resource("t1", &g.id).await.unwrap();
+        }
+        service.list_scenes("t1").await.unwrap();
+        assert!(scene_skill_grants(&service, &itops).await.is_empty());
+    }
+
+    /// Skills synced after the first list still become the default, and the member side
+    /// gets explicit ids (what a scene conversation can actually select).
+    #[tokio::test]
+    async fn defaults_arrive_once_skills_exist_and_reach_members_as_explicit_ids() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "alice", "t1", "member").await;
+        let scenes = service.list_scenes("t1").await.unwrap();
+        let itops = scenes.iter().find(|s| s.name == "IT运维").unwrap().id.clone();
+        service.add_scene_member("t1", &itops, "alice").await.unwrap();
+        assert!(
+            scene_skill_grants(&service, &itops).await.is_empty(),
+            "nothing to recommend yet"
+        );
+
+        seed_scene_skill_catalogue(db.pool(), &[("c_k8s", "onework-k8s-ops-guide", "catalog", "")]).await;
+        let mine = service.list_my_scenes("t1", "alice").await.unwrap();
+        let it = mine.iter().find(|s| s.name == "IT运维").unwrap();
+        assert_eq!(it.skill_ids, vec!["c_k8s".to_string()]);
+        assert!(
+            it.resources
+                .iter()
+                .any(|r| r.resource_type == "skill" && !r.includes_all && r.count == 1)
+        );
     }
 
     // --- matrix mode (additive vs whitelist) ---

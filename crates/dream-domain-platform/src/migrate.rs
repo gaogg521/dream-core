@@ -77,6 +77,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/025_mcp_explicit_grants.sql"),
     ),
     ("026_laboratory", include_str!("../migrations/026_laboratory.sql")),
+    (
+        "027_scene_skill_defaults",
+        include_str!("../migrations/027_scene_skill_defaults.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -167,6 +171,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
         include_str!("../migrations_mysql/025_mcp_explicit_grants.sql"),
     ),
     ("026_laboratory", include_str!("../migrations_mysql/026_laboratory.sql")),
+    (
+        "027_scene_skill_defaults",
+        include_str!("../migrations_mysql/027_scene_skill_defaults.sql"),
+    ),
 ];
 
 /// Run all pending one-platform migrations on the pool's backend. Idempotent;
