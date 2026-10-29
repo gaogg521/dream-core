@@ -2826,6 +2826,23 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn default_work_life_skills_ship_in_the_embedded_corpus() {
+        for name in ["one-work-assistant", "one-life-assistant"] {
+            let file = builtin_skills_corpus()
+                .get_file(format!("{name}/SKILL.md"))
+                .expect("default scene skill must ship");
+            let text = file.contents_utf8().expect("skill must be UTF-8");
+            assert!(text.contains(&format!("name: {name}")));
+            assert!(text.contains("one-browser"));
+            assert!(text.contains("long-term memory"));
+            if name == "one-work-assistant" {
+                assert!(text.contains("do not infer attendance"));
+                assert!(text.contains("page_count=1"));
+            }
+        }
+    }
+
+    #[test]
     fn embedded_corpus_contains_every_platform_local_ocr_skill() {
         let corpus = builtin_skills_corpus();
         for path in [

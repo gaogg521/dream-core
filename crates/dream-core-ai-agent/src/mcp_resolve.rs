@@ -103,12 +103,30 @@ pub async fn resolve_session_mcp_servers(
     servers
 }
 
-/// Inject a user's current native-HTTP credential only into the runtime copy.
+/// Refresh app-owned tool transports and inject current native-HTTP credentials into the runtime copy.
 pub(crate) async fn authorize_session_server(
     repo: &dyn IMcpServerRepository,
     user: &str,
     server: &mut SessionMcpServer,
 ) -> Result<(), String> {
+    // These local app services carry per-instance ports in their transport.
+    // Persisted snapshots must not reconnect to another instance after restart.
+    if matches!(
+        server.name.as_str(),
+        "one-browser" | "one-page-reader" | "one-export-pdf" | "one-html-render"
+    ) {
+        let row = repo.find_by_name(user, &server.name).await.map_err(|e| e.to_string())?;
+        let Some(row) = row.filter(|row| row.builtin && row.enabled && row.deleted_at.is_none()) else {
+            warn!(server_name = %server.name, "Builtin MCP is unavailable; refusing stored transport");
+            return Err("Builtin MCP is unavailable".into());
+        };
+        let current = row_to_session_mcp_server(&row).await?;
+        if serde_json::to_value(&server.transport).ok() != serde_json::to_value(&current.transport).ok() {
+            info!(server_name = %server.name, "Refreshed builtin MCP transport from current app registration");
+        }
+        *server = current;
+        return Ok(());
+    }
     let (url, headers) = match &mut server.transport {
         SessionMcpTransport::StreamableHttp { url, headers } | SessionMcpTransport::Sse { url, headers } => {
             (url, headers)
@@ -353,6 +371,52 @@ mod tests {
 
     fn test_broadcaster() -> Arc<dyn EventBroadcaster> {
         Arc::new(dream_core_realtime::BroadcastEventBus::new(16))
+    }
+
+    #[tokio::test]
+    async fn builtin_snapshot_uses_current_transport_and_cannot_revive_disabled_or_deleted_tools() {
+        let mut row = make_row("one-export-pdf", true);
+        row.builtin = true;
+        let original = SessionMcpServer {
+            id: row.id.clone(),
+            name: row.name.clone(),
+            transport: SessionMcpTransport::StreamableHttp {
+                url: "http://127.0.0.1:19820/old".into(),
+                headers: Default::default(),
+            },
+        };
+        let mut current = original.clone();
+        authorize_session_server(
+            &MockRepo {
+                rows: vec![row.clone()],
+                fail: false,
+            },
+            TEST_USER_ID,
+            &mut current,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(current.transport, SessionMcpTransport::StreamableHttp { ref url, .. } if url == "http://127.0.0.1:9999/mcp")
+        );
+        for variant in 0..4 {
+            let mut unavailable = row.clone();
+            match variant {
+                0 => unavailable.enabled = false,
+                1 => unavailable.deleted_at = Some(1),
+                2 => unavailable.builtin = false,
+                _ => {}
+            }
+            let repo = MockRepo {
+                rows: if variant == 3 { vec![] } else { vec![unavailable] },
+                fail: false,
+            };
+            assert!(
+                authorize_session_server(&repo, TEST_USER_ID, &mut original.clone())
+                    .await
+                    .is_err()
+            );
+        }
     }
 
     #[tokio::test]
