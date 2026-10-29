@@ -82,15 +82,43 @@ pub struct ContentBlock {
 }
 
 /// Holds the distributed rules and the findings they produce.
-#[derive(Default)]
+///
+/// `scan_enabled` is the company policy's `messageScanEnabled` master switch
+/// (pushed down with the rule sync). It defaults to `true`: a deployment that
+/// distributes rules without ever syncing the policy flag keeps today's
+/// behaviour, where rules alone govern enforcement.
 pub struct ContentInspectionService {
     rules: RwLock<Vec<DlpRule>>,
+    scan_enabled: RwLock<bool>,
     pending: Mutex<VecDeque<PendingFinding>>,
+}
+
+impl Default for ContentInspectionService {
+    fn default() -> Self {
+        Self {
+            rules: RwLock::new(Vec::new()),
+            scan_enabled: RwLock::new(true),
+            pending: Mutex::new(VecDeque::new()),
+        }
+    }
 }
 
 impl ContentInspectionService {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The policy-level master switch. `false` turns blocking off even while
+    /// rules are still distributed — an admin relaxing the tier must not keep
+    /// blocking on rules they can no longer see.
+    pub fn set_scan_enabled(&self, enabled: bool) {
+        if let Ok(mut guard) = self.scan_enabled.write() {
+            *guard = enabled;
+        }
+    }
+
+    pub fn scan_enabled(&self) -> bool {
+        self.scan_enabled.read().map(|g| *g).unwrap_or(true)
     }
 
     /// Replace the active rule set. Authoritative by design: a rule an admin
@@ -114,6 +142,9 @@ impl ContentInspectionService {
     /// configured to block. With no rules distributed this is a read lock and a
     /// length check — the cost on personal builds is nil.
     pub fn inspect(&self, conversation_id: Option<&str>, model: Option<&str>, text: &str) -> InspectionOutcome {
+        if !self.scan_enabled() {
+            return InspectionOutcome { blocked: None };
+        }
         let rules = match self.rules.read() {
             Ok(guard) if !guard.is_empty() => guard.clone(),
             // A poisoned lock must not silently disable the policy, but it also
@@ -191,6 +222,34 @@ mod tests {
             pattern: pattern.to_owned(),
             action,
         }
+    }
+
+    #[test]
+    fn scan_disabled_switch_blocks_nothing_even_with_block_rules() {
+        let svc = ContentInspectionService::new();
+        svc.set_rules(vec![rule("r1", "secret-token", DlpAction::Block)]);
+        assert!(
+            svc.inspect(Some("c1"), None, "has secret-token inside")
+                .blocked
+                .is_some()
+        );
+        svc.set_scan_enabled(false);
+        assert!(
+            svc.inspect(Some("c1"), None, "has secret-token inside")
+                .blocked
+                .is_none()
+        );
+        svc.set_scan_enabled(true);
+        assert!(
+            svc.inspect(Some("c1"), None, "has secret-token inside")
+                .blocked
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn scan_enabled_defaults_to_true() {
+        assert!(ContentInspectionService::new().scan_enabled());
     }
 
     #[test]

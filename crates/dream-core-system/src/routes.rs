@@ -462,9 +462,14 @@ async fn sync_model_channels(
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SetInspectionRulesBody {
     #[serde(default)]
     rules: Vec<dream_core_common::dlp::DlpRule>,
+    /// The company policy's `messageScanEnabled` master switch. Absent (older
+    /// renderers) leaves the current value untouched.
+    #[serde(default)]
+    scan_enabled: Option<bool>,
 }
 
 #[derive(serde::Serialize)]
@@ -556,6 +561,9 @@ async fn set_inspection_rules(
     body: Result<Json<SetInspectionRulesBody>, JsonRejection>,
 ) -> Result<Json<ApiResponse<SetInspectionRulesReport>>, ApiError> {
     let Json(body) = body.map_err(ApiError::from)?;
+    if let Some(enabled) = body.scan_enabled {
+        state.content_inspection.set_scan_enabled(enabled);
+    }
     let active_rules = state.content_inspection.set_rules(body.rules);
     Ok(Json(ApiResponse::ok(SetInspectionRulesReport { active_rules })))
 }
