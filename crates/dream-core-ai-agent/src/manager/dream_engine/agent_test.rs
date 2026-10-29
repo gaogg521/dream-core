@@ -774,6 +774,55 @@ async fn company_memory_is_prepended_to_an_engine_turn() {
     assert!(sent.ends_with("who leads project zephyr?"), "{sent}");
 }
 
+/// The recalled text is invisible to the member unless the turn says so.
+#[tokio::test]
+async fn the_conversation_is_told_which_company_memory_a_turn_drew_on() {
+    let agent = DreamEngineAgentManager::new(
+        "conv-mem".into(),
+        "/project".into(),
+        make_test_config(),
+        None,
+        None,
+        memory(&["Project Zephyr is led by Zhou Mingyuan.
+Reports go out on Fridays."]),
+    )
+    .await
+    .unwrap();
+    let mut rx = agent.subscribe();
+
+    agent.with_recalled_memory("who leads project zephyr?").await;
+
+    let AgentStreamEvent::Tips(tip) = rx.try_recv().expect("a tip should have been sent") else {
+        panic!("expected a tip");
+    };
+    assert_eq!(tip.code.as_deref(), Some("TEAM_MEMORY_RECALLED"));
+    let params = tip.params.expect("params");
+    assert_eq!(params["count"], 1);
+    let items = params["items"].as_str().expect("items");
+    assert!(items.contains("Zhou Mingyuan"), "{items}");
+    // Line breaks inside an item must not break the list into fake items.
+    assert_eq!(items.lines().count(), 1, "{items}");
+}
+
+#[tokio::test]
+async fn a_turn_with_nothing_recalled_says_nothing() {
+    let agent = DreamEngineAgentManager::new(
+        "conv-mem".into(),
+        "/project".into(),
+        make_test_config(),
+        None,
+        None,
+        memory(&[]),
+    )
+    .await
+    .unwrap();
+    let mut rx = agent.subscribe();
+
+    agent.with_recalled_memory("hello").await;
+
+    assert!(rx.try_recv().is_err());
+}
+
 #[tokio::test]
 async fn nothing_recalled_leaves_the_turn_untouched() {
     let agent = DreamEngineAgentManager::new(

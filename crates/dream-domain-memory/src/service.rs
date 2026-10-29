@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use dream_core_db::{DbPool, db_params};
 
+use dream_core_common::recall_terms::QueryTerms;
 use dream_core_common::{generate_prefixed_id, now_ms};
 use sha2::{Digest, Sha256};
 
@@ -944,24 +945,16 @@ impl MemoryService {
         text: &str,
         limit: i64,
     ) -> Result<Vec<MemoryItemDto>, MemoryError> {
-        // Words worth matching on: 2+ chars, deduped, capped so a long
-        // paste can't build a monster query. CJK has no spaces, so also
-        // keep the trimmed whole string as one term.
-        let mut terms: Vec<String> = text
-            .split_whitespace()
-            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
-            .filter(|w| w.chars().count() >= 2)
-            .collect();
-        let whole = text.trim().to_lowercase();
-        if whole.chars().count() >= 2 && !terms.contains(&whole) {
-            terms.push(whole);
-        }
-        terms.sort();
-        terms.dedup();
-        terms.truncate(16);
-        if terms.is_empty() {
+        // The same breakdown the client's synced copy uses, so a question finds
+        // the same items on either side. CJK has no spaces, so a sentence is
+        // matched by its adjacent character pairs rather than as one word. The
+        // cap keeps a long paste from building a monster query.
+        let query_terms = QueryTerms::from_query(text);
+        if query_terms.is_empty() {
             return Ok(vec![]);
         }
+        let mut terms: Vec<String> = query_terms.words.iter().chain(&query_terms.pairs).cloned().collect();
+        terms.truncate(24);
 
         let collection_ids = self.readable_collection_ids(tenant_id, caller_id, caller_role).await?;
         if collection_ids.is_empty() {
@@ -987,9 +980,27 @@ impl MemoryService {
         params.extend(collection_ids.iter().map(|id| id.as_str().into()));
         params.extend(terms.iter().map(|t| t.as_str().into())); // WHERE (…OR…)
         params.extend(terms.iter().map(|t| t.as_str().into())); // ORDER BY score
-        params.push(limit.into());
+        // Over-fetch: the SQL only knows "contains any term", and the threshold
+        // that keeps one coincidental character pair from recalling an
+        // unrelated item is applied below.
+        params.push((limit * 4).into());
         let rows = self.db.fetch_all_as::<ItemRow>(&sql, &params).await?;
-        Ok(rows.into_iter().map(item_row_to_dto).collect())
+        let required = query_terms.required_score();
+        let mut scored: Vec<(usize, MemoryItemDto)> = rows
+            .into_iter()
+            .map(item_row_to_dto)
+            .filter_map(|item| {
+                let score = query_terms.score(&item.content.to_lowercase());
+                (score >= required).then_some((score, item))
+            })
+            .collect();
+        // Stable: ties keep the SQL order (importance, then recency).
+        scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+        Ok(scored
+            .into_iter()
+            .take(usize::try_from(limit).unwrap_or(0))
+            .map(|(_, item)| item)
+            .collect())
     }
 
     /// The caller's own `personal` collection id, creating it on first use.
@@ -2136,6 +2147,46 @@ mod tests {
         assert!(
             service
                 .search_relevant("t1", "m1", "member", "   ", 5)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn search_relevant_finds_a_chinese_question_by_character_pairs() {
+        let (db, service) = setup().await;
+        seed_membership(db.pool(), "admin1", "t1", "org_admin").await;
+        seed_membership(db.pool(), "m1", "t1", "member").await;
+        let global = make_collection(&service, "admin1", "global", None, "kb").await;
+        add_item(
+            &service,
+            "admin1",
+            &global.id,
+            "项目北辰由周明远负责，每周三同步进度。",
+            0.5,
+        )
+        .await;
+        add_item(
+            &service,
+            "admin1",
+            &global.id,
+            "报销单需在每月25日前提交给财务部。",
+            0.5,
+        )
+        .await;
+
+        let hits = service
+            .search_relevant("t1", "m1", "member", "项目北辰是谁负责的？", 5)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(hits[0].content.contains("周明远"));
+
+        // Filler alone matches nothing.
+        assert!(
+            service
+                .search_relevant("t1", "m1", "member", "今天天气怎么样", 5)
                 .await
                 .unwrap()
                 .is_empty()

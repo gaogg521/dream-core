@@ -10,6 +10,7 @@ use dream_core_api_types::{
     AgentErrorResolutionKind, AgentModeResponse, ConfigOptionConfirmation, GetConfigOptionsResponse,
     SetConfigOptionResponse, SlashCommandItem,
 };
+use dream_core_common::auto_workspace::has_auto_workspace_structure;
 use dream_core_common::{
     AgentKillReason, AgentType, Confirmation, ConversationStatus, ErrorChain, TimestampMs, generate_short_id, now_ms,
 };
@@ -27,7 +28,7 @@ use dream_engine_protocol::{
     AskAnswer, AskUserManager, AskUserOutcome, ToolApprovalManager, ToolApprovalResult, ToolCallGuard,
 };
 
-use crate::capability::memory_recall::{MemoryPrefix, TurnMemoryRecall, recall_prefix};
+use crate::capability::memory_recall::{Recalled, TurnMemoryRecall, format_prefix, recall_hits};
 use dream_engine_types::message::{StopReason, TokenUsage};
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify, broadcast};
@@ -41,7 +42,7 @@ use crate::capability::backend_protocol_sink::BackendProtocolSink;
 use crate::capability::image_input::resolve_image_input_capability;
 use crate::dev_prompt_dump::{AgentFinalInputDump, dump_agent_final_input};
 use crate::error::AgentError;
-use crate::protocol::events::{AgentStreamEvent, ToolCallStatus};
+use crate::protocol::events::{AgentStreamEvent, TipType, TipsEventData, ToolCallStatus};
 use crate::protocol::send_error::AgentSendError;
 use crate::types::{DreamEngineResolvedConfig, SendMessageData};
 
@@ -293,6 +294,9 @@ impl Drop for DreamEngineAgentManager {
     }
 }
 
+/// Characters of each recalled item shown in the "referenced company memory" tip.
+const RECALL_PREVIEW_CHARS: usize = 60;
+
 /// The company memory a conversation can recall, bound to the member it
 /// belongs to.
 ///
@@ -343,6 +347,34 @@ impl DreamEngineAgentManager {
             tool_server_ids,
         }));
     }
+    /// Tell the member which company memory this turn drew on.
+    ///
+    /// The recalled text is prepended to what the model reads and is not part of
+    /// what the member typed, so without this a turn quietly knows things the
+    /// member cannot account for. A tip rather than a hidden detail: they can
+    /// see that company memory is in play, and what, and turn the switch off.
+    fn announce_recalled_memory(&self, hits: &[String]) {
+        let preview = hits
+            .iter()
+            .map(|hit| {
+                let flat: String = hit.split_whitespace().collect::<Vec<_>>().join(" ");
+                if flat.chars().count() > RECALL_PREVIEW_CHARS {
+                    format!("· {}…", flat.chars().take(RECALL_PREVIEW_CHARS).collect::<String>())
+                } else {
+                    format!("· {flat}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let _ = self.runtime.event_sender().send(AgentStreamEvent::Tips(TipsEventData {
+            content: format!("Referenced {} company memory item(s):\n{preview}", hits.len()),
+            tip_type: TipType::Info,
+            code: Some("TEAM_MEMORY_RECALLED".to_owned()),
+            params: Some(serde_json::json!({ "count": hits.len(), "items": preview })),
+            supersedes_key: None,
+        }));
+    }
+
     /// Prepend the member's readable company memory to this turn's text.
     ///
     /// The engine has no prompt-hook pipeline of its own, so the injection
@@ -354,10 +386,13 @@ impl DreamEngineAgentManager {
         let Some(memory) = self.memory.as_ref() else {
             return content.to_owned();
         };
-        match recall_prefix(memory.recall.as_ref(), &memory.user_id, content).await {
-            MemoryPrefix::Text(prefix) => format!("{prefix}{content}"),
-            MemoryPrefix::None => content.to_owned(),
-            MemoryPrefix::TimedOut => {
+        match recall_hits(memory.recall.as_ref(), &memory.user_id, content).await {
+            Recalled::Hits(hits) => {
+                self.announce_recalled_memory(&hits);
+                format!("{}{content}", format_prefix(&hits))
+            }
+            Recalled::None => content.to_owned(),
+            Recalled::TimedOut => {
                 warn!(
                     conversation_id = %self.runtime.conversation_id(),
                     "memory recall timed out; sending the turn without company memory"
@@ -486,7 +521,11 @@ impl DreamEngineAgentManager {
         let is_resume = resume_session.is_some();
         let provider_label = config.provider_label.clone();
 
+        // A conversation running in a directory the app provisioned for it has no project of its own,
+        // so what it learns about the person belongs to them, not to a folder that is discarded.
+        let shared_memory = has_auto_workspace_structure(&workspace);
         let mut bootstrap = AgentBootstrap::new(config, &workspace, sink)
+            .shared_memory(shared_memory)
             .host_skills(config_extra.host_skills)
             .runtime_env(runtime_env)
             .vision_unavailable_reason(vision_unavailable_reason);

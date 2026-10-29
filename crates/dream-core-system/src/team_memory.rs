@@ -30,6 +30,7 @@
 
 use std::sync::RwLock;
 
+use dream_core_common::recall_terms::QueryTerms;
 use serde::{Deserialize, Serialize};
 
 /// Most items to inject into one turn.
@@ -101,12 +102,8 @@ impl TeamMemoryService {
             return Vec::new();
         }
 
-        let words: Vec<String> = query
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|word| is_selective(word))
-            .map(str::to_lowercase)
-            .collect();
-        if words.is_empty() {
+        let terms = QueryTerms::from_query(query);
+        if terms.is_empty() {
             return Vec::new();
         }
 
@@ -114,14 +111,13 @@ impl TeamMemoryService {
             .items
             .iter()
             .filter_map(|item| {
-                let haystack = item.content.to_lowercase();
-                let hits = words.iter().filter(|word| haystack.contains(*word)).count();
-                (hits > 0).then_some((hits, item))
+                let score = terms.score(&item.content.to_lowercase());
+                (score >= terms.required_score()).then_some((score, item))
             })
             .collect();
         // Strongest match first; ties keep the order the server sent, which is
         // its own relevance order (`sort_by_key` is stable).
-        scored.sort_by_key(|(hits, _)| std::cmp::Reverse(*hits));
+        scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
 
         scored
             .into_iter()
@@ -129,25 +125,6 @@ impl TeamMemoryService {
             .map(|(_, item)| truncate(&item.content))
             .collect()
     }
-}
-
-/// Whether a query word carries enough signal to match on.
-///
-/// Without this, "the" matches almost every sentence ever written and recall
-/// fills the prompt with whatever happened to be stored — the first version
-/// here surfaced an unrelated item for "what is the weather tomorrow" because
-/// one memory began with "The". Injecting the wrong memory is worse than
-/// injecting none: the member cannot see why the model suddenly knows about
-/// deploy keys.
-///
-/// A length floor rather than a stopword list, because a stopword list is one
-/// per language and this text is routinely mixed. Latin words need four
-/// characters, which clears the/is/who/and while keeping anything anyone would
-/// actually search for; scripts that do not separate words — CJK above all —
-/// need two, where two characters is usually already a whole word.
-fn is_selective(word: &str) -> bool {
-    let len = word.chars().count();
-    if word.is_ascii() { len >= 4 } else { len >= 2 }
 }
 
 fn truncate(text: &str) -> String {
@@ -242,5 +219,59 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert!(hits[0].ends_with('…'));
         assert_eq!(hits[0].chars().count(), MAX_ITEM_CHARS + 1);
+    }
+
+    fn zh_loaded() -> TeamMemoryService {
+        let svc = TeamMemoryService::new();
+        svc.set_snapshot(TeamMemorySnapshot {
+            recall_enabled: true,
+            items: vec![
+                item("z1", "项目北辰由周明远负责，每周三上午同步进度。"),
+                item("z2", "报销单需在每月25日前提交给财务部，逾期顺延到下月。"),
+                item("z3", "测试环境的部署密钥每周一轮换。"),
+            ],
+        });
+        svc
+    }
+
+    /// The reason this exists: a whole Chinese sentence is one "word" to a
+    /// splitter that only breaks on punctuation, so nothing could ever match it.
+    #[test]
+    fn a_chinese_question_finds_the_item_it_is_about() {
+        let hits = zh_loaded().recall("项目北辰是谁负责的？");
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(hits[0].contains("周明远"));
+
+        let hits = zh_loaded().recall("报销要在什么时候之前提交");
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(hits[0].contains("财务部"));
+    }
+
+    #[test]
+    fn filler_in_a_chinese_question_is_not_a_match() {
+        assert!(zh_loaded().recall("今天天气怎么样").is_empty());
+        assert!(zh_loaded().recall("你可以帮我一下吗").is_empty());
+    }
+
+    /// With enough pairs to afford it, one coincidental pair is not a match.
+    #[test]
+    fn one_stray_pair_in_a_long_chinese_question_is_not_enough() {
+        // "项目" sits in z1, but nothing else in this long question does.
+        assert!(
+            zh_loaded()
+                .recall("项目演示文稿的封面应该选什么颜色比较合适")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_latin_word_still_counts_inside_a_chinese_question() {
+        let svc = TeamMemoryService::new();
+        svc.set_snapshot(TeamMemorySnapshot {
+            recall_enabled: true,
+            items: vec![item("m", "Project Zephyr 的负责人是周明远。")],
+        });
+        let hits = svc.recall("请问 Zephyr 项目负责人电话号码是多少呢");
+        assert_eq!(hits.len(), 1, "{hits:?}");
     }
 }
