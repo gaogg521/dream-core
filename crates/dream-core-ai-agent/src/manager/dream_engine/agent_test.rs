@@ -804,6 +804,80 @@ Reports go out on Fridays."]),
     assert_eq!(items.lines().count(), 1, "{items}");
 }
 
+/// The model only sees a short index of recent memories, so a memory the request mentions has to
+/// be brought in by the host — and the person told that it was.
+#[tokio::test]
+async fn a_saved_memory_the_request_mentions_is_brought_into_the_turn() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("user_codename.md"),
+        "---
+name: Codename
+description: 用户的代号是北辰七号，要求称呼周老师
+type: user
+---
+
+代号：北辰七号；称呼：周老师
+",
+    )
+    .unwrap();
+    let mut agent = DreamEngineAgentManager::new(
+        "conv-saved".into(),
+        "/project".into(),
+        make_test_config(),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    agent.memory_dir = Some(tmp.path().to_path_buf());
+    let mut rx = agent.subscribe();
+
+    let sent = agent.with_recalled_memory("北辰七号是谁？").await;
+
+    assert!(sent.starts_with("[Saved Memory]"), "{sent}");
+    assert!(sent.contains("周老师"));
+    assert!(sent.ends_with("北辰七号是谁？"), "{sent}");
+    let AgentStreamEvent::Tips(tip) = rx.try_recv().expect("a tip should have been sent") else {
+        panic!("expected a tip");
+    };
+    assert_eq!(tip.code.as_deref(), Some("ENGINE_MEMORY_RECALLED"));
+
+    // The same file is not repeated while it is unchanged: its text is already in the conversation.
+    assert_eq!(agent.with_recalled_memory("北辰七号是谁？").await, "北辰七号是谁？");
+}
+
+#[tokio::test]
+async fn a_request_that_mentions_no_saved_memory_is_sent_untouched() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("user_codename.md"),
+        "---
+name: Codename
+description: 用户的代号是北辰七号
+type: user
+---
+
+代号
+",
+    )
+    .unwrap();
+    let mut agent = DreamEngineAgentManager::new(
+        "conv-saved".into(),
+        "/project".into(),
+        make_test_config(),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    agent.memory_dir = Some(tmp.path().to_path_buf());
+
+    assert_eq!(agent.with_recalled_memory("今天天气怎么样").await, "今天天气怎么样");
+}
+
 #[tokio::test]
 async fn a_turn_with_nothing_recalled_says_nothing() {
     let agent = DreamEngineAgentManager::new(

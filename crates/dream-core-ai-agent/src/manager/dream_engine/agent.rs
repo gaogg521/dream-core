@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex as StdMutex, RwLock};
+use std::time::{Duration, SystemTime};
 
 use dream_core_api_types::{
     AcpConfigOptionDto, AcpConfigSelectOptionDto, AgentErrorCode, AgentErrorOwnership, AgentErrorResolution,
@@ -28,6 +28,7 @@ use dream_engine_protocol::{
     AskAnswer, AskUserManager, AskUserOutcome, ToolApprovalManager, ToolApprovalResult, ToolCallGuard,
 };
 
+use crate::capability::engine_memory_recall::{RecalledMemory, format_engine_memory_prefix, recall_engine_memory};
 use crate::capability::memory_recall::{Recalled, TurnMemoryRecall, format_prefix, recall_hits};
 use dream_engine_types::message::{StopReason, TokenUsage};
 use serde_json::Value;
@@ -274,6 +275,11 @@ pub struct DreamEngineAgentManager {
     /// Company memory to prepend to each outgoing prompt, and whose it is.
     /// `None` outside an enterprise deployment.
     memory: Option<TurnMemory>,
+    /// The directory of the assistant's own saved memory for this session, when memory is on.
+    memory_dir: Option<PathBuf>,
+    /// Saved-memory files already put in front of the model in this conversation, with the
+    /// modification time they had then, so an unchanged file is not repeated every turn.
+    saved_memory_sent: StdMutex<HashMap<String, SystemTime>>,
     confirmations: Arc<RwLock<Vec<Confirmation>>>,
     final_input_dump: Option<DreamEngineFinalInputDumpContext>,
     /// Signalled by `cancel()` to abort an in-flight `engine.run()` via
@@ -293,6 +299,12 @@ impl Drop for DreamEngineAgentManager {
         self.schedule_mcp_shutdown();
     }
 }
+
+/// How long a turn waits for its saved-memory lookup before going without it.
+const SAVED_MEMORY_TIMEOUT: Duration = Duration::from_millis(300);
+
+/// Leading characters of a request matched against saved memory.
+const SAVED_MEMORY_QUERY_CHARS: usize = 2000;
 
 /// Characters of each recalled item shown in the "referenced company memory" tip.
 const RECALL_PREVIEW_CHARS: usize = 60;
@@ -383,23 +395,92 @@ impl DreamEngineAgentManager {
     /// true on the settings page and false in the product: the recall port was
     /// only ever consulted on the ACP path, and this is the default one.
     async fn with_recalled_memory(&self, content: &str) -> String {
+        let saved = self.recall_saved_memory(content).await;
+        let company = self.recall_company_memory(content).await;
+        format!("{saved}{company}{content}")
+    }
+
+    /// The company-memory block for this turn, or an empty string.
+    async fn recall_company_memory(&self, content: &str) -> String {
         let Some(memory) = self.memory.as_ref() else {
-            return content.to_owned();
+            return String::new();
         };
         match recall_hits(memory.recall.as_ref(), &memory.user_id, content).await {
             Recalled::Hits(hits) => {
                 self.announce_recalled_memory(&hits);
-                format!("{}{content}", format_prefix(&hits))
+                format_prefix(&hits)
             }
-            Recalled::None => content.to_owned(),
+            Recalled::None => String::new(),
             Recalled::TimedOut => {
                 warn!(
                     conversation_id = %self.runtime.conversation_id(),
                     "memory recall timed out; sending the turn without company memory"
                 );
-                content.to_owned()
+                String::new()
             }
         }
+    }
+
+    /// The assistant's own saved memories that this request mentions, or an empty string.
+    ///
+    /// Only a short index of recent memories is in the system prompt; this is what brings the
+    /// rest in, by matching the request against each memory's name, description and index line.
+    /// Bounded by a time budget like company recall: a lookup must never delay the turn.
+    async fn recall_saved_memory(&self, content: &str) -> String {
+        let Some(dir) = self.memory_dir.clone() else {
+            return String::new();
+        };
+        let sent = self
+            .saved_memory_sent
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        let query: String = content.chars().take(SAVED_MEMORY_QUERY_CHARS).collect();
+        let lookup = tokio::task::spawn_blocking(move || recall_engine_memory(&dir, &query, &sent));
+        let found = match tokio::time::timeout(SAVED_MEMORY_TIMEOUT, lookup).await {
+            Ok(Ok(found)) => found,
+            Ok(Err(error)) => {
+                warn!(
+                    conversation_id = %self.runtime.conversation_id(),
+                    error = %error,
+                    "saved memory lookup failed; sending the turn without it"
+                );
+                return String::new();
+            }
+            Err(_) => {
+                warn!(
+                    conversation_id = %self.runtime.conversation_id(),
+                    "saved memory lookup timed out; sending the turn without it"
+                );
+                return String::new();
+            }
+        };
+        if found.is_empty() {
+            return String::new();
+        }
+        if let Ok(mut sent) = self.saved_memory_sent.lock() {
+            for memory in &found {
+                sent.insert(memory.filename.clone(), memory.modified);
+            }
+        }
+        self.announce_saved_memory(&found);
+        format_engine_memory_prefix(&found)
+    }
+
+    /// Tell the person which of the assistant's saved memories this turn brought in.
+    fn announce_saved_memory(&self, memories: &[RecalledMemory]) {
+        let items = memories
+            .iter()
+            .map(|memory| format!("· {}", memory.name))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let _ = self.runtime.event_sender().send(AgentStreamEvent::Tips(TipsEventData {
+            content: format!("Brought in {} saved memory item(s):\n{items}", memories.len()),
+            tip_type: TipType::Info,
+            code: Some("ENGINE_MEMORY_RECALLED".to_owned()),
+            params: Some(serde_json::json!({ "count": memories.len(), "items": items })),
+            supersedes_key: None,
+        }));
     }
 
     pub async fn new(
@@ -602,6 +683,8 @@ impl DreamEngineAgentManager {
             approval_manager,
             ask_manager,
             memory,
+            memory_dir: result.memory_dir,
+            saved_memory_sent: StdMutex::new(HashMap::new()),
             confirmations,
             final_input_dump,
             cancel_notify: Arc::new(Notify::new()),

@@ -37,6 +37,7 @@ thiserror.workspace = true
 tracing.workspace = true
 which.workspace = true
 dream-engine-agent.workspace = true
+dream-engine-memory.workspace = true
 dream-engine-providers.workspace = true
 dream-engine-types.workspace = true
 dream-engine-protocol.workspace = true
