@@ -1541,12 +1541,26 @@ async fn list_my_vault_files(
 /// Multipart upload: exactly one `file` field carrying the bytes and its
 /// client-side name. Extra fields are ignored, a missing `file` field is a
 /// 400.
+///
+/// The global `DefaultBodyLimit` kills any multipart parse once the raw body
+/// passes `BODY_LIMIT`, which surfaces as an unreadable "failed to read
+/// upload" 400. Pre-check `Content-Length` first so an oversized file gets a
+/// message that names the actual limit instead.
 async fn upload_vault_file(
     State(state): State<OnePlatformRouterState>,
     RequirePlatformMember(actor): RequirePlatformMember,
     Extension(user): Extension<CurrentUser>,
+    headers: axum::http::HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<FileVaultObjectDto>>, PlatformError> {
+    if let Some(len) = headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        && len > dream_core_common::constants::BODY_LIMIT as u64
+    {
+        return Err(PlatformError::BadRequest("file exceeds the 10 MiB upload limit".into()));
+    }
     let mut uploaded: Option<(String, Vec<u8>)> = None;
     while let Some(field) = multipart
         .next_field()
@@ -1583,11 +1597,41 @@ async fn download_vault_file(
     Path(id): Path<String>,
 ) -> Result<axum::response::Response, PlatformError> {
     let (dto, bytes) = state.service.read_vault_object(&actor.tenant_id, &user.id, &id).await?;
-    let disposition = format!(
-        "attachment; filename=\"{}\"",
-        dto.file_name.replace(['"', '\\', '\r', '\n'], "_")
-    );
+    let disposition = content_disposition_attachment(&dto.file_name);
     Ok(([(axum::http::header::CONTENT_DISPOSITION, disposition)], bytes).into_response())
+}
+
+/// `Content-Disposition: attachment` with a non-ASCII-safe name.
+///
+/// Bytes above 0x7F must not ride in the quoted `filename` token (Hyper will
+/// happily emit them, but browsers then save mojibake names — the reported
+/// vault download issue). RFC 6266/5987: keep an ASCII-sanitized `filename`
+/// fallback and carry the real UTF-8 name in percent-encoded `filename*`.
+pub(crate) fn content_disposition_attachment(file_name: &str) -> String {
+    let ascii_fallback: String = file_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii() && !matches!(c, '"' | '\\' | '\r' | '\n') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if file_name.is_ascii() {
+        return format!("attachment; filename=\"{ascii_fallback}\"");
+    }
+    let encoded: String = file_name
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
+    format!("attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}")
 }
 
 async fn delete_vault_file(
