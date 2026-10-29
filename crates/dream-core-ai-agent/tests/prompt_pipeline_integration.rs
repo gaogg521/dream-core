@@ -285,3 +285,45 @@ async fn prelude_io_failure_emits_prompt_hook_warning() {
     // hook == "session_new_prelude".
     let _ = fixture_params("claude", Some("ctx"), true).await;
 }
+
+struct FixedRecall(Vec<String>);
+#[async_trait::async_trait]
+impl dream_core_ai_agent::capability::memory_recall::TurnMemoryRecall for FixedRecall {
+    async fn recall(&self, _: &str, _: &str) -> Vec<String> {
+        self.0.clone()
+    }
+}
+
+#[tokio::test]
+async fn acp_company_recall_is_visible_only_when_memory_was_injected() {
+    use dream_core_ai_agent::capability::prompt_pipeline::PreSendHook;
+    use dream_core_ai_agent::manager::acp::memory_prompt_hook::MemoryPromptHook;
+    use dream_core_ai_agent::protocol::events::AgentStreamEvent;
+    let params = fixture_params("claude", None, true).await;
+    let skill_manager = fixture_skill_manager();
+    let runtime = fixture_runtime();
+    let mut events = runtime.subscribe();
+    let mut session = AcpSession::new(None, None, HashMap::new());
+    let mut ctx = PromptCtx {
+        session: &mut session,
+        params: &params,
+        skill_manager: &skill_manager,
+        runtime: &runtime,
+        files: &[],
+    };
+    let hook = MemoryPromptHook {
+        recall: Arc::new(FixedRecall(vec!["中文企业知识\n部署密钥每周轮换".into()])),
+    };
+    let out = hook.pre_send(&mut ctx, "如何轮换？".into()).await;
+    assert!(out.contains("[Relevant Memory]"));
+    let AgentStreamEvent::Tips(tip) = events.try_recv().unwrap() else {
+        panic!("missing attribution");
+    };
+    assert_eq!(tip.code.as_deref(), Some("TEAM_MEMORY_RECALLED"));
+    assert_eq!(tip.params.unwrap()["count"], 1);
+    let empty = MemoryPromptHook {
+        recall: Arc::new(FixedRecall(vec![])),
+    };
+    assert_eq!(empty.pre_send(&mut ctx, "无关问题".into()).await, "无关问题");
+    assert!(events.try_recv().is_err());
+}

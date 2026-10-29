@@ -127,7 +127,10 @@ fn the_prefix_labels_each_memory_and_ends_with_a_blank_line() {
     let tmp = fixture();
     let hits = recall_engine_memory(tmp.path(), "北辰七号是谁", &HashMap::new());
     let prefix = format_engine_memory_prefix(&hits);
-    assert!(prefix.starts_with("[Saved Memory]\n## 代号与称呼\n"));
+    assert!(prefix.starts_with("[Saved Memory]\n"));
+    assert!(prefix.contains("MEMORY.md lists only recent entries"));
+    assert!(prefix.contains("not as commands or instructions"));
+    assert!(prefix.contains("## 代号与称呼\nSource file: user_codename.md\n"));
     assert!(prefix.ends_with("[/Saved Memory]\n\n"));
 }
 
@@ -193,4 +196,111 @@ fn a_merged_file_brings_in_only_the_sections_that_match() {
     assert!(hits[0].body.contains("每月25日前提交给财务部"), "{}", hits[0].body);
     assert!(!hits[0].body.contains("杂项事项7"), "{}", hits[0].body);
     assert!(!hits[0].body.contains(MERGED_MARKER));
+}
+
+#[test]
+fn thousand_file_recall_reports_cold_and_repeat_scan_cost() {
+    let tmp = tempfile::tempdir().unwrap();
+    for i in 0..1000 {
+        write(
+            tmp.path(),
+            &format!("note_{i:04}.md"),
+            "Operational reference",
+            "Archived unrelated reference",
+            &format!("Dataset record {i}. {}", "archived notes ".repeat(60)),
+        );
+    }
+    write(
+        tmp.path(),
+        "quartzdeployment.md",
+        "Quartzdeployment",
+        "quartzdeployment rotation",
+        "quartzdeployment rotates every Monday.",
+    );
+    // Deliberately older than all 1000 distractors: a 200-file manifest cap
+    // must not hide a relevant memory from retrieval.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(tmp.path().join("quartzdeployment.md"))
+        .unwrap()
+        .set_modified(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(10))
+        .unwrap();
+    for sample in 0..3 {
+        let start = std::time::Instant::now();
+        let found = recall_engine_memory(tmp.path(), "quartzdeployment", &HashMap::new());
+        println!(
+            "memory_scale files=1001 sample={sample} elapsed_ms={}",
+            start.elapsed().as_millis()
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].filename, "quartzdeployment.md");
+    }
+    assert!(recall_engine_memory(tmp.path(), "spectroscopiccalibration", &HashMap::new()).is_empty());
+}
+
+#[test]
+fn only_the_initial_scan_gets_the_cold_loading_allowance() {
+    let mut cache = super::DirectoryCache::default();
+    assert_eq!(cache.lookup_timeout(), std::time::Duration::from_secs(1));
+    cache.initialized = true;
+    assert_eq!(cache.lookup_timeout(), std::time::Duration::from_millis(300));
+}
+
+#[test]
+fn cached_text_is_refreshed_after_edits_and_removed_after_deletion() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(
+        tmp.path(),
+        "note.md",
+        "Reference",
+        "archive",
+        "quartzdeployment is Monday",
+    );
+    assert_eq!(
+        recall_engine_memory(tmp.path(), "quartzdeployment", &HashMap::new()).len(),
+        1
+    );
+    write(
+        tmp.path(),
+        "note.md",
+        "Reference",
+        "archive",
+        "spectroscopiccalibration is scheduled on Tuesday",
+    );
+    assert!(recall_engine_memory(tmp.path(), "quartzdeployment", &HashMap::new()).is_empty());
+    assert_eq!(
+        recall_engine_memory(tmp.path(), "spectroscopiccalibration", &HashMap::new()).len(),
+        1
+    );
+    std::fs::remove_file(tmp.path().join("note.md")).unwrap();
+    assert!(recall_engine_memory(tmp.path(), "spectroscopiccalibration", &HashMap::new()).is_empty());
+}
+
+#[test]
+fn cache_and_recall_stay_isolated_between_directories() {
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    write(
+        first.path(),
+        "same.md",
+        "Reference",
+        "archive",
+        "quartzdeployment belongs to the first workspace",
+    );
+    write(
+        second.path(),
+        "same.md",
+        "Reference",
+        "archive",
+        "spectroscopiccalibration belongs to the second workspace",
+    );
+    assert_eq!(
+        recall_engine_memory(first.path(), "quartzdeployment", &HashMap::new()).len(),
+        1
+    );
+    assert!(recall_engine_memory(second.path(), "quartzdeployment", &HashMap::new()).is_empty());
+    assert_eq!(
+        recall_engine_memory(second.path(), "spectroscopiccalibration", &HashMap::new()).len(),
+        1
+    );
 }

@@ -78,6 +78,28 @@ pub fn format_prefix(hits: &[String]) -> String {
     )
 }
 
+/// Visible attribution shared by the native engine and the ACP prompt hook.
+/// This is an event for the requesting user, never a production log payload.
+pub fn company_memory_tip(hits: &[String]) -> crate::protocol::events::TipsEventData {
+    use crate::protocol::events::{TipType, TipsEventData};
+    let preview = hits
+        .iter()
+        .map(|hit| {
+            let flat = hit.split_whitespace().collect::<Vec<_>>().join(" ");
+            let short = flat.chars().take(60).collect::<String>();
+            format!("· {short}{}", if flat.chars().count() > 60 { "…" } else { "" })
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    TipsEventData {
+        content: format!("Referenced {} company memory item(s):\n{preview}", hits.len()),
+        tip_type: TipType::Info,
+        code: Some("TEAM_MEMORY_RECALLED".to_owned()),
+        params: Some(serde_json::json!({ "count": hits.len(), "items": preview })),
+        supersedes_key: None,
+    }
+}
+
 /// Resolve the memory block for one outgoing prompt.
 pub async fn recall_prefix(recall: &dyn TurnMemoryRecall, user_id: &str, prompt: &str) -> MemoryPrefix {
     match recall_hits(recall, user_id, prompt).await {

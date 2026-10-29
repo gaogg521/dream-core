@@ -28,8 +28,10 @@ use dream_engine_protocol::{
     AskAnswer, AskUserManager, AskUserOutcome, ToolApprovalManager, ToolApprovalResult, ToolCallGuard,
 };
 
-use crate::capability::engine_memory_recall::{RecalledMemory, format_engine_memory_prefix, recall_engine_memory};
-use crate::capability::memory_recall::{Recalled, TurnMemoryRecall, format_prefix, recall_hits};
+use crate::capability::engine_memory_recall::{
+    RecalledMemory, engine_memory_lookup_timeout, format_engine_memory_prefix, recall_engine_memory,
+};
+use crate::capability::memory_recall::{Recalled, TurnMemoryRecall, company_memory_tip, format_prefix, recall_hits};
 use dream_engine_types::message::{StopReason, TokenUsage};
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify, broadcast};
@@ -300,14 +302,8 @@ impl Drop for DreamEngineAgentManager {
     }
 }
 
-/// How long a turn waits for its saved-memory lookup before going without it.
-const SAVED_MEMORY_TIMEOUT: Duration = Duration::from_millis(300);
-
 /// Leading characters of a request matched against saved memory.
 const SAVED_MEMORY_QUERY_CHARS: usize = 2000;
-
-/// Characters of each recalled item shown in the "referenced company memory" tip.
-const RECALL_PREVIEW_CHARS: usize = 60;
 
 /// The company memory a conversation can recall, bound to the member it
 /// belongs to.
@@ -366,25 +362,10 @@ impl DreamEngineAgentManager {
     /// member cannot account for. A tip rather than a hidden detail: they can
     /// see that company memory is in play, and what, and turn the switch off.
     fn announce_recalled_memory(&self, hits: &[String]) {
-        let preview = hits
-            .iter()
-            .map(|hit| {
-                let flat: String = hit.split_whitespace().collect::<Vec<_>>().join(" ");
-                if flat.chars().count() > RECALL_PREVIEW_CHARS {
-                    format!("· {}…", flat.chars().take(RECALL_PREVIEW_CHARS).collect::<String>())
-                } else {
-                    format!("· {flat}")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let _ = self.runtime.event_sender().send(AgentStreamEvent::Tips(TipsEventData {
-            content: format!("Referenced {} company memory item(s):\n{preview}", hits.len()),
-            tip_type: TipType::Info,
-            code: Some("TEAM_MEMORY_RECALLED".to_owned()),
-            params: Some(serde_json::json!({ "count": hits.len(), "items": preview })),
-            supersedes_key: None,
-        }));
+        let _ = self
+            .runtime
+            .event_sender()
+            .send(AgentStreamEvent::Tips(company_memory_tip(hits)));
     }
 
     /// Prepend the member's readable company memory to this turn's text.
@@ -436,8 +417,9 @@ impl DreamEngineAgentManager {
             .map(|guard| guard.clone())
             .unwrap_or_default();
         let query: String = content.chars().take(SAVED_MEMORY_QUERY_CHARS).collect();
+        let timeout = engine_memory_lookup_timeout(&dir);
         let lookup = tokio::task::spawn_blocking(move || recall_engine_memory(&dir, &query, &sent));
-        let found = match tokio::time::timeout(SAVED_MEMORY_TIMEOUT, lookup).await {
+        let found = match tokio::time::timeout(timeout, lookup).await {
             Ok(Ok(found)) => found,
             Ok(Err(error)) => {
                 warn!(
