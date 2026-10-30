@@ -81,6 +81,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "025_mcp_scene_selection",
         include_str!("../migrations/025_mcp_scene_selection.sql"),
     ),
+    (
+        "026_knowledge_updated_at",
+        include_str!("../migrations/026_knowledge_updated_at.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -162,6 +166,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "025_mcp_scene_selection",
         include_str!("../migrations_mysql/025_mcp_scene_selection.sql"),
+    ),
+    (
+        "026_knowledge_updated_at",
+        include_str!("../migrations_mysql/026_knowledge_updated_at.sql"),
     ),
 ];
 

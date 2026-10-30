@@ -203,15 +203,15 @@ impl DevopsService {
             self.assert_rag_library_target(actor, target, &scope).await?;
             self.db
                 .execute(
-                    "UPDATE one_rag_documents SET title = ?, library_id = ?, scope = ? WHERE id = ?",
-                    &db_params![title, target, &scope, id],
+                    "UPDATE one_rag_documents SET title = ?, library_id = ?, scope = ?, updated_at = ? WHERE id = ?",
+                    &db_params![title, target, &scope, now_ms(), id],
                 )
                 .await?;
         } else {
             self.db
                 .execute(
-                    "UPDATE one_rag_documents SET title = ? WHERE id = ?",
-                    &db_params![title, id],
+                    "UPDATE one_rag_documents SET title = ?, updated_at = ? WHERE id = ?",
+                    &db_params![title, now_ms(), id],
                 )
                 .await?;
         }

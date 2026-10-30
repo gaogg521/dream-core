@@ -251,6 +251,8 @@ pub struct RagDocumentDto {
     pub visibility: String,
     pub created_by: String,
     pub created_at: i64,
+    #[sqlx(default)]
+    pub updated_at: i64,
     /// Knowledge-library container (018). Older rows backfill to `oraglib_default`.
     #[serde(default)]
     pub library_id: String,

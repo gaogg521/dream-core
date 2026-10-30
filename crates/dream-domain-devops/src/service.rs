@@ -1549,7 +1549,7 @@ impl DevopsService {
 
     pub async fn list_rag_documents(&self, viewer_user_id: &str) -> Result<Vec<RagDocumentDto>, DevopsError> {
         const COLS: &str = "id, title, file_path, file_size, mime_type, status, last_error, chunk_count, \
-                            scope, team_id, visibility, created_by, created_at, library_id, source_key, source_state";
+                            scope, team_id, visibility, created_by, created_at, library_id, source_key, source_state, CASE WHEN updated_at = 0 THEN created_at ELSE updated_at END AS updated_at";
         let privileged = self.viewer_is_privileged(viewer_user_id).await?;
         // Personal documents belong to the member who made them: nobody else
         // sees them, administrators included.
@@ -2325,10 +2325,11 @@ impl DevopsService {
         let updated = tx
             .execute(
                 "UPDATE one_rag_documents SET content = ?, status = ?, content_revision = content_revision + 1, \
-                 chunk_count = 0, last_error = NULL WHERE id = ? AND (? IS NULL OR content_revision = ?)",
+                 chunk_count = 0, last_error = NULL, updated_at = ? WHERE id = ? AND (? IS NULL OR content_revision = ?)",
                 &db_params![
                     content,
                     if content.trim().is_empty() { "ready" } else { "pending" },
+                    now_ms(),
                     id,
                     expected_revision,
                     expected_revision

@@ -1,6 +1,52 @@
 // Included in service::tests so these exercise the actual service and its ACL fixtures.
 
 #[tokio::test]
+async fn document_listing_tracks_content_and_title_edits_without_changing_creation_time() {
+    let svc = service().await;
+    let doc = svc
+        .register_rag_document("before", None, None, None, "org", None, "all", "admin1", None)
+        .await
+        .unwrap();
+    svc.db
+        .execute(
+            "UPDATE one_rag_documents SET created_at = 1, updated_at = 1 WHERE id = ?",
+            &db_params![&doc.id],
+        )
+        .await
+        .unwrap();
+    svc.set_document_content("admin1", &doc.id, "").await.unwrap();
+    let edited = svc
+        .list_rag_documents("admin1")
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|row| row.id == doc.id)
+        .unwrap();
+    assert_eq!(edited.created_at, 1);
+    assert!(edited.updated_at > 1);
+    svc.db
+        .execute(
+            "UPDATE one_rag_documents SET updated_at = 1 WHERE id = ?",
+            &db_params![&doc.id],
+        )
+        .await
+        .unwrap();
+    svc.update_rag_document_location("admin1", &doc.id, "renamed", None)
+        .await
+        .unwrap();
+    let renamed = svc
+        .list_rag_documents("admin1")
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|row| row.id == doc.id)
+        .unwrap();
+    assert_eq!(renamed.title, "renamed");
+    assert_eq!(renamed.created_at, 1);
+    assert!(renamed.updated_at > 1);
+}
+
+#[tokio::test]
 async fn rag_versioned_save_rejects_stale_drafts_and_clears_empty_pending() {
     let svc = service().await;
     let doc = svc

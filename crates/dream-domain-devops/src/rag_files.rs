@@ -114,8 +114,8 @@ pub(crate) async fn retain_original(
     transaction
         .execute(
             "UPDATE one_rag_documents SET file_path = ?, file_size = ?, mime_type = ?, \
-             content = '', content_revision = content_revision + 1, status = 'ready', chunk_count = 0, last_error = NULL WHERE id = ?",
-            &db_params![format!("{PREFIX}{key}"), data.len() as i64, mime(name), id],
+             content = '', content_revision = content_revision + 1, status = 'ready', chunk_count = 0, last_error = NULL, updated_at = ? WHERE id = ?",
+            &db_params![format!("{PREFIX}{key}"), data.len() as i64, mime(name), dream_core_common::now_ms(), id],
         )
         .await?;
     transaction
