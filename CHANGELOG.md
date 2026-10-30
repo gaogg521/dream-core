@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.1.99](https://github.com/gaogg521/dream-core/compare/v0.1.98...v0.1.99) (2026-10-30)
+
+
+### Features
+
+* **memory:** bring in only the saved memories a request mentions ([2ea61b1](https://github.com/gaogg521/dream-core/commit/2ea61b15b5713be5cc70f96a193e51b07a5f9aef))
+* **memory:** match a request against a memory's text too, and bring in only the matching sections of a merged file ([ee494be](https://github.com/gaogg521/dream-core/commit/ee494be0a11017bafd2086d7acb221b89b19ff04))
+* **memory:** share one memory across projectless conversations; recall Chinese company memory and say what was used ([8e942ee](https://github.com/gaogg521/dream-core/commit/8e942eec557aa8c5367c46c25155ebbd821ac672))
+* **org:** expose directory mapping ownership on DepartmentDto ([5b50288](https://github.com/gaogg521/dream-core/commit/5b50288eaf92c059931e9195a0b49c1122ea3b7a))
+* **platform:** built-in scenes default to a few recommended skills instead of "all" ([dc17ad9](https://github.com/gaogg521/dream-core/commit/dc17ad9fe46177a134a70c7e54f1b62ce984a3a5))
+* **scenes:** bundle practical work and life skills and refresh builtin MCP transports ([0e2ad92](https://github.com/gaogg521/dream-core/commit/0e2ad9234c2e36f0c7b6f50adc2a82dd508b6ed7))
+* **security:** 消息扫描总开关接入实际执行点 ([238221b](https://github.com/gaogg521/dream-core/commit/238221bc110acb542c02e974fd565bc042c7731a))
+* 记录知识文档编辑时间供近期目录排序 ([9cb02a9](https://github.com/gaogg521/dream-core/commit/9cb02a991cfbcce23df178117b1cd1a7507a8866))
+
+
+### Bug Fixes
+
+* automatically provision bounded scene MCP selections ([36b6cb8](https://github.com/gaogg521/dream-core/commit/36b6cb81ea309ccb4dbff6ce98bb44751af15829))
+* **mcp:** cap user MCP at 20, stop browser-auth storms, bound employee MCP separately ([f73307c](https://github.com/gaogg521/dream-core/commit/f73307cefc95141b520fdeb010ced5f9ef98aa7f))
+* **mcp:** harden OAuth discovery and cancellation ([6215881](https://github.com/gaogg521/dream-core/commit/621588104c2bc0b6815643166e34339606327c2e))
+* **mcp:** scope enterprise quotas and enforce batched atomic selection ([25a2a79](https://github.com/gaogg521/dream-core/commit/25a2a7929a12e397ad57fcb4fb174032ea1fd900))
+* **memory:** 修复旧记忆召回性能来源与ACP提示 ([5243b1e](https://github.com/gaogg521/dream-core/commit/5243b1e49d09ea85730aa0cd72c9a2a308c099a3))
+* **model-proxy:** log streams that end badly, cover long-task shapes in e2e ([80a215e](https://github.com/gaogg521/dream-core/commit/80a215ea989624c67182cf0a315c7fc5dc3109f0))
+* **org:** name the owning mapping and the unblock path in directory-overlap error ([a3908f1](https://github.com/gaogg521/dream-core/commit/a3908f1eb5a113a59be94c4284e0f89c6978eb97))
+* **org:** validate Feishu connector credentials through token exchange ([d99ccee](https://github.com/gaogg521/dream-core/commit/d99cceead1a440764457a36c0cb343bf746d4f98))
+* **org:** 分离项目组退出与企业成员关系并返回实际归属 ([99f1ac2](https://github.com/gaogg521/dream-core/commit/99f1ac2ad93e70a96cf630da0b0d2c45914c969a))
+* **runtime:** integrate Spawn cancellation cleanup and historical MCP QA fixture ([11f4717](https://github.com/gaogg521/dream-core/commit/11f4717fb2378c4df2bd413b85e0abd9bc026f42))
+* **vault:** 保险箱下载支持中文文件名并预检上传大小 ([e7cc0b8](https://github.com/gaogg521/dream-core/commit/e7cc0b85df446bc94076028544a66b6bd9b60ed4))
+
 ## [0.1.98](https://github.com/gaogg521/dream-core/compare/v0.1.97...v0.1.98) (2026-10-24)
 
 
