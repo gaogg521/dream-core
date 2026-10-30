@@ -463,15 +463,12 @@ async fn org_exit(
     actor: OrgActor,
     Json(body): Json<ExitBody>,
 ) -> Result<Json<ApiResponse<()>>, OrgError> {
-    let release_enterprise_id = state
+    let _ = state
         .service
         .leave(&actor.user_id, body.tenant_id.as_deref(), &body.exit_code)
         .await?;
-    // This was the caller's last project group under a company — also
-    // release the seat it issued them. See `enterprise_hooks` module docs.
-    if let (Some(sync), Some(eid)) = (state.company_seat_sync.as_ref(), release_enterprise_id.as_deref()) {
-        sync.release_company_member(&actor.user_id, eid).await;
-    }
+    // Leaving a collaboration group does not remove company membership.
+    // Company offboarding is a separate, explicitly authorized operation.
     Ok(Json(ApiResponse::ok(())))
 }
 
@@ -1026,19 +1023,11 @@ async fn admin_remove_user(
     RequireOrgAdmin(actor): RequireOrgAdmin,
     Path(user_id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, OrgError> {
-    let release_enterprise_id = state
+    let _ = state
         .service
         .remove_member(&actor.tenant_id, &actor.user_id, &user_id)
         .await?;
-    // This was their last project group under a company — also release the
-    // seat, so removing someone from their only group actually offboards
-    // them instead of leaving a stale company membership behind (previously
-    // only the separate project-group admin's OffboardMemberModal flow did
-    // this explicitly, by calling two endpoints; this makes it automatic
-    // and correct for the multi-group case too — see `enterprise_hooks`).
-    if let (Some(sync), Some(eid)) = (state.company_seat_sync.as_ref(), release_enterprise_id.as_deref()) {
-        sync.release_company_member(&user_id, eid).await;
-    }
+    // Removing a group membership is not company offboarding.
     Ok(Json(ApiResponse::ok(())))
 }
 

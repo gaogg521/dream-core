@@ -262,16 +262,17 @@ impl OrgService {
         let active = self.active_tenant_id(user_id).await?;
         let rows = self
             .db
-            .fetch_all_as::<(String, String, String, i64)>(
-                "SELECT t.id, t.name, uo.role, \n                    (SELECT COUNT(*) FROM one_user_org m WHERE m.tenant_id = t.id) AS member_count \n             FROM one_user_org uo JOIN one_tenants t ON t.id = uo.tenant_id \n             WHERE uo.user_id = ? ORDER BY uo.created_at ASC",
+            .fetch_all_as::<(String, String, String, i64, Option<String>)>(
+                "SELECT t.id, t.name, uo.role, \n                    (SELECT COUNT(*) FROM one_user_org m WHERE m.tenant_id = t.id) AS member_count, t.enterprise_id \n             FROM one_user_org uo JOIN one_tenants t ON t.id = uo.tenant_id \n             WHERE uo.user_id = ? ORDER BY uo.created_at ASC",
                 &db_params![user_id],
             )
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(tenant_id, name, role, member_count)| MyTenantDto {
+            .map(|(tenant_id, name, role, member_count, enterprise_id)| MyTenantDto {
                 is_active: tenant_id == active,
                 tenant_id,
+                enterprise_id,
                 name,
                 role,
                 member_count,
@@ -1927,11 +1928,9 @@ impl OrgService {
     /// Leave a project group. `tenant_id` selects which group to leave;
     /// `None` leaves the user's currently-active group. Scoped delete so a
     /// user who belongs to several groups only leaves the one named.
-    /// Leave a project group. Returns `Some(enterprise_id)` when this was
-    /// the user's last group under a company — the caller (route layer)
-    /// should then also release the company seat via
-    /// `CompanySeatSync::release_company_member`. `None` for a standalone
-    /// group, or when other memberships under the same company remain.
+    /// Leave a project group without changing company membership or login.
+    /// The optional company id is retained for compatibility with existing
+    /// callers; it is informational and must not trigger company offboarding.
     pub async fn leave(
         &self,
         user_id: &str,
@@ -1967,7 +1966,8 @@ impl OrgService {
         // If the group just left was the active one, repoint to another
         // membership (or clear the pointer so resolution falls back to default).
         self.reselect_active_after_leave(user_id, &membership.tenant_id).await?;
-        self.invalidate_user_tokens(user_id).await?;
+        // Tenant and role are resolved from current memberships on each request.
+        // A voluntary group exit must not sign the user out of the server.
         let username = self.lookup_username(user_id).await;
         self.audit(
             &membership.tenant_id,
@@ -2033,14 +2033,10 @@ impl OrgService {
 
     /// Admin-initiated removal of another member from `tenant_id` (P0-2).
     ///
-    /// This is `leave()` performed *by an administrator on someone else*, and
-    /// it deliberately mirrors that method's cleanup so a removed member is
-    /// left in exactly the same state as one who quit: the membership row is
-    /// deleted, a dangling active-tenant pointer is repointed, and the target's
-    /// JWT secret is rotated so **existing sessions stop working immediately**
-    /// rather than lingering until token expiry. Without that rotation a
-    /// just-offboarded employee would keep a working client — the whole point
-    /// of having this endpoint.
+    /// Remove a project-group membership administratively. Unlike voluntary
+    /// leave, this also rotates the target's credentials as an administrative
+    /// security action. It never removes company membership: company
+    /// offboarding is a separate operation with its own authorization.
     ///
     /// Differs from `leave()` in that no exit password is required (the admin
     /// is the authority here, not the member) and three guards apply instead.
@@ -2111,13 +2107,12 @@ impl OrgService {
     }
 
     /// After removing `user_id` from `left_tenant_id` (row already deleted),
-    /// whether the company-side seat should also be released: `Some(enterprise_id)`
+    /// report `Some(enterprise_id)`
     /// when the group belonged to a company AND the user has no other
     /// membership left under that same company; `None` when the group was
     /// standalone (no `enterprise_id`) or the user still belongs to another
-    /// group under it. Shared by `leave` and `remove_member` — see
-    /// `CompanySeatSync::release_company_member`'s doc comment for why this
-    /// check exists.
+    /// group under it. Retained as an informational result for compatibility;
+    /// it does not authorize removing company membership or resource seats.
     async fn enterprise_seat_to_release(
         &self,
         user_id: &str,
@@ -2274,8 +2269,10 @@ impl OrgService {
         let tenant_id = self.tenant_of(user_id).await?;
         let role = self.effective_role(user_id).await?;
         let is_enterprise = is_enterprise_tenant_id(&tenant_id);
+        let tenant = self.get_tenant(&tenant_id).await?;
+        let enterprise_id = tenant.as_ref().and_then(|tenant| tenant.enterprise_id.clone());
         let (tenant_name, member_count) = if is_enterprise {
-            let name = self.get_tenant(&tenant_id).await?.map(|t| t.name);
+            let name = tenant.map(|tenant| tenant.name);
             let count = self.member_count(&tenant_id).await?;
             (name, count)
         } else {
@@ -2283,6 +2280,7 @@ impl OrgService {
         };
         Ok(OrgContextDto {
             tenant_id,
+            enterprise_id,
             tenant_name,
             role,
             is_enterprise,
@@ -3730,6 +3728,28 @@ mod tests {
         let after = repo.find_by_id(&user_id).await.unwrap().unwrap();
         assert_eq!(after.session_generation, before.session_generation + 1);
         assert_ne!(after.jwt_secret, before.jwt_secret);
+    }
+
+    #[tokio::test]
+    async fn leaving_a_project_group_preserves_login_and_reports_group_ownership() {
+        let (_db, service, repo) = setup().await;
+        let member = create_user(&repo, "independent-collaborator").await;
+        let (group, _, invite) = service
+            .create_tenant_for_enterprise("company-a", "Delivery team", SYSTEM_DEFAULT_USER_ID, None)
+            .await
+            .unwrap();
+        service.join_with_invite(&member, &invite).await.unwrap();
+        let context = service.context(&member).await.unwrap();
+        assert_eq!(context.enterprise_id.as_deref(), Some("company-a"));
+        let groups = service.list_memberships(&member).await.unwrap();
+        assert_eq!(groups[0].enterprise_id.as_deref(), Some("company-a"));
+        let before = repo.find_by_id(&member).await.unwrap().unwrap();
+        service.leave(&member, Some(&group), "").await.unwrap();
+        let after = repo.find_by_id(&member).await.unwrap().unwrap();
+        assert_eq!(before.session_generation, after.session_generation);
+        assert_eq!(before.jwt_secret, after.jwt_secret);
+        assert!(!service.context(&member).await.unwrap().is_enterprise);
+        assert!(service.context(&member).await.unwrap().enterprise_id.is_none());
     }
 
     #[tokio::test]
@@ -5496,6 +5516,12 @@ mod tests {
         );
         assert_eq!(service.effective_role(member).await.unwrap(), ROLE_MEMBER);
         assert_eq!(service.member_count(&tenant_id).await.unwrap(), 2);
+        assert!(service.context(member).await.unwrap().enterprise_id.is_none());
+        assert!(
+            service.list_memberships(member).await.unwrap()[0]
+                .enterprise_id
+                .is_none()
+        );
 
         // Double join rejected.
         let err = service.join_with_invite(member, &display).await.unwrap_err();

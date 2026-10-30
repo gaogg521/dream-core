@@ -142,6 +142,8 @@ pub struct EnterpriseTenantDto {
 #[serde(rename_all = "camelCase")]
 pub struct MyTenantDto {
     pub tenant_id: String,
+    /// Owning company, or None for an independent collaboration group.
+    pub enterprise_id: Option<String>,
     pub name: String,
     pub role: String,
     pub member_count: i64,
@@ -234,8 +236,12 @@ pub struct UserOrgRow {
 #[serde(rename_all = "camelCase")]
 pub struct OrgContextDto {
     pub tenant_id: String,
+    /// Group ownership, independent of the caller's employment or SSO identity.
+    pub enterprise_id: Option<String>,
     pub tenant_name: Option<String>,
     pub role: String,
+    /// Legacy wire name: true means a non-default project-group membership,
+    /// not verified employment, company ownership, or a licensed deployment.
     pub is_enterprise: bool,
     pub member_count: i64,
 }

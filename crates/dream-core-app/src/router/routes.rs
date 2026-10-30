@@ -551,23 +551,6 @@ impl dream_domain_org::CompanySeatSync for CompanySeatSyncAdapter {
             tracing::warn!(%error, user_id, enterprise_id, "company seat sync failed; project-group join continues");
         }
     }
-
-    async fn release_company_member(&self, user_id: &str, enterprise_id: &str) {
-        if let Err(error) = self.0.leave_company(enterprise_id, user_id).await {
-            // MemberNotFound is expected and not worth a warning: not every
-            // project-group joiner ever synced into the company (the hook
-            // this mirrors is best-effort too), and LastCompanyAdmin is a
-            // real, intentional refusal — the seat is deliberately kept
-            // occupied rather than leaving the company with no admin.
-            if !matches!(
-                error,
-                dream_domain_enterprise::EnterpriseError::MemberNotFound
-                    | dream_domain_enterprise::EnterpriseError::LastCompanyAdmin
-            ) {
-                tracing::warn!(%error, user_id, enterprise_id, "company seat release failed; project-group leave continues");
-            }
-        }
-    }
 }
 
 /// Re-encrypts SSO provider secrets still stored as plaintext by builds that
