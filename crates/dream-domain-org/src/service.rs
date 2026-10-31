@@ -1967,7 +1967,15 @@ impl OrgService {
         // membership (or clear the pointer so resolution falls back to default).
         self.reselect_active_after_leave(user_id, &membership.tenant_id).await?;
         // Tenant and role are resolved from current memberships on each request.
-        // A voluntary group exit must not sign the user out of the server.
+        // A voluntary group exit must not sign the user out of the server —
+        // unless it was the last company membership (offboarding, below).
+        let offboarded = self
+            .offboard_if_last_company_membership(user_id, &membership.tenant_id)
+            .await?;
+        if offboarded {
+            // The account just left the company entirely: kill the session.
+            self.invalidate_user_tokens(user_id).await?;
+        }
         let username = self.lookup_username(user_id).await;
         self.audit(
             &membership.tenant_id,
@@ -2088,6 +2096,8 @@ impl OrgService {
             .await?;
         self.reselect_active_after_leave(target_user_id, tenant_id).await?;
         self.invalidate_user_tokens(target_user_id).await?;
+        self.offboard_if_last_company_membership(target_user_id, tenant_id)
+            .await?;
 
         // Attributed to the ACTOR, with the target in `resource` — same
         // rationale as `set_user_role`: attributing it to the target would
@@ -2104,6 +2114,49 @@ impl OrgService {
         .await;
         let release_enterprise_id = self.enterprise_seat_to_release(target_user_id, tenant_id).await?;
         Ok(release_enterprise_id)
+    }
+
+    /// Product decision (2026-10-31): leaving/removing the LAST company
+    /// membership means offboarding — a local account that no longer belongs
+    /// to the company may no longer sign in to this server. The employee
+    /// profile is kept for audit and seat accounting; `identity_of` hides it
+    /// while the account is disabled, and re-creating the member (same
+    /// username) reactivates the account. External-collaborator flows re-run
+    /// through the same reactivation.
+    /// Returns `true` when the account was disabled by this call.
+    async fn offboard_if_last_company_membership(&self, user_id: &str, left_tenant_id: &str) -> Result<bool, OrgError> {
+        let left_enterprise_id: Option<String> = self
+            .db
+            .fetch_optional_scalar::<Option<String>>(
+                "SELECT enterprise_id FROM one_tenants WHERE id = ?",
+                &db_params![left_tenant_id],
+            )
+            .await?
+            .flatten();
+        let Some(enterprise_id) = left_enterprise_id else {
+            return Ok(false);
+        };
+        let still_member_elsewhere: i64 = self
+            .db
+            .fetch_one_scalar(
+                "SELECT COUNT(*) FROM one_user_org uo \
+             JOIN one_tenants t ON t.id = uo.tenant_id \
+             WHERE t.enterprise_id = ? AND uo.user_id = ?",
+                &db_params![&enterprise_id, user_id],
+            )
+            .await?;
+        if still_member_elsewhere > 0 {
+            return Ok(false);
+        }
+        let disabled = self
+            .db
+            .execute(
+                "UPDATE users SET status = 'disabled', updated_at = ? \
+                 WHERE id = ? AND user_type = 'local' AND status = 'active'",
+                &db_params![now_ms() as i64, user_id],
+            )
+            .await?;
+        Ok(disabled > 0)
     }
 
     /// After removing `user_id` from `left_tenant_id` (row already deleted),
@@ -2601,31 +2654,48 @@ impl OrgService {
         if let Err(e) = dream_core_auth::validate_password(password) {
             return Err(OrgError::BadRequest(format!("初始密码不符合要求：{e}")));
         }
-        let taken: i64 = self
+        let taken: Option<(String, String)> = self
             .db
-            .fetch_one_scalar("SELECT COUNT(*) FROM users WHERE username = ?", &db_params![username])
+            .fetch_optional_as("SELECT id, status FROM users WHERE username = ?", &db_params![username])
             .await?;
-        if taken > 0 {
-            return Err(OrgError::BadRequest(format!("用户名「{username}」已存在")));
-        }
+        // 重新雇用：同名本地账号若已因移除被停用，重设凭据并复活，而不是报错堵死管理员。
+        let reactivated_id: Option<String> = match &taken {
+            Some((id, status)) if status == "disabled" => {
+                let password_hash = dream_core_auth::hash_password(password)
+                    .map_err(|e| OrgError::BadRequest(format!("密码加密失败: {e}")))?;
+                self.db
+                    .execute(
+                        "UPDATE users SET password_hash = ?, status = 'active', session_generation = session_generation + 1, updated_at = ? WHERE id = ?",
+                        &db_params![&password_hash, now_ms() as i64, id],
+                    )
+                    .await?;
+                Some(id.clone())
+            }
+            Some(_) => return Err(OrgError::BadRequest(format!("用户名「{username}」已存在"))),
+            None => None,
+        };
         let password_hash =
             dream_core_auth::hash_password(password).map_err(|e| OrgError::BadRequest(format!("密码加密失败: {e}")))?;
 
-        let user_id = dream_core_common::generate_prefixed_id("user");
+        let user_id = reactivated_id
+            .clone()
+            .unwrap_or_else(|| dream_core_common::generate_prefixed_id("user"));
         let now = now_ms() as i64;
         let mut tx = self.db.begin().await?;
-        let user_sql = match tx.backend() {
-            DbBackend::Sqlite => {
-                "INSERT INTO users (id, user_type, username, password_hash, status, session_generation, created_at, updated_at) \
-                 VALUES (?, 'local', ?, ?, 'active', 0, ?, ?)"
-            }
-            DbBackend::MySql => {
-                "INSERT INTO users (id, user_type, username, password_hash, status, session_generation, created_at, updated_at) \
-                 VALUES (?, 'local', ?, ?, 'active', 0, ?, ?)"
-            }
-        };
-        tx.execute(user_sql, &db_params![&user_id, username, &password_hash, now, now])
-            .await?;
+        if reactivated_id.is_none() {
+            let user_sql = match tx.backend() {
+                DbBackend::Sqlite => {
+                    "INSERT INTO users (id, user_type, username, password_hash, status, session_generation, created_at, updated_at) \
+                     VALUES (?, 'local', ?, ?, 'active', 0, ?, ?)"
+                }
+                DbBackend::MySql => {
+                    "INSERT INTO users (id, user_type, username, password_hash, status, session_generation, created_at, updated_at) \
+                     VALUES (?, 'local', ?, ?, 'active', 0, ?, ?)"
+                }
+            };
+            tx.execute(user_sql, &db_params![&user_id, username, &password_hash, now, now])
+                .await?;
+        }
         let member_sql = match tx.backend() {
             DbBackend::Sqlite => {
                 "INSERT INTO one_user_org (user_id, tenant_id, role, display_name, created_at, updated_at) \
@@ -3739,6 +3809,13 @@ mod tests {
             .await
             .unwrap();
         service.join_with_invite(&member, &invite).await.unwrap();
+        // A second company group keeps the member inside the company after
+        // leaving one group — offboarding only fires on the LAST membership.
+        let (_, _, second_invite) = service
+            .create_tenant_for_enterprise("company-a", "Research team", SYSTEM_DEFAULT_USER_ID, None)
+            .await
+            .unwrap();
+        service.join_with_invite(&member, &second_invite).await.unwrap();
         let context = service.context(&member).await.unwrap();
         assert_eq!(context.enterprise_id.as_deref(), Some("company-a"));
         let groups = service.list_memberships(&member).await.unwrap();
@@ -3748,8 +3825,105 @@ mod tests {
         let after = repo.find_by_id(&member).await.unwrap().unwrap();
         assert_eq!(before.session_generation, after.session_generation);
         assert_eq!(before.jwt_secret, after.jwt_secret);
+        assert_eq!(after.status, dream_core_db::models::UserStatus::Active);
+        assert!(service.context(&member).await.unwrap().is_enterprise);
+        assert!(service.context(&member).await.unwrap().enterprise_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn leaving_the_last_company_membership_offboards_and_disables_the_account() {
+        let (_db, service, repo) = setup().await;
+        let member = create_user(&repo, "resigning").await;
+        let (group, _, invite) = service
+            .create_tenant_for_enterprise("company-a", "Delivery team", SYSTEM_DEFAULT_USER_ID, None)
+            .await
+            .unwrap();
+        service.join_with_invite(&member, &invite).await.unwrap();
+        let before = repo.find_by_id(&member).await.unwrap().unwrap();
+        service.leave(&member, Some(&group), "").await.unwrap();
+        let after = repo.find_by_id(&member).await.unwrap().unwrap();
+        assert_eq!(after.status, dream_core_db::models::UserStatus::Disabled);
+        assert_eq!(after.session_generation, before.session_generation + 1);
         assert!(!service.context(&member).await.unwrap().is_enterprise);
-        assert!(service.context(&member).await.unwrap().enterprise_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn removing_a_company_member_disables_the_account_and_rehire_reactivates() {
+        let (db, service, repo) = setup().await;
+        let (company_group, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        sqlx::query("UPDATE one_tenants SET enterprise_id = 'ent1' WHERE id = ?")
+            .bind(&company_group)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let alice = service
+            .admin_create_member(&company_group, "alice", "Password!234", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.find_by_id(&alice.user_id).await.unwrap().unwrap().status,
+            dream_core_db::models::UserStatus::Active
+        );
+        service
+            .remove_member(&company_group, SYSTEM_DEFAULT_USER_ID, &alice.user_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.find_by_id(&alice.user_id).await.unwrap().unwrap().status,
+            dream_core_db::models::UserStatus::Disabled
+        );
+        // 重新雇用：同名账号复活并回到组里，而不是报「已存在」堵死管理员。
+        let rehired = service
+            .admin_create_member(&company_group, "alice", "NewPass#234", Some("Alice"))
+            .await
+            .unwrap();
+        assert_eq!(rehired.user_id, alice.user_id);
+        let back = repo.find_by_id(&alice.user_id).await.unwrap().unwrap();
+        assert_eq!(back.status, dream_core_db::models::UserStatus::Active);
+        assert!(
+            service
+                .list_memberships(&alice.user_id)
+                .await
+                .unwrap()
+                .iter()
+                .any(|m| m.tenant_id == company_group)
+        );
+    }
+
+    #[tokio::test]
+    async fn recreating_an_active_username_is_still_rejected() {
+        let (_db, service, _repo) = setup().await;
+        let (company_group, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        service
+            .admin_create_member(&company_group, "alice", "Password!234", None)
+            .await
+            .unwrap();
+        let err = service
+            .admin_create_member(&company_group, "alice", "Password!234", None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("已存在"));
+    }
+
+    #[tokio::test]
+    async fn removing_from_a_standalone_group_keeps_the_account_active() {
+        let (_db, service, repo) = setup().await;
+        let (tenant_id, _) = service
+            .create_tenant(SYSTEM_DEFAULT_USER_ID, "Independent")
+            .await
+            .unwrap();
+        let contractor = service
+            .admin_create_member(&tenant_id, "contractor", "Password!234", None)
+            .await
+            .unwrap();
+        service
+            .remove_member(&tenant_id, SYSTEM_DEFAULT_USER_ID, &contractor.user_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.find_by_id(&contractor.user_id).await.unwrap().unwrap().status,
+            dream_core_db::models::UserStatus::Active
+        );
     }
 
     #[tokio::test]

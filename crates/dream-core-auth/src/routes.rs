@@ -715,6 +715,13 @@ async fn login_handler(
     }
 
     let user = found_user.ok_or_else(|| ApiError::Unauthorized("Invalid username or password".into()))?;
+    if user.status != UserStatus::Active {
+        // Offboarded members keep their row for audit but must not sign in.
+        // A distinct message is safe here: the person knows the account existed.
+        return Err(ApiError::Forbidden(
+            "账号已被企业管理员停用，如需恢复请联系管理员。".into(),
+        ));
+    }
     if let Some(gate) = &state.login_risk {
         gate.record_success(&req.username).await;
     }

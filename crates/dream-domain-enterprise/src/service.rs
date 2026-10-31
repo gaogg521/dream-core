@@ -713,7 +713,9 @@ impl EnterpriseService {
         let member_count: i64 = self
             .db
             .fetch_one_scalar(
-                "SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ?",
+                "SELECT COUNT(*) FROM one_enterprise_members m \
+             WHERE m.enterprise_id = ? \
+               AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = m.user_id AND u.status = 'disabled')",
                 &db_params![&company_id],
             )
             .await?;
@@ -1075,7 +1077,8 @@ impl EnterpriseService {
                 "SELECT e.provider, e.external_id, e.display_name, m.display_name, m.department, m.job_title, m.employee_no, m.enterprise_email, m.role \
              FROM one_enterprise_members m \
              JOIN one_enterprises e ON e.id = m.enterprise_id \
-             WHERE m.user_id = ?",
+             WHERE m.user_id = ? \
+               AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = m.user_id AND u.status = 'disabled')",
                 &db_params![user_id],
             )
             .await?;
