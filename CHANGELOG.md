@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.101](https://github.com/gaogg521/dream-core/compare/v0.1.100...v0.1.101) (2026-10-31)
+
+
+### Bug Fixes
+
+* **security:** 灰盒审计修复——代理头信任模型对齐部署拓扑+治理面爆破防护+权限对称 ([b803b25](https://github.com/gaogg521/dream-core/commit/b803b2538408fd128fa3daeebbf8c72866fcf15a))
+
 ## [0.1.100](https://github.com/gaogg521/dream-core/compare/v0.1.99...v0.1.100) (2026-10-31)
 
 
