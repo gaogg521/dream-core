@@ -1,5 +1,6 @@
 #![allow(clippy::disallowed_types)]
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,7 +29,7 @@ use dream_core_db::{
 use crate::error::AuthError;
 use crate::extract::extract_token_from_headers;
 use crate::mfa::MfaDecision;
-use crate::middleware::{AuthIdentityMode, AuthState, CurrentUser, auth_middleware, is_webui_proxied};
+use crate::middleware::{AuthIdentityMode, AuthState, CurrentUser, PeerAddr, auth_middleware, is_webui_proxied};
 use crate::password::{
     GENERATED_PASSWORD_LEN, dummy_password_hash, generate_password, hash_password, verify_password_timed,
 };
@@ -641,6 +642,7 @@ async fn revoke_external_session_handler(
 async fn login_handler(
     State(state): State<AuthRouterState>,
     headers: HeaderMap,
+    PeerAddr(peer): PeerAddr,
     body: Result<Json<LoginRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     if state.dreampro_mode {
@@ -729,7 +731,7 @@ async fn login_handler(
     // 登录二次认证闸（判定矩阵见 mfa.rs）：需要第二步时签发一次性挑战，
     // 不带 Set-Cookie —— 正式登录态只在 MFA 通过后签发。
     if let Some(mfa) = state.mfa.as_ref() {
-        let ip = client_ip(&headers);
+        let ip = client_ip(&headers, peer);
         if let MfaDecision::Challenge(purpose) =
             mfa.decide(&user).await.map_err(|e| ApiError::BadRequest(e.message()))?
         {
@@ -761,7 +763,7 @@ async fn login_handler(
     )
     .await?;
 
-    record_completed_login(&state, &user.id, "password", "web", &headers).await?;
+    record_completed_login(&state, &user.id, "password", "web", &headers, peer).await?;
 
     let resp = LoginResponse::new(
         PublicUser {
@@ -815,21 +817,14 @@ pub struct MfaEnrollInfo {
     pub secret: String,
 }
 
-/// 网关/代理场景下尽力提取来源 IP（审计用，取不到则 None）。
-fn client_ip(headers: &HeaderMap) -> String {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-        .or_else(|| {
-            headers
-                .get("x-real-ip")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_owned)
-        })
+/// 网关/代理场景下尽力提取来源 IP（审计用，取不到则 "unknown"）。
+///
+/// 解析规则统一走 [`crate::audit_client_ip`]（信任模型与中间件一致：
+/// WebUI 代理头 > 反代场景的头解析 > socket 对端兜底），MFA 挑战审计与
+/// 登录审计对同一请求必须给出同一个来源。
+fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
+    crate::audit_client_ip(headers, peer.map(|addr| addr.ip()))
+        .map(|ip| ip.to_string())
         .unwrap_or_else(|| "unknown".into())
 }
 
@@ -839,8 +834,9 @@ async fn record_completed_login(
     method: &str,
     client: &str,
     headers: &HeaderMap,
+    peer: Option<SocketAddr>,
 ) -> Result<(), ApiError> {
-    let (ip, user_agent) = crate::login_request_metadata(headers);
+    let (ip, user_agent) = crate::login_request_metadata(headers, peer);
     state
         .user_repo
         .record_login_context(user_id, method, client, ip.as_deref(), user_agent.as_deref())
@@ -854,13 +850,14 @@ async fn record_completed_login(
 async fn mfa_verify_handler(
     State(state): State<AuthRouterState>,
     headers: HeaderMap,
+    PeerAddr(peer): PeerAddr,
     body: Result<Json<MfaVerifyRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let Some(mfa) = state.mfa.as_ref() else {
         return Err(ApiError::NotFound("MFA is not enabled on this deployment".into()));
     };
     let Json(req) = body.map_err(ApiError::from)?;
-    let ip = client_ip(&headers);
+    let ip = client_ip(&headers, peer);
     let (login_method, desktop) = mfa
         .login_source(&req.mfa_token)
         .await
@@ -913,6 +910,7 @@ async fn mfa_verify_handler(
         &login_method,
         if desktop { "desktop" } else { "web" },
         &headers,
+        peer,
     )
     .await?;
     let can_change_password = !state
@@ -1004,11 +1002,12 @@ async fn mfa_self_enroll_handler(
     State(state): State<AuthRouterState>,
     Extension(user): Extension<CurrentUser>,
     headers: HeaderMap,
+    PeerAddr(peer): PeerAddr,
 ) -> Result<Json<ApiResponse<MfaSelfEnrollStarted>>, ApiError> {
     let Some(mfa) = state.mfa.as_ref() else {
         return Err(ApiError::NotFound("MFA is not enabled on this deployment".into()));
     };
-    let ip = client_ip(&headers);
+    let ip = client_ip(&headers, peer);
     match mfa.self_enroll_start(&user.id, Some(ip.as_str())).await {
         Ok((mfa_token, expires_at)) => Ok(Json(ApiResponse::ok(MfaSelfEnrollStarted { mfa_token, expires_at }))),
         Err(e @ crate::mfa::MfaError::AlreadyEnrolled) => Err(ApiError::Conflict(e.message())),
@@ -1431,6 +1430,8 @@ async fn ws_token_handler(
 
 async fn qr_login_handler(
     State(state): State<AuthRouterState>,
+    headers: HeaderMap,
+    PeerAddr(peer): PeerAddr,
     body: Result<Json<QrLoginRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     if state.dreampro_mode {
@@ -1498,10 +1499,9 @@ async fn qr_login_handler(
             .map_err(|e| ApiError::Internal(format!("Failed to audit device session: {e}")))?;
     }
 
-    // Update last login (best-effort)
-    if let Err(e) = state.user_repo.update_last_login(&user.id).await {
-        tracing::warn!("Failed to update last login for {}: {e}", user.id);
-    }
+    // 扫码登录与密码登录走同一条审计链：用户表最近登录字段 + 登录事件流水
+    // （此前只更新时间戳，成员页最近登录列对扫码登录永远显示「未记录」）。
+    record_completed_login(&state, &user.id, "qr", "web", &headers, peer).await?;
     let resp = LoginResponse::new(
         PublicUser {
             id: user.id,

@@ -1,9 +1,10 @@
 #![allow(clippy::disallowed_types)]
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Request, State};
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderValue, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -12,8 +13,24 @@ use dashmap::DashMap;
 use dream_core_common::ApiError;
 
 use crate::error::AuthError;
-use crate::extract::extract_client_ip;
 use crate::middleware::CurrentUser;
+
+/// 限流分桶键的来源 IP：与登录审计同一条 [`crate::audit_client_ip`] 解析链。
+///
+/// 此前直接取 `X-Forwarded-For` 首条——那一条由客户端说了算，攻击者每次
+/// 请求换一个伪造 IP 就能无限换桶，把「5 次失败锁 15 分钟」的爆破闸整个
+/// 架空。走统一解析后，公网直连（头可伪造）一律落 socket 对端桶，只有
+/// 确认经过反代（对端为 loopback/私网）才采信头，且取最近一跳追加的最右
+/// 可解析条目。
+fn client_ip_for_limit(request: &Request) -> String {
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| addr.ip());
+    crate::audit_client_ip(request.headers(), peer)
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| "unknown".into())
+}
 
 /// Rate limit entry tracking request count within a fixed time window.
 struct RateLimitEntry {
@@ -164,7 +181,7 @@ pub async fn auth_rate_limit_middleware(
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let ip = extract_client_ip(&request);
+    let ip = client_ip_for_limit(&request);
     if limiter.check(&ip).is_err() {
         return Ok(rate_limited_response(&limiter, &ip));
     }
@@ -184,7 +201,7 @@ pub async fn api_rate_limit_middleware(
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let ip = extract_client_ip(&request);
+    let ip = client_ip_for_limit(&request);
     if limiter.check_and_increment(&ip).is_err() {
         return Ok(rate_limited_response(&limiter, &ip));
     }
@@ -204,7 +221,7 @@ pub async fn authenticated_action_rate_limit_middleware(
         .extensions()
         .get::<CurrentUser>()
         .map(|u| format!("user:{}", u.id))
-        .unwrap_or_else(|| format!("ip:{}", extract_client_ip(&request)));
+        .unwrap_or_else(|| format!("ip:{}", client_ip_for_limit(&request)));
     if limiter.check_and_increment(&key).is_err() {
         return Ok(rate_limited_response(&limiter, &key));
     }

@@ -3,6 +3,7 @@
 //! Mount behind the upstream auth middleware for admin routes; authorize
 //! + callback are public (OAuth can't run with a session cookie yet).
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -13,7 +14,7 @@ use axum::{Extension, Form, Json, Router};
 use serde::{Deserialize, Serialize};
 
 use dream_core_api_types::ApiResponse;
-use dream_core_auth::CurrentUser;
+use dream_core_auth::{CurrentUser, PeerAddr};
 
 use crate::error::SsoError;
 use crate::models::{SsoProviderConfigDto, SsoProviderKind, SsoProviderStatusDto, UpdateProviderBody};
@@ -468,11 +469,12 @@ async fn callback(
     Path(provider): Path<String>,
     Query(query): Query<CallbackQuery>,
     headers: HeaderMap,
+    PeerAddr(peer): PeerAddr,
 ) -> Result<Response, SsoError> {
     let provider = SsoProviderKind::parse(&provider)
         .ok_or_else(|| SsoError::BadRequest(format!("unknown provider: {provider}")))?;
     let secure = state.service.cookie_secure();
-    let mut response = callback_inner(state, provider, query, &headers).await?;
+    let mut response = callback_inner(state, provider, query, &headers, peer).await?;
     if let Ok(clear) = header::HeaderValue::from_str(&clear_state_cookie_header(provider, secure)) {
         response.headers_mut().append(header::SET_COOKIE, clear);
     }
@@ -484,6 +486,7 @@ async fn callback_inner(
     provider: SsoProviderKind,
     query: CallbackQuery,
     headers: &HeaderMap,
+    peer: Option<SocketAddr>,
 ) -> Result<Response, SsoError> {
     let code = query.authorization_code()?;
     let state_token = query
@@ -617,7 +620,7 @@ async fn callback_inner(
         .service
         .issue_session(&user_id, &username, entry.redirect_target.clone(), entry.desktop)
         .await?;
-    record_successful_login(&state, &user_id, provider, headers, entry.desktop).await?;
+    record_successful_login(&state, &user_id, provider, headers, entry.desktop, peer).await?;
 
     if entry.desktop {
         // Desktop deep-link: pass token via OS protocol handler.
@@ -682,6 +685,7 @@ struct SamlCallbackForm {
 async fn saml_callback(
     State(state): State<OneSsoRouterState>,
     headers: HeaderMap,
+    PeerAddr(peer): PeerAddr,
     Form(form): Form<SamlCallbackForm>,
 ) -> Result<Response, SsoError> {
     let state_token = form
@@ -712,7 +716,7 @@ async fn saml_callback(
     }
     let profile =
         crate::providers::saml::SamlProvider::complete(state_token, &form.saml_response, form.relay_state.as_deref())?;
-    let mut response = finish_external_login(&state, entry, SsoProviderKind::Saml, profile, &headers).await?;
+    let mut response = finish_external_login(&state, entry, SsoProviderKind::Saml, profile, &headers, peer).await?;
     if let Ok(cookie) = clear_state_cookie_header(SsoProviderKind::Saml, state.service.cookie_secure()).parse() {
         response.headers_mut().append(header::SET_COOKIE, cookie);
     }
@@ -754,6 +758,7 @@ async fn finish_external_login(
     provider: SsoProviderKind,
     profile: crate::providers::ProviderUserInfo,
     headers: &HeaderMap,
+    peer: Option<SocketAddr>,
 ) -> Result<Response, SsoError> {
     let display_name = profile.preferred_username.clone();
     let org_external_id = profile.org_external_id.clone();
@@ -809,7 +814,7 @@ async fn finish_external_login(
         .service
         .issue_session(&user_id, &username, entry.redirect_target.clone(), entry.desktop)
         .await?;
-    record_successful_login(state, &user_id, provider, headers, entry.desktop).await?;
+    record_successful_login(state, &user_id, provider, headers, entry.desktop, peer).await?;
     if entry.desktop {
         let params = format!(
             "token={}&userId={}&username={}&name={}",
@@ -951,6 +956,7 @@ struct LdapLoginDto {
 async fn ldap_login(
     State(state): State<OneSsoRouterState>,
     headers: HeaderMap,
+    PeerAddr(peer): PeerAddr,
     Json(body): Json<LdapLoginBody>,
 ) -> Result<Response, SsoError> {
     let provider = SsoProviderKind::Ldap;
@@ -1051,7 +1057,7 @@ async fn ldap_login(
         .service
         .issue_session(&user_id, &username, redirect_target, false)
         .await?;
-    record_successful_login(&state, &user_id, provider, &headers, false).await?;
+    record_successful_login(&state, &user_id, provider, &headers, false, peer).await?;
 
     Ok((
         [(header::SET_COOKIE, session.cookie.clone())],
@@ -1074,8 +1080,9 @@ async fn record_successful_login(
     provider: SsoProviderKind,
     headers: &HeaderMap,
     desktop: bool,
+    peer: Option<SocketAddr>,
 ) -> Result<(), SsoError> {
-    let (ip, user_agent) = dream_core_auth::login_request_metadata(headers);
+    let (ip, user_agent) = dream_core_auth::login_request_metadata(headers, peer);
     state
         .service
         .record_login_context(
@@ -1348,6 +1355,7 @@ mod tests {
         let response = saml_callback(
             State(state.clone()),
             HeaderMap::new(),
+            PeerAddr(None),
             Form(SamlCallbackForm {
                 saml_response: "valid response forwarded from another browser".into(),
                 relay_state: Some(token.clone()),
@@ -1362,6 +1370,7 @@ mod tests {
             let error = saml_callback(
                 State(state.clone()),
                 headers,
+                PeerAddr(None),
                 Form(SamlCallbackForm {
                     saml_response: "forwarded assertion".into(),
                     relay_state: Some(token.clone()),

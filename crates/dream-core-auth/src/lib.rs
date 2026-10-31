@@ -7,7 +7,7 @@ mod error;
 mod extract;
 mod jwt;
 mod login_context;
-pub use login_context::{login_audit_event, login_request_metadata};
+pub use login_context::{audit_client_ip, login_audit_event, login_request_metadata};
 pub mod mfa;
 pub use dream_core_db::MfaMode;
 pub use mfa::{MfaDecision, MfaService};
@@ -59,8 +59,9 @@ pub use csrf::csrf_middleware;
 // Auth middleware
 pub use middleware::{
     ApiKeyGate, ApiKeyVerdict, AuthIdentityMode, AuthState, CLIENT_IP_HEADER, CurrentUser, IRuntimeTokenVerifier,
-    IpAllowlistGate, NoopIpAllowlistGate, RUNTIME_CONVERSATION_ID_HEADER, RUNTIME_TOKEN_HEADER, RUNTIME_USER_ID_HEADER,
-    WEBUI_PROXY_HEADER, WEBUI_PROXY_VALUE, auth_middleware, caller_ip, is_webui_proxied, local_auth_middleware,
+    IpAllowlistGate, NoopIpAllowlistGate, PeerAddr, RUNTIME_CONVERSATION_ID_HEADER, RUNTIME_TOKEN_HEADER,
+    RUNTIME_USER_ID_HEADER, WEBUI_PROXY_HEADER, WEBUI_PROXY_VALUE, auth_middleware, caller_ip, is_webui_proxied,
+    local_auth_middleware,
 };
 
 // QR token store

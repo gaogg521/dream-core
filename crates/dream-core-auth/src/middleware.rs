@@ -110,6 +110,29 @@ fn resolve_caller_ip(request: &Request) -> Option<IpAddr> {
     )
 }
 
+/// Handler-side extractor for the direct TCP peer address, `None` when the
+/// service was not started with `into_make_service_with_connect_info`
+/// (direct handler invocations in tests, exotic runtimes).
+///
+/// `Option<ConnectInfo<SocketAddr>>` cannot be used as a handler parameter
+/// directly: axum 0.8 requires `OptionalFromRequest`, which `ConnectInfo`
+/// does not implement. This reads the same request extension the middleware
+/// does, so the value is identical whenever it exists.
+pub struct PeerAddr(pub Option<SocketAddr>);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for PeerAddr {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut axum::http::request::Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(Self(
+            parts
+                .extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|ConnectInfo(addr)| *addr),
+        ))
+    }
+}
+
 /// [`resolve_caller_ip`] over the parts a handler can extract, so a handler
 /// that must reason about the caller's own address (the allowlist editor
 /// refusing a list that would lock its author out) uses the very rule the
@@ -373,9 +396,11 @@ pub async fn auth_middleware(
         if !active {
             return Err(ApiError::Unauthorized("This device session has been revoked".into()));
         }
-        let ip = crate::extract::extract_client_ip(&request);
+        // 设备最近 IP 与登录审计同源：直连记 socket 对端，反代场景才信头，
+        // 避免「X-Forwarded-For 首条可伪造」串进设备列表。
+        let ip = resolve_caller_ip(&request).map(|ip| ip.to_string());
         devices
-            .touch(&user.id, device_id, (ip != "unknown").then_some(ip.as_str()))
+            .touch(&user.id, device_id, ip.as_deref())
             .await
             .map_err(|_| ApiError::Internal("Device authorization unavailable".into()))?;
     }
