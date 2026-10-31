@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.100](https://github.com/gaogg521/dream-core/compare/v0.1.99...v0.1.100) (2026-10-31)
+
+
+### Bug Fixes
+
+* **auth:** XFF 提取适配两级代理链——跳过内网代理条目取最右公网，全私网回退首条 ([ed7261e](https://github.com/gaogg521/dream-core/commit/ed7261ec7806574052fa350f6e21e94ce61fa34b))
+* **auth:** 登录审计IP全链路修复——对端兜底、XFF取最右可信、限流键防伪造、QR登录补审计 ([1b3f3e4](https://github.com/gaogg521/dream-core/commit/1b3f3e47eb8f90efc31641b33d2fdb74f97d3ae4))
+* **org:** 移除成员即移出公司——停用本地账号拒绝登录,身份随状态隐藏,成员数按活跃档案统计,同名重建自动复活 ([dccf3c4](https://github.com/gaogg521/dream-core/commit/dccf3c415efa9b5879af59abdd4ac505a9c22d7e))
+* **skills:** recover missing builtin resources and tolerate stale imports ([a209448](https://github.com/gaogg521/dream-core/commit/a209448632cf2f2401752b9d023412cbd48d11f8))
+* **team:** exclude disabled agents and assistant defaults from staffing ([63c2719](https://github.com/gaogg521/dream-core/commit/63c2719a539eaf2bdd1a968e11dd680f9bda9a86))
+
 ## [0.1.99](https://github.com/gaogg521/dream-core/compare/v0.1.98...v0.1.99) (2026-10-30)
 
 
