@@ -73,7 +73,7 @@ pub async fn materialize_if_needed(
 ) -> Result<bool, ExtensionError> {
     let target = data_dir.join(crate::constants::BUILTIN_SKILLS_DIR_NAME);
 
-    if version_file_matches(&target, binary_version).await {
+    if version_file_matches(&target, binary_version).await && corpus_files_present(&target, corpus).await {
         info!(
             target = %target.display(),
             version = binary_version,
@@ -88,7 +88,7 @@ pub async fn materialize_if_needed(
         "materializing embedded builtin skills"
     );
     let _guard = MaterializeLockGuard::acquire(data_dir).await?;
-    if version_file_matches(&target, binary_version).await {
+    if version_file_matches(&target, binary_version).await && corpus_files_present(&target, corpus).await {
         info!(
             target = %target.display(),
             version = binary_version,
@@ -111,6 +111,25 @@ pub async fn materialize_if_needed(
         Err(e) => return Err(e),
     }
     Ok(true)
+}
+
+/// A matching marker does not prove the installation is intact: cleanup tools
+/// or interrupted upgrades can remove files while leaving `.version` behind.
+async fn corpus_files_present(target: &Path, corpus: &Dir<'static>) -> bool {
+    let mut pending = vec![corpus];
+    while let Some(dir) = pending.pop() {
+        for file in dir.files() {
+            if !tokio::fs::metadata(target.join(file.path()))
+                .await
+                .is_ok_and(|meta| meta.is_file())
+            {
+                warn!(resource = %file.path().display(), "Bundled skill resource missing; repairing builtin skills");
+                return false;
+            }
+        }
+        pending.extend(dir.dirs());
+    }
+    true
 }
 
 /// Read `.version` and compare against the provided `binary_version`.

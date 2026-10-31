@@ -32,9 +32,25 @@ impl AcpSkillManager {
             } else {
                 location.to_path_buf()
             };
-            let content = tokio::fs::read_to_string(&manifest)
-                .await
-                .map_err(|e| AgentError::internal(format!("Failed to read selected skill manifest: {e}")))?;
+            let content = match tokio::fs::read_to_string(&manifest).await {
+                Ok(content) => content,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotFound
+                        && matches!(item.source, SkillSource::Custom | SkillSource::Extension) =>
+                {
+                    // Imported skills are automatically selected for ordinary chats.
+                    // A stale catalog row must not make every new chat unusable.
+                    tracing::warn!(skill = %item.name, source = ?item.source,
+                        "Skipping missing optional session skill; re-import or remove its catalog entry");
+                    continue;
+                }
+                Err(error) => {
+                    return Err(AgentError::internal(format!(
+                        "Failed to read selected skill manifest ({}): {error}",
+                        item.name
+                    )));
+                }
+            };
             let parsed = parse_frontmatter(&content);
             let root = manifest.parent().map(|path| path.to_string_lossy().into_owned());
             skills.push(parse_skill_fields(

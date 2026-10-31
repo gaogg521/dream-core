@@ -64,10 +64,11 @@ async fn materialize_cleans_staging_from_prior_crash() {
 #[tokio::test]
 async fn gate_skips_when_version_matches() {
     let tmp = TempDir::new().unwrap();
-    // Pre-populate target with matching version.
+    // A complete matching installation skips rewriting.
+    materialize_embedded_builtin_skills(tmp.path(), &FIXTURE_CORPUS, "1.2.3")
+        .await
+        .unwrap();
     let target = tmp.path().join("builtin-skills");
-    std::fs::create_dir_all(&target).unwrap();
-    std::fs::write(target.join(".version"), "1.2.3").unwrap();
     std::fs::write(target.join("sentinel"), "do-not-delete").unwrap();
 
     let wrote = materialize_if_needed(tmp.path(), &FIXTURE_CORPUS, "1.2.3")
@@ -226,4 +227,26 @@ async fn concurrent_gate_materialize_all_callers_succeed() {
     let target = tmp.path().join("builtin-skills");
     assert_eq!(read_version(&target).as_deref(), Some("1.2.3"));
     assert!(target.join("example-skill").join("SKILL.md").is_file());
+}
+
+#[tokio::test]
+async fn matching_marker_repairs_a_missing_skill_manifest() {
+    let tmp = TempDir::new().unwrap();
+    materialize_embedded_builtin_skills(tmp.path(), &FIXTURE_CORPUS, "1.2.3")
+        .await
+        .unwrap();
+    let manifest = tmp.path().join("builtin-skills/example-skill/SKILL.md");
+    let expected = std::fs::read(&manifest).unwrap();
+    std::fs::remove_file(&manifest).unwrap();
+    assert!(
+        materialize_if_needed(tmp.path(), &FIXTURE_CORPUS, "1.2.3")
+            .await
+            .unwrap()
+    );
+    assert_eq!(std::fs::read(&manifest).unwrap(), expected);
+    assert!(
+        !materialize_if_needed(tmp.path(), &FIXTURE_CORPUS, "1.2.3")
+            .await
+            .unwrap()
+    );
 }

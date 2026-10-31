@@ -133,3 +133,77 @@ async fn employee_skill_from_500_catalog_loads_body_without_foreign_or_unselecte
         assert!(!rejected.content.contains("FOREIGN-SECRET-BODY"));
     }
 }
+
+#[tokio::test]
+async fn stale_import_does_not_block_valid_skills_or_an_ordinary_chat() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let paths = Arc::new(SkillPaths {
+        data_dir: root.into(),
+        user_skills_dir: root.join("skills"),
+        cron_skills_dir: root.join("cron/skills"),
+        builtin_skills_dir: root.join("builtin-skills"),
+        builtin_rules_dir: root.join("rules"),
+        assistant_rules_dir: root.join("assistant-rules"),
+        assistant_skills_dir: root.join("assistant-skills"),
+    });
+    let db = init_database_memory().await.unwrap();
+    let repo = Arc::new(SqliteSkillRepository::new(db.pool().clone()));
+    let good = root.join("good");
+    tokio::fs::create_dir_all(&good).await.unwrap();
+    tokio::fs::write(
+        good.join("SKILL.md"),
+        "---\nname: good\ndescription: valid\n---\nVALID-BODY",
+    )
+    .await
+    .unwrap();
+    for (name, path, source) in [
+        ("missing", root.join("deleted-import"), "user"),
+        ("good", good.clone(), "user"),
+    ] {
+        repo.upsert_for_user(
+            "system_default_user",
+            UpsertSkillParams {
+                name,
+                path: path.to_str().unwrap(),
+                source,
+                description: None,
+                display_name: None,
+                icon_file: None,
+                enabled: true,
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let manager = AcpSkillManager::new_with_repo(paths, repo.clone());
+    let loaded = manager
+        .engine_skills_for_user("system_default_user", &["missing".into(), "good".into()])
+        .await
+        .unwrap();
+    assert_eq!(loaded.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["good"]);
+    assert!(
+        manager
+            .engine_skills_for_user("system_default_user", &["missing".into()])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    // Bundled skills are required resources, not optional stale imports.
+    repo.upsert_global(UpsertSkillParams {
+        name: "required",
+        path: root.join("missing-builtin").to_str().unwrap(),
+        source: "builtin",
+        description: None,
+        display_name: None,
+        icon_file: None,
+        enabled: true,
+    })
+    .await
+    .unwrap();
+    let error = manager
+        .engine_skills_for_user("system_default_user", &["required".into()])
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("required"));
+}
