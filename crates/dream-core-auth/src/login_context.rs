@@ -58,7 +58,12 @@ fn last_forwarded_ip(headers: &HeaderMap) -> Option<IpAddr> {
     let entries: Vec<IpAddr> = headers
         .get("x-forwarded-for")
         .and_then(|value| value.to_str().ok())
-        .map(|chain| chain.split(',').filter_map(|entry| entry.trim().parse::<IpAddr>().ok()).collect())
+        .map(|chain| {
+            chain
+                .split(',')
+                .filter_map(|entry| entry.trim().parse::<IpAddr>().ok())
+                .collect()
+        })
         .unwrap_or_default();
     let is_infra = |ip: &IpAddr| match ip {
         IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
@@ -100,9 +105,11 @@ pub fn audit_client_ip(headers: &HeaderMap, peer: Option<IpAddr>) -> Option<IpAd
         return parse_ip_header(headers, CLIENT_IP_HEADER);
     }
     match peer {
-        Some(peer) if is_infra_ip(peer) => {
-            Some(parse_ip_header(headers, "x-real-ip").or_else(|| last_forwarded_ip(headers)).unwrap_or(peer))
-        }
+        Some(peer) if is_infra_ip(peer) => Some(
+            parse_ip_header(headers, "x-real-ip")
+                .or_else(|| last_forwarded_ip(headers))
+                .unwrap_or(peer),
+        ),
         Some(peer) => Some(peer),
         None => parse_ip_header(headers, "x-real-ip").or_else(|| last_forwarded_ip(headers)),
     }
@@ -179,10 +186,7 @@ mod tests {
     #[test]
     fn public_peer_overrides_forgeable_headers() {
         // 公网直连客户端可伪造任意头：一律以 socket 对端为准。
-        let headers = headers_with(&[
-            ("x-real-ip", "9.9.9.9"),
-            ("x-forwarded-for", "8.8.8.8, 9.9.9.9"),
-        ]);
+        let headers = headers_with(&[("x-real-ip", "9.9.9.9"), ("x-forwarded-for", "8.8.8.8, 9.9.9.9")]);
         assert_eq!(audit_client_ip(&headers, ip("203.0.113.99")), ip("203.0.113.99"));
     }
 
