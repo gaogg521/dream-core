@@ -1114,6 +1114,9 @@ impl AssistantService {
             state,
             agent_rows,
             runtime_backend.as_deref(),
+            self.builtin_listing_default(definition)
+                .map(|(_, enabled)| enabled)
+                .unwrap_or(true),
         ))
     }
 
@@ -3165,8 +3168,9 @@ fn assistant_projection_for_definition(
     state: Option<&AssistantOverlayRow>,
     agent_rows: &[AgentManagementRow],
     resolved_runtime_backend: Option<&str>,
+    default_enabled: bool,
 ) -> AssistantRuntimeProjection {
-    let enabled = state.is_none_or(|row| row.enabled);
+    let enabled = state.map(|row| row.enabled).unwrap_or(default_enabled);
     let source = match definition.source.as_str() {
         "builtin" => AssistantSource::Builtin,
         "generated" => AssistantSource::Generated,
@@ -3226,7 +3230,8 @@ fn assistant_projection_for_definition(
         Some("Assistant is disabled.".to_string())
     } else {
         match agent_row {
-            Some(row) if matches!(row.status, AgentManagementStatus::Missing) => {
+            Some(row) if !row.enabled => Some("This assistant's agent is disabled.".to_string()),
+            Some(row) if !row.installed || matches!(row.status, AgentManagementStatus::Missing) => {
                 Some("This assistant's agent is not installed.".to_string())
             }
             Some(row) if matches!(row.status, AgentManagementStatus::Offline) => Some(
@@ -3248,10 +3253,13 @@ fn assistant_projection_for_definition(
         agent_status_message,
         team_selectable: enabled
             && agent_row.is_some_and(|row| {
-                matches!(
-                    row.status,
-                    AgentManagementStatus::Online | AgentManagementStatus::Unchecked
-                ) && row.team_capable
+                row.enabled
+                    && row.installed
+                    && matches!(
+                        row.status,
+                        AgentManagementStatus::Online | AgentManagementStatus::Unchecked
+                    )
+                    && row.team_capable
             }),
         team_block_reason,
         deletable: matches!(source, AssistantSource::User | AssistantSource::Imported),
@@ -4606,6 +4614,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn manifest_disabled_assistant_is_not_team_selectable_without_overlay() {
+        let mut builtin = mk_builtin("builtin-off", "Disabled preset");
+        builtin.default_enabled = false;
+        let fx = fixture_with_options(FixtureOpts {
+            builtins: vec![builtin],
+            agent_rows: vec![mk_agent_row("agent-gemini", "gemini", AgentManagementStatus::Online)],
+            ..Default::default()
+        })
+        .await;
+        let list = fx.service.list().await.unwrap();
+        let preset = list.iter().find(|a| a.id == "builtin-off").unwrap();
+        assert!(!preset.enabled);
+        assert!(!preset.team_selectable);
+        assert_eq!(preset.team_block_reason.as_deref(), Some("Assistant is disabled."));
+    }
+
+    #[tokio::test]
     async fn list_maps_generated_definition_to_generated_source() {
         let fx = fixture().await;
         fx.agent_rows
@@ -4692,6 +4717,45 @@ mod tests {
         assert_eq!(detail.defaults.skills.mode, "fixed");
         assert!(detail.defaults.skills.value.is_empty());
         assert!(detail.capabilities.default_disabled_builtin_skill_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn disabling_installed_agent_removes_existing_assistant_from_team_catalog() {
+        let fx = fixture_with_options(FixtureOpts {
+            agent_rows: vec![mk_agent_row("agent-claude", "claude", AgentManagementStatus::Online)],
+            ..Default::default()
+        })
+        .await;
+        let before = fx.service.list().await.unwrap();
+        assert!(
+            before
+                .iter()
+                .find(|a| a.id == "bare:agent-claude")
+                .unwrap()
+                .team_selectable
+        );
+        fx.agent_rows.lock().unwrap()[0].enabled = false;
+        let after = fx.service.list().await.unwrap();
+        let assistant = after.iter().find(|a| a.id == "bare:agent-claude").unwrap();
+        assert!(assistant.enabled, "assistant toggle remains enabled independently");
+        assert!(!assistant.team_selectable);
+        assert_eq!(
+            assistant.team_block_reason.as_deref(),
+            Some("This assistant's agent is disabled.")
+        );
+        let detail = fx.service.get_detail("bare:agent-claude", Some("en-US")).await.unwrap();
+        assert!(!detail.team_selectable);
+        fx.agent_rows.lock().unwrap()[0].enabled = true;
+        assert!(
+            fx.service
+                .list()
+                .await
+                .unwrap()
+                .iter()
+                .find(|a| a.id == "bare:agent-claude")
+                .unwrap()
+                .team_selectable
+        );
     }
 
     #[tokio::test]
