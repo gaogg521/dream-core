@@ -295,10 +295,13 @@ impl EnterpriseService {
     }
 
     async fn active_seat_count_below(&self, enterprise_id: &str, limit: i64) -> Result<bool, EnterpriseError> {
+        // 口径对齐 company_overview：被停用的账号（MFA 锁定等非 SCIM 停用
+        // 不删成员行）不再占席位，否则席位被永久占据且 pending 成员永远
+        // 等不到重评。
         let used: i64 = self
             .db
             .fetch_one_scalar(
-                "SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND seat_status = ?",
+                "SELECT COUNT(*) FROM one_enterprise_members m WHERE m.enterprise_id = ? AND m.seat_status = ?                  AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = m.user_id AND u.status = 'disabled')",
                 &db_params![enterprise_id, SEAT_STATUS_ACTIVE],
             )
             .await?;

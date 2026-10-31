@@ -89,29 +89,35 @@ fn last_forwarded_ip(headers: &HeaderMap) -> Option<IpAddr> {
 ///
 /// 1. Desktop WebUI reverse proxy: the connection is spliced over loopback
 ///    and the proxy overwrites the dedicated header unconditionally, so the
-///    header is the truth.
+///    header is the truth. The headers are only trusted when the socket peer
+///    is loopback — the WebUI proxy always splices over loopback, while on a
+///    network-exposed server (enterprise deployment) those headers can only
+///    ever arrive from a client, and trusting them would let anyone forge
+///    their audit IP and rotate rate-limit buckets per request.
 /// 2. Socket peer is loopback/private: the request came through a local or
 ///    on-prem reverse proxy, and the peer only identifies that proxy. The
-///    real origin can only come from headers — `X-Real-IP` (stamped by the
-///    edge proxy) first, then the rightmost parseable `X-Forwarded-For`
-///    entry; when neither resolves, record the peer as-is (the proxy's own
+///    real origin can only come from the rightmost public `X-Forwarded-For`
+///    entry; when none resolves, record the peer as-is (the proxy's own
 ///    address) rather than nothing.
+///
+/// `X-Real-IP` is deliberately NOT consulted: unlike `X-Forwarded-For`,
+/// proxies do not append to it, so a pass-through proxy leaves a
+/// client-forged value intact — trusting it would let any client rotate its
+/// rate-limit bucket per request and poison the audit trail. Deployments
+/// that want the real client IP must present it via `X-Forwarded-For`, whose
+/// appending semantics make the edge proxy's value win over client forgeries.
 /// 3. Socket peer is public: a direct client, which may forge any header —
 ///    the peer wins outright and headers are ignored.
 /// 4. No peer info (handlers invoked directly in tests, exotic runtimes):
 ///    fall back to header parsing alone.
 pub fn audit_client_ip(headers: &HeaderMap, peer: Option<IpAddr>) -> Option<IpAddr> {
-    if is_webui_proxied(headers) {
+    if is_webui_proxied(headers) && peer.is_some_and(|p| p.is_loopback()) {
         return parse_ip_header(headers, CLIENT_IP_HEADER);
     }
     match peer {
-        Some(peer) if is_infra_ip(peer) => Some(
-            parse_ip_header(headers, "x-real-ip")
-                .or_else(|| last_forwarded_ip(headers))
-                .unwrap_or(peer),
-        ),
+        Some(peer) if is_infra_ip(peer) => Some(last_forwarded_ip(headers).unwrap_or(peer)),
         Some(peer) => Some(peer),
-        None => parse_ip_header(headers, "x-real-ip").or_else(|| last_forwarded_ip(headers)),
+        None => last_forwarded_ip(headers),
     }
 }
 
@@ -145,14 +151,26 @@ mod tests {
     }
 
     #[test]
-    fn webui_proxy_header_wins_over_everything() {
+    fn webui_proxy_header_wins_over_everything_on_loopback() {
         let headers = headers_with(&[
             ("x-dream-forwarded-origin", "webui"),
             ("x-dream-client-ip", "203.0.113.4"),
-            ("x-real-ip", "203.0.113.5"),
             ("x-forwarded-for", "9.9.9.9"),
         ]);
         assert_eq!(audit_client_ip(&headers, ip("127.0.0.1")), ip("203.0.113.4"));
+        assert_eq!(audit_client_ip(&headers, ip("::1")), ip("203.0.113.4"));
+    }
+
+    #[test]
+    fn webui_proxy_headers_from_non_loopback_peer_are_ignored() {
+        // 网络可达的服务器（企业部署 0.0.0.0）上，这两个头只会来自客户端：
+        // 采信即等于把审计 IP 和限流分桶交给请求方随意指定。
+        let headers = headers_with(&[
+            ("x-dream-forwarded-origin", "webui"),
+            ("x-dream-client-ip", "203.0.113.4"),
+        ]);
+        assert_eq!(audit_client_ip(&headers, ip("203.0.113.99")), ip("203.0.113.99"));
+        assert_eq!(audit_client_ip(&headers, ip("172.18.0.2")), ip("172.18.0.2"));
     }
 
     #[test]
@@ -163,9 +181,11 @@ mod tests {
     }
 
     #[test]
-    fn proxied_peer_prefers_x_real_ip_then_rightmost_forwarded() {
+    fn proxied_peer_uses_rightmost_public_forwarded_entry() {
+        // X-Real-IP 不再采信：代理不向它追加，透传代理下客户端可任意伪造
+        // （限流分桶可按请求旋转）。只认有追加语义的 X-Forwarded-For。
         let headers = headers_with(&[("x-real-ip", "203.0.113.5")]);
-        assert_eq!(audit_client_ip(&headers, ip("172.18.0.2")), ip("203.0.113.5"));
+        assert_eq!(audit_client_ip(&headers, ip("172.18.0.2")), ip("172.18.0.2"));
         // 单跳反代：Caddy 追加它看到的客户端。
         let headers = headers_with(&[("x-forwarded-for", "203.0.113.8")]);
         assert_eq!(audit_client_ip(&headers, ip("172.18.0.2")), ip("203.0.113.8"));
@@ -179,14 +199,14 @@ mod tests {
         let headers = headers_with(&[("x-forwarded-for", "192.168.1.50, 172.18.0.1")]);
         assert_eq!(audit_client_ip(&headers, ip("172.18.0.2")), ip("192.168.1.50"));
         // 头都在但全是垃圾：回退对端，不崩溃也不记 NULL。
-        let headers = headers_with(&[("x-real-ip", "garbage"), ("x-forwarded-for", "not-an-ip")]);
+        let headers = headers_with(&[("x-forwarded-for", "not-an-ip")]);
         assert_eq!(audit_client_ip(&headers, ip("172.18.0.2")), ip("172.18.0.2"));
     }
 
     #[test]
     fn public_peer_overrides_forgeable_headers() {
         // 公网直连客户端可伪造任意头：一律以 socket 对端为准。
-        let headers = headers_with(&[("x-real-ip", "9.9.9.9"), ("x-forwarded-for", "8.8.8.8, 9.9.9.9")]);
+        let headers = headers_with(&[("x-forwarded-for", "8.8.8.8, 9.9.9.9")]);
         assert_eq!(audit_client_ip(&headers, ip("203.0.113.99")), ip("203.0.113.99"));
     }
 
@@ -198,7 +218,7 @@ mod tests {
 
     #[test]
     fn without_peer_falls_back_to_headers_only() {
-        let headers = headers_with(&[("x-real-ip", "198.51.100.5")]);
+        let headers = headers_with(&[("x-forwarded-for", "198.51.100.5")]);
         assert_eq!(audit_client_ip(&headers, None), ip("198.51.100.5"));
         let headers = headers_with(&[("x-forwarded-for", "invalid")]);
         assert_eq!(audit_client_ip(&headers, None), None);

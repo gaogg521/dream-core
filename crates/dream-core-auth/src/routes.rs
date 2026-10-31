@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Json, Path, Query, Request, State};
+use axum::extract::{ConnectInfo, Json, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::{Html, IntoResponse, Response};
@@ -265,6 +265,17 @@ fn ensure_local_mode(local: bool) -> Result<(), ApiError> {
 /// added to this group later cannot forget the check.
 async fn reject_webui_proxied_middleware(request: Request, next: Next) -> Result<Response, ApiError> {
     if is_webui_proxied(request.headers()) {
+        return Err(ApiError::Forbidden(
+            "This endpoint is only available to the local desktop app".into(),
+        ));
+    }
+    // 本机内部端点只服务本机进程。桌面「允许远程访问」会把监听器绑到
+    // 0.0.0.0，此时来自局域网的无代理头直连不得触达 internal 面（改密
+    // 哈希/轮换 JWT secret/建用户），只有 socket 对端为 loopback 的调用
+    // （桌面主进程/本机工具）放行。无 ConnectInfo（测试直调）不受影响。
+    if let Some(ConnectInfo(addr)) = request.extensions().get::<ConnectInfo<SocketAddr>>()
+        && !addr.ip().is_loopback()
+    {
         return Err(ApiError::Forbidden(
             "This endpoint is only available to the local desktop app".into(),
         ));

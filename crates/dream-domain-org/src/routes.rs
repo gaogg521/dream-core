@@ -4,7 +4,12 @@
 //! (it relies on `CurrentUser` in request extensions). The `/api/one/*`
 //! prefix keeps our namespace disjoint from upstream `/api/*` routes.
 
-use axum::extract::{Path, Query, State};
+use std::net::SocketAddr;
+use std::sync::{Arc, OnceLock};
+
+use axum::extract::{ConnectInfo, Path, Query, Request, State};
+use axum::middleware::{Next, from_fn};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -23,18 +28,77 @@ use crate::models::{
 use crate::rbac::{OrgActor, RequireAuditReader, RequireIntegrationAdmin, RequireOrgAdmin, RequireSystemAdmin};
 use crate::state::OneOrgRouterState;
 
+/// 退出密码闸的在线爆破防护：5 次失败 / 15 分钟 / IP 桶（登录同规格）。
+/// 此前该端点无任何限流——持有效会话的成员可对租户退出密码无限试错，
+/// 且错误尝试不留任何痕迹。静态实例：org 路由状态不含限流器，主面与
+/// 治理面共用同款进程级闸。
+fn exit_limiter() -> &'static Arc<dream_core_auth::RateLimiter> {
+    static LIMITER: OnceLock<Arc<dream_core_auth::RateLimiter>> = OnceLock::new();
+    LIMITER.get_or_init(|| Arc::new(dream_core_auth::RateLimiter::auth()))
+}
+
+/// 邀请码 preview/join 的防枚举限流：60 次/分钟/IP（与 API 限流同规格）。
+/// 新码熵 2^64 不可枚举，但旧部署里存在 2^32 的 8 位存量码，且该端点
+/// 此前无任何限速。
+fn invite_limiter() -> &'static Arc<dream_core_auth::RateLimiter> {
+    static LIMITER: OnceLock<Arc<dream_core_auth::RateLimiter>> = OnceLock::new();
+    LIMITER.get_or_init(|| Arc::new(dream_core_auth::RateLimiter::api()))
+}
+
+/// 限流分桶键：与登录审计同一条 `audit_client_ip` 解析链（公网直连以
+/// socket 对端为准，伪造头换不了桶）。
+fn bucket_ip(request: &Request) -> Option<String> {
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| addr.ip());
+    // peer=None 表示测试直调（生产两个二进制恒带 ConnectInfo）：跳过限流，
+    // 否则共享的 "unknown" 桶会让测试套件互相消耗额度。
+    peer?;
+    dream_core_auth::audit_client_ip(request.headers(), peer).map(|ip| ip.to_string())
+}
+
+/// 只记失败的退出限流（成功退出不应把人锁在外面）。
+async fn exit_rate_limit(request: Request, next: Next) -> Result<Response, axum::http::StatusCode> {
+    let Some(key) = bucket_ip(&request) else {
+        return Ok(next.run(request).await);
+    };
+    if exit_limiter().check(&key).is_err() {
+        return Ok(dream_core_common::ApiError::from(dream_core_auth::AuthError::RateLimited).into_response());
+    }
+    let response = next.run(request).await;
+    if !response.status().is_success() {
+        exit_limiter().record_attempt(&key);
+    }
+    Ok(response)
+}
+
+/// 全量计数的邀请限流。
+async fn invite_rate_limit(request: Request, next: Next) -> Result<Response, axum::http::StatusCode> {
+    let Some(key) = bucket_ip(&request) else {
+        return Ok(next.run(request).await);
+    };
+    if invite_limiter().check_and_increment(&key).is_err() {
+        return Ok(dream_core_common::ApiError::from(dream_core_auth::AuthError::RateLimited).into_response());
+    }
+    Ok(next.run(request).await)
+}
+
 pub fn one_org_routes(state: OneOrgRouterState) -> Router {
     Router::new()
         .route("/api/one/org/context", get(org_context))
         .route("/api/one/org/public-info", get(org_public_info))
-        .route("/api/one/org/invites/preview", post(org_preview_invite))
-        .route("/api/one/org/join", post(org_join))
+        .route(
+            "/api/one/org/invites/preview",
+            post(org_preview_invite).layer(from_fn(invite_rate_limit)),
+        )
+        .route("/api/one/org/join", post(org_join).layer(from_fn(invite_rate_limit)))
         .route("/api/one/org/my-tenants", get(org_my_tenants))
         .route("/api/one/org/switch", post(org_switch))
         .route("/api/one/org/members", get(org_members))
         .route("/api/one/org/tenants", get(org_list_tenants))
         .route("/api/one/org/invites", get(org_invites))
-        .route("/api/one/org/exit", post(org_exit))
+        .route("/api/one/org/exit", post(org_exit).layer(from_fn(exit_rate_limit)))
         .route("/api/one/org/create", post(org_create))
         .route("/api/one/org/reset-local", post(org_reset_local))
         .route(

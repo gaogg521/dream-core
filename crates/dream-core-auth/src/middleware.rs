@@ -138,7 +138,12 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for PeerAddr {
 /// refusing a list that would lock its author out) uses the very rule the
 /// middleware enforces, not a second copy of it.
 pub fn caller_ip(headers: &axum::http::HeaderMap, peer: Option<SocketAddr>) -> Option<IpAddr> {
-    if is_webui_proxied(headers) {
+    // The WebUI proxy always splices over loopback, so its header is only
+    // trusted from a loopback peer. On a network-exposed server (enterprise
+    // deployment) those headers can only ever come from a client — trusting
+    // them would let anyone pass the IP allowlist with a forged
+    // `x-dream-client-ip`.
+    if is_webui_proxied(headers) && peer.is_some_and(|addr| addr.ip().is_loopback()) {
         return headers
             .get(CLIENT_IP_HEADER)
             .and_then(|v| v.to_str().ok())

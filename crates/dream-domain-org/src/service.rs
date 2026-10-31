@@ -13,7 +13,7 @@ use std::sync::{Arc, RwLock};
 
 use serde::Serialize;
 
-use dream_core_auth::{generate_password, generate_random_secret_string, hash_password, verify_password};
+use dream_core_auth::{generate_password, generate_random_secret_string, hash_password};
 use dream_core_common::license::Feature;
 use dream_core_common::{decrypt_string, encrypt_string, now_ms};
 use dream_core_db::{DbBackend, DbPool, DbValue, IConversationRepository, IUserRepository, db_params};
@@ -1947,10 +1947,26 @@ impl OrgService {
         };
 
         let tenant = self.get_tenant(&membership.tenant_id).await?;
-        if let Some(hash) = tenant.and_then(|t| t.exit_password_hash)
-            && !verify_password(exit_code, &hash)?
-        {
-            return Err(OrgError::WrongExitCode);
+        if let Some(hash) = tenant.and_then(|t| t.exit_password_hash) {
+            // spawn_blocking 版（登录同款）：同步 bcrypt 会以 ~200ms/次占住
+            // tokio worker，几十个并发错误尝试即可拖垮整个治理面。
+            let ok = dream_core_auth::verify_password_timed(exit_code, &hash)
+                .await
+                .unwrap_or(false);
+            if !ok {
+                // 失败审计：退出密码爆破此前零痕迹（对比登录失败有 LoginRiskGate）。
+                let username = self.lookup_username(user_id).await;
+                self.audit_failure(
+                    &membership.tenant_id,
+                    Some(user_id),
+                    username.as_deref(),
+                    "org.exit",
+                    Some("wrong_exit_code"),
+                    None,
+                )
+                .await;
+                return Err(OrgError::WrongExitCode);
+            }
         }
 
         if is_admin_role(&membership.role) {
@@ -2133,19 +2149,25 @@ impl OrgService {
             )
             .await?
             .flatten();
-        let Some(enterprise_id) = left_enterprise_id else {
+        let Some(_enterprise_id) = left_enterprise_id else {
             return Ok(false);
         };
-        let still_member_elsewhere: i64 = self
+        // The departed row is already deleted when this runs. A local account
+        // is only offboarded when NO company membership remains anywhere on
+        // this deployment — leaving company A must not disable an account
+        // that company B (same server, multi-company) still employs.
+        // Standalone groups carry no enterprise_id and never count as
+        // employment, matching the pre-existing single-company semantics.
+        let still_employed_elsewhere: i64 = self
             .db
             .fetch_one_scalar(
                 "SELECT COUNT(*) FROM one_user_org uo \
              JOIN one_tenants t ON t.id = uo.tenant_id \
-             WHERE t.enterprise_id = ? AND uo.user_id = ?",
-                &db_params![&enterprise_id, user_id],
+             WHERE uo.user_id = ? AND t.enterprise_id IS NOT NULL",
+                &db_params![user_id],
             )
             .await?;
-        if still_member_elsewhere > 0 {
+        if still_employed_elsewhere > 0 {
             return Ok(false);
         }
         let disabled = self
@@ -2274,8 +2296,12 @@ impl OrgService {
     }
 
     pub async fn set_exit_password(&self, tenant_id: &str, password: &str) -> Result<(), OrgError> {
-        if password.is_empty() {
-            return Err(OrgError::BadRequest("password is required".into()));
+        // 强度下限对齐控制台（至少 4 字符）并加上限：这把闸保护全公司的
+        // offboarding 流程，而它的在线爆破面已由 exit 限流兜底（5 次失败
+        // /15 分钟），太短的口令会同时削弱两道防线。
+        let length = password.chars().count();
+        if !(4..=64).contains(&length) {
+            return Err(OrgError::BadRequest("exit password must be 4 to 64 characters".into()));
         }
         let hash = hash_password(password)?;
         let result = self
@@ -3410,6 +3436,22 @@ impl OrgService {
                 &db_params![tenant_id, target_user_id],
             )
             .await?;
+        // A system_admin outranks an org_admin; only a peer may change one —
+        // same rule as `remove_member`. Demotion achieves everything removal
+        // would, and demoting the machine owner used to lock every admin
+        // surface: nobody left who could promote a replacement.
+        if is_system_admin_role(current_role.as_deref().unwrap_or("")) {
+            let actor_role = self
+                .membership_row(actor_user_id, tenant_id)
+                .await?
+                .map(|m| m.role)
+                .unwrap_or_default();
+            if !is_system_admin_role(&actor_role) {
+                return Err(OrgError::Forbidden(
+                    "only system_admin can change a system_admin's role".into(),
+                ));
+            }
+        }
         if current_role.is_some_and(|r| is_admin_role(&r)) && !is_admin_role(role) {
             self.ensure_not_last_admin(tenant_id, target_user_id).await?;
         }
@@ -3770,6 +3812,7 @@ pub(crate) fn mask_secret(secret: &str) -> String {
 mod tests {
     use super::*;
     use crate::models::ROLE_ORG_ADMIN;
+    use dream_core_auth::verify_password;
     use dream_core_db::SqliteUserRepository;
 
     async fn setup() -> (dream_core_db::Database, Arc<OrgService>, Arc<dyn IUserRepository>) {
@@ -6274,6 +6317,96 @@ mod tests {
     }
 
     // --- Direction B: company-owned project groups ---
+
+    #[tokio::test]
+    async fn org_admin_cannot_demote_a_system_admin() {
+        // 降级达成移除能做的一切：此前 org_admin 可把 system_admin（机器
+        // 主人）降为 member，且无任何同级能再提回 system_admin——实例管理
+        // 面整体死锁。规则对齐 remove_member：只有同级可动同级。
+        let (db, service, user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let (_, code) = service
+            .create_invite(&tenant_id, SYSTEM_DEFAULT_USER_ID, None, None)
+            .await
+            .unwrap();
+        let boss = create_user(&user_repo, "orgboss").await;
+        let peer_admin = create_user(&user_repo, "peersys").await;
+        service.join_with_invite(&boss, &code).await.unwrap();
+        service.join_with_invite(&peer_admin, &code).await.unwrap();
+        service
+            .set_user_role(&tenant_id, SYSTEM_DEFAULT_USER_ID, &boss, ROLE_ORG_ADMIN)
+            .await
+            .unwrap();
+        service
+            .set_user_role(&tenant_id, SYSTEM_DEFAULT_USER_ID, &peer_admin, ROLE_SYSTEM_ADMIN)
+            .await
+            .unwrap();
+
+        // org_admin 动 system_admin → 拒绝
+        let err = service
+            .set_user_role(&tenant_id, &boss, &peer_admin, ROLE_MEMBER)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::error::OrgError::Forbidden(_)), "{err:?}");
+        // org_admin 动 bootstrap system_admin → 同样拒绝
+        let err = service
+            .set_user_role(&tenant_id, &boss, SYSTEM_DEFAULT_USER_ID, ROLE_MEMBER)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::error::OrgError::Forbidden(_)), "{err:?}");
+        // 同级 system_admin 可以动
+        service
+            .set_user_role(&tenant_id, &peer_admin, SYSTEM_DEFAULT_USER_ID, ROLE_ORG_ADMIN)
+            .await
+            .unwrap();
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn set_exit_password_enforces_length_bounds() {
+        let (db, service, _user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        for bad in ["123", "", "x".repeat(65).as_str()] {
+            let err = service.set_exit_password(&tenant_id, bad).await.unwrap_err();
+            assert!(
+                matches!(err, crate::error::OrgError::BadRequest(_)),
+                "{bad:?} -> {err:?}"
+            );
+        }
+        service.set_exit_password(&tenant_id, "abcd").await.unwrap();
+        service
+            .set_exit_password(&tenant_id, "x".repeat(64).as_str())
+            .await
+            .unwrap();
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn leaving_one_company_keeps_multi_company_account_active() {
+        // 多公司共服：本地成员同属 A、B 两公司时，退出 A 的最后一层不得停用
+        // 账号——B 公司的在册关系还在，登录必须照常可用。
+        let (db, service, user_repo) = setup().await;
+        let member = create_user(&user_repo, "dual-company").await;
+        let (_, _, invite_a) = service
+            .create_tenant_for_enterprise("company-a", "A Team", SYSTEM_DEFAULT_USER_ID, None)
+            .await
+            .unwrap();
+        let (_, _, invite_b) = service
+            .create_tenant_for_enterprise("company-b", "B Team", SYSTEM_DEFAULT_USER_ID, None)
+            .await
+            .unwrap();
+        service.join_with_invite(&member, &invite_a).await.unwrap();
+        service.join_with_invite(&member, &invite_b).await.unwrap();
+
+        service.leave(&member, None, "").await.unwrap();
+        let row = user_repo.find_by_id(&member).await.unwrap().unwrap();
+        assert_eq!(
+            row.status,
+            dream_core_db::UserStatus::Active,
+            "B 公司仍在册，账号不得停用"
+        );
+        db.close().await;
+    }
 
     #[tokio::test]
     async fn create_for_enterprise_allows_multiple_under_same_company() {

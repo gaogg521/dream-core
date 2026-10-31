@@ -21,13 +21,50 @@ use crate::models::{SsoProviderConfigDto, SsoProviderKind, SsoProviderStatusDto,
 use crate::rbac::RequireSsoAdmin;
 use crate::state::OneSsoRouterState;
 
+/// LDAP 登录端点的密码喷洒防护：5 次失败 / 15 分钟 / IP 桶（与
+/// `/login` 同规格）。该端点公网可达且直连企业目录，此前无任何限速，
+/// 攻击者可把应用当作 LDAP 密码喷洒代理绕开目录侧防护。
+fn ldap_limiter() -> &'static std::sync::Arc<dream_core_auth::RateLimiter> {
+    static LIMITER: std::sync::OnceLock<std::sync::Arc<dream_core_auth::RateLimiter>> = std::sync::OnceLock::new();
+    LIMITER.get_or_init(|| std::sync::Arc::new(dream_core_auth::RateLimiter::auth()))
+}
+
+async fn ldap_rate_limit(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, axum::http::StatusCode> {
+    use std::net::SocketAddr;
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|axum::extract::ConnectInfo(addr)| addr.ip());
+    // peer=None（测试直调，无 ConnectInfo）跳过限流。
+    let Some(peer) = peer else {
+        return Ok(next.run(request).await);
+    };
+    let key = dream_core_auth::audit_client_ip(request.headers(), Some(peer))
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| "unknown".into());
+    if ldap_limiter().check(&key).is_err() {
+        return Ok(dream_core_common::ApiError::from(dream_core_auth::AuthError::RateLimited).into_response());
+    }
+    let response = next.run(request).await;
+    if !response.status().is_success() {
+        ldap_limiter().record_attempt(&key);
+    }
+    Ok(response)
+}
+
 pub fn one_sso_public_routes(state: OneSsoRouterState) -> Router {
     Router::new()
         .route("/api/one/sso/providers", get(list_providers))
         .route("/api/one/sso/{provider}/authorize", get(authorize))
         .route("/api/one/sso/{provider}/callback", get(callback))
         .route("/api/one/sso/saml/callback", post(saml_callback))
-        .route("/api/one/sso/ldap/login", post(ldap_login))
+        .route(
+            "/api/one/sso/ldap/login",
+            post(ldap_login).layer(axum::middleware::from_fn(ldap_rate_limit)),
+        )
         .with_state(state)
 }
 
