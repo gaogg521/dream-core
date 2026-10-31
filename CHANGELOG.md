@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.100](https://github.com/gaogg521/dream-core/compare/v0.1.99...v0.1.100) (2026-10-31)
+
+
+### Bug Fixes
+
+* **skills:** recover missing builtin resources and tolerate stale imports ([a209448](https://github.com/gaogg521/dream-core/commit/a209448632cf2f2401752b9d023412cbd48d11f8))
+* **team:** exclude disabled agents and assistant defaults from staffing ([63c2719](https://github.com/gaogg521/dream-core/commit/63c2719a539eaf2bdd1a968e11dd680f9bda9a86))
+
 ## [0.1.99](https://github.com/gaogg521/dream-core/compare/v0.1.98...v0.1.99) (2026-10-30)
 
 
