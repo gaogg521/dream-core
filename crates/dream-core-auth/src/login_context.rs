@@ -31,7 +31,7 @@ fn parse_ip_header(headers: &HeaderMap, name: &str) -> Option<IpAddr> {
 /// the on-prem network (loopback, RFC 1918, IPv4 link-local, IPv6 unique
 /// local / link local). Such a peer means "the TCP connection came from a
 /// reverse proxy", not from the end client.
-fn peer_is_proxy(ip: IpAddr) -> bool {
+fn is_infra_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
         IpAddr::V6(v6) => {
@@ -42,24 +42,38 @@ fn peer_is_proxy(ip: IpAddr) -> bool {
     }
 }
 
-/// Rightmost parseable entry of the `X-Forwarded-For` chain.
+/// Rightmost usable entry of the `X-Forwarded-For` chain.
 ///
-/// Every proxy hop appends the peer it saw to the end of the chain, so the
-/// rightmost entry is the origin as judged by the proxy closest to this
-/// service. Taking the rightmost (rather than the leftmost) entry is what
-/// keeps a client-forged first entry (`X-Forwarded-For: 9.9.9.9` sent
-/// verbatim) from masking the value the real reverse proxy appended.
+/// Every proxy hop appends the peer it saw to the end of the chain. In a
+/// two-level chain (edge nginx → Caddy → app) the rightmost entry is the
+/// INNER proxy's private address (Caddy appends the nginx host gateway), so
+/// "rightmost" alone would record infrastructure instead of the client.
+/// Therefore: skip private/loopback entries from the right (they are proxy
+/// hops) and take the rightmost public entry — a client-forged first entry
+/// (`X-Forwarded-For: 9.9.9.9` sent verbatim) still loses to the real value
+/// the edge proxy appended after it. When every entry is private (on-prem
+/// LAN clients behind local proxies), the real client IP is itself private:
+/// fall back to the leftmost entry, which is what the edge proxy wrote.
 fn last_forwarded_ip(headers: &HeaderMap) -> Option<IpAddr> {
-    headers
+    let entries: Vec<IpAddr> = headers
         .get("x-forwarded-for")
         .and_then(|value| value.to_str().ok())
-        .and_then(|chain| {
-            chain
-                .split(',')
-                .rev()
-                .map(str::trim)
-                .find_map(|entry| entry.parse::<IpAddr>().ok())
-        })
+        .map(|chain| chain.split(',').filter_map(|entry| entry.trim().parse::<IpAddr>().ok()).collect())
+        .unwrap_or_default();
+    let is_infra = |ip: &IpAddr| match ip {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00 // unique local (fc00::/7)
+                || (v6.segments()[0] & 0xffc0) == 0xfe80 // link local (fe80::/10)
+        }
+    };
+    entries
+        .iter()
+        .rev()
+        .find(|ip| !is_infra(ip))
+        .or_else(|| entries.first())
+        .copied()
 }
 
 /// Best-effort client-source resolution for audit-grade consumers (login
@@ -86,7 +100,7 @@ pub fn audit_client_ip(headers: &HeaderMap, peer: Option<IpAddr>) -> Option<IpAd
         return parse_ip_header(headers, CLIENT_IP_HEADER);
     }
     match peer {
-        Some(peer) if peer_is_proxy(peer) => {
+        Some(peer) if is_infra_ip(peer) => {
             Some(parse_ip_header(headers, "x-real-ip").or_else(|| last_forwarded_ip(headers)).unwrap_or(peer))
         }
         Some(peer) => Some(peer),
@@ -145,10 +159,18 @@ mod tests {
     fn proxied_peer_prefers_x_real_ip_then_rightmost_forwarded() {
         let headers = headers_with(&[("x-real-ip", "203.0.113.5")]);
         assert_eq!(audit_client_ip(&headers, ip("172.18.0.2")), ip("203.0.113.5"));
-        let headers = headers_with(&[("x-forwarded-for", "9.9.9.9, 203.0.113.8")]);
-        assert_eq!(audit_client_ip(&headers, ip("172.18.0.2")), ip("203.0.113.8"));
+        // 单跳反代：Caddy 追加它看到的客户端。
         let headers = headers_with(&[("x-forwarded-for", "203.0.113.8")]);
         assert_eq!(audit_client_ip(&headers, ip("172.18.0.2")), ip("203.0.113.8"));
+        // 伪造首条仍输给边缘代理追加的真实值（取最右公网条目）。
+        let headers = headers_with(&[("x-forwarded-for", "9.9.9.9, 203.0.113.8")]);
+        assert_eq!(audit_client_ip(&headers, ip("172.18.0.2")), ip("203.0.113.8"));
+        // 两级链（nginx→Caddy→app）：最右是 Caddy 追加的内网网关，须跳过取公网客户端。
+        let headers = headers_with(&[("x-forwarded-for", "203.0.113.7, 172.18.0.1")]);
+        assert_eq!(audit_client_ip(&headers, ip("172.18.0.2")), ip("203.0.113.7"));
+        // 全私网（内网客户端走本地代理）：回退首条（边缘代理写入的真实内网客户端）。
+        let headers = headers_with(&[("x-forwarded-for", "192.168.1.50, 172.18.0.1")]);
+        assert_eq!(audit_client_ip(&headers, ip("172.18.0.2")), ip("192.168.1.50"));
         // 头都在但全是垃圾：回退对端，不崩溃也不记 NULL。
         let headers = headers_with(&[("x-real-ip", "garbage"), ("x-forwarded-for", "not-an-ip")]);
         assert_eq!(audit_client_ip(&headers, ip("172.18.0.2")), ip("172.18.0.2"));
@@ -185,8 +207,8 @@ mod tests {
         headers.insert("user-agent", "x".repeat(900).parse().unwrap());
         headers.insert("authorization", "Bearer secret".parse().unwrap());
         let (ip, agent) = login_request_metadata(&headers, None);
-        // 最右可解析条目：最近一跳代理追加的 10.0.0.1，而非客户端可伪造的首条。
-        assert_eq!(ip.as_deref(), Some("10.0.0.1"));
+        // 跳过私网条目取最右公网：10.0.0.1 是内网代理地址，客户端是 192.0.2.9。
+        assert_eq!(ip.as_deref(), Some("192.0.2.9"));
         assert_eq!(agent.unwrap().len(), 512);
         headers.insert("x-forwarded-for", "invalid".parse().unwrap());
         assert_eq!(login_request_metadata(&headers, None).0, None);
