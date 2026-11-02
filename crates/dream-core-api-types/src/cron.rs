@@ -205,6 +205,9 @@ pub struct UpdateConversationCronRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateCronJobRequest {
+    /// Absent keeps the directory, null selects the default; changes run in fresh conversations.
+    #[serde(default, deserialize_with = "deserialize_optional_nullable")]
+    pub workspace: Option<Option<String>>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -357,6 +360,17 @@ pub struct CronJobRemovedPayload {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn workspace_update_distinguishes_keep_default_and_replacement() {
+        use super::UpdateCronJobRequest;
+        let keep: UpdateCronJobRequest = serde_json::from_value(serde_json::json!({})).unwrap();
+        let default: UpdateCronJobRequest = serde_json::from_value(serde_json::json!({"workspace": null})).unwrap();
+        let replace: UpdateCronJobRequest =
+            serde_json::from_value(serde_json::json!({"workspace": "/new-project"})).unwrap();
+        assert_eq!(keep.workspace, None);
+        assert_eq!(default.workspace, Some(None));
+        assert_eq!(replace.workspace, Some(Some("/new-project".to_owned())));
+    }
     use super::*;
     use serde_json::json;
 

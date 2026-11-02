@@ -646,6 +646,7 @@ impl IConversationRepository for StubConvRepo {
     }
 
     async fn create(&self, row: &dream_core_db::models::ConversationRow) -> Result<(), dream_core_db::DbError> {
+        self.seed_sqlite_row(row).await?;
         self.rows.lock().unwrap().insert(row.id.clone(), row.clone());
         Ok(())
     }
@@ -1700,6 +1701,7 @@ async fn cj8_update_job() {
         schedule: None,
         message: None,
         execution_mode: None,
+        workspace: None,
         agent_config: None,
         conversation_title: None,
         max_retries: None,
@@ -1733,6 +1735,7 @@ fn empty_update() -> UpdateCronJobRequest {
         schedule: None,
         message: None,
         execution_mode: None,
+        workspace: None,
         agent_config: None,
         conversation_title: None,
         max_retries: None,
@@ -1822,6 +1825,7 @@ async fn update_existing_conversation_job_rejects_agent_config_changes() {
         .unwrap();
 
     let req = UpdateCronJobRequest {
+        workspace: None,
         name: None,
         description: None,
         enabled: None,
@@ -1862,6 +1866,7 @@ async fn update_existing_conversation_job_rejects_agent_config_even_when_switchi
         .unwrap();
 
     let req = UpdateCronJobRequest {
+        workspace: None,
         name: None,
         description: None,
         enabled: None,
@@ -1914,6 +1919,7 @@ async fn update_existing_job_to_new_conversation_keeps_owner_anchor() {
                 schedule: None,
                 message: None,
                 execution_mode: Some("new_conversation".into()),
+                workspace: None,
                 agent_config: None,
                 conversation_title: None,
                 max_retries: None,
@@ -1976,6 +1982,7 @@ async fn update_existing_job_to_new_conversation_clears_previous_auto_workspace(
             schedule: None,
             message: None,
             execution_mode: Some("new_conversation".into()),
+            workspace: None,
             agent_config: None,
             conversation_title: None,
             max_retries: None,
@@ -2022,6 +2029,7 @@ async fn update_existing_job_to_new_conversation_preserves_custom_workspace() {
             schedule: None,
             message: None,
             execution_mode: Some("new_conversation".into()),
+            workspace: None,
             agent_config: None,
             conversation_title: None,
             max_retries: None,
@@ -2058,6 +2066,7 @@ async fn update_team_conversation_job_rejects_execution_mode_change() {
         schedule: None,
         message: None,
         execution_mode: Some("new_conversation".into()),
+        workspace: None,
         agent_config: None,
         conversation_title: None,
         max_retries: None,
@@ -2080,6 +2089,7 @@ async fn update_job_strips_legacy_agent_ids_when_assistant_id_present() {
     let created = svc.add_job("u1", create_req).await.unwrap();
 
     let req = UpdateCronJobRequest {
+        workspace: None,
         name: None,
         description: None,
         enabled: None,
@@ -2118,6 +2128,7 @@ async fn update_job_rejects_when_assistant_id_cannot_resolve() {
     let created = svc.add_job("u1", create_req).await.unwrap();
 
     let req = UpdateCronJobRequest {
+        workspace: None,
         name: None,
         description: None,
         enabled: None,
@@ -2169,6 +2180,7 @@ async fn cj9_update_schedule_type() {
         schedule: Some(cron_every_5min()),
         message: None,
         execution_mode: None,
+        workspace: None,
         agent_config: None,
         conversation_title: None,
         max_retries: None,
@@ -2196,6 +2208,7 @@ async fn cj10_update_nonexistent() {
         schedule: None,
         message: None,
         execution_mode: None,
+        workspace: None,
         agent_config: None,
         conversation_title: None,
         max_retries: None,
@@ -3396,6 +3409,7 @@ async fn update_max_retries() {
         schedule: None,
         message: None,
         execution_mode: None,
+        workspace: None,
         agent_config: None,
         conversation_title: None,
         max_retries: Some(5),
@@ -3428,6 +3442,7 @@ async fn create_and_update_queue_enabled() {
                     schedule: None,
                     message: None,
                     execution_mode: None,
+                    workspace: None,
                     agent_config: None,
                     conversation_title: None,
                     max_retries: None,
@@ -3786,4 +3801,121 @@ async fn cd4_on_conversation_delete_preserves_all_cron_jobs() {
     let events = bc.take_events();
     let removed_events: Vec<_> = events.iter().filter(|e| e.name == "cron.job-removed").collect();
     assert!(removed_events.is_empty());
+}
+
+#[tokio::test]
+async fn workspace_recovery_preserves_settings_history_and_runs_in_fresh_conversations() {
+    for use_default in [false, true] {
+        let (svc, _, _, conv_repo, _) = setup_with_conv_runtime().await;
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join("old-project");
+        let new = root.path().join("new-project");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::create_dir(&new).unwrap();
+        let old_path = old.to_string_lossy().to_string();
+        conv_repo.set_conversation_extra("conv_1", serde_json::json!({"workspace": old_path}));
+        let mut req = make_create_req("Preserved task", every_60s());
+        req.execution_mode = Some("existing".into());
+        req.agent_config.as_mut().unwrap().workspace = Some(old_path.clone());
+        let before = svc.add_job("u1", req).await.unwrap();
+        sqlx::query("INSERT INTO messages(id, conversation_id, type, content, position, created_at) VALUES ('keep-history', 'conv_1', 'text', 'KEEP_HISTORY', 'left', 1)")
+            .execute(&conv_repo.sqlite_pool).await.unwrap();
+        std::fs::remove_dir(&old).unwrap();
+        assert!(matches!(svc.run_now("u1", &before.id).await.unwrap_err(),
+            dream_core_cron::error::CronError::WorkspacePathRuntimeUnavailable(path) if path == old_path));
+        let workspace = if use_default {
+            None
+        } else {
+            Some(new.to_string_lossy().to_string())
+        };
+        let after = svc
+            .update_job(
+                "u1",
+                &before.id,
+                UpdateCronJobRequest {
+                    workspace: Some(workspace.clone()),
+                    ..empty_update()
+                },
+            )
+            .await
+            .unwrap();
+        let mut expected_config = before.agent_config.clone().unwrap();
+        expected_config.workspace = workspace.clone();
+        assert_eq!(
+            serde_json::to_value(after.agent_config.as_ref().unwrap()).unwrap(),
+            serde_json::to_value(expected_config).unwrap()
+        );
+        assert_eq!(after.schedule, before.schedule);
+        assert_eq!(after.next_run_at, before.next_run_at);
+        assert_eq!(after.message, before.message);
+        assert_eq!(after.conversation_id, before.conversation_id);
+        assert_eq!(
+            after.execution_mode,
+            dream_core_cron::types::ExecutionMode::NewConversation
+        );
+        assert!(
+            conv_repo
+                .list_by_cron_job("u1", &before.id)
+                .await
+                .unwrap()
+                .iter()
+                .any(|row| row.id == "conv_1")
+        );
+        let history: String = sqlx::query_scalar("SELECT content FROM messages WHERE id = 'keep-history'")
+            .fetch_one(&conv_repo.sqlite_pool)
+            .await
+            .unwrap();
+        assert_eq!(history, "KEEP_HISTORY");
+        let run = svc.run_now("u1", &before.id).await.unwrap();
+        assert_ne!(run.conversation_id, "conv_1");
+        let conversation = conv_repo.get("u1", &run.conversation_id).await.unwrap().unwrap();
+        let extra: serde_json::Value = serde_json::from_str(&conversation.extra).unwrap();
+        let actual = extra["workspace"].as_str().unwrap();
+        assert!(std::path::Path::new(actual).is_dir());
+        if let Some(workspace) = workspace {
+            assert_eq!(actual, workspace);
+        } else {
+            assert_ne!(actual, old_path);
+        }
+    }
+}
+
+#[tokio::test]
+async fn workspace_recovery_rejects_invalid_paths_and_other_users_without_mutation() {
+    let (svc, _, _, _, _) = setup_with_conv_runtime().await;
+    let root = tempfile::tempdir().unwrap();
+    let mut req = make_create_req("Scoped workspace", every_60s());
+    req.agent_config.as_mut().unwrap().workspace = Some(root.path().to_string_lossy().to_string());
+    let before = svc.add_job("u1", req).await.unwrap();
+    let missing = root.path().join("missing").to_string_lossy().to_string();
+    let error = svc
+        .update_job(
+            "u1",
+            &before.id,
+            UpdateCronJobRequest {
+                workspace: Some(Some(missing.clone())),
+                ..empty_update()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, dream_core_cron::error::CronError::WorkspacePathUnavailable(path) if path == missing));
+    let error = svc
+        .update_job(
+            "u2",
+            &before.id,
+            UpdateCronJobRequest {
+                workspace: Some(None),
+                ..empty_update()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, dream_core_cron::error::CronError::JobNotFound(_)));
+    let after = svc.get_job("u1", &before.id).await.unwrap();
+    assert_eq!(after.execution_mode, before.execution_mode);
+    assert_eq!(
+        serde_json::to_value(after.agent_config).unwrap(),
+        serde_json::to_value(before.agent_config).unwrap()
+    );
 }

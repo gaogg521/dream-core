@@ -295,6 +295,13 @@ impl JobExecutor {
     }
 
     pub(crate) async fn resolve_job_workspace_raw(&self, job: &CronJob) -> Result<String, CronError> {
+        if job.execution_mode == ExecutionMode::NewConversation {
+            return Ok(job
+                .agent_config
+                .as_ref()
+                .and_then(|config| config.workspace.clone())
+                .unwrap_or_default());
+        }
         self.resolve_execution_workspace_raw(job, &job.conversation_id).await
     }
 

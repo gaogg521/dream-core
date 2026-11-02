@@ -216,6 +216,7 @@ impl CronService {
                     }),
                     message: Some(req.message),
                     execution_mode: None,
+                    workspace: None,
                     agent_config: None,
                     conversation_title: None,
                     max_retries: None,
@@ -354,6 +355,8 @@ impl CronService {
         let mut job = cron_job_from_row(existing_row)?;
         job.agent_type = self.resolve_job_agent_type(&job).await?;
         let original_execution_mode = job.execution_mode;
+        let original_schedule = job.schedule.clone();
+        let original_enabled = job.enabled;
         let original_conversation_id = job.conversation_id.clone();
         let mut clear_conversation_binding = false;
         let mut agent_config_changed = false;
@@ -404,6 +407,37 @@ impl CronService {
                     .await?,
             );
         }
+        if let Some(workspace) = &req.workspace {
+            if self.is_team_conversation_job(&job).await? {
+                return Err(CronError::InvalidExecutionMode(
+                    "Team cron jobs must keep their owning Team workspace".into(),
+                ));
+            }
+            if job.agent_config.is_none() {
+                let row = self
+                    .executor
+                    .get_conversation_row_for_user(user_id, &original_conversation_id)
+                    .await?
+                    .ok_or_else(|| {
+                        CronError::InvalidAgentConfig("Original task assistant configuration is unavailable".into())
+                    })?;
+                let (_, config, _) = self.build_agent_config_from_conversation(&row).await;
+                if let Some(config) = config {
+                    job.agent_config = Some(
+                        self.build_cron_agent_config(user_id, &job.agent_type, config, None)
+                            .await?,
+                    );
+                }
+            }
+            let config = job.agent_config.as_mut().ok_or_else(|| {
+                CronError::InvalidAgentConfig("Original task assistant configuration is unavailable".into())
+            })?;
+            config.workspace = workspace.as_ref().filter(|path| !path.trim().is_empty()).cloned();
+            job.execution_mode = ExecutionMode::NewConversation;
+            agent_config_changed = true;
+            // Preserve the original conversation's cron association and historical runs.
+            clear_conversation_binding = false;
+        }
         if let Some(title) = &req.conversation_title
             && !clear_conversation_binding
         {
@@ -419,7 +453,7 @@ impl CronService {
             job.push_target = normalize_push_target(push_target.clone())?;
         }
 
-        if req.schedule.is_some() || req.enabled.is_some() {
+        if job.schedule != original_schedule || job.enabled != original_enabled {
             job.next_run_at = compute_next_run(&job.schedule, now_ms());
         }
         if clear_conversation_binding
@@ -434,6 +468,9 @@ impl CronService {
         self.validate_job_workspace(&job).await?;
 
         let mut params = build_update_params(&job, &req);
+        if req.workspace.is_some() {
+            params.execution_mode = Some(ExecutionMode::NewConversation.as_str().to_owned());
+        }
         if clear_conversation_binding {
             params.conversation_title = Some(None);
         }
@@ -459,6 +496,14 @@ impl CronService {
         self.bind_existing_conversation_if_needed(&job).await;
         self.scheduler.reschedule_job(&job);
         self.emitter.emit_job_updated(user_id, &cron_job_to_response(&job));
+
+        if let Some(workspace) = &req.workspace {
+            info!(
+                job_id,
+                use_default_workspace = workspace.as_deref().is_none_or(|path| path.trim().is_empty()),
+                "Cron workspace updated; subsequent runs use fresh conversations"
+            );
+        }
 
         info!(job_id = %job.id, "Cron job updated");
         Ok(job)
@@ -2676,6 +2721,7 @@ mod tests {
             schedule: None,
             message: None,
             execution_mode: None,
+            workspace: None,
             agent_config: None,
             conversation_title: None,
             max_retries: None,
@@ -2711,6 +2757,7 @@ mod tests {
             }),
             message: None,
             execution_mode: None,
+            workspace: None,
             agent_config: None,
             conversation_title: None,
             max_retries: None,
@@ -2739,6 +2786,7 @@ mod tests {
             workspace: None,
         });
         let req = UpdateCronJobRequest {
+            workspace: None,
             name: None,
             description: None,
             enabled: None,
@@ -2818,6 +2866,7 @@ mod tests {
             schedule: None,
             message: None,
             execution_mode: None,
+            workspace: None,
             agent_config: None,
             conversation_title: None,
             max_retries: None,
@@ -2839,6 +2888,7 @@ mod tests {
             schedule: None,
             message: None,
             execution_mode: None,
+            workspace: None,
             agent_config: None,
             conversation_title: None,
             max_retries: None,
