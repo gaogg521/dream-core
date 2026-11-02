@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.102](https://github.com/gaogg521/dream-core/compare/v0.1.101...v0.1.102) (2026-11-02)
+
+
+### Bug Fixes
+
+* **cron:** recover task workspaces without losing configuration or history ([1219e4a](https://github.com/gaogg521/dream-core/commit/1219e4af8110685535bbd78d1bf764c8f98ff44c))
+
 ## [0.1.101](https://github.com/gaogg521/dream-core/compare/v0.1.100...v0.1.101) (2026-10-31)
 
 
