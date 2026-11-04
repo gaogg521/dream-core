@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.102](https://github.com/gaogg521/dream-core/compare/v0.1.101...v0.1.102) (2026-11-04)
+
+
+### Bug Fixes
+
+* **cron:** recover task workspaces without losing configuration or history ([1219e4a](https://github.com/gaogg521/dream-core/commit/1219e4af8110685535bbd78d1bf764c8f98ff44c))
+* **skills:** 修改现有文档走轻量路径，Windows OCR 输出固定 UTF-8 ([4924ab9](https://github.com/gaogg521/dream-core/commit/4924ab94015ca0e19d55b00214b6bf185d0bd699))
+
 ## [0.1.101](https://github.com/gaogg521/dream-core/compare/v0.1.100...v0.1.101) (2026-10-31)
 
 
