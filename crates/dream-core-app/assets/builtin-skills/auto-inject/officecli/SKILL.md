@@ -43,6 +43,19 @@ Verify with `officecli --version`. If still not found after install, open a new 
 
 **L1 (read) → L2 (DOM edit) → L3 (raw XML)**. Always prefer higher layers. Add `--json` for structured output.
 
+### Editing an existing file (resume tweaks, wording fixes, a few changed paragraphs)
+
+The build-from-scratch skills (`officecli-docx` etc.) carry a full QA cycle, Delivery Gate and contact-sheet screenshots. **Do not run that for a small edit** — it turned an 8-replacement resume fix into a 40-minute session. Use this path instead:
+
+1. **Read once, completely.** `view text` + `view outline`. If paragraphs look empty, the content sits in text boxes / shapes (typical for PDF-converted or designer-made resumes): use `query` on the textbox/shape elements, or `officecli dump <file>` (full-coverage JSON including text) — do not fall back to OCR for a file whose text is already in the XML.
+2. **Edit in one batch** (one JSON file, one `batch` call), changing only what the user asked for.
+3. **Verify cheaply:** `validate`, then `view text` and compare against what you intended. Render **one** screenshot at the end, and only of pages whose text length changed. If a line now wraps badly, fix it once (shorten or reword, or one explicit line break). Do not tune letter-spacing or add/remove characters by trial and error, and do not loop render → inspect → retry; if the second render is still wrong, deliver and say exactly what is off.
+4. Never re-extract a contact detail (phone, email, ID) a second way "to double check" — read it once from the XML text and copy it, don't retype.
+
+**PDF input:** a PDF with a text layer is read with `pypdf` / `pdftotext` (see the `pdf` skill) — never OCR it. OCR/vision is only for scanned or image-only PDFs. officecli cannot edit a PDF in place; say up front which route you will take (rebuild as .docx from the extracted text, or edit the user's original source file if they have it) instead of discovering it mid-task.
+
+**Chinese text in scripts:** Windows PowerShell 5.1 reads a BOM-less `.ps1` as ANSI and turns Chinese literals into mojibake. Put Chinese strings in a UTF-8 data file (batch JSON, `.txt`) or use Python, not inline in a `.ps1`.
+
 **Before doc work, check Specialized Skills** (bottom of this file). Fundraising decks, academic papers, financial models, dashboards, and Morph animations need their own skill loaded first — `load_skill` once, then proceed.
 
 > **PPT priority rule (overrides the table below).** Any request to create a NEW deck, presentation, slides, 路演, 汇报 or 宣讲 is handled by the auto-injected `ppt-studio` skill: load it with the Skill tool, write one `deck.json`, and render it with its bundled script. Do NOT load the `pptx` default for a new deck. Use `officecli-pptx` only to read or edit an existing .pptx, and `pitch-deck` / `morph-ppt` only when the user explicitly asks for a fundraising deck or Morph animation.

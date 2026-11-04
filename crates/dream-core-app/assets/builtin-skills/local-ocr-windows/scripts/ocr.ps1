@@ -7,6 +7,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# The host decodes our stdout as UTF-8. A PowerShell process inherits the
+# console code page (936/GBK on a Chinese-locale Windows), so without this the
+# recognized Chinese reaches the model as mojibake even though recognition
+# itself was correct.
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+
 # Windows PowerShell does not necessarily load this projection until it is
 # requested. It is part of Windows/.NET, not a downloaded OCR dependency.
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
@@ -74,7 +80,11 @@ try {
     $bitmap = Await-WinRtOperation -Operation ($decoder.GetSoftwareBitmapAsync()) -ResultType ([Windows.Graphics.Imaging.SoftwareBitmap])
     try {
         $result = Await-WinRtOperation -Operation ($engine.RecognizeAsync($bitmap)) -ResultType ([Windows.Media.Ocr.OcrResult])
-        [Console]::Out.Write($result.Text)
+        # Windows' Chinese recognizer puts a space between every pair of
+        # adjacent Han characters; drop those so the text reads as written.
+        $han = '[' + [char]0x3400 + '-' + [char]0x9FFF + ']'
+        $text = [regex]::Replace($result.Text, "(?<=$han)\s+(?=$han)", '')
+        [Console]::Out.Write($text)
     }
     finally {
         $bitmap.Dispose()

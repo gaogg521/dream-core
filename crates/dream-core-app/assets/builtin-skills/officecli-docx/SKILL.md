@@ -469,6 +469,8 @@ an instruction never to finish.) Headings look fine until `view outline` shows a
 
 ### Minimum cycle before "done"
 
+> **Scope.** This cycle and the Delivery Gate below are for documents you *build*. When you are **editing an existing file** (a resume, a contract, a report someone else made) and changing a few paragraphs, run steps 1, 3 and 4 only, plus one screenshot of the pages whose text changed — and skip Gate 3 (a one-page resume legitimately has no PAGE field, and adding one changes the user's document). Do not loop the full cycle; see "Editing an existing file" in the injected `officecli` skill.
+
 1. `officecli view "$FILE" issues` — empty paras, missing alt text, formatting anomalies.
 2. `officecli view "$FILE" outline` — heading hierarchy (no H1 → H3 skips), TOC presence, section count.
 3. `officecli view "$FILE" text --max-lines 400` — typos, stray `\$`/`\t`/`\n` literals, placeholder tokens.
