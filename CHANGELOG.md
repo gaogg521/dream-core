@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.103](https://github.com/gaogg521/dream-core/compare/v0.1.102...v0.1.103) (2026-11-06)
+
+
+### Bug Fixes
+
+* **deps:** calamine 0.38 + libz-sys 1.1.31——RUSTSEC-2026-0436/0418 清零，Security Audit 恢复绿（office/devops 消费方 459 测试全过） ([4c92179](https://github.com/gaogg521/dream-core/commit/4c92179b4db0077116a2723d8548210febe90a3f))
+
 ## [0.1.102](https://github.com/gaogg521/dream-core/compare/v0.1.101...v0.1.102) (2026-11-04)
 
 
