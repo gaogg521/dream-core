@@ -12,6 +12,7 @@
  *             labelled 三视图型线图 (plan); otherwise sections are read from 3D curves / layer names.
  *     --scale drawing units per label unit (only if the height-axis numbers are missing; mm drawing, m labels = 1000)
  *     --centerline  y of the centreline (plan mode) / of the body plan (sections mode); auto-detected in plan mode
+ *   node model3d.cjs read <file>          # plain-text overview of a drawing (what is in it, flat sheet or real 3D, next step)
  *   node model3d.cjs info <file>          # print what would be shown, no HTML
  *   common: --unit mm|m|in   (override a wrong $INSUNITS)   --encoding gbk|utf-8|big5   (old DXF only)
  *
@@ -21,10 +22,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const { Model } = require('./model3d_lib/model.cjs');
+const { Model, zFlatness } = require('./model3d_lib/model.cjs');
 const { readDxfFile, walk } = require('./model3d_lib/dxf.cjs');
 const { readStl, readObj, readOcct } = require('./model3d_lib/meshio.cjs');
 const { loftJson, loftDxf } = require('./model3d_lib/loft.cjs');
+const { readDxfReport } = require('./model3d_lib/report.cjs');
 
 const SKILL_DIR = path.join(__dirname, '..');
 
@@ -81,18 +83,15 @@ function flatnessWarning(model) {
   };
   for (const p of model.parts.values()) { scan(p.pos); scan(p.lines); }
   if (!zs.length) return;
-  const tol = Math.max(1e-9, 1e-6 * Math.max(hx1 - hx0, hy1 - hy0));
-  const counts = new Map();
-  let best = 0, bestKey = 0;
-  for (const z of zs) { const k = Math.round(z / tol); const c = (counts.get(k) || 0) + 1; counts.set(k, c); if (c > best) { best = c; bestKey = k; } }
-  const share = best / zs.length;
-  if (zmax - zmin <= tol) {
+  const f = zFlatness(zs, Math.max(hx1 - hx0, hy1 - hy0));
+  const share = f.share;
+  if (f.exact) {
     model.view = 'top';
     model.warn('这张 DXF 是纯平面图（所有 Z 坐标相同），没有三维信息。二维型线图请用 loft 子命令放样；二维平/立面要建模需先补充高度');
   } else if (share >= 0.9 && zs.length >= 200) {
     model.view = 'top';
     const pct = (100 * share).toFixed(1);
-    const z = +(bestKey * tol).toFixed(1);
+    const z = +f.z.toFixed(1);
     model.warn(`这张 DXF 有 ${pct}% 的点落在同一个平面（Z=${z}），三维只来自 ${(100 - 100 * share).toFixed(1)}% 的零散图元（Z 范围 ${Math.round(zmin)} ~ ${Math.round(zmax)}）：`
       + '它是平铺的二维工程图（总布置图、三视图一类，各视图并排画在同一个平面上），转出来基本是一张平的图，不是三维模型，已默认用顶视图打开。'
       + '要得到三维：用原始三维模型导出 STEP；船体可用带标注的型线图走 loft 放样');
@@ -190,10 +189,25 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   let [cmd, input] = args._;
   if (!cmd || cmd === '-h' || cmd === '--help') usage(0);
-  if (!['view', 'loft', 'info'].includes(cmd)) { input = cmd; cmd = 'view'; }
+  if (!['read', 'view', 'loft', 'info'].includes(cmd)) { input = cmd; cmd = 'view'; }
   if (!input || !fs.existsSync(input)) { console.error(`找不到输入文件 / input not found: ${input}`); process.exit(2); }
 
+  if (cmd === 'read' && path.extname(input).toLowerCase() === '.dxf' && !sniffDwg(input)) {
+    console.log(readDxfReport(input, { encoding: args.encoding }));
+    return;
+  }
+
   const model = new Model();
+  if (cmd === 'read') {
+    // DWG and native CAD formats throw their "how to export" guidance here; STEP/STL/OBJ get a short overview.
+    await load(input, args, model);
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    for (const p of model.parts.values()) for (const arr of [p.pos, p.lines]) for (let i = 0; i < arr.length; i++) { const k = i % 3; min[k] = Math.min(min[k], arr[i]); max[k] = Math.max(max[k], arr[i]); }
+    const s = model.stats();
+    console.log([`文件：${path.basename(input)}`, `内容：${s.parts} 个零件/图层、${Math.round(s.tris)} 个三角面、${Math.round(s.segs)} 条线段｜单位 ${model.unit || '未声明'}`,
+      `尺寸：${[0, 1, 2].map((k) => Math.round((max[k] - min[k]) * 100) / 100).join(' × ')}`, ...model.warnings.map((w) => '注意：' + w), '', `下一步：node scripts/model3d.cjs view "${path.basename(input)}"`].join('\n'));
+    return;
+  }
   if (cmd === 'loft') {
     const opts = { mode: args.mode, stations: args.stations, scale: args.scale, centerline: args.centerline, encoding: args.encoding, layers: args.layers, stationScale: args.stationScale, samples: args.samples ? +args.samples : undefined, mirror: args.mirror };
     const n = path.extname(input).toLowerCase() === '.json' ? loftJson(input, model, opts) : loftDxf(input, model, opts);

@@ -5,6 +5,11 @@
 ## 命令
 
 ```bash
+# 先读图：一次看清文件里有什么、是平铺二维图还是真三维、下一步该用哪个命令（零依赖，约 1 秒）
+node scripts/model3d.cjs read 输入文件
+```
+
+```bash
 # 3D 图纸 / 模型 -> 可旋转 3D（默认输出到输入文件旁边的 <名字>.3d.html）
 node scripts/model3d.cjs view 输入文件 --out 结果.3d.html --title "图名"
 
@@ -29,6 +34,8 @@ node scripts/model3d.cjs info 输入文件
 | **STEP / STP / IGES / IGS / BREP** | 真实体，按零件分组、带颜色 | 装配体几十个零件约 1 秒 |
 | **STL**（二进制/ASCII）、**OBJ** | 网格模型 | OBJ 默认按 Y 轴朝上 |
 | **型线图 DXF / JSON** | 用 `loft` 放样成船体曲面（左右舷镜像），叠加横剖线和纵向参考线 | 见下文约定 |
+
+**三维线（DXF 里每条线已经是 3D 坐标，如 FreeCAD、Rhino 导出的整条船的线）用 `view`，不要用 `loft`**：view 保留全部线并按图层显隐；loft 是把二维型线图/完整的横剖线放样成曲面，对被拆成许多段的三维线会出毛刺。
 
 **不支持，并会给出原因：**
 

@@ -103,4 +103,23 @@ function pushSeg(arr, a, b) {
 
 function add(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
 
-module.exports = { Model, aciToHex, trueColorToHex, rgbHex };
+/**
+ * How flat is a point cloud? Returns the share of points in the single most populated Z plane. A flat
+ * multi-view sheet (general arrangement, three-view drawing) scores ~1 even with a few stray 3D entities,
+ * a real 3D model scores far lower. The one rule behind the converter's warning and the `read` report.
+ */
+function zFlatness(zs, horizontalSpan) {
+  const tol = Math.max(1e-9, 1e-6 * horizontalSpan);
+  const counts = new Map();
+  let best = 0, key = 0, zmin = Infinity, zmax = -Infinity;
+  for (const z of zs) {
+    if (z < zmin) zmin = z;
+    if (z > zmax) zmax = z;
+    const k = Math.round(z / tol), c = (counts.get(k) || 0) + 1;
+    counts.set(k, c);
+    if (c > best) { best = c; key = k; }
+  }
+  return { n: zs.length, share: zs.length ? best / zs.length : 1, z: key * tol, zmin, zmax, exact: zmax - zmin <= tol };
+}
+
+module.exports = { Model, aciToHex, trueColorToHex, rgbHex, zFlatness };

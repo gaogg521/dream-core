@@ -114,6 +114,18 @@ check('no axis numbers -> asks for --scale', /--scale/.test(msg), msg.slice(0, 4
   const wire = [];
   for (let i = 0; i < 120; i++) wire.push(line([i * 10, 0, 0], [i * 10, 50, (i % 20) * 40 + 40])); // genuinely spread over z
   check('real 3D wireframe -> not flagged', !infoWarnings(wire).some((w) => /平面/.test(w)));
+
+  // `read` is what an agent runs for "阅读一下这个图纸": it must answer flat-vs-3D itself, offline, with no package.
+  const readText = (entities) => {
+    const f = path.join(os.tmpdir(), `read-${process.pid}-${Math.random().toString(36).slice(2)}.dxf`);
+    fs.writeFileSync(f, dxf(entities));
+    try { return execFileSync(process.execPath, [path.join(__dirname, 'model3d.cjs'), 'read', f], { encoding: 'utf8', maxBuffer: 1 << 26 }); } finally { fs.unlinkSync(f); }
+  };
+  const flatRead = readText(sheet), wireRead = readText(wire);
+  check('read: flat sheet -> says 平铺的二维工程图 and does not offer a 3D view', /平铺的二维工程图/.test(flatRead) && /Z=0/.test(flatRead));
+  check('read: 3D wireframe -> says 真正的三维几何 and points to view', /真正的三维几何/.test(wireRead) && /model3d\.cjs view/.test(wireRead));
+  check('read: reports entity census and layers', /LINE×120/.test(wireRead) && /图层/.test(wireRead));
+  check('read: never tells the user to install anything', !/pip install|npm install/.test(flatRead + wireRead));
 }
 
 console.log(failed ? `\n${failed} FAILED` : '\nall passed');

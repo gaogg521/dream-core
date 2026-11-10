@@ -1,7 +1,7 @@
 ---
 name: autocad-drawing
 display_name: "AutoCAD 图纸绘制"
-description: CAD/三维文件先用本技能：STEP/IGES/STL/OBJ/3D DXF/型线图转可旋转3D模型（离线html，已内置OpenCascade，勿自装）；AutoCAD DXF 出图/改图/提取数据；SolidWorks 等原生格式给导出指引。不用于 Word/Excel/PPT
+description: 阅读/看看/分析 CAD 图纸（DXF/STEP/STL/型线图）、转可旋转3D，先用本技能自带脚本 model3d.cjs read（免装任何包，勿自装 ezdxf/OCP）；DWG 须另存 DXF；也可画图/改图。不用于 Word/Excel/PPT
 ---
 
 
@@ -10,6 +10,21 @@ description: CAD/三维文件先用本技能：STEP/IGES/STL/OBJ/3D DXF/型线�
 ## 用途
 
 为各类行业生成/修改规范、可直接用 AutoCAD 打开的图纸，并从图纸提取数据、优化规范化。默认输出 **DXF 文件**（AutoCAD 可直接打开另存为 DWG），需要交互式绘图时输出 **SCR 脚本**或 **AutoLISP(.lsp)** 供用户在 AutoCAD 内运行。
+
+## 先读图（「阅读/看看/分析/解读这张图」一律从这里开始）
+
+```bash
+node scripts/model3d.cjs read 图纸.dxf
+```
+
+零依赖、一次出结果（约 1 秒）：格式与版本、生成工具、单位、实体构成、图层、范围、文字摘要，以及**结论**——是平铺的二维工程图、真正的三维模型，还是带标注的型线图，并给出下一步命令。**不要为了看一眼图纸去 pip 装 ezdxf 或自己写解析脚本**；只有要改图、导出表格时才需要 ezdxf。
+
+| 读图结论 | 下一步 |
+|---|---|
+| 真三维线框/面/网格 | `view` 转成可旋转 3D（线框按图层显隐） |
+| 带水线标注的型线图 | `loft` 放样船体 |
+| 平铺的二维工程图（总布置图、三视图） | 如实告诉用户它不是三维模型，转不成 3D |
+| DWG / SolidWorks 等原生格式 | 让用户另存 ASCII DXF 或导出 STEP |
 
 ## 核心进化机制（v1.1，最重要的能力）
 
@@ -40,6 +55,7 @@ description: CAD/三维文件先用本技能：STEP/IGES/STL/OBJ/3D DXF/型线�
 
 - **建图**：用户要求「画个 XXX 图」「做个机械零件图 / 建筑平面图 / 电气原理图 / 工艺流程图 / 户型图 / 钢结构详图」等。
 - **改图**：用户要求「这张图加个尺寸 / 换个图层 / 补个标注 / 换个图框 / 改一下比例」。
+- **读图**：用户说「阅读一下这个图纸」「看看这张图」「这图里有什么」→ 先 `read`（见上）。
 - **提取**：用户要求「把图里的尺寸/材料表/图层/文字/坐标 导出来」。
 - **优化**：用户要求「这图图层很乱，帮我规范一下 / 清理一下 / 统一线型」。
 - **转 3D**：用户要求「把这个 3D 图纸/线框/STEP/STL 转成能旋转看的三维模型」「型线图放样成船体」「看看这个模型长什么样」。
@@ -52,7 +68,8 @@ description: CAD/三维文件先用本技能：STEP/IGES/STL/OBJ/3D DXF/型线�
 |------|----------|------|
 | **建图** | `scripts/gen_dxf.py`（DXF 生成） | plate / floorplan / spec / blank 四种子命令 |
 | **改图** | ezdxf 读入定位修改后另存 | 先备份原图，改后 AUDIT+PURGE |
-| **提取** | ezdxf 只读遍历实体导出 CSV | 注意块引用与属性递归展开 |
+| **读图** | `node scripts/model3d.cjs read` | 零依赖；先看全貌再决定下一步 |
+| **提取** | 先 `read` 看全貌；要导出 CSV 再用 ezdxf 只读遍历 | 仅导出表格时才装 ezdxf；注意块引用与属性递归展开 |
 | **优化** | ezdxf 批量改 + SCR 跑 LAYTRANS/PURGE | 特性一律 ByLayer，改前备份 |
 | **转 3D** | `node scripts/model3d.cjs view/loft` | 输出单个离线 .html，可旋转/剖切/分图层；见 `@references/model3d.md` |
 

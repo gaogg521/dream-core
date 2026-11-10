@@ -91,7 +91,9 @@ function readEntities(pairs, start, stopAt) {
 
 function parseDxf(buf, encoding) {
   const pairs = toPairs(decodeDxf(buf, encoding));
-  const doc = { unit: '', layers: new Map(), blocks: new Map(), entities: [] };
+  // version/codepage come from the HEADER; `comments` are the leading 999 lines, where converters sign their work
+  // ("LibreDWG 0.12.2", "FreeCAD v1.1 ...") — worth reporting because what a tool drops is tool-specific.
+  const doc = { unit: '', version: '', codepage: '', comments: pairs.filter(([c]) => c === 999).slice(0, 3).map(([, v]) => v), layers: new Map(), blocks: new Map(), entities: [] };
   for (let i = 0; i < pairs.length; i++) {
     if (pairs[i][0] !== 0 || pairs[i][1] !== 'SECTION') continue;
     const name = pairs[i + 1] && pairs[i + 1][1];
@@ -99,6 +101,8 @@ function parseDxf(buf, encoding) {
     if (name === 'HEADER') {
       for (; i < pairs.length && !(pairs[i][0] === 0 && pairs[i][1] === 'ENDSEC'); i++) {
         if (pairs[i][0] === 9 && pairs[i][1] === '$INSUNITS' && pairs[i + 1]) doc.unit = UNITS[parseInt(pairs[i + 1][1], 10)] || '';
+        if (pairs[i][0] === 9 && pairs[i][1] === '$ACADVER' && pairs[i + 1]) doc.version = pairs[i + 1][1];
+        if (pairs[i][0] === 9 && pairs[i][1] === '$DWGCODEPAGE' && pairs[i + 1]) doc.codepage = pairs[i + 1][1];
       }
     } else if (name === 'TABLES') {
       for (; i < pairs.length && !(pairs[i][0] === 0 && pairs[i][1] === 'ENDSEC'); i++) {

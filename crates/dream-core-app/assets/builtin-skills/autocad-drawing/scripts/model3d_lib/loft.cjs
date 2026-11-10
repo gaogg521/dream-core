@@ -66,15 +66,25 @@ function buildHull(model, stations, opts) {
   const tol = opts.tol || Math.hypot(ymax - ymin, zmax - zmin) * 0.01;
 
   const secs = [];
+  const fragmented = [];
   for (const s of stations.slice().sort((a, b) => a.x - b.x)) {
     const chains = chain(s.curves, tol);
     if (!chains.length) continue;
-    if (chains.length > 1) model.warn(`站位 x=${s.x} 的横剖线断成 ${chains.length} 段，已按最长一段放样，请检查是否有缺口`);
+    if (chains.length > 1) fragmented.push({ x: s.x, n: chains.length });
     let c = chains.sort((a, b) => arcLen(b) - arcLen(a))[0];
     // Orient keel -> deck: start at the lower end (ties: the end nearer the centreline).
     const a = c[0], b = c[c.length - 1];
     if (b[1] < a[1] - tol || (Math.abs(b[1] - a[1]) <= tol && b[0] < a[0])) c = c.slice().reverse();
     secs.push({ x: s.x, pts: resample(c, n) });
+  }
+  if (fragmented.length > 3) {
+    // Many stations in pieces means the "sections" are really a 3D wireframe (one object/layer per line, as
+    // exported by FreeCAD or Rhino) rather than complete section curves. Lofting only the longest piece of
+    // each gives spikes; the faithful picture is the wireframe itself, which `view` shows.
+    model.warn(`${fragmented.length} 个站位的横剖线都被拆成了多段（最多 ${Math.max(...fragmented.map((f) => f.n))} 段），每站只取最长一段放样会出毛刺。`
+      + '如果这个 DXF 本身就是三维线框（每条线一个图层/对象，FreeCAD、Rhino 导出常见），请改用 view 直接旋转查看线框；loft 只适合横剖线完整连续的型线图');
+  } else {
+    for (const f of fragmented) model.warn(`站位 x=${f.x} 的横剖线断成 ${f.n} 段，已按最长一段放样，请检查是否有缺口`);
   }
   if (secs.length < 2) throw new Error('至少需要 2 个站位的横剖线才能放样 / need at least 2 stations');
 
