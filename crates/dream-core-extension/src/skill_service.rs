@@ -4052,6 +4052,57 @@ mod tests {
         );
     }
 
+    /// The autocad-drawing 3D converter is a Node script that `require`s sibling modules and
+    /// loads a WASM file at run time, so ONE missing file breaks it at the user's machine only.
+    /// A directory named `lib/` once never reached the repo (the root .gitignore ignores every
+    /// `lib/`), and every local run was green because the files existed on disk.
+    #[test]
+    fn autocad_3d_toolchain_is_embedded_intact() {
+        let corpus = builtin_skills_corpus();
+        let base = "autocad-drawing";
+        for rel in [
+            "scripts/model3d.cjs",
+            "scripts/model3d_lib/model.cjs",
+            "scripts/model3d_lib/dxf.cjs",
+            "scripts/model3d_lib/meshio.cjs",
+            "scripts/model3d_lib/loft.cjs",
+            "templates/viewer3d.html",
+            "vendor/three-viewer.iife.min.js",
+            "vendor/occt/occt-import-js.js",
+            "references/model3d.md",
+        ] {
+            let file = corpus
+                .get_file(format!("{base}/{rel}"))
+                .unwrap_or_else(|| panic!("{base}/{rel} is not embedded in the built-in skills corpus"));
+            assert!(!file.contents().is_empty(), "{base}/{rel} is embedded but empty");
+        }
+        let wasm = corpus
+            .get_file(format!("{base}/vendor/occt/occt-import-js.wasm"))
+            .expect("OpenCascade wasm is not embedded");
+        assert_eq!(
+            &wasm.contents()[..4],
+            b" asm",
+            "embedded wasm lost its magic header (text conversion?)"
+        );
+        assert!(
+            wasm.contents().len() > 5_000_000,
+            "embedded wasm is truncated: {} bytes",
+            wasm.contents().len()
+        );
+
+        // The viewer template must still carry every placeholder the converter fills in.
+        let tpl = std::str::from_utf8(
+            corpus
+                .get_file(format!("{base}/templates/viewer3d.html"))
+                .unwrap()
+                .contents(),
+        )
+        .unwrap();
+        for ph in ["__THREE__", "__MODEL__", "__LANG__", "__TITLE__"] {
+            assert!(tpl.contains(ph), "viewer3d.html lost placeholder {ph}");
+        }
+    }
+
     #[tokio::test]
     async fn embedded_rejects_path_traversal() {
         let tmp = TempDir::new().unwrap();
