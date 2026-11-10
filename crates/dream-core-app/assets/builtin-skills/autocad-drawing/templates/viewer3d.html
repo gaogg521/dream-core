@@ -185,7 +185,8 @@ function btn(parent, label, fn, cls){
 }
 
 var views = $("views");
-btn(views, T.fit, function(){ setView("iso"); });
+var HOME = DIRS[MODEL.view] ? MODEL.view : "iso"; // a flat sheet opens from above, a 3D model in axonometric
+btn(views, T.fit, function(){ setView(HOME); });
 ["front","back","left","right","top","bottom","iso"].forEach(function(v){ btn(views, T[v], function(){ setView(v); }); });
 
 var hasMesh = (MODEL.meshes||[]).length > 0;
@@ -274,7 +275,7 @@ canvas.addEventListener("dblclick", function(e){
   if(hits.length){ var d = hits[0].point.clone().sub(controls.target); controls.target.add(d); camera.position.add(d); controls.update(); }
 });
 
-resize(); setView("iso"); applyModes();
+resize(); setView(HOME); applyModes();
 // Key light rides with the camera (slightly above it) so the face you look at is always lit.
 var lift = new THREE.Vector3();
 (function loop(){

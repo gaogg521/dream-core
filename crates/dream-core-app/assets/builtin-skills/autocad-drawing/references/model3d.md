@@ -35,7 +35,8 @@ node scripts/model3d.cjs info 输入文件
 - **DWG**：Autodesk 私有格式。在 AutoCAD/中望/浩辰里「另存为 DXF」即可。
 - **SolidWorks（.sldprt/.sldasm）、Inventor、CATIA、NX/Creo（.prt）、Solid Edge、Parasolid、SketchUp、Rhino 等原生格式**：没有公开规范，任何开源库都读不了，**不要尝试逆向解析二进制**（白费时间且不会有结果）。请用户在原软件里「另存为 / 导出」STEP（首选，保留零件和颜色）或 STL；文件是别人发来的，就请对方导出 STEP。工具遇到这些扩展名会直接给出这条提示。
 - **DXF 里的 3DSOLID/REGION/曲面（ACIS 实体）**：几何是加密的 ACIS 数据，读不出来。在 AutoCAD 里用 `EXPORT` 导出 STEP，或 `STLOUT` 导出 STL，再转换。
-- **纯二维平面图**（所有 Z 都相同）：没有高度信息，转出来是平的。工具会给出提示。二维平/立面要建模，得先补充高度（例如给墙线设置 thickness）。
+- **平铺的二维工程图**（总布置图、三视图、各层甲板平面一类，各视图并排画在同一个平面上）：没有三维信息，转出来就是一张平的图。工具按「同一平面的点占比」判断：全部同一个 Z 提示「纯平面图」；≥90% 在同一个平面（常有几条零散竖线）提示「平铺的二维工程图」，并默认用顶视图打开。**这种图无法自动合成三维**；船体可以用其中带标注的型线图走 `loft`，其余要三维只能找原始三维模型导出 STEP。58 万线段的总布置图也能打开（约 19MB）。
+- **DXF 里的实体是空壳**：用 LibreDWG（`dwg2dxf`、各类「DWG 批量转 DXF」小工具，文件头第一行写着 `LibreDWG`）转出来的 DXF，3DSOLID/REGION/BODY 记录只有头和 GUID，**没有 ACIS 数据**，任何读取器都还原不出来。要保留实体，得用 AutoCAD/中望等原生软件「另存为 DXF」，或直接导出 STEP。工具只会说「读不出 N 个 ACIS 实体」，看到文件头是 LibreDWG 就该这样告诉用户。
 - **二进制 DXF**：另存为 ASCII DXF。
 
 ## 型线图放样约定（loft）

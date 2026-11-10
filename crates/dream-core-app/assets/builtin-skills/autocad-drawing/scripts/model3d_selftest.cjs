@@ -96,5 +96,25 @@ let msg = '';
 try { recognise(build({}).split('\n').join('\n').replace(/\n1\n(\d\.0)\n/g, '\n1\nax$1\n')); } catch (e) { msg = e.message; }
 check('no axis numbers -> asks for --scale', /--scale/.test(msg), msg.slice(0, 40));
 
+// Flat multi-view sheets (a general arrangement drawing) must be called out as 2D, even with a few stray 3D
+// entities; a real 3D wireframe must not be flagged. Run through the CLI, as a user would.
+{
+  const { execFileSync } = require('child_process');
+  const line = (a, b) => ['0', 'LINE', '8', 'L', '10', String(a[0]), '20', String(a[1]), '30', String(a[2]), '11', String(b[0]), '21', String(b[1]), '31', String(b[2])];
+  const infoWarnings = (entities) => {
+    const f = path.join(os.tmpdir(), `flat-${process.pid}-${Math.random().toString(36).slice(2)}.dxf`);
+    fs.writeFileSync(f, dxf(entities));
+    try { return JSON.parse(execFileSync(process.execPath, [path.join(__dirname, 'model3d.cjs'), 'info', f], { encoding: 'utf8', maxBuffer: 1 << 26 })).warnings; } finally { fs.unlinkSync(f); }
+  };
+  const sheet = [];
+  for (let i = 0; i < 400; i++) sheet.push(line([i * 10, 0, 0], [i * 10 + 5, 80, 0])); // 800 points, all z = 0
+  for (let i = 0; i < 6; i++) sheet.push(line([i * 100, 0, 0], [i * 100, 0, 3000])); // a few stray vertical lines
+  check('flat sheet with stray 3D lines -> flagged as 2D', infoWarnings(sheet).some((w) => /同一个平面/.test(w)));
+  check('exactly flat drawing -> flagged as 2D', infoWarnings(sheet.slice(0, 400)).some((w) => /纯平面图/.test(w)));
+  const wire = [];
+  for (let i = 0; i < 120; i++) wire.push(line([i * 10, 0, 0], [i * 10, 50, (i % 20) * 40 + 40])); // genuinely spread over z
+  check('real 3D wireframe -> not flagged', !infoWarnings(wire).some((w) => /平面/.test(w)));
+}
+
 console.log(failed ? `\n${failed} FAILED` : '\nall passed');
 process.exit(failed ? 1 : 0);

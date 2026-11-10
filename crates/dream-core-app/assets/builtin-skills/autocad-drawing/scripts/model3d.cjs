@@ -63,6 +63,42 @@ const NATIVE = {
   '.rvt': 'Revit', '.dgn': 'MicroStation',
 };
 
+/**
+ * A drawing whose points nearly all share one Z is a flat 2D sheet, not a 3D model. Exact equality is too
+ * strict: real sheets carry a few stray 3D entities (masts, ladders, one odd block), and a viewer of a
+ * 580k-segment general arrangement that merely warns about ACIS solids reads as "a 3D model".
+ */
+function flatnessWarning(model) {
+  const zs = [];
+  let hx0 = Infinity, hx1 = -Infinity, hy0 = Infinity, hy1 = -Infinity, zmin = Infinity, zmax = -Infinity;
+  const scan = (arr) => {
+    for (let i = 0; i + 2 < arr.length; i += 3) {
+      const x = arr[i], y = arr[i + 1], z = arr[i + 2];
+      if (x < hx0) hx0 = x; if (x > hx1) hx1 = x; if (y < hy0) hy0 = y; if (y > hy1) hy1 = y;
+      if (z < zmin) zmin = z; if (z > zmax) zmax = z;
+      zs.push(z);
+    }
+  };
+  for (const p of model.parts.values()) { scan(p.pos); scan(p.lines); }
+  if (!zs.length) return;
+  const tol = Math.max(1e-9, 1e-6 * Math.max(hx1 - hx0, hy1 - hy0));
+  const counts = new Map();
+  let best = 0, bestKey = 0;
+  for (const z of zs) { const k = Math.round(z / tol); const c = (counts.get(k) || 0) + 1; counts.set(k, c); if (c > best) { best = c; bestKey = k; } }
+  const share = best / zs.length;
+  if (zmax - zmin <= tol) {
+    model.view = 'top';
+    model.warn('这张 DXF 是纯平面图（所有 Z 坐标相同），没有三维信息。二维型线图请用 loft 子命令放样；二维平/立面要建模需先补充高度');
+  } else if (share >= 0.9 && zs.length >= 200) {
+    model.view = 'top';
+    const pct = (100 * share).toFixed(1);
+    const z = +(bestKey * tol).toFixed(1);
+    model.warn(`这张 DXF 有 ${pct}% 的点落在同一个平面（Z=${z}），三维只来自 ${(100 - 100 * share).toFixed(1)}% 的零散图元（Z 范围 ${Math.round(zmin)} ~ ${Math.round(zmax)}）：`
+      + '它是平铺的二维工程图（总布置图、三视图一类，各视图并排画在同一个平面上），转出来基本是一张平的图，不是三维模型，已默认用顶视图打开。'
+      + '要得到三维：用原始三维模型导出 STEP；船体可用带标注的型线图走 loft 放样');
+  }
+}
+
 async function load(file, args, model) {
   const ext = path.extname(file).toLowerCase();
   if (NATIVE[ext]) {
@@ -88,15 +124,7 @@ async function load(file, args, model) {
     }
     const other = Object.entries(skipped).filter(([k]) => k !== 'acis');
     if (other.length) model.warn('未显示的实体类型：' + other.map(([k, v]) => `${k}×${v}`).join('、'));
-    let zSpan = 0, zmin = Infinity, zmax = -Infinity;
-    for (const p of model.parts.values()) {
-      for (let i = 2; i < p.pos.length; i += 3) { zmin = Math.min(zmin, p.pos[i]); zmax = Math.max(zmax, p.pos[i]); }
-      for (let i = 2; i < p.lines.length; i += 3) { zmin = Math.min(zmin, p.lines[i]); zmax = Math.max(zmax, p.lines[i]); }
-    }
-    zSpan = zmax - zmin;
-    if (!(zSpan > 1e-9)) {
-      model.warn('这张 DXF 是纯平面图（所有 Z 坐标相同），没有三维信息。二维型线图请用 loft 子命令放样；二维平/立面要建模需先补充高度');
-    }
+    flatnessWarning(model);
     return;
   }
   if (ext === '.stl') return readStl(file, model);
@@ -129,7 +157,7 @@ function pack(model, title, lang) {
     if (p.lines.length) lines.push({ name: p.name, color: p.color, pos: b64(shift(p.lines), Float32Array) });
   }
   if (off.some((v) => v)) model.warn(`坐标已整体平移 (${off.join(', ')}) 以保证显示精度，尺寸不受影响`);
-  return { title, unit: model.unit, up: model.up, meshes, lines, warnings: model.warnings };
+  return { title, unit: model.unit, up: model.up, view: model.view || 'iso', meshes, lines, warnings: model.warnings };
 }
 
 function writeHtml(out, data, lang) {
