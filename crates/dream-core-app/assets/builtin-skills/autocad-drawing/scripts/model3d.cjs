@@ -7,6 +7,11 @@
  *   node model3d.cjs view <file> [--out x.html] [--title T] [--lang zh|en] [--up z|y] [--quality low|medium|high]
  *   node model3d.cjs loft <lines.json|lines.dxf> [--out x.html] [--layers REGEX] [--centerline 0]
  *                         [--station-scale 1] [--samples 60] [--no-mirror]
+ *                         [--mode auto|plan|sections] [--scale 1000] [--stations 140]
+ *     --mode  auto (default): a DXF whose half-breadth plan has "17.0WL"-style waterline labels is read as a
+ *             labelled 三视图型线图 (plan); otherwise sections are read from 3D curves / layer names.
+ *     --scale drawing units per label unit (only if the height-axis numbers are missing; mm drawing, m labels = 1000)
+ *     --centerline  y of the centreline (plan mode) / of the body plan (sections mode); auto-detected in plan mode
  *   node model3d.cjs info <file>          # print what would be shown, no HTML
  *   common: --unit mm|m|in   (override a wrong $INSUNITS)   --encoding gbk|utf-8|big5   (old DXF only)
  *
@@ -67,8 +72,9 @@ async function load(file, args, model) {
       + ` / ${NATIVE[ext]} native format is proprietary: export STEP (preferred) or STL from the authoring CAD.`);
   }
   if (ext === '.dwg' || sniffDwg(file)) {
-    throw new Error('DWG 是 Autodesk 私有格式，无法直接读取。请在 AutoCAD/中望/浩辰里「另存为 DXF」后再转换；'
-      + '实体模型也可以用 AutoCAD 的 EXPORT 导出 STEP，或 STLOUT 导出 STL。/ DWG is proprietary: save as DXF, or export STEP/STL.');
+    throw new Error('DWG 是 Autodesk 私有格式，无法直接读取。请在 AutoCAD/中望/浩辰里「另存为 DXF」（版本选 2010 或更高的 ASCII DXF）后再转换；'
+      + '二维型线图用 loft 子命令处理 DXF（保留图上的文字标注）；实体模型也可以用 AutoCAD 的 EXPORT 导出 STEP，或 STLOUT 导出 STL。'
+      + ' / DWG is proprietary: save as ASCII DXF (2010+) and run loft for a lines plan, or export STEP/STL.');
   }
   if (ext === '.dxf') {
     const doc = readDxfFile(file, args.encoding);
@@ -161,7 +167,7 @@ async function main() {
 
   const model = new Model();
   if (cmd === 'loft') {
-    const opts = { encoding: args.encoding, layers: args.layers, centerline: args.centerline, stationScale: args.stationScale, samples: args.samples ? +args.samples : undefined, mirror: args.mirror };
+    const opts = { mode: args.mode, stations: args.stations, scale: args.scale, centerline: args.centerline, encoding: args.encoding, layers: args.layers, stationScale: args.stationScale, samples: args.samples ? +args.samples : undefined, mirror: args.mirror };
     const n = path.extname(input).toLowerCase() === '.json' ? loftJson(input, model, opts) : loftDxf(input, model, opts);
     model.warn(`已用 ${n} 个站位放样；曲面由横剖线按弧长对应插值，适合查看外形，不能替代光顺后的型值`);
   } else {

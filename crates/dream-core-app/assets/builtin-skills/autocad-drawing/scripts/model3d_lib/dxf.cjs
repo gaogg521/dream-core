@@ -8,7 +8,7 @@ const { aciToHex, trueColorToHex } = require('./model.cjs');
 
 const UNITS = { 0: '', 1: 'in', 2: 'ft', 4: 'mm', 5: 'cm', 6: 'm', 7: 'km', 8: 'µin', 9: 'mil', 10: 'yd', 14: 'dm' };
 const ACIS_TYPES = new Set(['3DSOLID', 'BODY', 'REGION', 'SURFACE', 'PLANESURFACE', 'EXTRUDEDSURFACE', 'LOFTEDSURFACE', 'REVOLVEDSURFACE', 'SWEPTSURFACE', 'NURBSURFACE']);
-const IGNORED = new Set(['TEXT', 'MTEXT', 'ATTDEF', 'ATTRIB', 'DIMENSION', 'LEADER', 'MLEADER', 'MULTILEADER', 'HATCH', 'POINT', 'VIEWPORT', 'IMAGE', 'WIPEOUT', 'TOLERANCE', 'OLE2FRAME', 'XLINE', 'RAY', 'SEQEND', 'ENDBLK']);
+const IGNORED = new Set(['ATTDEF', 'ATTRIB', 'DIMENSION', 'LEADER', 'MLEADER', 'MULTILEADER', 'HATCH', 'POINT', 'VIEWPORT', 'IMAGE', 'WIPEOUT', 'TOLERANCE', 'OLE2FRAME', 'XLINE', 'RAY', 'SEQEND', 'ENDBLK']);
 
 // ---------- decoding ----------
 
@@ -54,6 +54,18 @@ function toPairs(text) {
     pairs.push([code, lines[i + 1].trim()]);
   }
   return pairs;
+}
+
+/** Strip MTEXT/TEXT formatting codes (fonts, colours, paragraph breaks) down to plain text. */
+function cleanText(s) {
+  return String(s || '')
+    .replace(/\\[fFcCHhQqWwTtAa][^;]*;/g, '')
+    .replace(/\\[Pp]/g, ' ')
+    .replace(/\\~/g, ' ')
+    .replace(/%%[cC]/g, 'Ø')
+    .replace(/[{}]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 // ---------- structure ----------
@@ -462,6 +474,14 @@ function walk(doc, cb, opts = {}) {
           for (const fc of faces) if (fc.length >= 3 && fc.every((x) => x < verts.length)) face(fc.map((x) => verts[x]));
           break;
         }
+        case 'TEXT': case 'MTEXT': {
+          if (!cb.onText) break;
+          let raw = f[1] || '';
+          if (e.type === 'MTEXT') raw = e.g.filter(([c]) => c === 3).map(([, v]) => v).join('') + raw;
+          const p = pt(f, 10);
+          cb.onText(layer, cleanText(raw), apply(m, e.type === 'TEXT' ? apply(ocs, p) : p), num(f, 40));
+          break;
+        }
         case 'INSERT': {
           const blk = doc.blocks.get(f[2]);
           if (!blk || depth > 16) break;
@@ -492,4 +512,4 @@ function readDxfFile(file, encoding) {
   return parseDxf(fs.readFileSync(file), encoding);
 }
 
-module.exports = { readDxfFile, parseDxf, walk, sampleSpline };
+module.exports = { readDxfFile, parseDxf, walk, sampleSpline, cleanText };

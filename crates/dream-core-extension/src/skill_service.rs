@@ -4066,6 +4066,8 @@ mod tests {
             "scripts/model3d_lib/dxf.cjs",
             "scripts/model3d_lib/meshio.cjs",
             "scripts/model3d_lib/loft.cjs",
+            "scripts/model3d_lib/lines_plan.cjs",
+            "scripts/model3d_selftest.cjs",
             "templates/viewer3d.html",
             "vendor/three-viewer.iife.min.js",
             "vendor/occt/occt-import-js.js",

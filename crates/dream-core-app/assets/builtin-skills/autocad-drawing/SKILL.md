@@ -166,6 +166,7 @@ node scripts/model3d.cjs loft 型线图.dxf --out 船体.3d.html  # 型线图 ->
 - 输出是单个 .html：在预览面板打开即可拖动旋转、缩放、切换视图、剖切、按图层显隐、截图。
 - DWG、DXF 里的 3DSOLID（ACIS）、纯二维图没法直接转，工具会给出原因和下一步做法，**照实转告用户**。
 - **SolidWorks（.sldprt/.sldasm）、Inventor、CATIA、NX/Creo 等原生格式读不了，也不要尝试逆向解析二进制**：直接请用户在原软件里导出 STEP（首选）或 STL。
+- **带标注的三视图型线图**（DWG 先另存为 ASCII DXF）：`node scripts/model3d.cjs loft 型线图.dxf`，自动按「17.0WL」线名放样船体；把脚本输出的 WARN（内插的水线、舍弃的线名、艏艉细节未建模）原样转告用户，并说明这只适合看外形、不能当型值表。
 - 输入约定、型线图图层命名、参数说明见 `@references/model3d.md`。
 
 ## 参考文件

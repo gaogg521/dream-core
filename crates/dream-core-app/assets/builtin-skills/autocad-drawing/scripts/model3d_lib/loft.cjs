@@ -4,6 +4,7 @@
 
 const fs = require('fs');
 const { readDxfFile, walk } = require('./dxf.cjs');
+const { planToStations } = require('./lines_plan.cjs');
 
 function dist(a, b) { return Math.hypot(a[0] - b[0], a[1] - b[1], (a[2] || 0) - (b[2] || 0)); }
 
@@ -109,16 +110,29 @@ function loftJson(file, model, opts) {
  *  - 3D: each section is a curve lying in a plane x = const (exported from Rhino/Maxsurf);
  *  - 2D body plan: sections drawn in the Y–Z view, station position taken from the layer
  *    name (e.g. "ST_1500", "站-3000", "Station 12" with --station-scale).
+ * A third, tried first unless --mode sections: the labelled three-view lines plan ("17.0WL" next to
+ * each waterline of the half-breadth plan), see lines_plan.cjs.
  */
 function loftDxf(file, model, opts) {
   const doc = readDxfFile(file, opts.encoding);
   if (doc.unit) model.unit = doc.unit;
   const layerRe = opts.layers ? new RegExp(opts.layers, 'i') : null;
   const curves = [];
+  const texts = [];
   walk(doc, {
     onCurve: (layer, color, pts) => { if (!layerRe || layerRe.test(layer)) curves.push({ layer, pts }); },
     onFace: () => {},
+    onText: (layer, text, p) => { texts.push({ layer, text, x: p[0], y: p[1] }); },
   });
+  if (opts.mode !== 'sections') {
+    const plan = planToStations(curves, texts, opts);
+    if (plan) {
+      for (const n of plan.notes) model.warn(n);
+      model.planInfo = plan.info;
+      return buildHull(model, plan.stations.map((s) => ({ x: s.x, curves: [s.points] })), { ...opts, samples: opts.samples || 64 });
+    }
+    if (opts.mode === 'plan') throw new Error('没有识别到带标注的型线图：需要半宽水线图里每条水线旁写着形如「17.0WL」的线名，以及高度轴刻度数字。/ no labelled lines plan found');
+  }
   if (!curves.length) throw new Error('DXF 里没有找到曲线（检查 --layers 过滤条件）/ no curves found');
   let xmin = Infinity, xmax = -Infinity, span = 0;
   for (const c of curves) for (const p of c.pts) { xmin = Math.min(xmin, p[0]); xmax = Math.max(xmax, p[0]); }
