@@ -98,4 +98,29 @@ function readDxfReport(file, opts = {}) {
   return out.join('\n');
 }
 
-module.exports = { readDxfReport };
+/**
+ * Every distinct text in the drawing, in reading order (top to bottom, left to right), already decoded with the
+ * file's real encoding. A general arrangement's content lives in its text (principal dimensions, deck names, equipment
+ * lists), and hand-rolled parsers keep tripping on the mixed encodings of DXF files.
+ */
+function readDxfTexts(file, opts = {}) {
+  const doc = readDxfFile(file, opts.encoding);
+  const all = [];
+  walk(doc, { onCurve() {}, onFace() {}, onText(layer, text, p) { if (text) all.push({ layer, text, x: p[0], y: p[1] }); } });
+  let re = null;
+  if (opts.grep) re = new RegExp(opts.grep, 'i');
+  const byText = new Map();
+  for (const t of all) {
+    if (re && !re.test(t.text)) continue;
+    const hit = byText.get(t.text);
+    if (hit) hit.n++; else byText.set(t.text, { ...t, n: 1 });
+  }
+  const rows = [...byText.values()].sort((a, b) => b.y - a.y || a.x - b.x);
+  const limit = Math.max(1, +opts.limit || 400);
+  const lines = [`文字：共 ${nf(all.length)} 条，不重复 ${nf(new Set(all.map((t) => t.text)).size)} 条${re ? `，匹配「${opts.grep}」的 ${rows.length} 条` : ''}（按位置从上到下、从左到右；格式：次数 图层 (x,y) 文字）`];
+  for (const t of rows.slice(0, limit)) lines.push(`${t.n > 1 ? `${t.n}x` : '  '} ${t.layer} (${Math.round(t.x)},${Math.round(t.y)}) ${t.text}`);
+  if (rows.length > limit) lines.push(`…… 还有 ${rows.length - limit} 条，用 --limit 加大或 --grep 筛选`);
+  return lines.join('\n');
+}
+
+module.exports = { readDxfReport, readDxfTexts };

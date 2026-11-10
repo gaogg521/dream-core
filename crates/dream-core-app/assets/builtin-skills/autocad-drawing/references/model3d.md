@@ -10,6 +10,11 @@ node scripts/model3d.cjs read 输入文件
 ```
 
 ```bash
+# 图里写了什么：所有不重复的文字，按阅读顺序，编码已处理好（总布置图的主尺度、甲板名称、设备清单都在这里）
+node scripts/model3d.cjs read 输入文件 --texts --grep "LENGTH|BREADTH|DEPTH" --limit 100
+```
+
+```bash
 # 3D 图纸 / 模型 -> 可旋转 3D（默认输出到输入文件旁边的 <名字>.3d.html）
 node scripts/model3d.cjs view 输入文件 --out 结果.3d.html --title "图名"
 

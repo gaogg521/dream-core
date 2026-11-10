@@ -13,6 +13,7 @@
  *     --scale drawing units per label unit (only if the height-axis numbers are missing; mm drawing, m labels = 1000)
  *     --centerline  y of the centreline (plan mode) / of the body plan (sections mode); auto-detected in plan mode
  *   node model3d.cjs read <file>          # plain-text overview of a drawing (what is in it, flat sheet or real 3D, next step)
+ *   node model3d.cjs read <file> --texts [--grep REGEX] [--limit 400]   # every distinct text, decoded correctly, in reading order
  *   node model3d.cjs info <file>          # print what would be shown, no HTML
  *   common: --unit mm|m|in   (override a wrong $INSUNITS)   --encoding gbk|utf-8|big5   (old DXF only)
  *
@@ -26,7 +27,7 @@ const { Model, zFlatness } = require('./model3d_lib/model.cjs');
 const { readDxfFile, walk } = require('./model3d_lib/dxf.cjs');
 const { readStl, readObj, readOcct } = require('./model3d_lib/meshio.cjs');
 const { loftJson, loftDxf } = require('./model3d_lib/loft.cjs');
-const { readDxfReport } = require('./model3d_lib/report.cjs');
+const { readDxfReport, readDxfTexts } = require('./model3d_lib/report.cjs');
 
 const SKILL_DIR = path.join(__dirname, '..');
 
@@ -35,6 +36,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === '--no-mirror') a.mirror = false;
+    else if (t === '--texts') a.texts = true;
     else if (t.startsWith('--')) a[t.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = argv[++i];
     else a._.push(t);
   }
@@ -193,7 +195,7 @@ async function main() {
   if (!input || !fs.existsSync(input)) { console.error(`找不到输入文件 / input not found: ${input}`); process.exit(2); }
 
   if (cmd === 'read' && path.extname(input).toLowerCase() === '.dxf' && !sniffDwg(input)) {
-    console.log(readDxfReport(input, { encoding: args.encoding }));
+    console.log(args.texts ? readDxfTexts(input, { encoding: args.encoding, grep: args.grep, limit: args.limit }) : readDxfReport(input, { encoding: args.encoding }));
     return;
   }
 

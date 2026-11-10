@@ -116,11 +116,16 @@ check('no axis numbers -> asks for --scale', /--scale/.test(msg), msg.slice(0, 4
   check('real 3D wireframe -> not flagged', !infoWarnings(wire).some((w) => /平面/.test(w)));
 
   // `read` is what an agent runs for "阅读一下这个图纸": it must answer flat-vs-3D itself, offline, with no package.
-  const readText = (entities) => {
+  const readText = (entities, ...extra) => {
     const f = path.join(os.tmpdir(), `read-${process.pid}-${Math.random().toString(36).slice(2)}.dxf`);
     fs.writeFileSync(f, dxf(entities));
-    try { return execFileSync(process.execPath, [path.join(__dirname, 'model3d.cjs'), 'read', f], { encoding: 'utf8', maxBuffer: 1 << 26 }); } finally { fs.unlinkSync(f); }
+    try { return execFileSync(process.execPath, [path.join(__dirname, 'model3d.cjs'), 'read', f, ...extra], { encoding: 'utf8', maxBuffer: 1 << 26 }); } finally { fs.unlinkSync(f); }
   };
+  // `read --texts` lists the drawing's own words, correctly decoded, so nobody has to hand-roll a DXF text parser.
+  const noted = [...sheet.slice(0, 5), text('t', '总布置图 CARGO HATCH 16800 x 19800', 10, 500, false), text('t', 'plain note', 10, 100, true), text('t', 'plain note', 20, 100, true)];
+  const allTexts = readText(noted, '--texts'), grepped = readText(noted, '--texts', '--grep', '总布置');
+  check('read --texts: lists Chinese text intact, top to bottom', allTexts.indexOf('总布置图 CARGO HATCH 16800 x 19800') > 0 && allTexts.indexOf('总布置图') < allTexts.indexOf('plain note'));
+  check('read --texts: merges repeats and honours --grep', /2x/.test(allTexts) && grepped.includes('总布置图') && !grepped.includes('plain note'));
   const flatRead = readText(sheet), wireRead = readText(wire);
   check('read: flat sheet -> says 平铺的二维工程图 and does not offer a 3D view', /平铺的二维工程图/.test(flatRead) && /Z=0/.test(flatRead));
   check('read: 3D wireframe -> says 真正的三维几何 and points to view', /真正的三维几何/.test(wireRead) && /model3d\.cjs view/.test(wireRead));
