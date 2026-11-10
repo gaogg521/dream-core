@@ -1,7 +1,7 @@
 ---
 name: autocad-drawing
 display_name: "AutoCAD 图纸绘制"
-description: 当用户需要绘制/生成/修改/优化 CAD 图纸，或从图纸提取数据（机械、建筑、电气、给排水、暖通、室内家具、钢结构、工艺流程图等各类行业图纸），或提到 AutoCAD、CAD、DX。触发：用户提出「AutoCAD 图纸绘制」相关需求时使用（常见说法：AutoCAD 图纸绘制、AutoCAD 图纸绘制；英文：autocad/drawing）；不要用于“生成或编辑 Word/Excel/PPT 文档文件”（改用 officecli-docx / officecli-xlsx / officecli-pptx），也不要用于与本技能无关的其他任务。需要用户提供：明确的任务描述，以及必要的输入文件或数据。
+description: CAD/三维文件先用本技能：STEP/IGES/STL/OBJ/3D DXF/型线图转可旋转3D模型（离线html，已内置OpenCascade，勿自装）；AutoCAD DXF 出图/改图/提取数据；SolidWorks 等原生格式给导出指引。不用于 Word/Excel/PPT
 ---
 
 
@@ -42,6 +42,7 @@ description: 当用户需要绘制/生成/修改/优化 CAD 图纸，或从图�
 - **改图**：用户要求「这张图加个尺寸 / 换个图层 / 补个标注 / 换个图框 / 改一下比例」。
 - **提取**：用户要求「把图里的尺寸/材料表/图层/文字/坐标 导出来」。
 - **优化**：用户要求「这图图层很乱，帮我规范一下 / 清理一下 / 统一线型」。
+- **转 3D**：用户要求「把这个 3D 图纸/线框/STEP/STL 转成能旋转看的三维模型」「型线图放样成船体」「看看这个模型长什么样」。
 - 用户提到 AutoCAD / CAD / DWG / DXF / 出图 / 图框 / 标题栏 / 三视图 / 轴测图 / 标注 / 图层 / 线型。
 - 需要生成规范的图纸文件交给设计、生产、报审、备案（如软著附图、专利申请附图、工程图纸）。
 
@@ -53,6 +54,7 @@ description: 当用户需要绘制/生成/修改/优化 CAD 图纸，或从图�
 | **改图** | ezdxf 读入定位修改后另存 | 先备份原图，改后 AUDIT+PURGE |
 | **提取** | ezdxf 只读遍历实体导出 CSV | 注意块引用与属性递归展开 |
 | **优化** | ezdxf 批量改 + SCR 跑 LAYTRANS/PURGE | 特性一律 ByLayer，改前备份 |
+| **转 3D** | `node scripts/model3d.cjs view/loft` | 输出单个离线 .html，可旋转/剖切/分图层；见 `@references/model3d.md` |
 
 详细方案、参数与动态经验见 `@references/experience-base.md`。
 
@@ -150,8 +152,25 @@ JSON 规格字段与示例见 `@references/dxf-notes.md` 与 `templates/` 目录
 - **图纸合规**：涉及地图/地形图时，先触发地图合规技能检查中国版图规范。
 - **改图/优化前先备份**：绝不覆盖原图，一律另存新版本。
 
+## 转可旋转 3D 模型
+
+用户要「看三维」「转成 3D」「能转着看」时，**不要**再画三视图/轴测图凑数，直接生成可旋转模型：
+
+```bash
+node scripts/model3d.cjs info 输入文件                    # 先看：零件/图层、面数、包围盒、警告
+node scripts/model3d.cjs view 输入文件 --out 模型.3d.html  # DXF(3D)/STEP/IGES/STL/OBJ
+node scripts/model3d.cjs loft 型线图.dxf --out 船体.3d.html  # 型线图 -> 船体曲面
+```
+
+- 只依赖 Node（本平台自带），离线可用，**不需要** pip/ezdxf。
+- 输出是单个 .html：在预览面板打开即可拖动旋转、缩放、切换视图、剖切、按图层显隐、截图。
+- DWG、DXF 里的 3DSOLID（ACIS）、纯二维图没法直接转，工具会给出原因和下一步做法，**照实转告用户**。
+- **SolidWorks（.sldprt/.sldasm）、Inventor、CATIA、NX/Creo 等原生格式读不了，也不要尝试逆向解析二进制**：直接请用户在原软件里导出 STEP（首选）或 STL。
+- 输入约定、型线图图层命名、参数说明见 `@references/model3d.md`。
+
 ## 参考文件
 
+- `@references/model3d.md` — 转可旋转 3D 模型：支持格式、型线图放样约定、查看器功能。
 - `@references/experience-base.md` — **经验库与高频方案速查（每次必读/必写）**，含四大高频需求最优方案、动态经验记录、术语速查。
 - `@references/drawing-standards.md` — 各行业图层、线型、标注、图幅标题栏国标。
 - `@references/dxf-notes.md` — ezdxf 生成 DXF 的字段说明与 JSON 规格示例。

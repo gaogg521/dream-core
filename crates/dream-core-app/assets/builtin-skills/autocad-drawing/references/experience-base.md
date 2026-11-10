@@ -50,6 +50,12 @@
 - 经验：一句话，下次直接照做 / 规避什么
 -->
 
+### [2026-11-10] 把 3D 图纸 / STEP / 型线图转成可旋转 3D 模型
+- 需求类型：转 3D
+- 采用方案：`node scripts/model3d.cjs info <文件>` 先看，再 `view <文件>`（DXF 三维/STEP/IGES/STL/OBJ）或 `loft <型线图>`；输出单个离线 .html
+- 结果：成功（STEP 装配体 18 零件约 1 秒；DXF 块/厚度/样条与 ezdxf 包围盒一致；型线放样误差 <0.3%）
+- 经验：**不要自己解析 STEP 或 pip 装 OCP/cadquery**，脚本已自带 OpenCascade；SolidWorks/.sldprt 等原生格式读不了，直接让用户导出 STEP；DXF 头里单位常写错，看到「单位可疑」警告就加 --unit mm
+
 ## 四、术语速查（教学式解答用）
 
 | 术语 | 大白话解释 |

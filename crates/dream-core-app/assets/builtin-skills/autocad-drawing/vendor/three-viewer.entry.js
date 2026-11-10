@@ -1,0 +1,3 @@
+import { WebGLRenderer, Scene, Vector3, Vector2, Group, HemisphereLight, DirectionalLight, Plane, BufferGeometry, BufferAttribute, MeshStandardMaterial, DoubleSide, Mesh, EdgesGeometry, LineBasicMaterial, LineSegments, Box3, PerspectiveCamera, OrthographicCamera, GridHelper, AxesHelper, Raycaster, Color } from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+window.THREE = { WebGLRenderer, Scene, Vector3, Vector2, Group, HemisphereLight, DirectionalLight, Plane, BufferGeometry, BufferAttribute, MeshStandardMaterial, DoubleSide, Mesh, EdgesGeometry, LineBasicMaterial, LineSegments, Box3, PerspectiveCamera, OrthographicCamera, GridHelper, AxesHelper, Raycaster, Color, OrbitControls };

@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="__LANG__">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+:root{--bg1:#eef1f5;--bg2:#cfd6df;--panel:rgba(255,255,255,.88);--fg:#1d2733;--muted:#5b6876;--line:#c5ccd5;--acc:#2f6fdf;--accfg:#fff}
+@media (prefers-color-scheme:dark){:root{--bg1:#2a3038;--bg2:#15181d;--panel:rgba(30,34,40,.9);--fg:#e4e8ee;--muted:#9aa5b1;--line:#3a424d;--acc:#4d8dff;--accfg:#fff}}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:radial-gradient(ellipse at 50% 30%,var(--bg1),var(--bg2));color:var(--fg);font:13px/1.4 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+#c{position:fixed;inset:0;display:block;width:100%;height:100%;touch-action:none}
+.bar{position:fixed;left:8px;right:8px;top:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;pointer-events:none}
+.grp{display:flex;gap:2px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:3px;pointer-events:auto;backdrop-filter:blur(6px)}
+button{appearance:none;border:0;background:transparent;color:var(--fg);font:inherit;padding:4px 8px;border-radius:5px;cursor:pointer;white-space:nowrap}
+button:hover{background:rgba(127,127,127,.18)}
+button.on{background:var(--acc);color:var(--accfg)}
+.title{font-weight:600;padding:4px 8px;max-width:40vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.info{position:fixed;left:8px;bottom:8px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 10px;max-width:calc(100% - 16px);backdrop-filter:blur(6px)}
+.info b{font-weight:600}
+.info .w{color:#c77700}
+.parts{position:fixed;right:8px;top:52px;bottom:8px;width:230px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px;overflow:auto;display:none;backdrop-filter:blur(6px)}
+.parts.open{display:block}
+.parts label{display:flex;gap:6px;align-items:center;padding:2px 4px;border-radius:4px;cursor:pointer}
+.parts label:hover{background:rgba(127,127,127,.15)}
+.sw{width:10px;height:10px;border-radius:2px;flex:none;border:1px solid rgba(0,0,0,.25)}
+.parts .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.clip{display:none;align-items:center;gap:6px;padding:0 6px}
+.clip.open{display:flex}
+input[type=range]{width:140px}
+.hint{position:fixed;right:8px;bottom:8px;color:var(--muted);font-size:12px;pointer-events:none}
+@media (max-width:640px){.parts{width:60vw}.hint{display:none}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="bar">
+  <div class="grp"><span class="title" id="title"></span></div>
+  <div class="grp" id="views"></div>
+  <div class="grp" id="modes"></div>
+  <div class="grp" id="tools"></div>
+  <div class="grp clip" id="clipbox"></div>
+</div>
+<div class="parts" id="parts"></div>
+<div class="info" id="info"></div>
+<div class="hint" id="hint"></div>
+<script>__THREE__</script>
+<script>
+(function(){
+"use strict";
+var MODEL = __MODEL__;
+var LANG = "__LANG__";
+var T = {
+  zh:{fit:"适应",front:"前",back:"后",left:"左",right:"右",top:"顶",bottom:"底",iso:"轴测",solid:"实体",wire:"线框",edges:"边线",persp:"透视",ortho:"正交",parts:"图层/零件",clip:"剖切",shot:"截图",size:"包围盒",unit:"单位",tris:"三角面",segs:"线段",nparts:"零件/图层",hint:"左键旋转 · 右键平移 · 滚轮缩放 · 双击定位旋转中心",all:"全部",none:"全不选",axis:"轴",flip:"反向",off:"关",warn:"注意"},
+  en:{fit:"Fit",front:"Front",back:"Back",left:"Left",right:"Right",top:"Top",bottom:"Bottom",iso:"Iso",solid:"Solid",wire:"Wire",edges:"Edges",persp:"Persp",ortho:"Ortho",parts:"Layers/Parts",clip:"Section",shot:"Snapshot",size:"Bounds",unit:"Unit",tris:"Triangles",segs:"Segments",nparts:"Parts/Layers",hint:"Left drag rotate · Right drag pan · Wheel zoom · Double-click to set pivot",all:"All",none:"None",axis:"Axis",flip:"Flip",off:"Off",warn:"Note"}
+}[LANG] || null;
+if(!T) T = {};
+var THREE = window.THREE;
+var $ = function(id){return document.getElementById(id)};
+$("title").textContent = MODEL.title || "3D";
+$("hint").textContent = T.hint;
+
+function b64(s, Ctor){
+  var bin = atob(s), n = bin.length, u8 = new Uint8Array(n);
+  for(var i=0;i<n;i++) u8[i] = bin.charCodeAt(i);
+  return new Ctor(u8.buffer);
+}
+
+var canvas = $("c");
+var renderer;
+try { renderer = new THREE.WebGLRenderer({canvas:canvas, antialias:true, preserveDrawingBuffer:true, alpha:true}); }
+catch(e){ document.body.insertAdjacentHTML("beforeend","<p style='position:fixed;top:45%;width:100%;text-align:center'>WebGL unavailable / 当前环境不支持 WebGL</p>"); return; }
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 2));
+renderer.localClippingEnabled = true;
+
+var scene = new THREE.Scene();
+var up = (MODEL.up === "y") ? new THREE.Vector3(0,1,0) : new THREE.Vector3(0,0,1);
+var root = new THREE.Group();
+scene.add(root);
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.1));
+var key = new THREE.DirectionalLight(0xffffff, 1.5); scene.add(key); scene.add(key.target);
+var fill = new THREE.DirectionalLight(0xffffff, 0.5); scene.add(fill);
+
+var clipPlane = new THREE.Plane(new THREE.Vector3(-1,0,0), 0);
+var clipOn = false;
+var clipList = [];
+
+var parts = [];   // {name,color,objs:[],edges:[],visible}
+var meshMats = [], lineMats = [];
+var nTris = 0, nSegs = 0;
+
+function partFor(name, color){
+  for(var i=0;i<parts.length;i++) if(parts[i].name===name) return parts[i];
+  var p = {name:name, color:color, objs:[], edges:[], visible:true};
+  parts.push(p); return p;
+}
+
+(MODEL.meshes||[]).forEach(function(m){
+  var g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(b64(m.pos, Float32Array), 3));
+  if(m.idx) g.setIndex(new THREE.BufferAttribute(b64(m.idx, Uint32Array), 1));
+  g.computeVertexNormals();
+  nTris += (m.idx ? b64(m.idx, Uint32Array).length : g.attributes.position.count) / 3;
+  // Shade with a softened copy of the CAD colour: pure ACI red/yellow read as glare on large faces.
+  var shade = new THREE.Color(m.color||"#b8c4d0").lerp(new THREE.Color(0xd8dde3), 0.25);
+  var mat = new THREE.MeshStandardMaterial({color:shade, metalness:0.15, roughness:0.6, side:THREE.DoubleSide, polygonOffset:true, polygonOffsetFactor:1, polygonOffsetUnits:1, clippingPlanes:clipList});
+  meshMats.push(mat);
+  var mesh = new THREE.Mesh(g, mat);
+  root.add(mesh);
+  var p = partFor(m.name||"part", m.color||"#b8c4d0");
+  p.objs.push(mesh);
+  var eg = new THREE.EdgesGeometry(g, 28);
+  var em = new THREE.LineBasicMaterial({color:0x1b2430, transparent:true, opacity:0.55, clippingPlanes:clipList});
+  lineMats.push(em);
+  var edges = new THREE.LineSegments(eg, em);
+  root.add(edges);
+  p.edges.push(edges);
+});
+
+(MODEL.lines||[]).forEach(function(l){
+  var g = new THREE.BufferGeometry();
+  var pos = b64(l.pos, Float32Array);
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  nSegs += pos.length/6;
+  var mat = new THREE.LineBasicMaterial({color:l.color||"#2a6fd6", clippingPlanes:clipList});
+  lineMats.push(mat);
+  var ls = new THREE.LineSegments(g, mat);
+  root.add(ls);
+  partFor(l.name||"lines", l.color||"#2a6fd6").objs.push(ls);
+});
+
+var box = new THREE.Box3().setFromObject(root);
+if(box.isEmpty()) box.set(new THREE.Vector3(-1,-1,-1), new THREE.Vector3(1,1,1));
+var center = box.getCenter(new THREE.Vector3());
+var sizeV = box.getSize(new THREE.Vector3());
+var radius = Math.max(sizeV.length()/2, 1e-6);
+
+var persp = new THREE.PerspectiveCamera(35, 1, radius/1000, radius*100);
+var ortho = new THREE.OrthographicCamera(-1,1,1,-1, -radius*50, radius*50);
+persp.up.copy(up); ortho.up.copy(up);
+var camera = persp;
+var controls = new THREE.OrbitControls(camera, canvas);
+controls.enableDamping = true; controls.dampingFactor = 0.12;
+controls.screenSpacePanning = true;
+
+// Ground grid on the "floor" plane under the model.
+var gridSize = Math.pow(10, Math.ceil(Math.log10(Math.max(sizeV.x,sizeV.y,sizeV.z)*1.6||1)));
+var grid = new THREE.GridHelper(gridSize, 20, 0x8796a8, 0xaab4c0);
+grid.material.transparent = true; grid.material.opacity = 0.35;
+if(MODEL.up !== "y"){ grid.rotation.x = Math.PI/2; grid.position.set(center.x, center.y, box.min.z); }
+else grid.position.set(center.x, box.min.y, center.z);
+scene.add(grid);
+var axes = new THREE.AxesHelper(radius*0.25);
+axes.position.copy(box.min);
+scene.add(axes);
+
+function resize(){
+  var w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h, false);
+  persp.aspect = w/h; persp.updateProjectionMatrix();
+  var a = w/h, s = ortho.userData.half || radius*1.2;
+  ortho.left=-s*a; ortho.right=s*a; ortho.top=s; ortho.bottom=-s; ortho.updateProjectionMatrix();
+}
+window.addEventListener("resize", resize);
+
+// View directions in the model's Z-up (or Y-up) frame.
+var DIRS = MODEL.up === "y" ? {
+  front:[0,0,1], back:[0,0,-1], left:[-1,0,0], right:[1,0,0], top:[0,1,0.0001], bottom:[0,-1,0.0001], iso:[1,0.8,1]
+} : {
+  front:[0,-1,0], back:[0,1,0], left:[-1,0,0], right:[1,0,0], top:[0,-0.0001,1], bottom:[0,0.0001,-1], iso:[1,-1,0.8]
+};
+function setView(name){
+  var d = new THREE.Vector3().fromArray(DIRS[name]).normalize();
+  var dist = radius / Math.sin(persp.fov*Math.PI/360) * 1.05;
+  controls.target.copy(center);
+  camera.position.copy(center).addScaledVector(d, dist);
+  ortho.userData.half = radius*1.05; ortho.zoom = 1;
+  resize(); camera.lookAt(center); controls.update();
+}
+
+function btn(parent, label, fn, cls){
+  var b = document.createElement("button"); b.textContent = label; if(cls) b.className = cls;
+  b.addEventListener("click", function(){ fn(b); }); parent.appendChild(b); return b;
+}
+
+var views = $("views");
+btn(views, T.fit, function(){ setView("iso"); });
+["front","back","left","right","top","bottom","iso"].forEach(function(v){ btn(views, T[v], function(){ setView(v); }); });
+
+var hasMesh = (MODEL.meshes||[]).length > 0;
+var modes = $("modes");
+var showSolid = true, showEdges = true, wire = false;
+function applyModes(){
+  parts.forEach(function(p){
+    p.objs.forEach(function(o){ o.visible = p.visible && (o.isMesh ? (showSolid || wire) : true); if(o.isMesh) o.material.wireframe = wire && !showSolid; });
+    p.edges.forEach(function(e){ e.visible = p.visible && showEdges; });
+  });
+}
+if(hasMesh){
+  btn(modes, T.solid, function(b){ showSolid = !showSolid; if(showSolid) wire=false; b.classList.toggle("on", showSolid); wb.classList.toggle("on", wire); applyModes(); }, "on");
+  var wb = btn(modes, T.wire, function(b){ wire = !wire; if(wire) showSolid=false; b.classList.toggle("on", wire); modes.firstChild.classList.toggle("on", showSolid); applyModes(); });
+  btn(modes, T.edges, function(b){ showEdges = !showEdges; b.classList.toggle("on", showEdges); applyModes(); }, "on");
+}
+var pb = btn(modes, T.persp, function(b){
+  var next = camera === persp ? ortho : persp;
+  next.position.copy(camera.position); next.quaternion.copy(camera.quaternion);
+  if(next === ortho){ ortho.userData.half = camera.position.distanceTo(controls.target) * Math.tan(persp.fov*Math.PI/360); ortho.zoom = 1; }
+  camera = next; controls.object = camera; resize(); controls.update();
+  b.textContent = camera === persp ? T.persp : T.ortho;
+});
+
+var tools = $("tools");
+var partsEl = $("parts");
+btn(tools, T.parts + " (" + parts.length + ")", function(b){ partsEl.classList.toggle("open"); b.classList.toggle("on"); });
+var clipBox = $("clipbox");
+btn(tools, T.clip, function(b){ clipBox.classList.toggle("open"); b.classList.toggle("on"); setClip(clipBox.classList.contains("open")); });
+btn(tools, T.shot, function(){
+  renderer.render(scene, camera);
+  var a = document.createElement("a"); a.download = (MODEL.title||"model") + ".png"; a.href = canvas.toDataURL("image/png"); a.click();
+});
+
+// Section plane: axis + position slider + flip.
+var clipAxis = 0, clipFlip = false;
+var range = document.createElement("input"); range.type = "range"; range.min = 0; range.max = 1000; range.value = 500;
+function updateClip(){
+  var t = range.value/1000, n = new THREE.Vector3(), pos;
+  n.setComponent(clipAxis, clipFlip ? 1 : -1);
+  pos = box.min.getComponent(clipAxis) + sizeV.getComponent(clipAxis)*t;
+  clipPlane.normal.copy(n); clipPlane.constant = clipFlip ? -pos : pos;
+}
+function setClip(on){
+  clipOn = on; clipList.length = 0; if(on) clipList.push(clipPlane);
+  meshMats.concat(lineMats).forEach(function(m){ m.clippingPlanes = on ? [clipPlane] : []; m.needsUpdate = true; });
+  updateClip();
+}
+var axBtns = [];
+["X","Y","Z"].forEach(function(a, i){ axBtns.push(btn(clipBox, a, function(b){ clipAxis = i; axBtns.forEach(function(x){x.classList.remove("on")}); b.classList.add("on"); updateClip(); }, i===0?"on":"")); });
+clipBox.appendChild(range);
+range.addEventListener("input", updateClip);
+btn(clipBox, T.flip, function(b){ clipFlip = !clipFlip; b.classList.toggle("on", clipFlip); updateClip(); });
+
+// Parts / layers list.
+function partRow(p){
+  var l = document.createElement("label");
+  var c = document.createElement("input"); c.type = "checkbox"; c.checked = true;
+  c.addEventListener("change", function(){ p.visible = c.checked; applyModes(); });
+  var sw = document.createElement("span"); sw.className = "sw"; sw.style.background = p.color;
+  var n = document.createElement("span"); n.className = "n"; n.textContent = p.name; n.title = p.name;
+  l.appendChild(c); l.appendChild(sw); l.appendChild(n); p.cb = c; return l;
+}
+var allRow = document.createElement("div");
+btn(allRow, T.all, function(){ parts.forEach(function(p){ p.visible = true; p.cb.checked = true; }); applyModes(); });
+btn(allRow, T.none, function(){ parts.forEach(function(p){ p.visible = false; p.cb.checked = false; }); applyModes(); });
+partsEl.appendChild(allRow);
+parts.forEach(function(p){ partsEl.appendChild(partRow(p)); });
+
+// Info line.
+function fmt(v){ var a = Math.abs(v); return a >= 1000 ? v.toFixed(0) : a >= 10 ? v.toFixed(1) : v.toPrecision(3); }
+var info = "<b>" + T.size + "</b> " + fmt(sizeV.x) + " × " + fmt(sizeV.y) + " × " + fmt(sizeV.z) + " " + (MODEL.unit||"");
+info += " · " + T.nparts + " " + parts.length;
+if(nTris) info += " · " + T.tris + " " + Math.round(nTris).toLocaleString();
+if(nSegs) info += " · " + T.segs + " " + Math.round(nSegs).toLocaleString();
+(MODEL.warnings||[]).forEach(function(w){ var d = document.createElement("div"); d.className = "w"; d.textContent = T.warn + "：" + w; info += d.outerHTML; });
+$("info").innerHTML = info;
+
+// Double-click: move the orbit pivot to the picked point.
+var ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+ray.params.Line.threshold = radius/200;
+canvas.addEventListener("dblclick", function(e){
+  ndc.set(e.clientX/window.innerWidth*2-1, -e.clientY/window.innerHeight*2+1);
+  ray.setFromCamera(ndc, camera);
+  var hits = ray.intersectObjects(root.children.filter(function(o){return o.visible}), false);
+  if(hits.length){ var d = hits[0].point.clone().sub(controls.target); controls.target.add(d); camera.position.add(d); controls.update(); }
+});
+
+resize(); setView("iso"); applyModes();
+// Key light rides with the camera (slightly above it) so the face you look at is always lit.
+var lift = new THREE.Vector3();
+(function loop(){
+  requestAnimationFrame(loop); controls.update();
+  lift.copy(camera.up).multiplyScalar(radius*0.8);
+  key.position.copy(camera.position).add(lift); key.target.position.copy(controls.target);
+  renderer.render(scene, camera);
+})();
+window.__viewer = {scene:scene, parts:parts, box:box, setView:setView};
+})();
+</script>
+</body>
+</html>
