@@ -13,7 +13,7 @@
  *     --scale drawing units per label unit (only if the height-axis numbers are missing; mm drawing, m labels = 1000)
  *     --centerline  y of the centreline (plan mode) / of the body plan (sections mode); auto-detected in plan mode
  *   node model3d.cjs read <file>          # plain-text overview of a drawing (what is in it, flat sheet or real 3D, next step)
- *   node model3d.cjs read <file> --texts [--grep REGEX] [--limit 400]   # every distinct text, decoded correctly, in reading order
+ *   node model3d.cjs read <file> --texts [--grep REGEX] [--limit 120]   # every distinct text, decoded correctly, in reading order
  *   node model3d.cjs info <file>          # print what would be shown, no HTML
  *   common: --unit mm|m|in   (override a wrong $INSUNITS)   --encoding gbk|utf-8|big5   (old DXF only)
  *
