@@ -93,7 +93,8 @@ function readDxfReport(file, opts = {}) {
   const q = JSON.stringify(path.basename(file));
   if (plan) say(`  node scripts/model3d.cjs loft ${q}`);
   else if (!flat) say(`  node scripts/model3d.cjs view ${q}`);
-  else say(`  node scripts/model3d.cjs view ${q}    （按顶视图打开，可缩放、按图层显隐）`);
+  else say(`  node scripts/model3d.cjs preview ${q}    （出一张 PNG 看整张图的版面；再用 --box 放大某一块）`);
+  if (flat && !plan) say(`  node scripts/model3d.cjs read ${q} --texts --grep "关键词"    （图里写了什么：主尺度、标题栏、设备清单；--box 可只取某一块的文字）`);
   say(`  node scripts/model3d.cjs info ${q}    （机器可读的 JSON：图层、面数、包围盒、警告）`);
   return out.join('\n');
 }
@@ -109,9 +110,16 @@ function readDxfTexts(file, opts = {}) {
   walk(doc, { onCurve() {}, onFace() {}, onText(layer, text, p) { if (text) all.push({ layer, text, x: p[0], y: p[1] }); } });
   let re = null;
   if (opts.grep) re = new RegExp(opts.grep, 'i');
+  // --box x0,y0,x1,y1: only texts inside that drawing-coordinate window (the same window a `preview --box` shows)
+  let box = null;
+  if (opts.box) {
+    box = String(opts.box).split(',').map(Number);
+    if (box.length !== 4 || box.some((v) => !Number.isFinite(v))) throw new Error('--box 的格式是 x0,y0,x1,y1（图纸坐标）');
+  }
   const byText = new Map();
   for (const t of all) {
     if (re && !re.test(t.text)) continue;
+    if (box && (t.x < box[0] || t.x > box[2] || t.y < box[1] || t.y > box[3])) continue;
     const hit = byText.get(t.text);
     if (hit) hit.n++; else byText.set(t.text, { ...t, n: 1 });
   }

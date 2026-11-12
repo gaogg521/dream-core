@@ -10,12 +10,20 @@ node scripts/model3d.cjs read 输入文件
 ```
 
 ```bash
+# 看版面：出一张带坐标网格的 PNG（纯 Node 画线，不需要 WebGL/浏览器），用看图工具直接打开；--box 放大某一块
+node scripts/model3d.cjs preview 输入文件.dxf
+node scripts/model3d.cjs preview 输入文件.dxf --box x0,y0,x1,y1 --width 1600
+# 图里没有文字，用同一个 --box 取这一块的文字：
+node scripts/model3d.cjs read 输入文件.dxf --texts --box x0,y0,x1,y1
+```
+
+```bash
 # 图里写了什么：所有不重复的文字，按阅读顺序，编码已处理好（总布置图的主尺度、甲板名称、设备清单都在这里）
 node scripts/model3d.cjs read 输入文件 --texts --grep "LENGTH|BREADTH|DEPTH" --limit 100
 ```
 
 ```bash
-# 3D 图纸 / 模型 -> 可旋转 3D（默认输出到输入文件旁边的 <名字>.3d.html）
+# 3D 图纸 / 模型 -> 可旋转 3D（默认输出到当前目录，即会话工作区里的 <名字>.3d.html）
 node scripts/model3d.cjs view 输入文件 --out 结果.3d.html --title "图名"
 
 # 二维/三维型线图 -> 船体曲面

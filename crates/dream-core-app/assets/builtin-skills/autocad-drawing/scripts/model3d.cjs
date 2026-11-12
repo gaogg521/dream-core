@@ -13,7 +13,10 @@
  *     --scale drawing units per label unit (only if the height-axis numbers are missing; mm drawing, m labels = 1000)
  *     --centerline  y of the centreline (plan mode) / of the body plan (sections mode); auto-detected in plan mode
  *   node model3d.cjs read <file>          # plain-text overview of a drawing (what is in it, flat sheet or real 3D, next step)
- *   node model3d.cjs read <file> --texts [--grep REGEX] [--limit 120]   # every distinct text, decoded correctly, in reading order
+ *   node model3d.cjs read <file> --texts [--grep REGEX] [--limit 120] [--box x0,y0,x1,y1]   # distinct texts, decoded correctly, in reading order
+ *   node model3d.cjs preview <file.dxf> [--box x0,y0,x1,y1] [--layers RE] [--skip-layers RE] [--width 2000] [--out x.png]
+ *                         # PNG of the drawing's lines with a labelled grid, for LOOKING at a layout (no WebGL needed)
+ *   Outputs of view/loft/preview go to the current directory (the conversation workspace) unless --out is given.
  *   node model3d.cjs info <file>          # print what would be shown, no HTML
  *   common: --unit mm|m|in   (override a wrong $INSUNITS)   --encoding gbk|utf-8|big5   (old DXF only)
  *
@@ -28,6 +31,7 @@ const { readDxfFile, walk } = require('./model3d_lib/dxf.cjs');
 const { readStl, readObj, readOcct } = require('./model3d_lib/meshio.cjs');
 const { loftJson, loftDxf } = require('./model3d_lib/loft.cjs');
 const { readDxfReport, readDxfTexts } = require('./model3d_lib/report.cjs');
+const { renderPng } = require('./model3d_lib/raster.cjs');
 
 const SKILL_DIR = path.join(__dirname, '..');
 
@@ -47,6 +51,36 @@ function usage(code) {
   const head = fs.readFileSync(__filename, 'utf8').split('*/')[0];
   process[code ? 'stderr' : 'stdout'].write(head.replace(/^\/\*|^ \* ?/gm, '') + '\n');
   process.exit(code);
+}
+
+/**
+ * Where generated files go when --out is not given: the conversation workspace, so the user finds them in the file tree.
+ * Agents run the script after `cd`-ing into the skill directory, and in a workspace that directory is a link to the
+ * user's real skill library (`<workspace>/.dream/skills/<name>`) — writing there would pollute the library. So when the
+ * working directory is inside it, step out to the workspace; if that cannot be told, use a temp folder.
+ */
+function defaultOutDir() {
+  const cwd = process.cwd();
+  const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+  const isDir = (p) => { try { return !!p && fs.statSync(p).isDirectory(); } catch { return false; } };
+  const skill = real(SKILL_DIR);
+  const inSkill = (p) => { const r = real(p); return r === skill || r.startsWith(skill + path.sep); };
+  // Git Bash reports the junction's TARGET as cwd (the workspace is lost) but still exports the path the user typed in
+  // $PWD; PowerShell keeps the junction path in cwd itself. Look at all of them for "<workspace>/.dream/skills/...".
+  const link = /^(.*?)[\\/]\.dream[\\/]skills(?:[\\/]|$)/;
+  for (const p of [cwd, process.env.PWD]) {
+    const m = p && link.exec(p);
+    if (m && m[1] && isDir(m[1])) return m[1];
+  }
+  if (inSkill(cwd)) {
+    // $OLDPWD is where the shell was before `cd skill-dir` — the workspace in the usual case.
+    const old = process.env.OLDPWD;
+    if (isDir(old) && !inSkill(old)) return old;
+    const dir = path.join(require('os').tmpdir(), 'cad-output');
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+  return cwd;
 }
 
 function sniffDwg(file) {
@@ -95,7 +129,7 @@ function flatnessWarning(model) {
     const pct = (100 * share).toFixed(1);
     const z = +f.z.toFixed(1);
     model.warn(`这张 DXF 有 ${pct}% 的点落在同一个平面（Z=${z}），三维只来自 ${(100 - 100 * share).toFixed(1)}% 的零散图元（Z 范围 ${Math.round(zmin)} ~ ${Math.round(zmax)}）：`
-      + '它是平铺的二维工程图（总布置图、三视图一类，各视图并排画在同一个平面上），转出来基本是一张平的图，不是三维模型，已默认用顶视图打开。'
+      + '它是平铺的二维工程图（总布置图、三视图一类，各视图并排画在同一个平面上），转出来基本是一张平的图，不是三维模型，已默认用顶视图打开。想看清版面请用 preview 出 PNG（不需要 WebGL）。'
       + '要得到三维：用原始三维模型导出 STEP；船体可用带标注的型线图走 loft 放样');
   }
 }
@@ -191,11 +225,12 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   let [cmd, input] = args._;
   if (!cmd || cmd === '-h' || cmd === '--help') usage(0);
-  if (!['read', 'view', 'loft', 'info'].includes(cmd)) { input = cmd; cmd = 'view'; }
+  if (!['read', 'view', 'loft', 'info', 'preview'].includes(cmd)) { input = cmd; cmd = 'view'; }
   if (!input || !fs.existsSync(input)) { console.error(`找不到输入文件 / input not found: ${input}`); process.exit(2); }
 
+  if (cmd === 'preview') { runPreview(input, args); return; }
   if (cmd === 'read' && path.extname(input).toLowerCase() === '.dxf' && !sniffDwg(input)) {
-    console.log(args.texts ? readDxfTexts(input, { encoding: args.encoding, grep: args.grep, limit: args.limit }) : readDxfReport(input, { encoding: args.encoding }));
+    console.log(args.texts ? readDxfTexts(input, { encoding: args.encoding, grep: args.grep, limit: args.limit, box: args.box }) : readDxfReport(input, { encoding: args.encoding }));
     return;
   }
 
@@ -230,8 +265,42 @@ async function main() {
     console.log(JSON.stringify({ ...model.stats(), unit: model.unit, up: model.up, bbox: { min, max }, parts, warnings: model.warnings }, null, 2));
     return;
   }
-  const out = args.out || path.join(path.dirname(input), path.basename(input, path.extname(input)) + '.3d.html');
+  const out = args.out || path.join(defaultOutDir(), path.basename(input, path.extname(input)) + '.3d.html');
   report(model, out, writeHtml(out, data, lang));
+}
+
+/**
+ * `preview`: PNG of a DXF's lines for looking at a drawing's layout. Written to the current directory (the
+ * conversation workspace) unless --out is given, so it shows up in the file tree rather than next to the user's file.
+ */
+function runPreview(input, args) {
+  if (path.extname(input).toLowerCase() !== '.dxf' || sniffDwg(input)) {
+    throw new Error('preview 只支持 DXF；DWG 请先另存为 ASCII DXF（STEP/STL 等三维文件请用 view）。');
+  }
+  const doc = readDxfFile(input, args.encoding);
+  const curves = [];
+  walk(doc, {
+    onCurve: (layer, color, pts) => curves.push({ layer, pts }),
+    onFace: (layer, color, pts) => curves.push({ layer, pts: pts.concat([pts[0]]) }),
+  });
+  let box;
+  if (args.box) {
+    box = String(args.box).split(',').map(Number);
+    if (box.length !== 4 || box.some((v) => !Number.isFinite(v))) throw new Error('--box 的格式是 x0,y0,x1,y1（图纸坐标，例如 --box -450000,-130000,-280000,-60000）');
+  }
+  const r = renderPng(curves, { width: args.width, box, layers: args.layers && new RegExp(args.layers, 'i'), skip: args.skipLayers && new RegExp(args.skipLayers, 'i') });
+  const base = path.basename(input, path.extname(input));
+  const out = args.out || path.join(defaultOutDir(), `${base}.preview${box ? '.zoom' : ''}.png`);
+  fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
+  fs.writeFileSync(out, r.png);
+  const f = (v) => Math.round(v);
+  console.log([
+    `OK  ${out}`,
+    `    ${r.width}×${r.height} 像素｜画了 ${r.segments.toLocaleString('en-US')} 条线段｜图纸范围 x ${f(r.box[0])} ~ ${f(r.box[2])}，y ${f(r.box[1])} ~ ${f(r.box[3])}｜1 像素 = ${+r.scale.toPrecision(3)} 图纸单位`,
+    `    浅蓝网格每格 ${r.gridStep} 图纸单位，上沿数字是 x、左沿数字是 y；线越密颜色越深`,
+    `    放大某一块：node scripts/model3d.cjs preview "${path.basename(input)}" --box x0,y0,x1,y1`,
+    `    只看某些图层：--layers 正则；去掉某些图层：--skip-layers 正则`,
+  ].join('\n'));
 }
 
 main().catch((e) => { console.error('ERROR ' + (e && e.message ? e.message : e)); process.exit(1); });

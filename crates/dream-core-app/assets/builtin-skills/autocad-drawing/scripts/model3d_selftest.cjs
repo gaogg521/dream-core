@@ -131,6 +131,50 @@ check('no axis numbers -> asks for --scale', /--scale/.test(msg), msg.slice(0, 4
   check('read: 3D wireframe -> says 真正的三维几何 and points to view', /真正的三维几何/.test(wireRead) && /model3d\.cjs view/.test(wireRead));
   check('read: reports entity census and layers', /LINE×120/.test(wireRead) && /图层/.test(wireRead));
   check('read: never tells the user to install anything', !/pip install|npm install/.test(flatRead + wireRead));
+  check('read: a flat sheet is pointed at preview (an image), not at the WebGL viewer', /model3d\.cjs preview/.test(flatRead) && !/model3d\.cjs view/.test(flatRead));
+
+  // `preview` must hand back a real PNG an agent can look at, written to the working directory, with the box printed
+  // so that a `--box` zoom is a single follow-up step. Decode it: signature, size, ink where the line is, white elsewhere.
+  {
+    const zlib = require('zlib');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pv-'));
+    const src = path.join(dir, 'in.dxf');
+    fs.writeFileSync(src, dxf([line([0, 0, 0], [1000, 0, 0]), line([0, 0, 0], [0, 500, 0]), line([1000, 0, 0], [1000, 500, 0]), line([0, 500, 0], [1000, 500, 0])]));
+    const run = (...a) => execFileSync(process.execPath, [path.join(__dirname, 'model3d.cjs'), 'preview', src, ...a], { cwd: dir, encoding: 'utf8' });
+    const say = run('--width', '400');
+    const pngPath = path.join(dir, 'in.preview.png');
+    const png = fs.existsSync(pngPath) ? fs.readFileSync(pngPath) : Buffer.alloc(0);
+    check('preview: writes <name>.preview.png into the working directory', png.length > 100 && png.slice(1, 4).toString() === 'PNG');
+    if (png.length > 100) {
+      const w = png.readUInt32BE(16), h = png.readUInt32BE(20);
+      const idat = [];
+      for (let o = 8; o < png.length;) { const len = png.readUInt32BE(o), type = png.slice(o + 4, o + 8).toString(); if (type === 'IDAT') idat.push(png.slice(o + 8, o + 8 + len)); o += 12 + len; }
+      const raw = zlib.inflateSync(Buffer.concat(idat)), stride = w * 3 + 1;
+      const px = (x, y) => [raw[y * stride + 1 + x * 3], raw[y * stride + 2 + x * 3], raw[y * stride + 3 + x * 3]];
+      let ink = 0;
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (px(x, y)[0] < 120) ink++;
+      check('preview: 2:1 drawing -> 400 px wide, ~200 px tall, inked along the outline', w === 400 && h >= 190 && h <= 210 && ink > 800 && ink < 4000, `${w}x${h}, ${ink} dark px`);
+      check('preview: the empty middle of the rectangle stays blank', px(Math.round(w / 2), Math.round(h / 2))[0] > 200);
+    }
+    // Agents cd into the skill directory before running the script. In a workspace that directory is a link into the
+    // user's real skill library, so output must NOT land there: it goes to the workspace that owns the link.
+    {
+      const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'ws-'));
+      fs.mkdirSync(path.join(ws, '.dream', 'skills'), { recursive: true });
+      const link = path.join(ws, '.dream', 'skills', 'autocad-drawing');
+      fs.symlinkSync(path.join(__dirname, '..'), link, 'junction');
+      execFileSync(process.execPath, [path.join('scripts', 'model3d.cjs'), 'preview', src, '--width', '300'], { cwd: link, encoding: 'utf8' });
+      check('preview: run from <workspace>/.dream/skills/<skill> writes to the workspace', fs.existsSync(path.join(ws, 'in.preview.png')));
+      check('preview: ...and never into the (linked) skill directory', !fs.existsSync(path.join(__dirname, '..', 'in.preview.png')));
+      fs.rmSync(path.join(__dirname, '..', 'in.preview.png'), { force: true });
+      fs.unlinkSync(link);
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+    check('preview: prints box, scale and the zoom hint', /图纸范围 x -?\d+ ~ -?\d+/.test(say) && /1 像素 = /.test(say) && /--box x0,y0,x1,y1/.test(say));
+    const zoom = run('--box', '0,0,500,250', '--width', '300', '--out', path.join(dir, 'z.png'));
+    check('preview: --box zooms to the window', /x 0 ~ 500，y 0 ~ 250/.test(zoom) && fs.existsSync(path.join(dir, 'z.png')));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 console.log(failed ? `\n${failed} FAILED` : '\nall passed');

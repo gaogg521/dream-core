@@ -4068,6 +4068,7 @@ mod tests {
             "scripts/model3d_lib/loft.cjs",
             "scripts/model3d_lib/lines_plan.cjs",
             "scripts/model3d_lib/report.cjs",
+            "scripts/model3d_lib/raster.cjs",
             "scripts/model3d_selftest.cjs",
             "templates/viewer3d.html",
             "vendor/three-viewer.iife.min.js",
