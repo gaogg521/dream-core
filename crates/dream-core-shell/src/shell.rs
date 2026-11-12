@@ -31,11 +31,20 @@ impl ShellService {
 
     pub async fn show_item_in_folder(&self, file_path: &str) -> Result<(), ShellError> {
         let path = validate_path_exists(file_path)?;
+        // A directory is opened itself rather than revealed inside its parent.
+        // The callers are "open location" buttons next to a delivered folder
+        // (chat path chips, explorer tree); revealing the folder in its parent
+        // dumped the user into a sibling-filled directory (e.g. every
+        // conversation's temp dir of the day) instead of the folder they asked for.
+        if path.is_dir() {
+            return self.open_folder_explorer(&strip_verbatim_prefix(&path)).await;
+        }
         if cfg!(target_os = "macos") {
             self.opener.run_command("open", &["-R", &path.to_string_lossy()]).await
         } else if cfg!(target_os = "windows") {
-            let parent = path.parent().unwrap_or(&path);
-            self.opener.run_command("explorer", &[&parent.to_string_lossy()]).await
+            let args = windows_reveal_file_args(&path);
+            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            self.opener.run_command("explorer", &arg_refs).await
         } else {
             // Linux: prefer the freedesktop D-Bus FileManager1.ShowItems method,
             // which opens the file manager *and* highlights the target file. Fall
@@ -167,6 +176,33 @@ fn validate_directory_exists(dir_path: &str) -> Result<std::path::PathBuf, Shell
         return Err(ShellError::DirectoryNotFound(dir_path.to_owned()));
     }
     Ok(canonical)
+}
+
+/// `canonicalize` on Windows yields a `\\?\` verbatim path, which Explorer's
+/// `/select` handling does not reliably accept. Strip it (UNC `\\?\UNC\srv\share`
+/// becomes `\\srv\share`); non-verbatim paths pass through unchanged.
+fn strip_verbatim_prefix(path: &Path) -> std::path::PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return std::path::PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        return std::path::PathBuf::from(rest);
+    }
+    path.to_path_buf()
+}
+
+/// Arguments that make Explorer open the file's folder with the file selected.
+///
+/// `/select,` and the path are deliberately two arguments: Rust quotes the path
+/// on its own (`/select, "C:\a b\c.txt"`), whereas one fused `/select,<path>`
+/// argument gets quoted as a whole and Explorer then falls back to opening the
+/// Documents folder.
+fn windows_reveal_file_args(path: &Path) -> Vec<String> {
+    vec![
+        "/select,".to_owned(),
+        strip_verbatim_prefix(path).to_string_lossy().into_owned(),
+    ]
 }
 
 fn build_windows_terminal_command(path: &str) -> String {
@@ -386,6 +422,100 @@ mod tests {
         let svc = ShellService::new(Arc::new(NoopSystemOpener));
         let result = svc.show_item_in_folder("/nonexistent/path").await;
         assert!(matches!(result, Err(ShellError::FileNotFound(_))));
+    }
+
+    /// Records every `run_command` so tests can assert what the OS would be asked to do.
+    #[derive(Default)]
+    struct RecordingOpener {
+        calls: std::sync::Mutex<Vec<(String, Vec<String>)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::opener::ISystemOpener for RecordingOpener {
+        fn open_detached(&self, _target: &str) -> Result<(), ShellError> {
+            Ok(())
+        }
+
+        async fn run_command(&self, program: &str, args: &[&str]) -> Result<(), ShellError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((program.to_owned(), args.iter().map(|a| (*a).to_owned()).collect()));
+            Ok(())
+        }
+
+        fn is_tool_available(&self, _tool_name: &str) -> bool {
+            false
+        }
+
+        fn copy_to_clipboard(&self, _text: &str) -> Result<(), ShellError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn show_item_in_folder_opens_a_directory_itself_not_its_parent() {
+        let parent = tempfile::tempdir().unwrap();
+        let target = parent.path().join("dream-temp-130c5a3b");
+        fs::create_dir(&target).unwrap();
+        // A sibling, like the other conversations' temp dirs that shared the parent.
+        fs::create_dir(parent.path().join("dream-temp-c91c1bac")).unwrap();
+
+        let opener = Arc::new(RecordingOpener::default());
+        let svc = ShellService::new(opener.clone());
+        svc.show_item_in_folder(target.to_str().unwrap()).await.unwrap();
+
+        let calls = opener.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        let expected = strip_verbatim_prefix(&target.canonicalize().unwrap())
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            calls[0].1,
+            vec![expected],
+            "must open the folder itself, not select it in the parent"
+        );
+    }
+
+    #[tokio::test]
+    async fn show_item_in_folder_still_reveals_a_file_in_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("report.md");
+        fs::write(&file, "x").unwrap();
+
+        let opener = Arc::new(RecordingOpener::default());
+        let svc = ShellService::new(opener.clone());
+        svc.show_item_in_folder(file.to_str().unwrap()).await.unwrap();
+
+        let calls = opener.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        let file_arg = strip_verbatim_prefix(&file.canonicalize().unwrap())
+            .to_string_lossy()
+            .into_owned();
+        if cfg!(target_os = "windows") {
+            assert_eq!(calls[0].1, vec!["/select,".to_owned(), file_arg]);
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(calls[0].1, vec!["-R".to_owned(), file_arg]);
+        }
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_handles_drive_unc_and_plain_paths() {
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\D:\onework\conversations")),
+            Path::new(r"D:\onework\conversations")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\UNC\srv\share\a")),
+            Path::new(r"\\srv\share\a")
+        );
+        assert_eq!(strip_verbatim_prefix(Path::new("/home/u/a")), Path::new("/home/u/a"));
+    }
+
+    #[test]
+    fn windows_reveal_args_keep_select_flag_separate_from_the_path() {
+        let args = windows_reveal_file_args(Path::new(r"\\?\D:\one work\报告.md"));
+        assert_eq!(args, vec!["/select,".to_owned(), r"D:\one work\报告.md".to_owned()]);
     }
 
     #[test]
