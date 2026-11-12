@@ -1573,7 +1573,7 @@ const QR_LOGIN_HTML: &str = r#"<!DOCTYPE html>
   fetch('/api/auth/qr-login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ qrToken: token, deviceId: deviceId, deviceLabel: navigator.userAgent.slice(0, 80) })
+    body: JSON.stringify({ qr_token: token, device_id: deviceId, device_label: navigator.userAgent.slice(0, 80) })
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {
@@ -1758,5 +1758,21 @@ mod error_mapping_tests {
     fn hash_error_maps_to_internal() {
         let api_err = ApiError::from(AuthError::HashError("failed".into()));
         assert_eq!(api_err.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// The page a scanned QR code opens POSTs to `/api/auth/qr-login`, whose body
+    /// type is snake_case (and rejects camelCase). The page used to send
+    /// `qrToken`, so every scan failed with "Invalid JSON request body".
+    #[test]
+    fn qr_login_page_posts_the_field_names_the_endpoint_accepts() {
+        assert!(QR_LOGIN_HTML.contains("qr_token: token"));
+        assert!(QR_LOGIN_HTML.contains("device_id: deviceId"));
+        assert!(!QR_LOGIN_HTML.contains("qrToken"));
+        assert!(!QR_LOGIN_HTML.contains("deviceId:"));
+
+        // And those names really deserialize into the request type.
+        let body = r#"{"qr_token":"t","device_id":"d","device_label":"l"}"#;
+        let req: QrLoginRequest = serde_json::from_str(body).expect("page body must parse");
+        assert_eq!(req.qr_token, "t");
     }
 }
