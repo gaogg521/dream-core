@@ -337,9 +337,19 @@ pub async fn build_module_states(
     )
     .await;
     tracing::info!(elapsed_ms = boot.elapsed().as_millis(), "startup: channel state built");
-    cron.cron_service.set_result_pusher(Arc::new(ChannelCronPusher {
+    let channel_pusher = Arc::new(ChannelCronPusher {
         manager: channel_state.manager.clone(),
-    }));
+    });
+    cron.cron_service.set_result_pusher(channel_pusher.clone());
+    // Long tasks tell the owner's chat bot when they finish (opt-in via `notify.turnCompleted`).
+    super::turn_push::spawn(
+        services.event_bus.clone(),
+        Arc::new(super::turn_push::DbTurnPushLookup {
+            prefs: Arc::new(SqliteClientPreferenceRepository::new(services.database.pool().clone())),
+            conversations: services.conversation_repo.clone(),
+        }),
+        channel_pusher,
+    );
 
     let backend_binary_path = services.backend_binary_path();
     tracing::info!(

@@ -22,6 +22,7 @@ mod system_file_opener;
 mod team_capability_resolver;
 mod team_conversation_adapters;
 mod trace;
+mod turn_push;
 
 /// Personal-build recall over the memory the renderer syncs down. Deliberately
 /// NOT behind `feature = "enterprise"` in the sense that matters — an enterprise
