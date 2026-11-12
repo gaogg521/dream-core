@@ -946,7 +946,7 @@ fn a_model_that_declares_no_window_gets_the_engine_default() {
 
     apply_context_window_policy(&mut config, None);
 
-    assert_eq!(config.compact.context_window, 1_000_000);
+    assert_eq!(config.compact.context_window, 500_000);
     assert_eq!(
         config.compact.autocompact_threshold_pct,
         Some(EXPECTED_AUTOCOMPACT_PCT as u8)
