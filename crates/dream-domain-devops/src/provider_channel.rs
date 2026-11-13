@@ -113,6 +113,10 @@ pub struct ChannelProbeDto {
     pub ok: bool,
     pub status: Option<u16>,
     pub model_count: Option<usize>,
+    /// Model ids the upstream listed. Lets the editor offer a pick list for an
+    /// already-saved channel, whose key the browser no longer holds — the
+    /// upstream call has to be made here, with the stored credential.
+    pub models: Option<Vec<String>>,
     pub error: Option<String>,
 }
 
@@ -122,6 +126,7 @@ impl ChannelProbeDto {
             ok: false,
             status,
             model_count: None,
+            models: None,
             error: Some(error.to_owned()),
         }
     }
@@ -316,15 +321,33 @@ impl DevopsService {
             ));
         }
         let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
-        let model_count = body
+        let entries = body
             .get("data")
             .or_else(|| body.get("models"))
-            .and_then(|v| v.as_array())
-            .map(|a| a.len());
+            .and_then(|v| v.as_array());
+        let model_count = entries.map(|a| a.len());
+        // OpenAI-style entries carry `id`; Gemini-style carry `name`
+        // (`models/gemini-…`), which clients use without the prefix.
+        let models = entries.map(|a| {
+            let mut ids: Vec<String> = a
+                .iter()
+                .filter_map(|m| {
+                    m.get("id")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| m.get("name").and_then(|v| v.as_str()))
+                        .map(|v| v.trim_start_matches("models/").to_owned())
+                })
+                .filter(|v| !v.is_empty())
+                .collect();
+            ids.sort();
+            ids.dedup();
+            ids
+        });
         Ok(ChannelProbeDto {
             ok: true,
             status: Some(status),
             model_count,
+            models,
             error: None,
         })
     }
