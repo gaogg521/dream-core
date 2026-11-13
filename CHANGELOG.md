@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.1.104](https://github.com/gaogg521/dream-core/compare/v0.1.103...v0.1.104) (2026-11-13)
+
+
+### Features
+
+* **devops:** 渠道健康检查返回上游模型列表 ([5295ab8](https://github.com/gaogg521/dream-core/commit/5295ab86aae4ffdb1fd96e567e9a6a445201b4a4))
+* **notify:** 长任务完成后推送到用户自己的 IM 机器人 ([ca831e5](https://github.com/gaogg521/dream-core/commit/ca831e5b2d9cd0fb84c6481c8755510d1aa5281d))
+* **skills:** autocad-drawing 支持把 CAD 三维文件转成可旋转 3D 模型 ([50ff1f6](https://github.com/gaogg521/dream-core/commit/50ff1f6f944e28fd2474ca2fbc6971e770914e2e))
+* **skills:** autocad-drawing 新增零依赖的 read 读图命令，并让「阅读图纸」类说法命中技能 ([9f17d78](https://github.com/gaogg521/dream-core/commit/9f17d78e5d0a1f54ea8f05ca86664ff3f4e05711))
+* **skills:** autocad-drawing 的 loft 自动识别带标注的三视图型线图（DXF 路线） ([cb25dbc](https://github.com/gaogg521/dream-core/commit/cb25dbc2aeed23d8ca20dd3dc1df1d72bcb74c34))
+* **skills:** CAD 读图新增 preview 出图命令，输出不再写进技能目录 ([570b939](https://github.com/gaogg521/dream-core/commit/570b939ccbe05f7abaab2ca36de138a42f6608b8))
+* **skills:** read 新增 --texts 列出图里所有文字，并清掉技能里的客户图纸名 ([5feb303](https://github.com/gaogg521/dream-core/commit/5feb3036b405806b78e58fa1d6df71936655c147))
+
+
+### Bug Fixes
+
+* **auth:** 扫码登录页提交的字段名与接口不一致，每次扫码都失败 ([389bdd4](https://github.com/gaogg521/dream-core/commit/389bdd4723540276604a0e702c5d3bb7aaf3f3a9))
+* **shell:** 「打开所在目录」对目录改为打开目录本身，文件在 Windows 上选中 ([8adb8ca](https://github.com/gaogg521/dream-core/commit/8adb8ca0c0a0a27905c6e1844fc1ac0f990f8f4f))
+* **skills:** model3d 识别平铺的二维工程图并如实提示，总布置图不再冒充 3D ([5c59b72](https://github.com/gaogg521/dream-core/commit/5c59b7236086fcc9e1b07b971bba1b79d993794a))
+* **skills:** 读图任务设完成标准，不再被「必读/必写经验库」拖成几十步 ([d5fe43e](https://github.com/gaogg521/dream-core/commit/d5fe43e672c673ded96a83a81d420c6827622abd))
+
 ## [0.1.103](https://github.com/gaogg521/dream-core/compare/v0.1.102...v0.1.103) (2026-11-06)
 
 
