@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.105](https://github.com/gaogg521/dream-core/compare/v0.1.104...v0.1.105) (2026-11-17)
+
+
+### Bug Fixes
+
+* **agent:** 自动压缩请求沿用主对话前缀以命中提示词缓存 ([dc20b96](https://github.com/gaogg521/dream-core/commit/dc20b9655ba0b3a92a67d32fa2bcbef1c14c2f97))
+
 ## [0.1.104](https://github.com/gaogg521/dream-core/compare/v0.1.103...v0.1.104) (2026-11-13)
 
 
