@@ -478,6 +478,9 @@ pub struct PriceLookupDto {
     pub custom_status: String,
     pub custom_message: Option<String>,
     pub custom_from: Option<String>,
+    /// With `auth_required`: the JSON endpoints that exist but want a login, for the
+    /// admin to open in their own (logged-in) browser.
+    pub custom_auth_urls: Vec<String>,
     pub official_status: String,
     pub official_message: Option<String>,
 }

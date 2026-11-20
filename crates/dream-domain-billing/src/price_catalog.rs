@@ -361,6 +361,9 @@ pub enum CustomFetch {
     /// The source answered 401/403, or the credentials were refused.
     AuthRequired {
         message: String,
+        /// JSON endpoints that answered 401/403: they exist, and the admin's own
+        /// logged-in browser can open them to copy the data.
+        urls: Vec<String>,
     },
     Failed {
         message: String,
@@ -482,10 +485,14 @@ pub async fn fetch_custom(url: &str, auth: &FetchAuth) -> CustomFetch {
             candidates.push(candidate);
         }
     }
-    let mut needs_auth = false;
+    let mut auth_urls: Vec<String> = Vec::new();
     let mut last_failure = None;
     for candidate in candidates {
         let label = candidate.path().to_owned();
+        // Without query / fragment: the address is shown back to the admin to open.
+        let mut shown = candidate.clone();
+        shown.set_query(None);
+        shown.set_fragment(None);
         match probe(&client, candidate, auth).await {
             Probe::Entries(entries) => {
                 return CustomFetch::Entries {
@@ -493,18 +500,21 @@ pub async fn fetch_custom(url: &str, auth: &FetchAuth) -> CustomFetch {
                     from: format!("{}{}", parsed.host_str().unwrap_or_default(), label),
                 };
             }
-            Probe::Auth => needs_auth = true,
+            Probe::Auth => auth_urls.push(shown.to_string()),
             Probe::NotData => {}
             Probe::Failed(message) => last_failure = Some(message),
         }
     }
-    if needs_auth {
+    if !auth_urls.is_empty() {
         let message = if auth.is_empty() {
             "该来源需要登录后才能读取价格".to_owned()
         } else {
             "提供的认证信息未通过，请重新获取后再试".to_owned()
         };
-        return CustomFetch::AuthRequired { message };
+        return CustomFetch::AuthRequired {
+            message,
+            urls: auth_urls,
+        };
     }
     CustomFetch::Failed {
         message: last_failure.unwrap_or_else(|| {
@@ -584,38 +594,78 @@ fn item(model: &str, source: &str, found: Option<Match<'_>>) -> PriceLookupItemD
     }
 }
 
-/// Look prices up for `models`: first in the company's own source (when an
-/// address is given), then — for whatever it does not know — in the public
-/// reference catalog. A source that wants a login stops the lookup with
-/// `custom_status = "auth_required"` so the console can ask the admin to
-/// authenticate instead of silently quoting reference prices over their own.
-pub async fn lookup(models: &[String], source_url: Option<&str>, auth: &FetchAuth) -> PriceLookupDto {
+/// Where the company's own prices come from.
+pub enum LookupSource<'a> {
+    /// Only the public reference catalog.
+    None,
+    /// An address the server reads (with optional credentials).
+    Url(&'a str),
+    /// JSON the admin copied from their own logged-in browser (or read there
+    /// directly). The server never contacts the source, so there is nothing to
+    /// authenticate and nothing to forge a request with.
+    Pasted(&'a str),
+}
+
+/// Parse text pasted from a browser into catalog entries.
+pub fn parse_pasted(text: &str) -> Result<Vec<CatalogEntry>, String> {
+    if text.len() > MAX_BODY_BYTES {
+        return Err("粘贴的内容过大".into());
+    }
+    let json: Value = serde_json::from_str(text.trim())
+        .map_err(|_| "粘贴的内容不是 JSON，请在价格页里全选（Ctrl+A）后复制整个页面内容".to_owned())?;
+    let entries = parse_catalog(&json);
+    if entries.is_empty() {
+        return Err("在粘贴的内容里没有识别到模型价格".into());
+    }
+    Ok(entries)
+}
+
+/// Look prices up for `models`: first in the company's own source, then — for
+/// whatever it does not know — in the public reference catalog. A source that
+/// wants a login stops the lookup with `custom_status = "auth_required"` (and
+/// the endpoints to open) so the console can ask the admin to bring the data
+/// from their own browser instead of silently quoting reference prices over
+/// their own.
+pub async fn lookup(models: &[String], source: LookupSource<'_>, auth: &FetchAuth) -> PriceLookupDto {
     let mut dto = PriceLookupDto {
         items: models.iter().map(|m| item(m, "", None)).collect(),
         custom_status: "unused".into(),
         custom_message: None,
         custom_from: None,
+        custom_auth_urls: Vec::new(),
         official_status: "unused".into(),
         official_message: None,
     };
-    if let Some(url) = source_url.map(str::trim).filter(|u| !u.is_empty()) {
-        match fetch_custom(url, auth).await {
-            CustomFetch::Entries { entries, from } => {
-                dto.custom_status = "ok".into();
-                dto.custom_from = Some(from);
-                for (slot, model) in dto.items.iter_mut().zip(models) {
-                    *slot = item(model, "custom", find_match(model, &entries));
-                }
+    let fetched = match source {
+        LookupSource::None => None,
+        LookupSource::Url(url) if url.trim().is_empty() => None,
+        LookupSource::Url(url) => Some(fetch_custom(url, auth).await),
+        LookupSource::Pasted(text) => Some(match parse_pasted(text) {
+            Ok(entries) => CustomFetch::Entries {
+                entries,
+                from: "browser".into(),
+            },
+            Err(message) => CustomFetch::Failed { message },
+        }),
+    };
+    match fetched {
+        None => {}
+        Some(CustomFetch::Entries { entries, from }) => {
+            dto.custom_status = "ok".into();
+            dto.custom_from = Some(from);
+            for (slot, model) in dto.items.iter_mut().zip(models) {
+                *slot = item(model, "custom", find_match(model, &entries));
             }
-            CustomFetch::AuthRequired { message } => {
-                dto.custom_status = "auth_required".into();
-                dto.custom_message = Some(message);
-                return dto;
-            }
-            CustomFetch::Failed { message } => {
-                dto.custom_status = "failed".into();
-                dto.custom_message = Some(message);
-            }
+        }
+        Some(CustomFetch::AuthRequired { message, urls }) => {
+            dto.custom_status = "auth_required".into();
+            dto.custom_message = Some(message);
+            dto.custom_auth_urls = urls;
+            return dto;
+        }
+        Some(CustomFetch::Failed { message }) => {
+            dto.custom_status = "failed".into();
+            dto.custom_message = Some(message);
         }
     }
     if dto.items.iter().any(|i| !i.found) {
@@ -800,6 +850,49 @@ mod tests {
         // Another model that merely shares leading words is still not matched.
         assert!(find_match("deepseek-v4-1-pro-260910", &entries).is_none());
         assert!(find_match("deepseek-v4-1", &entries).is_none());
+    }
+
+    /// What an admin copies from their own logged-in browser (Ctrl+A on the
+    /// JSON page) is parsed without the server ever contacting the source.
+    #[tokio::test]
+    async fn pasted_browser_json_is_matched_without_any_network_call() {
+        let copied = r#"
+            {"models":[{"modelName":"glm-5","backendNames":["glm-5-zhipu"],
+              "pricing":{"inputCostPerMillion":1.1,"outputCostPerMillion":3.9,
+                         "cacheReadCostPerMillion":0.28,"cacheWriteCostPerMillion":1.65}}]}
+        "#;
+        let models = vec!["glm-5".to_owned()];
+        let dto = lookup(&models, LookupSource::Pasted(copied), &FetchAuth::default()).await;
+        assert_eq!(
+            (dto.custom_status.as_str(), dto.custom_from.as_deref()),
+            ("ok", Some("browser"))
+        );
+        assert_eq!(
+            dto.official_status, "unused",
+            "everything was found, so the public catalog is not consulted"
+        );
+        let item = &dto.items[0];
+        assert_eq!(
+            (item.found, item.exact, item.source.as_deref()),
+            (true, true, Some("custom"))
+        );
+        assert_eq!(
+            item.price
+                .as_ref()
+                .map(|p| (p.input_usd_per_mtok, p.output_usd_per_mtok)),
+            Some((1.1, 3.9))
+        );
+    }
+
+    #[test]
+    fn pasted_text_that_is_not_prices_says_why() {
+        assert!(parse_pasted("<html>login</html>").unwrap_err().contains("不是 JSON"));
+        assert!(parse_pasted(r#"{"models":[]}"#).unwrap_err().contains("没有识别到"));
+        assert!(
+            parse_pasted(&"x".repeat(MAX_BODY_BYTES + 1))
+                .unwrap_err()
+                .contains("过大")
+        );
     }
 
     #[test]

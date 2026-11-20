@@ -84,7 +84,8 @@ pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
         // public reference catalog. POST because it may carry credentials.
         .route(
             "/api/one/billing/model-prices/lookup",
-            post(billing_lookup_model_prices),
+            // A pasted catalog can be a few MB (the public LiteLLM table is ~5MB).
+            post(billing_lookup_model_prices).layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024)),
         )
         .route("/api/one/billing/media-ledger/report", post(billing_report_media_asset))
         .route("/api/one/billing/media-ledger", get(billing_list_media_assets))
@@ -1087,6 +1088,10 @@ struct PriceLookupBody {
     cookie: Option<String>,
     #[serde(default)]
     authorization: Option<String>,
+    /// JSON copied from the admin's own logged-in browser. Takes the place of
+    /// `source_url`: the server does not contact the source at all.
+    #[serde(default)]
+    catalog_json: Option<String>,
 }
 
 async fn billing_lookup_model_prices(
@@ -1102,8 +1107,13 @@ async fn billing_lookup_model_prices(
         cookie: body.cookie,
         authorization: body.authorization,
     };
+    let source = match (body.catalog_json.as_deref(), body.source_url.as_deref()) {
+        (Some(json), _) if !json.trim().is_empty() => crate::price_catalog::LookupSource::Pasted(json),
+        (_, Some(url)) => crate::price_catalog::LookupSource::Url(url),
+        _ => crate::price_catalog::LookupSource::None,
+    };
     Ok(Json(ApiResponse::ok(
-        crate::price_catalog::lookup(&body.models, body.source_url.as_deref(), &auth).await,
+        crate::price_catalog::lookup(&body.models, source, &auth).await,
     )))
 }
 
