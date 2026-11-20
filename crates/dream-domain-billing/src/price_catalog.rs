@@ -708,6 +708,51 @@ mod tests {
         );
     }
 
+    /// The exact shape the company's Joy MaaS gateway returns from
+    /// `/api/admin/model-list` (captured 2026-11-20; prices here are made up).
+    /// Image, speech and rerank models are priced per million tokens too, so
+    /// every entry is a token price — and a full-width model name still parses.
+    #[test]
+    fn joy_maas_model_list_parses_including_media_and_full_width_names() {
+        let list = json!({"models": [
+            {"modelName": "deepseek-flash-latest", "backendNames": ["deepseek-flash-deepseek", "deepseek-v4-1-flash-volc"],
+             "pricing": {"inputCostPerMillion": 0.3, "outputCostPerMillion": 1.18, "cacheReadCostPerMillion": 0.006, "cacheWriteCostPerMillion": 0.44999999999999996},
+             "category": "文本模型", "maxContextWindow": 1048576, "vision": true},
+            {"modelName": "ＧＬＭ-5-2-claude", "backendNames": ["glm-5-2"],
+             "pricing": {"inputCostPerMillion": 1.0, "outputCostPerMillion": 4.0, "cacheReadCostPerMillion": 0.2, "cacheWriteCostPerMillion": 1.2},
+             "category": "文本模型", "maxContextWindow": 1048576, "vision": false},
+            {"modelName": "doubao-seedream-5-0-pro", "backendNames": ["seedream"],
+             "pricing": {"inputCostPerMillion": 0, "outputCostPerMillion": 16.6666666667, "cacheReadCostPerMillion": 0, "cacheWriteCostPerMillion": 0},
+             "category": "图片模型", "maxContextWindow": 0, "vision": false}
+        ]});
+        let entries = parse_catalog(&list);
+        assert_eq!(entries.len(), 3);
+        let flash = entry(&entries, "deepseek-flash-latest");
+        assert_eq!(
+            (flash.unit, flash.input_usd_per_mtok, flash.output_usd_per_mtok),
+            (BillingUnit::Token, 0.3, 1.18)
+        );
+        // 0.44999999999999996 from the wire is tidied, not shown as float noise.
+        assert_eq!(
+            (flash.cache_read_usd_per_mtok, flash.cache_write_usd_per_mtok),
+            (Some(0.006), Some(0.45))
+        );
+        assert!(entries.iter().any(|e| e.key == "ＧＬＭ-5-2-claude"));
+        let image = entry(&entries, "doubao-seedream-5-0-pro");
+        assert_eq!(
+            (image.unit, image.input_usd_per_mtok, image.output_usd_per_mtok),
+            (BillingUnit::Token, 0.0, 16.666667)
+        );
+        assert_eq!(
+            image.cache_read_usd_per_mtok,
+            Some(0.0),
+            "an explicit zero cache price stays zero, not 'default'"
+        );
+        // The gateway's own alias is matched as given; a backend's name is not its alias.
+        assert!(find_match("deepseek-flash-latest", &entries).unwrap().exact);
+        assert!(find_match("deepseek-v4-1-flash-volc", &entries).is_none());
+    }
+
     #[test]
     fn snapshot_suffixes_and_prefixes_normalise_away() {
         assert_eq!(normalize_model_name("openai/GPT-4o-2024-08-06"), "gpt-4o");
