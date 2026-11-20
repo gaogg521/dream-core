@@ -329,6 +329,11 @@ pub fn find_match<'a>(model: &str, entries: &'a [CatalogEntry]) -> Option<Match<
 const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 const OFFICIAL_TTL: Duration = Duration::from_secs(6 * 3600);
+/// An unreachable public catalog (an intranet with no route to GitHub) is remembered
+/// briefly: without it every click would wait out the timeouts again, one after
+/// another, because lookups share the cache lock.
+const OFFICIAL_FAILURE_MEMORY: Duration = Duration::from_secs(60);
+const OFFICIAL_TIMEOUT: Duration = Duration::from_secs(10);
 const OFFICIAL_URLS: [&str; 2] = [
     "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
     "https://cdn.jsdelivr.net/gh/BerriAI/litellm@main/model_prices_and_context_window.json",
@@ -370,10 +375,25 @@ pub enum CustomFetch {
     },
 }
 
+/// Follow at most 3 redirects, and refuse any hop that lands somewhere
+/// [`check_fetch_url`] would have refused up front (an allowed address that
+/// redirects to the cloud metadata service must not get there).
+fn redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 3 {
+            attempt.error("too many redirects")
+        } else if check_fetch_url(attempt.url().as_str()).is_err() {
+            attempt.error("redirect target is not allowed")
+        } else {
+            attempt.follow()
+        }
+    })
+}
+
 fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(FETCH_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::limited(3))
+        .redirect(redirect_policy())
         .user_agent("dream-core-price-sync")
         .build()
         .map_err(|e| e.to_string())
@@ -523,22 +543,43 @@ pub async fn fetch_custom(url: &str, auth: &FetchAuth) -> CustomFetch {
     }
 }
 
-type OfficialCache = tokio::sync::Mutex<Option<(Instant, Arc<Vec<CatalogEntry>>)>>;
+#[derive(Default)]
+struct OfficialState {
+    entries: Option<(Instant, Arc<Vec<CatalogEntry>>)>,
+    failed: Option<(Instant, String)>,
+}
+
+type OfficialCache = tokio::sync::Mutex<OfficialState>;
 
 fn official_cache() -> &'static OfficialCache {
     static CACHE: OnceLock<OfficialCache> = OnceLock::new();
-    CACHE.get_or_init(|| tokio::sync::Mutex::new(None))
+    CACHE.get_or_init(|| tokio::sync::Mutex::new(OfficialState::default()))
 }
 
 /// The public LiteLLM price catalog, cached for a few hours. A stale copy is
 /// served when a refresh fails — an old reference price beats none.
 pub async fn official_catalog() -> Result<Arc<Vec<CatalogEntry>>, String> {
-    let mut cache = official_cache().lock().await;
-    if let Some((fetched, entries)) = cache.as_ref().filter(|(at, _)| at.elapsed() < OFFICIAL_TTL) {
-        let _ = fetched;
+    let mut state = official_cache().lock().await;
+    if let Some((_, entries)) = state.entries.as_ref().filter(|(at, _)| at.elapsed() < OFFICIAL_TTL) {
         return Ok(entries.clone());
     }
-    let client = client()?;
+    // Failed a moment ago and there is nothing older to serve: answer at once.
+    if let Some((_, message)) = state
+        .failed
+        .as_ref()
+        .filter(|(at, _)| at.elapsed() < OFFICIAL_FAILURE_MEMORY)
+    {
+        return match state.entries.as_ref() {
+            Some((_, stale)) => Ok(stale.clone()),
+            None => Err(message.clone()),
+        };
+    }
+    let client = reqwest::Client::builder()
+        .timeout(OFFICIAL_TIMEOUT)
+        .redirect(redirect_policy())
+        .user_agent("dream-core-price-sync")
+        .build()
+        .map_err(|e| e.to_string())?;
     let mut failure = String::from("无法连接公开价格库");
     for url in OFFICIAL_URLS {
         let Ok(url) = reqwest::Url::parse(url) else { continue };
@@ -548,7 +589,8 @@ pub async fn official_catalog() -> Result<Arc<Vec<CatalogEntry>>, String> {
                     Ok(json) => {
                         let entries = Arc::new(parse_catalog(&json));
                         if !entries.is_empty() {
-                            *cache = Some((Instant::now(), entries.clone()));
+                            state.entries = Some((Instant::now(), entries.clone()));
+                            state.failed = None;
                             return Ok(entries);
                         }
                     }
@@ -560,7 +602,8 @@ pub async fn official_catalog() -> Result<Arc<Vec<CatalogEntry>>, String> {
             Err(e) => failure = format!("无法连接公开价格库：{}", e.without_url()),
         }
     }
-    match cache.as_ref() {
+    state.failed = Some((Instant::now(), failure.clone()));
+    match state.entries.as_ref() {
         Some((_, stale)) => Ok(stale.clone()),
         None => Err(failure),
     }
@@ -952,6 +995,35 @@ mod tests {
         assert!(check_fetch_url("http://metadata.google.internal/").is_err());
         assert!(check_fetch_url("file:///etc/passwd").is_err());
         assert!(check_fetch_url("not a url").is_err());
+    }
+
+    /// An allowed address that redirects to the metadata service must not get there.
+    /// A local server stands in for the company gateway.
+    #[tokio::test]
+    async fn a_redirect_to_a_forbidden_address_is_refused() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/latest/meta-data\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+        let outcome = fetch_custom(
+            &format!("http://127.0.0.1:{port}/support-models"),
+            &FetchAuth::default(),
+        )
+        .await;
+        match outcome {
+            CustomFetch::Failed { message } => {
+                assert!(!message.contains("169.254"), "must not echo the target: {message}")
+            }
+            other => panic!("a redirect to the metadata address must fail, got {other:?}"),
+        }
     }
 
     #[test]

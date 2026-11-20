@@ -1178,11 +1178,11 @@ impl BillingService {
                 Some(price) => {
                     let units = if kind.eq_ignore_ascii_case("video") {
                         let seconds = if duration_seconds > 0 { duration_seconds } else { 5 };
-                        count.max(0) * seconds
+                        count.max(0).saturating_mul(seconds)
                     } else {
                         count.max(0)
                     };
-                    units * price
+                    units.saturating_mul(price)
                 }
                 None => estimate_media_cost_micros(kind, model, count, duration_seconds),
             },

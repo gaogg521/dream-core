@@ -270,11 +270,11 @@ impl AdminModelPrice {
         let unit = self.unit_price_micros(tier);
         match self.unit {
             BillingUnit::Token => None,
-            BillingUnit::Image | BillingUnit::Request => Some(count * unit),
+            BillingUnit::Image | BillingUnit::Request => Some(count.saturating_mul(unit)),
             BillingUnit::Second => {
                 // A missing duration is the common 5s clip, not free.
                 let seconds = if duration_seconds > 0 { duration_seconds } else { 5 };
-                Some(count * seconds * unit)
+                Some(count.saturating_mul(seconds).saturating_mul(unit))
             }
         }
     }
@@ -326,9 +326,11 @@ pub fn estimate_media_cost_micros(kind: &str, model: &str, count: i64, duration_
     if kind.eq_ignore_ascii_case("video") {
         // Treat a missing duration as the common 5s clip rather than free.
         let seconds = if duration_seconds > 0 { duration_seconds } else { 5 };
-        count * seconds * video_rate_micros_per_second(model)
+        count
+            .saturating_mul(seconds)
+            .saturating_mul(video_rate_micros_per_second(model))
     } else {
-        count * image_rate_micros(model)
+        count.saturating_mul(image_rate_micros(model))
     }
 }
 
@@ -516,6 +518,20 @@ mod tests {
         assert_eq!(price.media_cost_micros(3, 0, None), Some(300_000));
         price.unit = BillingUnit::Token;
         assert_eq!(price.media_cost_micros(1, 5, None), None);
+    }
+
+    /// `count` and `duration_seconds` come from the reporting client. An absurd value
+    /// must clamp, not wrap negative (which would credit the spend cap) or panic.
+    #[test]
+    fn absurd_client_reported_counts_saturate_instead_of_overflowing() {
+        let price = AdminModelPrice {
+            unit: BillingUnit::Second,
+            unit_price_usd: 1.0,
+            ..Default::default()
+        };
+        assert_eq!(price.media_cost_micros(i64::MAX, i64::MAX, None), Some(i64::MAX));
+        assert!(estimate_media_cost_micros("video", "veo-3", i64::MAX, i64::MAX) >= 0);
+        assert!(estimate_media_cost_micros("image", "dall-e-3", i64::MAX, 0) >= 0);
     }
 
     #[test]
