@@ -206,6 +206,80 @@ pub fn estimate_cost_with_cache_micros(model: &str, usage: TokenUsage, prices: O
     cost.round() as i64
 }
 
+/// What a model's price is quoted per. Chat models bill tokens; image and
+/// video models bill per asset, per second of output, or — some gateways — per
+/// call; a few (gpt-image, Seedance) bill tokens too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BillingUnit {
+    #[default]
+    Token,
+    Image,
+    Second,
+    Request,
+}
+
+impl BillingUnit {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Token => "token",
+            Self::Image => "image",
+            Self::Second => "second",
+            Self::Request => "request",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "token" => Some(Self::Token),
+            "image" => Some(Self::Image),
+            "second" => Some(Self::Second),
+            "request" => Some(Self::Request),
+            _ => None,
+        }
+    }
+}
+
+/// An administrator's price for one model, in whichever unit it is billed.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct AdminModelPrice {
+    pub unit: BillingUnit,
+    /// Used when `unit` is [`BillingUnit::Token`].
+    pub tokens: TokenPricesUsdPerMtok,
+    /// USD per image / per second of output / per request.
+    pub unit_price_usd: f64,
+    /// Per-resolution overrides of `unit_price_usd` (`"1080p" -> 0.4`). A tier
+    /// the model has no entry for keeps the base price.
+    pub tiers: std::collections::HashMap<String, f64>,
+}
+
+impl AdminModelPrice {
+    /// USD-micros for one unit, honouring the resolution tier when it has one.
+    pub fn unit_price_micros(&self, tier: Option<&str>) -> i64 {
+        let usd = tier
+            .and_then(|t| self.tiers.get(t).or_else(|| self.tiers.get(&t.to_ascii_lowercase())))
+            .copied()
+            .unwrap_or(self.unit_price_usd);
+        (usd.max(0.0) * 1_000_000.0).round() as i64
+    }
+
+    /// Cost of a media generation under this price, or `None` when the price
+    /// is token-based (media usage reports carry no token counts to apply it
+    /// to — those calls are costed where tokens are visible, the model proxy).
+    pub fn media_cost_micros(&self, count: i64, duration_seconds: i64, tier: Option<&str>) -> Option<i64> {
+        let count = count.max(0);
+        let unit = self.unit_price_micros(tier);
+        match self.unit {
+            BillingUnit::Token => None,
+            BillingUnit::Image | BillingUnit::Request => Some(count * unit),
+            BillingUnit::Second => {
+                // A missing duration is the common 5s clip, not free.
+                let seconds = if duration_seconds > 0 { duration_seconds } else { 5 };
+                Some(count * seconds * unit)
+            }
+        }
+    }
+}
+
 /// Per-image cost in USD-micros. Media is not metered in tokens, so it needs its
 /// own table — charging it at a token rate would report zero and let the most
 /// expensive calls in the product sit invisibly under any spend cap.
@@ -411,5 +485,49 @@ mod tests {
         // Unknown model → 0, never negative on junk input.
         assert_eq!(estimate_cost_micros("mystery-model", 1000, 1000), 0);
         assert_eq!(estimate_cost_micros("claude-opus", -5, -5), 0);
+    }
+
+    #[test]
+    fn media_price_units_cost_per_asset_second_or_request() {
+        let mut price = AdminModelPrice {
+            unit: BillingUnit::Second,
+            unit_price_usd: 0.1,
+            ..Default::default()
+        };
+        // 2 clips x 8s x $0.10/s.
+        assert_eq!(price.media_cost_micros(2, 8, None), Some(1_600_000));
+        // Missing duration = the 5s default, not free.
+        assert_eq!(price.media_cost_micros(1, 0, None), Some(500_000));
+        price.tiers.insert("1080p".into(), 0.4);
+        assert_eq!(price.media_cost_micros(1, 5, Some("1080p")), Some(2_000_000));
+        assert_eq!(
+            price.media_cost_micros(1, 5, Some("480p")),
+            Some(500_000),
+            "unlisted tier keeps the base price"
+        );
+
+        price.unit = BillingUnit::Image;
+        assert_eq!(
+            price.media_cost_micros(4, 99, None),
+            Some(400_000),
+            "duration is ignored for images"
+        );
+        price.unit = BillingUnit::Request;
+        assert_eq!(price.media_cost_micros(3, 0, None), Some(300_000));
+        price.unit = BillingUnit::Token;
+        assert_eq!(price.media_cost_micros(1, 5, None), None);
+    }
+
+    #[test]
+    fn billing_unit_round_trips_through_its_wire_name() {
+        for unit in [
+            BillingUnit::Token,
+            BillingUnit::Image,
+            BillingUnit::Second,
+            BillingUnit::Request,
+        ] {
+            assert_eq!(BillingUnit::parse(unit.as_str()), Some(unit));
+        }
+        assert_eq!(BillingUnit::parse("minute"), None);
     }
 }

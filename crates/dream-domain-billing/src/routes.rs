@@ -80,6 +80,12 @@ pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
                 .put(billing_set_model_price)
                 .delete(billing_delete_model_price),
         )
+        // Price discovery: the company's own LiteLLM / relay source, then the
+        // public reference catalog. POST because it may carry credentials.
+        .route(
+            "/api/one/billing/model-prices/lookup",
+            post(billing_lookup_model_prices),
+        )
         .route("/api/one/billing/media-ledger/report", post(billing_report_media_asset))
         .route("/api/one/billing/media-ledger", get(billing_list_media_assets))
         .route(
@@ -166,6 +172,9 @@ struct MediaUsageBody {
     /// Attribution, not content. A generation started from the compose box
     /// writes no message, so without this the ledger row is the only trace it
     /// leaves and it points at nothing an admin can follow.
+    /// Resolution tier the generation ran at (`"1080p"`), for per-tier prices
+    /// in the company price table.
+    tier: Option<String>,
     conversation_id: Option<String>,
 }
 
@@ -186,6 +195,7 @@ async fn billing_media_usage(
             count: body.count.unwrap_or(1),
             duration_seconds: body.duration_seconds.unwrap_or(0),
             unit_price_micros: body.unit_price_micros,
+            tier: body.tier.as_deref(),
             conversation_id: body.conversation_id.as_deref(),
         })
         .await?;
@@ -1000,12 +1010,27 @@ async fn billing_list_model_prices(
 #[serde(rename_all = "camelCase")]
 struct SetModelPriceBody {
     model: String,
+    /// `token` (default) | `image` | `second` | `request`.
+    #[serde(default)]
+    billing_unit: Option<String>,
+    /// Left blank on the console = 0, so these default rather than being required.
+    #[serde(default)]
     input_usd_per_mtok: f64,
+    #[serde(default)]
     output_usd_per_mtok: f64,
     #[serde(default)]
     cache_read_usd_per_mtok: Option<f64>,
     #[serde(default)]
     cache_write_usd_per_mtok: Option<f64>,
+    #[serde(default)]
+    unit_price_usd: f64,
+    #[serde(default)]
+    tier_prices_usd: Option<std::collections::HashMap<String, f64>>,
+    /// `manual` (default) | `official` | `sync`.
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    source_note: Option<String>,
 }
 
 async fn billing_set_model_price(
@@ -1014,17 +1039,72 @@ async fn billing_set_model_price(
     Json(body): Json<SetModelPriceBody>,
 ) -> Result<Json<ApiResponse<ModelPriceListDto>>, BillingError> {
     let eid = model_price_admin_enterprise(&state, &user.id).await?;
-    let prices = dream_core_common::license::TokenPricesUsdPerMtok {
-        input: body.input_usd_per_mtok,
-        output: body.output_usd_per_mtok,
-        cache_read: body.cache_read_usd_per_mtok,
-        cache_write: body.cache_write_usd_per_mtok,
+    let unit = match body.billing_unit.as_deref() {
+        None => dream_core_common::license::BillingUnit::Token,
+        Some(raw) => dream_core_common::license::BillingUnit::parse(raw)
+            .ok_or_else(|| BillingError::BadRequest("billingUnit must be token, image, second or request".into()))?,
     };
-    state.service.set_model_price(&eid, &body.model, prices, &user.id).await?;
+    let price = dream_core_common::license::AdminModelPrice {
+        unit,
+        tokens: dream_core_common::license::TokenPricesUsdPerMtok {
+            input: body.input_usd_per_mtok,
+            output: body.output_usd_per_mtok,
+            cache_read: body.cache_read_usd_per_mtok,
+            cache_write: body.cache_write_usd_per_mtok,
+        },
+        unit_price_usd: body.unit_price_usd,
+        tiers: body.tier_prices_usd.unwrap_or_default(),
+    };
+    state
+        .service
+        .set_model_price(
+            &eid,
+            crate::service::ModelPriceWrite {
+                model: &body.model,
+                price,
+                source: body.source.as_deref().unwrap_or("manual"),
+                source_note: body.source_note.as_deref().map(str::trim).filter(|n| !n.is_empty()),
+            },
+            &user.id,
+        )
+        .await?;
     Ok(Json(ApiResponse::ok(ModelPriceListDto {
         prices: state.service.list_model_prices(&eid).await?,
         builtin: Vec::new(),
     })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PriceLookupBody {
+    models: Vec<String>,
+    /// The company's own LiteLLM / relay address. Absent = reference catalog only.
+    #[serde(default)]
+    source_url: Option<String>,
+    /// Credentials for a source behind a login. Used for this one request,
+    /// never stored or logged.
+    #[serde(default)]
+    cookie: Option<String>,
+    #[serde(default)]
+    authorization: Option<String>,
+}
+
+async fn billing_lookup_model_prices(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<PriceLookupBody>,
+) -> Result<Json<ApiResponse<crate::models::PriceLookupDto>>, BillingError> {
+    model_price_admin_enterprise(&state, &user.id).await?;
+    if body.models.is_empty() || body.models.len() > 500 {
+        return Err(BillingError::BadRequest("models must hold 1 to 500 names".into()));
+    }
+    let auth = crate::price_catalog::FetchAuth {
+        cookie: body.cookie,
+        authorization: body.authorization,
+    };
+    Ok(Json(ApiResponse::ok(
+        crate::price_catalog::lookup(&body.models, body.source_url.as_deref(), &auth).await,
+    )))
 }
 
 #[derive(Deserialize)]

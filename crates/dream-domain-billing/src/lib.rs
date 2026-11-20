@@ -17,6 +17,7 @@ pub mod error;
 pub mod license_key;
 pub mod migrate;
 pub mod models;
+pub mod price_catalog;
 pub mod routes;
 pub mod service;
 pub mod state;
@@ -26,5 +27,5 @@ pub use license_key::{LicenseKeyError, LicensePayload, ModuleAccess, verify_lice
 pub use migrate::run_one_billing_migrations;
 pub use models::{CheckoutResultDto, LicenseInfoDto, PlanDto, UsageSummaryDto};
 pub use routes::one_billing_routes;
-pub use service::{BillingProvider, BillingService, ManualBillingProvider, MeteredTurn, NewLlmCall};
+pub use service::{BillingProvider, BillingService, ManualBillingProvider, MeteredTurn, ModelPriceWrite, NewLlmCall};
 pub use state::OneBillingRouterState;

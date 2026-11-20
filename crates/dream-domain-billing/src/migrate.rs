@@ -66,6 +66,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "billing_014_model_prices",
         include_str!("../migrations/billing_014_model_prices.sql"),
     ),
+    (
+        "billing_015_model_price_units",
+        include_str!("../migrations/billing_015_model_price_units.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -112,6 +116,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "billing_014_model_prices",
         include_str!("../migrations_mysql/billing_014_model_prices.sql"),
+    ),
+    (
+        "billing_015_model_price_units",
+        include_str!("../migrations_mysql/billing_015_model_price_units.sql"),
     ),
     (
         "billing_009_conversation_audit_requests",

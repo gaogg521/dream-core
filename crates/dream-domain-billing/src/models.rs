@@ -405,17 +405,26 @@ pub struct DepartmentBudgetDto {
     pub cost_used_micros: i64,
 }
 
-/// One model the company has priced (admin price table). USD per million
-/// tokens; `None` cache prices default from the input price at costing time
-/// (hits at 10%, writes at 100%).
+/// One model the company has priced (admin price table). Token prices are USD
+/// per million tokens (`None` cache prices default from the input price at
+/// costing time: hits 10%, writes 100%); image / video / per-request models
+/// carry `unit_price_usd` per image / second of output / request instead, with
+/// optional per-resolution overrides in `tier_prices_usd`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelPriceDto {
     pub model: String,
+    /// `token` | `image` | `second` | `request`.
+    pub billing_unit: String,
     pub input_usd_per_mtok: f64,
     pub output_usd_per_mtok: f64,
     pub cache_read_usd_per_mtok: Option<f64>,
     pub cache_write_usd_per_mtok: Option<f64>,
+    pub unit_price_usd: f64,
+    pub tier_prices_usd: std::collections::HashMap<String, f64>,
+    /// `manual` | `official` (public reference catalog) | `sync` (company source).
+    pub source: String,
+    pub source_note: Option<String>,
     pub updated_by: String,
     pub updated_at: i64,
 }
@@ -430,6 +439,47 @@ pub struct BuiltinModelPriceDto {
     pub model: String,
     pub input_usd_per_mtok: f64,
     pub output_usd_per_mtok: f64,
+}
+
+/// A price a source states for a model, in the price table's own units.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PriceSuggestionDto {
+    pub billing_unit: String,
+    pub input_usd_per_mtok: f64,
+    pub output_usd_per_mtok: f64,
+    pub cache_read_usd_per_mtok: Option<f64>,
+    pub cache_write_usd_per_mtok: Option<f64>,
+    pub unit_price_usd: f64,
+}
+
+/// What a price lookup found for one model.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PriceLookupItemDto {
+    pub model: String,
+    pub found: bool,
+    /// `custom` (the company's own source) or `official` (public reference catalog).
+    pub source: Option<String>,
+    /// The catalog entry the model matched.
+    pub matched_key: Option<String>,
+    /// False when it matched only after ignoring a snapshot / date suffix.
+    pub exact: bool,
+    pub price: Option<PriceSuggestionDto>,
+}
+
+/// Result of a price lookup against the company's source and/or the public
+/// reference catalog. Statuses: custom `unused|ok|auth_required|failed`,
+/// official `unused|ok|failed`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PriceLookupDto {
+    pub items: Vec<PriceLookupItemDto>,
+    pub custom_status: String,
+    pub custom_message: Option<String>,
+    pub custom_from: Option<String>,
+    pub official_status: String,
+    pub official_message: Option<String>,
 }
 
 /// The admin price page's data: every priced model, plus the built-in rate

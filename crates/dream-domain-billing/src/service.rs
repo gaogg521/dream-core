@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use dream_core_common::license::{
-    Feature, Tier, TokenPricesUsdPerMtok, TokenUsage, estimate_cost_with_cache_micros,
+    AdminModelPrice, BillingUnit, Feature, Tier, TokenPricesUsdPerMtok, TokenUsage, estimate_cost_with_cache_micros,
     estimate_media_cost_micros, tier_allows, tier_seat_limit,
 };
 use dream_core_common::{generate_prefixed_id, now_ms, snapshot_conversation_id};
@@ -68,6 +68,15 @@ pub struct MeteredTurn<'a> {
     /// snapshot). Tried first when looking the price up: it is the name an
     /// administrator listed on the channel and priced.
     pub requested_model: Option<&'a str>,
+}
+
+/// One price-table write: which model, what it costs and where the figure came
+/// from (`manual` | `official` | `sync`), plus a note naming the catalog entry.
+pub struct ModelPriceWrite<'a> {
+    pub model: &'a str,
+    pub price: AdminModelPrice,
+    pub source: &'a str,
+    pub source_note: Option<&'a str>,
 }
 
 /// One completed MODEL CALL, as reported for the per-call LLM trace (P2-5).
@@ -202,6 +211,9 @@ pub struct MediaUsage<'a> {
     /// built-in rate table, which is a coarse illustration next to the contract
     /// they are actually billed under.
     pub unit_price_micros: Option<i64>,
+    /// Resolution tier the generation ran at (`"1080p"`), for per-tier prices
+    /// in the company price table. Optional: absent = the base unit price.
+    pub tier: Option<&'a str>,
     /// Where the generation happened. Attribution, not content — it is what lets
     /// an admin follow a charge back to somewhere. Optional because a caller may
     /// genuinely not have one.
@@ -1141,24 +1153,39 @@ impl BillingService {
             count,
             duration_seconds,
             unit_price_micros,
+            tier,
             conversation_id,
         } = usage;
         let enterprise_id = self.resolve_enterprise_id(user_id).await?;
         let department_id = self.resolve_department_id(user_id).await?;
+        // The company's price table is the one place admins price models, so
+        // it wins — an explicit 0 included (a free internal model). A
+        // token-priced row cannot cost a media report (no token counts), so it
+        // falls through to what the reporting client resolved, then the table.
+        let table_cost = match enterprise_id.as_deref() {
+            Some(eid) => self
+                .admin_model_price(eid, &[model])
+                .await
+                .and_then(|price| price.media_cost_micros(count, duration_seconds, tier)),
+            None => None,
+        };
         // A price the user entered for their own provider beats our built-in
         // table: the table is a coarse illustration, theirs is the contract they
         // are actually billed under.
-        let cost = match unit_price_micros.filter(|price| *price > 0) {
-            Some(price) => {
-                let units = if kind.eq_ignore_ascii_case("video") {
-                    let seconds = if duration_seconds > 0 { duration_seconds } else { 5 };
-                    count.max(0) * seconds
-                } else {
-                    count.max(0)
-                };
-                units * price
-            }
-            None => estimate_media_cost_micros(kind, model, count, duration_seconds),
+        let cost = match table_cost {
+            Some(cost) => cost,
+            None => match unit_price_micros.filter(|price| *price > 0) {
+                Some(price) => {
+                    let units = if kind.eq_ignore_ascii_case("video") {
+                        let seconds = if duration_seconds > 0 { duration_seconds } else { 5 };
+                        count.max(0) * seconds
+                    } else {
+                        count.max(0)
+                    };
+                    units * price
+                }
+                None => estimate_media_cost_micros(kind, model, count, duration_seconds),
+            },
         };
         // A media call that costs 0 does not just report oddly — it consumes
         // none of the company's spend cap, so the cap silently stops binding for
@@ -1167,7 +1194,7 @@ impl BillingService {
         // here invents a number: the row is recorded as-is, but an operator can
         // now find out why their cap is not moving, and fix it by entering a
         // unit price for the model.
-        if cost == 0 && count > 0 && enterprise_id.is_some() {
+        if cost == 0 && count > 0 && enterprise_id.is_some() && table_cost.is_none() {
             tracing::warn!(
                 model,
                 kind,
@@ -1270,17 +1297,26 @@ impl BillingService {
             None => None,
             Some(model) => {
                 let names: Vec<&str> = requested_model.into_iter().chain([model]).collect();
-                let prices = match enterprise_id.as_deref() {
-                    Some(eid) => self.admin_model_prices(eid, &names).await,
+                let price = match enterprise_id.as_deref() {
+                    Some(eid) => self.admin_model_price(eid, &names).await,
                     None => None,
                 };
-                let usage = TokenUsage {
-                    input: input_tokens.unwrap_or(0),
-                    output: output_tokens.unwrap_or(0),
-                    cache_read: cache_read_tokens,
-                    cache_write: cache_write_tokens,
-                };
-                Some(estimate_cost_with_cache_micros(model, usage, prices))
+                match price {
+                    // A per-call price (some gateways bill per request).
+                    Some(price) if price.unit == BillingUnit::Request => Some(price.unit_price_micros(None)),
+                    other => {
+                        let usage = TokenUsage {
+                            input: input_tokens.unwrap_or(0),
+                            output: output_tokens.unwrap_or(0),
+                            cache_read: cache_read_tokens,
+                            cache_write: cache_write_tokens,
+                        };
+                        // Only a token price applies to token counts; an
+                        // image/second price on a chat model is ignored.
+                        let tokens = other.filter(|p| p.unit == BillingUnit::Token).map(|p| p.tokens);
+                        Some(estimate_cost_with_cache_micros(model, usage, tokens))
+                    }
+                }
             }
         };
         // T7: stamped from the user's department AT THIS MOMENT, not resolved
@@ -1317,24 +1353,34 @@ impl BillingService {
 
     /// The company's own price for a model: the first of `names` the admin
     /// price table holds. Best-effort like every other read on the metering
-    /// path — a failed lookup costs the turn at the built-in rate rather than
+    /// path — a failed lookup costs the call at the built-in rate rather than
     /// failing the record.
-    async fn admin_model_prices(&self, enterprise_id: &str, names: &[&str]) -> Option<TokenPricesUsdPerMtok> {
+    async fn admin_model_price(&self, enterprise_id: &str, names: &[&str]) -> Option<AdminModelPrice> {
+        type Row = (f64, f64, Option<f64>, Option<f64>, String, f64, Option<String>);
         for name in names {
-            let row: Option<(f64, f64, Option<f64>, Option<f64>)> = self
+            let row: Option<Row> = self
                 .db
                 .fetch_optional_as(
-                    "SELECT input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok, cache_write_usd_per_mtok                      FROM one_model_prices WHERE enterprise_id = ? AND model = ?",
+                    "SELECT input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok, cache_write_usd_per_mtok, \
+                            billing_unit, unit_price_usd, tier_prices_json \
+                     FROM one_model_prices WHERE enterprise_id = ? AND model = ?",
                     &db_params![enterprise_id, *name],
                 )
                 .await
                 .unwrap_or(None);
-            if let Some((input, output, cache_read, cache_write)) = row {
-                return Some(TokenPricesUsdPerMtok {
-                    input,
-                    output,
-                    cache_read,
-                    cache_write,
+            if let Some((input, output, cache_read, cache_write, unit, unit_price_usd, tiers)) = row {
+                return Some(AdminModelPrice {
+                    unit: BillingUnit::parse(&unit).unwrap_or_default(),
+                    tokens: TokenPricesUsdPerMtok {
+                        input,
+                        output,
+                        cache_read,
+                        cache_write,
+                    },
+                    unit_price_usd,
+                    tiers: tiers
+                        .and_then(|raw| serde_json::from_str(&raw).ok())
+                        .unwrap_or_default(),
                 });
             }
         }
@@ -1343,65 +1389,138 @@ impl BillingService {
 
     /// Every model the company has priced, by name.
     pub async fn list_model_prices(&self, enterprise_id: &str) -> Result<Vec<ModelPriceDto>, BillingError> {
-        type Row = (String, f64, f64, Option<f64>, Option<f64>, String, i64);
+        type Row = (
+            String,
+            f64,
+            f64,
+            Option<f64>,
+            Option<f64>,
+            String,
+            f64,
+            Option<String>,
+            String,
+            Option<String>,
+            String,
+            i64,
+        );
         let rows: Vec<Row> = self
             .db
             .fetch_all_as::<Row>(
-                "SELECT model, input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok,                         cache_write_usd_per_mtok, updated_by, updated_at                  FROM one_model_prices WHERE enterprise_id = ? ORDER BY model",
+                "SELECT model, input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok, \
+                        cache_write_usd_per_mtok, billing_unit, unit_price_usd, tier_prices_json, \
+                        source, source_note, updated_by, updated_at \
+                 FROM one_model_prices WHERE enterprise_id = ? ORDER BY model",
                 &db_params![enterprise_id],
             )
             .await?;
         Ok(rows
             .into_iter()
             .map(
-                |(model, input, output, cache_read, cache_write, updated_by, updated_at)| ModelPriceDto {
-                    model,
-                    input_usd_per_mtok: input,
-                    output_usd_per_mtok: output,
-                    cache_read_usd_per_mtok: cache_read,
-                    cache_write_usd_per_mtok: cache_write,
-                    updated_by,
-                    updated_at,
+                |(model, input, output, cache_read, cache_write, unit, unit_price, tiers, source, note, by, at)| {
+                    ModelPriceDto {
+                        model,
+                        billing_unit: unit,
+                        input_usd_per_mtok: input,
+                        output_usd_per_mtok: output,
+                        cache_read_usd_per_mtok: cache_read,
+                        cache_write_usd_per_mtok: cache_write,
+                        unit_price_usd: unit_price,
+                        tier_prices_usd: tiers
+                            .and_then(|raw| serde_json::from_str(&raw).ok())
+                            .unwrap_or_default(),
+                        source,
+                        source_note: note,
+                        updated_by: by,
+                        updated_at: at,
+                    }
                 },
             )
             .collect())
     }
 
-    /// Price a model for the company (insert or replace). Input and output are
-    /// both required and every price must be a finite, non-negative number:
-    /// a malformed price would silently cost calls at zero, or negative.
-    /// Zero itself is allowed — a self-hosted model really is free per token.
+    /// Price a model for the company (insert or replace). Every figure must be
+    /// a finite, non-negative number: a malformed price would silently cost
+    /// calls at zero, or negative. Zero itself is a real price — a self-hosted
+    /// model is free per token, and a model left blank on the console is zero.
     pub async fn set_model_price(
         &self,
         enterprise_id: &str,
-        model: &str,
-        prices: TokenPricesUsdPerMtok,
+        write: ModelPriceWrite<'_>,
         updated_by: &str,
     ) -> Result<(), BillingError> {
+        let ModelPriceWrite {
+            model,
+            price,
+            source,
+            source_note,
+        } = write;
         let model = model.trim();
         if model.is_empty() {
             return Err(BillingError::BadRequest("model name is required".into()));
         }
         let valid = |p: f64| p.is_finite() && p >= 0.0;
-        if !valid(prices.input)
-            || !valid(prices.output)
-            || prices.cache_read.is_some_and(|p| !valid(p))
-            || prices.cache_write.is_some_and(|p| !valid(p))
+        if !valid(price.tokens.input)
+            || !valid(price.tokens.output)
+            || price.tokens.cache_read.is_some_and(|p| !valid(p))
+            || price.tokens.cache_write.is_some_and(|p| !valid(p))
+            || !valid(price.unit_price_usd)
+            || price.tiers.iter().any(|(tier, p)| tier.trim().is_empty() || !valid(*p))
         {
             return Err(BillingError::BadRequest(
-                "prices must be non-negative numbers (USD per million tokens)".into(),
+                "prices must be non-negative numbers (USD per million tokens / per unit)".into(),
             ));
         }
+        let source = match source {
+            "official" | "sync" => source,
+            _ => "manual",
+        };
+        let tiers_json = if price.tiers.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&price.tiers).ok()
+        };
+        let unit = price.unit.as_str();
         self.upsert(
-            "INSERT INTO one_model_prices                 (enterprise_id, model, input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok,                  cache_write_usd_per_mtok, updated_by, updated_at)              VALUES (?, ?, ?, ?, ?, ?, ?, ?)              ON CONFLICT(enterprise_id, model) DO UPDATE SET                  input_usd_per_mtok = excluded.input_usd_per_mtok,                  output_usd_per_mtok = excluded.output_usd_per_mtok,                  cache_read_usd_per_mtok = excluded.cache_read_usd_per_mtok,                  cache_write_usd_per_mtok = excluded.cache_write_usd_per_mtok,                  updated_by = excluded.updated_by, updated_at = excluded.updated_at",
-            "INSERT INTO one_model_prices                 (enterprise_id, model, input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok,                  cache_write_usd_per_mtok, updated_by, updated_at)              VALUES (?, ?, ?, ?, ?, ?, ?, ?) AS new              ON DUPLICATE KEY UPDATE                  input_usd_per_mtok = new.input_usd_per_mtok,                  output_usd_per_mtok = new.output_usd_per_mtok,                  cache_read_usd_per_mtok = new.cache_read_usd_per_mtok,                  cache_write_usd_per_mtok = new.cache_write_usd_per_mtok,                  updated_by = new.updated_by, updated_at = new.updated_at",
+            "INSERT INTO one_model_prices \
+                (enterprise_id, model, input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok, \
+                 cache_write_usd_per_mtok, billing_unit, unit_price_usd, tier_prices_json, source, source_note, \
+                 updated_by, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(enterprise_id, model) DO UPDATE SET \
+                 input_usd_per_mtok = excluded.input_usd_per_mtok, \
+                 output_usd_per_mtok = excluded.output_usd_per_mtok, \
+                 cache_read_usd_per_mtok = excluded.cache_read_usd_per_mtok, \
+                 cache_write_usd_per_mtok = excluded.cache_write_usd_per_mtok, \
+                 billing_unit = excluded.billing_unit, unit_price_usd = excluded.unit_price_usd, \
+                 tier_prices_json = excluded.tier_prices_json, source = excluded.source, \
+                 source_note = excluded.source_note, \
+                 updated_by = excluded.updated_by, updated_at = excluded.updated_at",
+            "INSERT INTO one_model_prices \
+                (enterprise_id, model, input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok, \
+                 cache_write_usd_per_mtok, billing_unit, unit_price_usd, tier_prices_json, source, source_note, \
+                 updated_by, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
+             ON DUPLICATE KEY UPDATE \
+                 input_usd_per_mtok = new.input_usd_per_mtok, \
+                 output_usd_per_mtok = new.output_usd_per_mtok, \
+                 cache_read_usd_per_mtok = new.cache_read_usd_per_mtok, \
+                 cache_write_usd_per_mtok = new.cache_write_usd_per_mtok, \
+                 billing_unit = new.billing_unit, unit_price_usd = new.unit_price_usd, \
+                 tier_prices_json = new.tier_prices_json, source = new.source, \
+                 source_note = new.source_note, \
+                 updated_by = new.updated_by, updated_at = new.updated_at",
             &db_params![
                 enterprise_id,
                 model,
-                prices.input,
-                prices.output,
-                prices.cache_read,
-                prices.cache_write,
+                price.tokens.input,
+                price.tokens.output,
+                price.tokens.cache_read,
+                price.tokens.cache_write,
+                unit,
+                price.unit_price_usd,
+                tiers_json,
+                source,
+                source_note,
                 updated_by,
                 now_ms()
             ],
@@ -3279,6 +3398,30 @@ mod tests {
         assert_eq!(plan.seat_limit, Some(3));
     }
 
+    /// Price a model in tokens, the way the console's token form does.
+    async fn set_token_price(
+        svc: &BillingService,
+        enterprise_id: &str,
+        model: &str,
+        tokens: TokenPricesUsdPerMtok,
+        by: &str,
+    ) -> Result<(), BillingError> {
+        svc.set_model_price(
+            enterprise_id,
+            ModelPriceWrite {
+                model,
+                price: AdminModelPrice {
+                    tokens,
+                    ..Default::default()
+                },
+                source: "manual",
+                source_note: None,
+            },
+            by,
+        )
+        .await
+    }
+
     /// A proxied call costs at the company's price for the model — found by
     /// the name the member requested before the dated name the upstream
     /// echoed — cache hits included; its cache tokens stay out of
@@ -3309,7 +3452,9 @@ mod tests {
             cache_read: Some(0.2),
             cache_write: None,
         };
-        svc.set_model_price("ent1", "deepseek-flash", admin, "admin").await.unwrap();
+        set_token_price(&svc, "ent1", "deepseek-flash", admin, "admin")
+            .await
+            .unwrap();
         let last_cost = || async {
             let (total, cost): (i64, i64) = sqlx::query_as(
                 "SELECT total_tokens, estimated_cost_micros FROM one_usage_events WHERE user_id = 'alice'                  ORDER BY created_at DESC, rowid DESC LIMIT 1",
@@ -3328,7 +3473,7 @@ mod tests {
 
         // Priced only under the echoed name: still found.
         svc.delete_model_price("ent1", "deepseek-flash").await.unwrap();
-        svc.set_model_price("ent1", "deepseek-v4-1-flash-261017", admin, "admin")
+        set_token_price(&svc, "ent1", "deepseek-v4-1-flash-261017", admin, "admin")
             .await
             .unwrap();
         svc.record_metered_turn(turn).await.unwrap();
@@ -3336,7 +3481,9 @@ mod tests {
 
         // No price at all: the built-in table, hits at a tenth of its
         // deepseek input rate ($0.5/M → $0.05/M), still not free.
-        svc.delete_model_price("ent1", "deepseek-v4-1-flash-261017").await.unwrap();
+        svc.delete_model_price("ent1", "deepseek-v4-1-flash-261017")
+            .await
+            .unwrap();
         svc.record_metered_turn(turn).await.unwrap();
         // 1260*0.5 + 2048*1.5 + 97536*0.05 = 630 + 3072 + 4876.8 → 8579.
         assert_eq!(last_cost().await.1, 8_579);
@@ -3358,10 +3505,16 @@ mod tests {
             cache_read: None,
             cache_write: None,
         };
-        svc.set_model_price("ent2", "glm-5", price(9.0), "other-admin").await.unwrap();
-        svc.set_model_price("ent1", "glm-5", price(1.0), "admin").await.unwrap();
+        set_token_price(&svc, "ent2", "glm-5", price(9.0), "other-admin")
+            .await
+            .unwrap();
+        set_token_price(&svc, "ent1", "glm-5", price(1.0), "admin")
+            .await
+            .unwrap();
         // Re-pricing replaces, it does not add a second row.
-        svc.set_model_price("ent1", "glm-5", price(3.0), "admin").await.unwrap();
+        set_token_price(&svc, "ent1", "glm-5", price(3.0), "admin")
+            .await
+            .unwrap();
         let listed = svc.list_model_prices("ent1").await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].input_usd_per_mtok, 3.0);
@@ -3369,11 +3522,117 @@ mod tests {
         svc.record_turn("alice", Some("c1"), Some("glm-5"), None, Some(1_000), Some(500))
             .await
             .unwrap();
-        let cost: i64 = sqlx::query_scalar("SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'alice'")
-            .fetch_one(&sqlite)
+        let cost: i64 =
+            sqlx::query_scalar("SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'alice'")
+                .fetch_one(&sqlite)
+                .await
+                .unwrap();
+        assert_eq!(
+            cost,
+            1_000 * 3 + 500 * 2,
+            "ent1's price, not ent2's or the built-in table"
+        );
+    }
+
+    /// Image / video / per-request models are priced in the same table, in the
+    /// unit they bill — per image, per OUTPUT second (with per-resolution
+    /// tiers), per call — and an explicit zero is honoured, not read as unset.
+    #[tokio::test]
+    async fn price_table_costs_media_per_image_per_second_and_per_request() {
+        let (svc, sqlite) = service().await;
+        add_members(&svc, &sqlite, "ent1", 1).await;
+        sqlx::query("UPDATE one_enterprise_members SET user_id = 'alice' WHERE enterprise_id = 'ent1'")
+            .execute(&sqlite)
             .await
             .unwrap();
-        assert_eq!(cost, 1_000 * 3 + 500 * 2, "ent1's price, not ent2's or the built-in table");
+        let write = |model: &'static str, unit: BillingUnit, usd: f64, tiers: &[(&str, f64)]| {
+            let svc = &svc;
+            let tiers: std::collections::HashMap<String, f64> =
+                tiers.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+            async move {
+                svc.set_model_price(
+                    "ent1",
+                    ModelPriceWrite {
+                        model,
+                        price: AdminModelPrice {
+                            unit,
+                            unit_price_usd: usd,
+                            tiers,
+                            ..Default::default()
+                        },
+                        source: "manual",
+                        source_note: None,
+                    },
+                    "admin",
+                )
+                .await
+                .unwrap()
+            }
+        };
+        write("vid-model", BillingUnit::Second, 0.1, &[("1080p", 0.4)]).await;
+        write("img-model", BillingUnit::Image, 0.04, &[]).await;
+        write("free-img", BillingUnit::Image, 0.0, &[]).await;
+        write("per-call-chat", BillingUnit::Request, 0.02, &[]).await;
+        let cost_of = |model: &'static str| {
+            let sqlite = sqlite.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT estimated_cost_micros FROM one_usage_events WHERE model = ? ORDER BY rowid DESC LIMIT 1",
+                )
+                .bind(model)
+                .fetch_one(&sqlite)
+                .await
+                .unwrap()
+            }
+        };
+        let media =
+            |model: &'static str, kind: &'static str, count: i64, secs: i64, tier: Option<&'static str>| MediaUsage {
+                user_id: "alice",
+                kind,
+                model,
+                count,
+                duration_seconds: secs,
+                unit_price_micros: Some(999_999), // a stale per-channel price the table must beat
+                tier,
+                conversation_id: None,
+            };
+
+        svc.record_media_usage(media("vid-model", "video", 2, 8, None))
+            .await
+            .unwrap();
+        assert_eq!(cost_of("vid-model").await, 1_600_000, "2 clips x 8s x $0.10/s");
+        svc.record_media_usage(media("vid-model", "video", 1, 5, Some("1080p")))
+            .await
+            .unwrap();
+        assert_eq!(cost_of("vid-model").await, 2_000_000, "the 1080p tier price applies");
+        svc.record_media_usage(media("img-model", "image", 4, 0, None))
+            .await
+            .unwrap();
+        assert_eq!(cost_of("img-model").await, 160_000);
+        svc.record_media_usage(media("free-img", "image", 3, 0, None))
+            .await
+            .unwrap();
+        assert_eq!(
+            cost_of("free-img").await,
+            0,
+            "an explicit zero price is free, not 'unpriced'"
+        );
+
+        // A chat model billed per call ignores token counts.
+        svc.record_metered_turn(MeteredTurn {
+            user_id: "alice",
+            conversation_id: None,
+            model: Some("per-call-chat"),
+            channel_id: None,
+            input_tokens: Some(50_000),
+            output_tokens: Some(9_000),
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            requested_model: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(cost_of("per-call-chat").await, 20_000);
     }
 
     /// A malformed price would silently cost calls at zero or negative; it is
@@ -3388,15 +3647,24 @@ mod tests {
             cache_write: None,
         };
         for bad in [-1.0, f64::NAN, f64::INFINITY] {
-            assert!(svc.set_model_price("ent1", "m", price(bad), "admin").await.is_err(), "{bad}");
+            assert!(
+                set_token_price(&svc, "ent1", "m", price(bad), "admin").await.is_err(),
+                "{bad}"
+            );
         }
-        assert!(svc.set_model_price("ent1", "  ", price(1.0), "admin").await.is_err());
+        assert!(set_token_price(&svc, "ent1", "  ", price(1.0), "admin").await.is_err());
         let negative_cache = TokenPricesUsdPerMtok {
             cache_read: Some(-0.1),
             ..price(1.0)
         };
-        assert!(svc.set_model_price("ent1", "m", negative_cache, "admin").await.is_err());
-        svc.set_model_price("ent1", "self-hosted", price(0.0), "admin").await.unwrap();
+        assert!(
+            set_token_price(&svc, "ent1", "m", negative_cache, "admin")
+                .await
+                .is_err()
+        );
+        set_token_price(&svc, "ent1", "self-hosted", price(0.0), "admin")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -4020,6 +4288,7 @@ mod tests {
             count: 1,
             duration_seconds: 0,
             unit_price_micros: price,
+            tier: None,
             conversation_id: None,
         };
 
@@ -4061,6 +4330,7 @@ mod tests {
             count: 1,
             duration_seconds: 5,
             unit_price_micros: None,
+            tier: None,
             conversation_id: None,
         })
         .await
@@ -4426,6 +4696,7 @@ mod tests {
             count: 1,
             duration_seconds: 5,
             unit_price_micros: None,
+            tier: None,
             conversation_id: Some("conv_1"),
         })
         .await
@@ -4458,6 +4729,7 @@ mod tests {
             count: 1,
             duration_seconds: 4,
             unit_price_micros: Some(2),
+            tier: None,
             conversation_id: None,
         })
         .await
@@ -4479,6 +4751,7 @@ mod tests {
             count: 3,
             duration_seconds: 0,
             unit_price_micros: Some(7),
+            tier: None,
             conversation_id: None,
         })
         .await
@@ -4498,6 +4771,7 @@ mod tests {
             count: 1,
             duration_seconds: 0,
             unit_price_micros: Some(0),
+            tier: None,
             conversation_id: None,
         })
         .await
@@ -4522,6 +4796,7 @@ mod tests {
             count: 3,
             duration_seconds: 0,
             unit_price_micros: None,
+            tier: None,
             conversation_id: None,
         })
         .await
@@ -4557,6 +4832,7 @@ mod tests {
             count: 1,
             duration_seconds: 0,
             unit_price_micros: None,
+            tier: None,
             conversation_id: None,
         })
         .await
@@ -4580,6 +4856,7 @@ mod tests {
             count: 2,
             duration_seconds: 0,
             unit_price_micros: Some(30_000),
+            tier: None,
             conversation_id: None,
         })
         .await
@@ -4606,6 +4883,7 @@ mod tests {
             count: 1,
             duration_seconds: 5,
             unit_price_micros: None,
+            tier: None,
             conversation_id: Some("conv_abc"),
         })
         .await
@@ -4627,6 +4905,7 @@ mod tests {
             count: 1,
             duration_seconds: 0,
             unit_price_micros: None,
+            tier: None,
             conversation_id: None,
         })
         .await
@@ -4685,6 +4964,7 @@ mod tests {
             count: 1,
             duration_seconds: 0,
             unit_price_micros: None,
+            tier: None,
             conversation_id: None,
         })
         .await
