@@ -38,10 +38,6 @@
 use base64::Engine;
 use sha2::{Digest, Sha256};
 
-use std::collections::HashMap;
-
-use dream_core_api_types::ModelSettings;
-use dream_core_common::license::TokenPricesUsdPerMtok;
 use dream_core_common::now_ms;
 use dream_core_common::{decrypt_string, encrypt_string};
 
@@ -104,37 +100,6 @@ pub struct ResolvedChannel {
     /// an access decision, not a hint for the picker: the proxy refuses a
     /// request naming anything outside it.
     pub models: Vec<String>,
-    /// Administrator-entered chat prices, keyed by model name exactly as
-    /// listed on the channel. Only models with both an input and an output
-    /// price appear; everything else is costed by the built-in table.
-    pub model_prices: HashMap<String, TokenPricesUsdPerMtok>,
-}
-
-/// Lifts the token prices out of a channel's stored `model_settings` JSON
-/// (`{ "<model>": ModelSettings }`). Unparseable JSON, a model with only one
-/// of input/output, or a negative / non-finite number reads as "not priced":
-/// a half-entered price must not cost a call at zero.
-pub(crate) fn parse_model_prices(raw: Option<&str>) -> HashMap<String, TokenPricesUsdPerMtok> {
-    let Some(settings) = raw.and_then(|raw| serde_json::from_str::<HashMap<String, ModelSettings>>(raw).ok()) else {
-        return HashMap::new();
-    };
-    let valid = |price: Option<f64>| price.filter(|p| p.is_finite() && *p >= 0.0);
-    settings
-        .into_iter()
-        .filter_map(|(model, s)| {
-            let input = valid(s.input_price_usd_per_mtok)?;
-            let output = valid(s.output_price_usd_per_mtok)?;
-            Some((
-                model,
-                TokenPricesUsdPerMtok {
-                    input,
-                    output,
-                    cache_read: valid(s.cache_read_price_usd_per_mtok),
-                    cache_write: valid(s.cache_write_price_usd_per_mtok),
-                },
-            ))
-        })
-        .collect()
 }
 
 /// One-shot LLM call settings for the memory turn extractor (P2-2 followups
@@ -673,16 +638,15 @@ impl DevopsService {
         } else {
             None
         };
-        type ChannelRow = (String, String, String, String, Option<String>, Option<String>);
-        let row: Option<ChannelRow> = if let Some(user_id) = &runtime_user {
+        let row: Option<(String, String, String, String, Option<String>)> = if let Some(user_id) = &runtime_user {
             self.db.fetch_optional_as(
-                "SELECT ?, platform, upstream_base_url, api_key_encrypted, models, model_settings FROM one_provider_registry WHERE id = ? AND enabled = 1",
+                "SELECT ?, platform, upstream_base_url, api_key_encrypted, models FROM one_provider_registry WHERE id = ? AND enabled = 1",
                 &db_params![user_id, channel_id],
             ).await?
         } else {
             self.db
-                .fetch_optional_as::<ChannelRow>(
-                    "SELECT t.user_id, r.platform, r.upstream_base_url, r.api_key_encrypted, r.models, r.model_settings \
+                .fetch_optional_as::<(String, String, String, String, Option<String>)>(
+                    "SELECT t.user_id, r.platform, r.upstream_base_url, r.api_key_encrypted, r.models \
              FROM one_provider_channel_tokens t \
              JOIN one_provider_registry r ON r.id = t.channel_id \
              WHERE t.token_hash = ? AND t.channel_id = ? AND t.revoked_at IS NULL AND r.enabled = 1",
@@ -691,7 +655,7 @@ impl DevopsService {
                 .await?
         };
 
-        let Some((user_id, platform, upstream_base_url, api_key_encrypted, models_json, model_settings)) = row else {
+        let Some((user_id, platform, upstream_base_url, api_key_encrypted, models_json)) = row else {
             return Ok(None);
         };
         if runtime_user.is_some() && self.user_org_role(&user_id).await?.is_none() {
@@ -741,7 +705,6 @@ impl DevopsService {
             api_key,
             user_id,
             models,
-            model_prices: parse_model_prices(model_settings.as_deref()),
         }))
     }
 }
@@ -749,32 +712,6 @@ impl DevopsService {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Only a model with BOTH an input and an output price counts as priced:
-    /// a half-filled form must not cost the other half of every call at 0.
-    #[test]
-    fn model_prices_need_input_and_output_and_reject_garbage() {
-        let raw = r#"{
-            "full": {"input_price_usd_per_mtok": 0.3, "output_price_usd_per_mtok": 1.2, "cache_read_price_usd_per_mtok": 0.03},
-            "free": {"input_price_usd_per_mtok": 0, "output_price_usd_per_mtok": 0},
-            "half": {"input_price_usd_per_mtok": 0.3},
-            "negative": {"input_price_usd_per_mtok": -1, "output_price_usd_per_mtok": 1},
-            "other": {"context_window": 128000}
-        }"#;
-        let prices = parse_model_prices(Some(raw));
-        assert_eq!(prices.len(), 2, "{prices:?}");
-        let full = prices["full"];
-        assert_eq!(
-            (full.input, full.output, full.cache_read, full.cache_write),
-            (0.3, 1.2, Some(0.03), None)
-        );
-        assert_eq!(
-            prices["free"].input, 0.0,
-            "an explicit zero is a real price (an internal model)"
-        );
-        assert!(parse_model_prices(Some("not json")).is_empty());
-        assert!(parse_model_prices(None).is_empty());
-    }
     use crate::migrate::run_one_devops_migrations;
 
     const KEY: [u8; 32] = [7u8; 32];

@@ -22,7 +22,7 @@ use crate::error::BillingError;
 use crate::models::{
     AgentSessionDetailDto, AgentSessionPageDto, CheckoutResultDto, ConversationCostDto, DepartmentBudgetDto,
     EnterpriseReportDto, KeyUsageDto, LicenseInfoDto, LlmCallPageDto, LlmCallPurgeResultDto, MediaAssetDto,
-    MediaLedgerSettingsDto, PlanDto, UsageEventPageDto, UsageSummaryDto, VisiblePlanDto,
+    MediaLedgerSettingsDto, ModelPriceListDto, PlanDto, UsageEventPageDto, UsageSummaryDto, VisiblePlanDto,
 };
 use crate::service::{LLM_CALL_RETENTION_DAYS, MediaAssetFilters, MediaUsage};
 use crate::state::OneBillingRouterState;
@@ -72,6 +72,13 @@ pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
         .route(
             "/api/one/billing/department-budgets",
             get(billing_list_department_budgets).put(billing_set_department_budget),
+        )
+        // Admin model price table: the one place chat token prices are set.
+        .route(
+            "/api/one/billing/model-prices",
+            get(billing_list_model_prices)
+                .put(billing_set_model_price)
+                .delete(billing_delete_model_price),
         )
         .route("/api/one/billing/media-ledger/report", post(billing_report_media_asset))
         .route("/api/one/billing/media-ledger", get(billing_list_media_assets))
@@ -937,6 +944,107 @@ struct SetDepartmentBudgetBody {
 /// one-org (same reason `record_turn` denormalizes rather than joins); an
 /// id for a department that is later renamed or removed just becomes an
 /// orphaned budget row, harmless and cleanable by re-setting it.
+/// Shared gate for the price table: billing admins only, scoped to their
+/// company.
+async fn model_price_admin_enterprise(state: &OneBillingRouterState, user_id: &str) -> Result<String, BillingError> {
+    if !state.service.is_billing_admin(user_id).await? {
+        return Err(BillingError::Forbidden("model prices are admin-only".into()));
+    }
+    state
+        .service
+        .resolve_enterprise_id(user_id)
+        .await?
+        .ok_or(BillingError::EnterpriseNotFound)
+}
+
+#[derive(Deserialize)]
+struct ModelPricesQuery {
+    /// Comma-separated model names the page lists (its channels' models), to
+    /// get the built-in rate for each alongside the configured prices.
+    #[serde(default)]
+    models: Option<String>,
+}
+
+async fn billing_list_model_prices(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(q): Query<ModelPricesQuery>,
+) -> Result<Json<ApiResponse<ModelPriceListDto>>, BillingError> {
+    let eid = model_price_admin_enterprise(&state, &user.id).await?;
+    let prices = state.service.list_model_prices(&eid).await?;
+    let mut names: Vec<&str> = q
+        .models
+        .as_deref()
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .collect();
+    names.extend(prices.iter().map(|p| p.model.as_str()));
+    names.sort_unstable();
+    names.dedup();
+    let builtin = names
+        .into_iter()
+        .filter_map(|model| {
+            dream_core_common::license::builtin_token_prices(model).map(|p| crate::models::BuiltinModelPriceDto {
+                model: model.to_owned(),
+                input_usd_per_mtok: p.input,
+                output_usd_per_mtok: p.output,
+            })
+        })
+        .collect();
+    Ok(Json(ApiResponse::ok(ModelPriceListDto { prices, builtin })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetModelPriceBody {
+    model: String,
+    input_usd_per_mtok: f64,
+    output_usd_per_mtok: f64,
+    #[serde(default)]
+    cache_read_usd_per_mtok: Option<f64>,
+    #[serde(default)]
+    cache_write_usd_per_mtok: Option<f64>,
+}
+
+async fn billing_set_model_price(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<SetModelPriceBody>,
+) -> Result<Json<ApiResponse<ModelPriceListDto>>, BillingError> {
+    let eid = model_price_admin_enterprise(&state, &user.id).await?;
+    let prices = dream_core_common::license::TokenPricesUsdPerMtok {
+        input: body.input_usd_per_mtok,
+        output: body.output_usd_per_mtok,
+        cache_read: body.cache_read_usd_per_mtok,
+        cache_write: body.cache_write_usd_per_mtok,
+    };
+    state.service.set_model_price(&eid, &body.model, prices, &user.id).await?;
+    Ok(Json(ApiResponse::ok(ModelPriceListDto {
+        prices: state.service.list_model_prices(&eid).await?,
+        builtin: Vec::new(),
+    })))
+}
+
+#[derive(Deserialize)]
+struct DeleteModelPriceQuery {
+    model: String,
+}
+
+async fn billing_delete_model_price(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(q): Query<DeleteModelPriceQuery>,
+) -> Result<Json<ApiResponse<ModelPriceListDto>>, BillingError> {
+    let eid = model_price_admin_enterprise(&state, &user.id).await?;
+    state.service.delete_model_price(&eid, &q.model).await?;
+    Ok(Json(ApiResponse::ok(ModelPriceListDto {
+        prices: state.service.list_model_prices(&eid).await?,
+        builtin: Vec::new(),
+    })))
+}
+
 async fn billing_set_department_budget(
     State(state): State<OneBillingRouterState>,
     Extension(user): Extension<CurrentUser>,

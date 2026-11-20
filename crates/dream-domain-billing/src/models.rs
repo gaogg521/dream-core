@@ -405,6 +405,42 @@ pub struct DepartmentBudgetDto {
     pub cost_used_micros: i64,
 }
 
+/// One model the company has priced (admin price table). USD per million
+/// tokens; `None` cache prices default from the input price at costing time
+/// (hits at 10%, writes at 100%).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPriceDto {
+    pub model: String,
+    pub input_usd_per_mtok: f64,
+    pub output_usd_per_mtok: f64,
+    pub cache_read_usd_per_mtok: Option<f64>,
+    pub cache_write_usd_per_mtok: Option<f64>,
+    pub updated_by: String,
+    pub updated_at: i64,
+}
+
+/// What the built-in rate table charges for a model the admin has not
+/// priced — shown beside it so the admin sees the estimate they would be
+/// replacing, or that there is none (the model then costs nothing and no
+/// spend cap can see it).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuiltinModelPriceDto {
+    pub model: String,
+    pub input_usd_per_mtok: f64,
+    pub output_usd_per_mtok: f64,
+}
+
+/// The admin price page's data: every priced model, plus the built-in rate
+/// for each name the page asked about that the table knows.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPriceListDto {
+    pub prices: Vec<ModelPriceDto>,
+    pub builtin: Vec<BuiltinModelPriceDto>,
+}
+
 /// One generated media asset, for the T8 consolidated ledger.
 ///
 /// One row per FILE, not per generation job — a job that produces 4 images

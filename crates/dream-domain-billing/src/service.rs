@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use dream_core_common::license::{
-    Feature, Tier, TokenPricesUsdPerMtok, TokenUsage, estimate_cost_micros, estimate_cost_with_cache_micros,
+    Feature, Tier, TokenPricesUsdPerMtok, TokenUsage, estimate_cost_with_cache_micros,
     estimate_media_cost_micros, tier_allows, tier_seat_limit,
 };
 use dream_core_common::{generate_prefixed_id, now_ms, snapshot_conversation_id};
@@ -19,7 +19,8 @@ use crate::error::BillingError;
 use crate::models::{
     AgentSessionDetailDto, AgentSessionDto, AgentSessionPageDto, CheckoutResultDto, DepartmentBudgetDto,
     EnterpriseReportDto, EntitlementDto, KeyUsageDto, LatencyTrendPointDto, LicenseInfoDto, LlmCallDto, LlmCallPageDto,
-    MediaAssetDto, PlanDto, TopUserDto, UsageBucketDto, UsageEventDto, UsageEventPageDto, UsageSummaryDto,
+    MediaAssetDto, ModelPriceDto, PlanDto, TopUserDto, UsageBucketDto, UsageEventDto, UsageEventPageDto,
+    UsageSummaryDto,
 };
 
 /// Pluggable payment backend. The default `ManualBillingProvider` is a stub
@@ -52,6 +53,7 @@ impl BillingProvider for ManualBillingProvider {
 /// One proxied model call, as the enterprise model proxy saw it — the input
 /// to [`BillingService::record_metered_turn`]. `input_tokens` is FRESH input
 /// (the proxy subtracts cache hits back out of OpenAI-style `prompt_tokens`).
+#[derive(Clone, Copy)]
 pub struct MeteredTurn<'a> {
     pub user_id: &'a str,
     pub conversation_id: Option<&'a str>,
@@ -61,9 +63,11 @@ pub struct MeteredTurn<'a> {
     pub output_tokens: Option<i64>,
     pub cache_read_tokens: i64,
     pub cache_write_tokens: i64,
-    /// The administrator's prices for this model on the serving channel.
-    /// `None` = the built-in rate table.
-    pub prices: Option<TokenPricesUsdPerMtok>,
+    /// The model name the caller asked for, when it differs from `model`
+    /// (the proxy records the name the upstream echoed, often a dated
+    /// snapshot). Tried first when looking the price up: it is the name an
+    /// administrator listed on the channel and priced.
+    pub requested_model: Option<&'a str>,
 }
 
 /// One completed MODEL CALL, as reported for the per-call LLM trace (P2-5).
@@ -1211,7 +1215,9 @@ impl BillingService {
 
     /// Record one metered turn. `enterprise_id` is resolved from the user;
     /// personal users record with a NULL enterprise. Tokens are best-effort
-    /// (may be `None`); cost is an estimate from the model rate table.
+    /// (may be `None`); cost is an estimate — the company's own price for the
+    /// model from the admin price table when there is one, else the built-in
+    /// rate table.
     ///
     /// `channel_id` is the raw `providers.id` of the configuration that served
     /// the turn (`prov_chan_<channel_id>` for enterprise channels; `None` for
@@ -1227,22 +1233,23 @@ impl BillingService {
         input_tokens: Option<i64>,
         output_tokens: Option<i64>,
     ) -> Result<(), BillingError> {
-        let cost = model.map(|m| estimate_cost_micros(m, input_tokens.unwrap_or(0), output_tokens.unwrap_or(0)));
-        self.insert_turn(
+        self.record_metered_turn(MeteredTurn {
             user_id,
             conversation_id,
             model,
             channel_id,
             input_tokens,
             output_tokens,
-            cost,
-        )
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            requested_model: None,
+        })
         .await
     }
 
     /// [`Self::record_turn`] for a caller that also knows the call's cache
-    /// traffic and, possibly, the administrator's prices for the model — the
-    /// enterprise model proxy. Cache tokens are costed (hits at a discount,
+    /// traffic and the model name the client asked for — the enterprise model
+    /// proxy. Cache tokens are costed (hits at a discount,
     /// see [`estimate_cost_with_cache_micros`]) but, like everywhere else in
     /// this ledger, not added to `total_tokens`: they are a billed dimension
     /// of the input, not extra volume.
@@ -1256,41 +1263,26 @@ impl BillingService {
             output_tokens,
             cache_read_tokens,
             cache_write_tokens,
-            prices,
+            requested_model,
         } = turn;
-        let cost = model.map(|m| {
-            let usage = TokenUsage {
-                input: input_tokens.unwrap_or(0),
-                output: output_tokens.unwrap_or(0),
-                cache_read: cache_read_tokens,
-                cache_write: cache_write_tokens,
-            };
-            estimate_cost_with_cache_micros(m, usage, prices)
-        });
-        self.insert_turn(
-            user_id,
-            conversation_id,
-            model,
-            channel_id,
-            input_tokens,
-            output_tokens,
-            cost,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn insert_turn(
-        &self,
-        user_id: &str,
-        conversation_id: Option<&str>,
-        model: Option<&str>,
-        channel_id: Option<&str>,
-        input_tokens: Option<i64>,
-        output_tokens: Option<i64>,
-        cost: Option<i64>,
-    ) -> Result<(), BillingError> {
         let enterprise_id = self.resolve_enterprise_id(user_id).await?;
+        let cost = match model {
+            None => None,
+            Some(model) => {
+                let names: Vec<&str> = requested_model.into_iter().chain([model]).collect();
+                let prices = match enterprise_id.as_deref() {
+                    Some(eid) => self.admin_model_prices(eid, &names).await,
+                    None => None,
+                };
+                let usage = TokenUsage {
+                    input: input_tokens.unwrap_or(0),
+                    output: output_tokens.unwrap_or(0),
+                    cache_read: cache_read_tokens,
+                    cache_write: cache_write_tokens,
+                };
+                Some(estimate_cost_with_cache_micros(model, usage, prices))
+            }
+        };
         // T7: stamped from the user's department AT THIS MOMENT, not resolved
         // live when a report is later pulled — see the migration's doc
         // comment for why (a department is a cost center; reassigning someone
@@ -1302,16 +1294,16 @@ impl BillingService {
         };
         // Same diagnosis hatch as `record_media_usage`: a turn costed at 0
         // consumes none of the company's spend cap, so the cap silently stops
-        // binding for that model. The built-in rate table matches on model
-        // name, and a gateway with its own naming misses it entirely — as does
-        // a vision delegate whose model the table has never heard of. Nothing
-        // here invents a rate (that would be a pricing decision); the row is
-        // recorded as-is, but an operator can now find out why their cap is
-        // not moving.
+        // binding for that model. Neither the admin price table nor the
+        // built-in rate table had it — a gateway with its own naming misses
+        // the latter entirely, as does a vision delegate. Nothing here invents
+        // a rate (that is the admin's pricing decision, made on the console's
+        // model price page); the row is recorded as-is, but an operator can
+        // now find out why their cap is not moving.
         if cost == Some(0) && total_tokens.unwrap_or(0) > 0 && enterprise_id.is_some() {
             tracing::warn!(
                 model,
-                "turn usage recorded at zero cost: no built-in rate matched this model, so it does not count                  against the company's spend cap"
+                "turn usage recorded at zero cost: no admin price or built-in rate matched this model, so it does not count                  against the company's spend cap"
             );
         }
         self.db.execute(
@@ -1320,6 +1312,113 @@ impl BillingService {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &db_params![generate_prefixed_id("usage"), user_id, enterprise_id, department_id, conversation_id, model, channel_id, input_tokens, output_tokens, total_tokens, cost, now_ms()])
         .await?;
+        Ok(())
+    }
+
+    /// The company's own price for a model: the first of `names` the admin
+    /// price table holds. Best-effort like every other read on the metering
+    /// path — a failed lookup costs the turn at the built-in rate rather than
+    /// failing the record.
+    async fn admin_model_prices(&self, enterprise_id: &str, names: &[&str]) -> Option<TokenPricesUsdPerMtok> {
+        for name in names {
+            let row: Option<(f64, f64, Option<f64>, Option<f64>)> = self
+                .db
+                .fetch_optional_as(
+                    "SELECT input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok, cache_write_usd_per_mtok                      FROM one_model_prices WHERE enterprise_id = ? AND model = ?",
+                    &db_params![enterprise_id, *name],
+                )
+                .await
+                .unwrap_or(None);
+            if let Some((input, output, cache_read, cache_write)) = row {
+                return Some(TokenPricesUsdPerMtok {
+                    input,
+                    output,
+                    cache_read,
+                    cache_write,
+                });
+            }
+        }
+        None
+    }
+
+    /// Every model the company has priced, by name.
+    pub async fn list_model_prices(&self, enterprise_id: &str) -> Result<Vec<ModelPriceDto>, BillingError> {
+        type Row = (String, f64, f64, Option<f64>, Option<f64>, String, i64);
+        let rows: Vec<Row> = self
+            .db
+            .fetch_all_as::<Row>(
+                "SELECT model, input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok,                         cache_write_usd_per_mtok, updated_by, updated_at                  FROM one_model_prices WHERE enterprise_id = ? ORDER BY model",
+                &db_params![enterprise_id],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(model, input, output, cache_read, cache_write, updated_by, updated_at)| ModelPriceDto {
+                    model,
+                    input_usd_per_mtok: input,
+                    output_usd_per_mtok: output,
+                    cache_read_usd_per_mtok: cache_read,
+                    cache_write_usd_per_mtok: cache_write,
+                    updated_by,
+                    updated_at,
+                },
+            )
+            .collect())
+    }
+
+    /// Price a model for the company (insert or replace). Input and output are
+    /// both required and every price must be a finite, non-negative number:
+    /// a malformed price would silently cost calls at zero, or negative.
+    /// Zero itself is allowed — a self-hosted model really is free per token.
+    pub async fn set_model_price(
+        &self,
+        enterprise_id: &str,
+        model: &str,
+        prices: TokenPricesUsdPerMtok,
+        updated_by: &str,
+    ) -> Result<(), BillingError> {
+        let model = model.trim();
+        if model.is_empty() {
+            return Err(BillingError::BadRequest("model name is required".into()));
+        }
+        let valid = |p: f64| p.is_finite() && p >= 0.0;
+        if !valid(prices.input)
+            || !valid(prices.output)
+            || prices.cache_read.is_some_and(|p| !valid(p))
+            || prices.cache_write.is_some_and(|p| !valid(p))
+        {
+            return Err(BillingError::BadRequest(
+                "prices must be non-negative numbers (USD per million tokens)".into(),
+            ));
+        }
+        self.upsert(
+            "INSERT INTO one_model_prices                 (enterprise_id, model, input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok,                  cache_write_usd_per_mtok, updated_by, updated_at)              VALUES (?, ?, ?, ?, ?, ?, ?, ?)              ON CONFLICT(enterprise_id, model) DO UPDATE SET                  input_usd_per_mtok = excluded.input_usd_per_mtok,                  output_usd_per_mtok = excluded.output_usd_per_mtok,                  cache_read_usd_per_mtok = excluded.cache_read_usd_per_mtok,                  cache_write_usd_per_mtok = excluded.cache_write_usd_per_mtok,                  updated_by = excluded.updated_by, updated_at = excluded.updated_at",
+            "INSERT INTO one_model_prices                 (enterprise_id, model, input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok,                  cache_write_usd_per_mtok, updated_by, updated_at)              VALUES (?, ?, ?, ?, ?, ?, ?, ?) AS new              ON DUPLICATE KEY UPDATE                  input_usd_per_mtok = new.input_usd_per_mtok,                  output_usd_per_mtok = new.output_usd_per_mtok,                  cache_read_usd_per_mtok = new.cache_read_usd_per_mtok,                  cache_write_usd_per_mtok = new.cache_write_usd_per_mtok,                  updated_by = new.updated_by, updated_at = new.updated_at",
+            &db_params![
+                enterprise_id,
+                model,
+                prices.input,
+                prices.output,
+                prices.cache_read,
+                prices.cache_write,
+                updated_by,
+                now_ms()
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Remove a model's price; its calls go back to the built-in rate table.
+    /// Removing a price that is not there is not an error.
+    pub async fn delete_model_price(&self, enterprise_id: &str, model: &str) -> Result<(), BillingError> {
+        self.db
+            .execute(
+                "DELETE FROM one_model_prices WHERE enterprise_id = ? AND model = ?",
+                &db_params![enterprise_id, model],
+            )
+            .await?;
         Ok(())
     }
 
@@ -1337,6 +1436,7 @@ impl BillingService {
             "one_usage_events",
             "one_llm_calls",
             "one_department_budgets",
+            "one_model_prices",
         ] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE enterprise_id = ?"),
@@ -3179,18 +3279,20 @@ mod tests {
         assert_eq!(plan.seat_limit, Some(3));
     }
 
-    /// A proxied call costs at the administrator's price when one exists —
-    /// cache hits included — and its cache tokens stay out of `total_tokens`
-    /// (a billed dimension of the input, not extra volume).
+    /// A proxied call costs at the company's price for the model — found by
+    /// the name the member requested before the dated name the upstream
+    /// echoed — cache hits included; its cache tokens stay out of
+    /// `total_tokens` (a billed dimension of the input, not extra volume).
+    /// Deleting the price drops the same call back to the built-in table.
     #[tokio::test]
-    async fn metered_turn_costs_at_admin_prices_including_cache_traffic() {
+    async fn metered_turn_costs_at_the_price_table_including_cache_traffic() {
         let (svc, sqlite) = service().await;
         add_members(&svc, &sqlite, "ent1", 1).await;
         sqlx::query("UPDATE one_enterprise_members SET user_id = 'alice' WHERE enterprise_id = 'ent1'")
             .execute(&sqlite)
             .await
             .unwrap();
-        let turn = |prices| MeteredTurn {
+        let turn = MeteredTurn {
             user_id: "alice",
             conversation_id: Some("c1"),
             model: Some("deepseek-v4-1-flash-261017"),
@@ -3199,7 +3301,7 @@ mod tests {
             output_tokens: Some(2_048),
             cache_read_tokens: 97_536,
             cache_write_tokens: 0,
-            prices,
+            requested_model: Some("deepseek-flash"),
         };
         let admin = TokenPricesUsdPerMtok {
             input: 1.0,
@@ -3207,31 +3309,94 @@ mod tests {
             cache_read: Some(0.2),
             cache_write: None,
         };
-        svc.record_metered_turn(turn(Some(admin))).await.unwrap();
-        let (total, cost): (i64, i64) = sqlx::query_as(
-            "SELECT total_tokens, estimated_cost_micros FROM one_usage_events WHERE user_id = 'alice' ORDER BY created_at DESC LIMIT 1",
-        )
-        .fetch_one(&sqlite)
-        .await
-        .unwrap();
+        svc.set_model_price("ent1", "deepseek-flash", admin, "admin").await.unwrap();
+        let last_cost = || async {
+            let (total, cost): (i64, i64) = sqlx::query_as(
+                "SELECT total_tokens, estimated_cost_micros FROM one_usage_events WHERE user_id = 'alice'                  ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            )
+            .fetch_one(&sqlite)
+            .await
+            .unwrap();
+            (total, cost)
+        };
+
+        svc.record_metered_turn(turn).await.unwrap();
+        let (total, cost) = last_cost().await;
         assert_eq!(total, 1_260 + 2_048, "cache hits are not volume");
         // 1260*1 + 2048*4 + 97536*0.2 = 1260 + 8192 + 19507.2 → 28959 micros.
         assert_eq!(cost, 28_959);
 
-        // Same call with no admin price: the built-in table, hits at a tenth
-        // of its deepseek input rate ($0.5/M → $0.05/M), still not free.
-        sqlx::query("DELETE FROM one_usage_events")
+        // Priced only under the echoed name: still found.
+        svc.delete_model_price("ent1", "deepseek-flash").await.unwrap();
+        svc.set_model_price("ent1", "deepseek-v4-1-flash-261017", admin, "admin")
+            .await
+            .unwrap();
+        svc.record_metered_turn(turn).await.unwrap();
+        assert_eq!(last_cost().await.1, 28_959);
+
+        // No price at all: the built-in table, hits at a tenth of its
+        // deepseek input rate ($0.5/M → $0.05/M), still not free.
+        svc.delete_model_price("ent1", "deepseek-v4-1-flash-261017").await.unwrap();
+        svc.record_metered_turn(turn).await.unwrap();
+        // 1260*0.5 + 2048*1.5 + 97536*0.05 = 630 + 3072 + 4876.8 → 8579.
+        assert_eq!(last_cost().await.1, 8_579);
+    }
+
+    /// The price table is per company, and plain server-side turns
+    /// (`record_turn`) read it too — not only the model proxy.
+    #[tokio::test]
+    async fn price_table_is_per_company_and_prices_plain_turns() {
+        let (svc, sqlite) = service().await;
+        add_members(&svc, &sqlite, "ent1", 1).await;
+        sqlx::query("UPDATE one_enterprise_members SET user_id = 'alice' WHERE enterprise_id = 'ent1'")
             .execute(&sqlite)
             .await
             .unwrap();
-        svc.record_metered_turn(turn(None)).await.unwrap();
-        let cost: i64 =
-            sqlx::query_scalar("SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'alice'")
-                .fetch_one(&sqlite)
-                .await
-                .unwrap();
-        // 1260*0.5 + 2048*1.5 + 97536*0.05 = 630 + 3072 + 4876.8 → 8579.
-        assert_eq!(cost, 8_579);
+        let price = |input| TokenPricesUsdPerMtok {
+            input,
+            output: 2.0,
+            cache_read: None,
+            cache_write: None,
+        };
+        svc.set_model_price("ent2", "glm-5", price(9.0), "other-admin").await.unwrap();
+        svc.set_model_price("ent1", "glm-5", price(1.0), "admin").await.unwrap();
+        // Re-pricing replaces, it does not add a second row.
+        svc.set_model_price("ent1", "glm-5", price(3.0), "admin").await.unwrap();
+        let listed = svc.list_model_prices("ent1").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].input_usd_per_mtok, 3.0);
+
+        svc.record_turn("alice", Some("c1"), Some("glm-5"), None, Some(1_000), Some(500))
+            .await
+            .unwrap();
+        let cost: i64 = sqlx::query_scalar("SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'alice'")
+            .fetch_one(&sqlite)
+            .await
+            .unwrap();
+        assert_eq!(cost, 1_000 * 3 + 500 * 2, "ent1's price, not ent2's or the built-in table");
+    }
+
+    /// A malformed price would silently cost calls at zero or negative; it is
+    /// refused instead. Zero itself is a real price.
+    #[tokio::test]
+    async fn malformed_prices_are_refused() {
+        let (svc, _sqlite) = service().await;
+        let price = |input: f64| TokenPricesUsdPerMtok {
+            input,
+            output: 1.0,
+            cache_read: None,
+            cache_write: None,
+        };
+        for bad in [-1.0, f64::NAN, f64::INFINITY] {
+            assert!(svc.set_model_price("ent1", "m", price(bad), "admin").await.is_err(), "{bad}");
+        }
+        assert!(svc.set_model_price("ent1", "  ", price(1.0), "admin").await.is_err());
+        let negative_cache = TokenPricesUsdPerMtok {
+            cache_read: Some(-0.1),
+            ..price(1.0)
+        };
+        assert!(svc.set_model_price("ent1", "m", negative_cache, "admin").await.is_err());
+        svc.set_model_price("ent1", "self-hosted", price(0.0), "admin").await.unwrap();
     }
 
     #[tokio::test]

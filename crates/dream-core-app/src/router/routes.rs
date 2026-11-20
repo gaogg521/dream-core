@@ -876,7 +876,9 @@ impl dream_domain_devops::ProxyUsageRecorder for BillingProxyUsageRecorder {
                     // they were free.
                     cache_read_tokens: event.cache_read_tokens.unwrap_or(0),
                     cache_write_tokens: event.cache_write_tokens.unwrap_or(0),
-                    prices: event.prices,
+                    // The admin prices the name members request; the upstream
+                    // may echo a dated snapshot of it.
+                    requested_model: event.requested_model.as_deref(),
                 })
                 .await
             {

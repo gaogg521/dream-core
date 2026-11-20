@@ -419,8 +419,7 @@ async fn handle_proxy(
         request_model,
         conversation_id,
         user_ip,
-    )
-    .with_prices(channel.model_prices.clone());
+    );
     let observed = ObservedStream::new(
         upstream.bytes_stream().map_err(std::io::Error::other),
         channel.id.clone(),
@@ -842,8 +841,7 @@ async fn handle_bedrock_proxy(
         None,
         conversation_id_header(&headers),
         client_ip_header(&headers),
-    )
-    .with_prices(channel.model_prices.clone());
+    );
     let observed = ObservedStream::new(
         upstream.bytes_stream().map_err(std::io::Error::other),
         channel.id.clone(),
@@ -958,7 +956,6 @@ mod tests {
             // Unscoped: these cases are about SigV4 re-signing, not about the
             // model allowlist, and an empty list is the "no restriction" value.
             models: Vec::new(),
-            model_prices: Default::default(),
         }
     }
 

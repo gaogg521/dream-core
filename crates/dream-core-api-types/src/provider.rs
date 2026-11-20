@@ -131,20 +131,6 @@ pub struct ModelSettings {
     /// provider-level `context_limit` applies, then the engine default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u32>,
-    /// Chat token prices in USD per million tokens, entered by an enterprise
-    /// administrator on a company model channel. They replace the built-in
-    /// rate table when the server costs a proxied call (spend caps, session
-    /// cost, usage reports). Input/output price fresh (uncached) input and
-    /// output; the two cache fields price cache hits and cache writes, and
-    /// default from the input price when left empty (see one-billing).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_price_usd_per_mtok: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_price_usd_per_mtok: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_read_price_usd_per_mtok: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_write_price_usd_per_mtok: Option<f64>,
 }
 
 /// Health status values for a model.

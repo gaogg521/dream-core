@@ -167,6 +167,25 @@ pub struct TokenUsage {
     pub cache_write: i64,
 }
 
+/// The built-in rate table's price for `model`, in the same unit an
+/// administrator enters (USD per million tokens), so the admin console can
+/// show what an unpriced model is currently costed at. `None` = the table has
+/// no rate for it and its calls cost nothing — which is also what lets an
+/// admin spot the models a spend cap cannot see.
+pub fn builtin_token_prices(model: &str) -> Option<TokenPricesUsdPerMtok> {
+    // Table rates are per 1K tokens in micros; per million in USD is the same
+    // number divided by 1000.
+    match model_rate_micros_per_1k(model) {
+        (0, 0) => None,
+        (input, output) => Some(TokenPricesUsdPerMtok {
+            input: input as f64 / 1000.0,
+            output: output as f64 / 1000.0,
+            cache_read: None,
+            cache_write: None,
+        }),
+    }
+}
+
 /// Share of the input rate the built-in table charges for a cache hit. Same
 /// default as an admin price with no cache-read entry.
 const CACHE_READ_SHARE_OF_INPUT: f64 = 0.1;
@@ -177,17 +196,7 @@ const CACHE_READ_SHARE_OF_INPUT: f64 = 0.1;
 /// vendor. Without it the built-in table applies, with cache hits at 10% of
 /// its input rate and cache writes at the full input rate.
 pub fn estimate_cost_with_cache_micros(model: &str, usage: TokenUsage, prices: Option<TokenPricesUsdPerMtok>) -> i64 {
-    let prices = prices.unwrap_or_else(|| {
-        // Table rates are per 1K tokens in micros; per million in USD is the
-        // same number divided by 1000.
-        let (input, output) = model_rate_micros_per_1k(model);
-        TokenPricesUsdPerMtok {
-            input: input as f64 / 1000.0,
-            output: output as f64 / 1000.0,
-            cache_read: None,
-            cache_write: None,
-        }
-    });
+    let prices = prices.or_else(|| builtin_token_prices(model)).unwrap_or_default();
     let cache_read = prices.cache_read.unwrap_or(prices.input * CACHE_READ_SHARE_OF_INPUT);
     let cache_write = prices.cache_write.unwrap_or(prices.input);
     let cost = usage.input.max(0) as f64 * prices.input
