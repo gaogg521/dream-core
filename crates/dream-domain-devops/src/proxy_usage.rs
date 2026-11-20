@@ -70,6 +70,12 @@ pub struct ProxyUsageEvent {
     /// `x-dream-conversation-id` request header. `None` = unattributed.
     pub conversation_id: Option<String>,
     pub model: Option<String>,
+    /// Fresh input only — prompt tokens the cache did NOT serve. Normalized
+    /// across wire shapes: Anthropic reports it this way natively, while
+    /// OpenAI-compatible vendors fold cache hits into `prompt_tokens` and the
+    /// tap subtracts them back out. Same meaning as the desktop client's
+    /// `client-usage` report, so one `one_llm_calls.input_tokens` column never
+    /// mixes two definitions.
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub cache_read_tokens: Option<i64>,
@@ -255,6 +261,10 @@ pub struct UsageTap {
     output_tokens: Option<i64>,
     cache_read_tokens: Option<i64>,
     cache_write_tokens: Option<i64>,
+    /// The captured input count came from a field that INCLUDES cache hits
+    /// (OpenAI `prompt_tokens`, Responses API `input_tokens`), so `finish`
+    /// must subtract `cache_read_tokens` to get fresh input.
+    input_includes_cache: bool,
     request_id: Option<String>,
     /// The stream errored mid-flight — never record a partial call.
     failed: bool,
@@ -298,6 +308,7 @@ impl UsageTap {
             output_tokens: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            input_includes_cache: false,
             request_id: None,
             failed: false,
             terminal: false,
@@ -351,12 +362,16 @@ impl UsageTap {
         if model.is_none() && self.input_tokens.is_none() && self.output_tokens.is_none() {
             return;
         }
+        let input_tokens = match (self.input_tokens, self.cache_read_tokens) {
+            (Some(input), Some(cached)) if self.input_includes_cache => Some((input - cached).max(0)),
+            (input, _) => input,
+        };
         context.recorder.record_proxy_usage(ProxyUsageEvent {
             user_id: context.user_id,
             channel_id: context.channel_id,
             conversation_id: context.conversation_id,
             model,
-            input_tokens: self.input_tokens,
+            input_tokens,
             output_tokens: self.output_tokens,
             cache_read_tokens: self.cache_read_tokens,
             cache_write_tokens: self.cache_write_tokens,
@@ -467,31 +482,41 @@ impl UsageTap {
         };
         // OpenAI names them prompt/completion; Anthropic (and Bedrock's
         // Anthropic-style bodies) input/output.
-        let input = usage
-            .get("prompt_tokens")
-            .and_then(serde_json::Value::as_i64)
-            .or_else(|| usage.get("input_tokens").and_then(serde_json::Value::as_i64));
+        let prompt_tokens = usage.get("prompt_tokens").and_then(serde_json::Value::as_i64);
+        let input = prompt_tokens.or_else(|| usage.get("input_tokens").and_then(serde_json::Value::as_i64));
         let output = usage
             .get("completion_tokens")
             .and_then(serde_json::Value::as_i64)
             .or_else(|| usage.get("output_tokens").and_then(serde_json::Value::as_i64));
         if input.is_some() {
             self.input_tokens = input;
+            // `prompt_tokens` (chat completions) and the Responses API's
+            // `input_tokens` (recognizable by its `input_tokens_details`) both
+            // count cache hits; Anthropic's `input_tokens` does not.
+            self.input_includes_cache = prompt_tokens.is_some() || usage.contains_key("input_tokens_details");
         }
         if output.is_some() {
             self.output_tokens = output;
         }
-        let cache_read = usage
-            .get("cached_tokens")
-            .and_then(serde_json::Value::as_i64)
+        // Where each wire shape puts cache hits:
+        // * OpenAI chat completions (and the vendors that copy it: GLM,
+        //   Volcengine Ark, Qwen, Kimi) — `prompt_tokens_details.cached_tokens`.
+        //   Missing this one is what left every enterprise-channel row at 0.
+        // * DeepSeek's own API — `prompt_cache_hit_tokens`.
+        // * OpenAI Responses API — `input_tokens_details.cached_tokens`.
+        // * Anthropic / Bedrock — `cache_read_input_tokens`.
+        let nested_cached = |key: &str| {
+            usage
+                .get(key)
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(serde_json::Value::as_i64)
+        };
+        let cache_read = nested_cached("prompt_tokens_details")
+            .or_else(|| usage.get("prompt_cache_hit_tokens").and_then(serde_json::Value::as_i64))
+            .or_else(|| nested_cached("input_tokens_details"))
             .or_else(|| usage.get("cache_read_input_tokens").and_then(serde_json::Value::as_i64))
-            .or_else(|| usage.get("cache_read_tokens").and_then(serde_json::Value::as_i64))
-            .or_else(|| {
-                usage
-                    .get("input_tokens_details")
-                    .and_then(|d| d.get("cached_tokens"))
-                    .and_then(serde_json::Value::as_i64)
-            });
+            .or_else(|| usage.get("cached_tokens").and_then(serde_json::Value::as_i64))
+            .or_else(|| usage.get("cache_read_tokens").and_then(serde_json::Value::as_i64));
         let cache_write = usage
             .get("cache_creation_input_tokens")
             .and_then(serde_json::Value::as_i64)
@@ -707,6 +732,87 @@ mod tests {
         assert_eq!(events[0].model.as_deref(), Some("gpt-4o"));
         assert_eq!(events[0].input_tokens, Some(119));
         assert_eq!(events[0].output_tokens, Some(43));
+    }
+
+    /// OpenAI-compatible vendors (GLM, Volcengine Ark, Qwen, Kimi, OpenAI
+    /// itself) report cache hits under `prompt_tokens_details` and count them
+    /// inside `prompt_tokens`. Both halves matter: missing the nested field
+    /// recorded every enterprise-channel call with 0 cache reads, and keeping
+    /// `prompt_tokens` raw would make the input column mean "fresh + cached"
+    /// here but "fresh" for Anthropic and the desktop client's own reports.
+    #[test]
+    fn openai_chat_cache_hits_are_captured_and_split_out_of_prompt_tokens() {
+        let recorder = sink();
+        let mut tap = make_tap(&recorder, "text/event-stream", true);
+        tap.absorb(b"data: {\"model\":\"deepseek-v4-1-flash\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}],\"usage\":null}\n\n");
+        tap.absorb(
+            b"data: {\"model\":\"deepseek-v4-1-flash\",\"choices\":[],\"usage\":{\"prompt_tokens\":98796,\"completion_tokens\":2048,\"total_tokens\":100844,\"prompt_tokens_details\":{\"cached_tokens\":97536}}}\n\n",
+        );
+        tap.absorb(b"data: [DONE]\n\n");
+        tap.finish();
+
+        let events = recorded(&recorder);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].cache_read_tokens, Some(97536));
+        assert_eq!(
+            events[0].input_tokens,
+            Some(1260),
+            "fresh input = prompt_tokens - cached"
+        );
+        assert_eq!(events[0].output_tokens, Some(2048));
+    }
+
+    /// DeepSeek's own API names the hit/miss split at the top level.
+    #[test]
+    fn deepseek_native_cache_hit_field_is_captured() {
+        let recorder = sink();
+        let mut tap = make_tap(&recorder, "application/json", true);
+        tap.absorb(
+            br#"{"model":"deepseek-chat","usage":{"prompt_tokens":1000,"completion_tokens":50,"prompt_cache_hit_tokens":800,"prompt_cache_miss_tokens":200}}"#,
+        );
+        tap.finish();
+
+        let events = recorded(&recorder);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].cache_read_tokens, Some(800));
+        assert_eq!(events[0].input_tokens, Some(200));
+    }
+
+    /// The Responses API's `input_tokens` includes cache hits (unlike
+    /// Anthropic's field of the same name), signalled by `input_tokens_details`.
+    #[test]
+    fn responses_api_input_tokens_drop_their_cached_share() {
+        let recorder = sink();
+        let mut tap = make_tap(&recorder, "text/event-stream", true);
+        tap.absorb(
+            b"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5\",\"usage\":{\"input_tokens\":500,\"output_tokens\":20,\"input_tokens_details\":{\"cached_tokens\":300}}}}\n\n",
+        );
+        tap.finish();
+
+        let events = recorded(&recorder);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].cache_read_tokens, Some(300));
+        assert_eq!(events[0].input_tokens, Some(200));
+    }
+
+    /// Anthropic already reports fresh input; subtracting the cache read there
+    /// would double-discount it.
+    #[test]
+    fn anthropic_input_tokens_are_not_reduced_by_cache_reads() {
+        let recorder = sink();
+        let mut tap = make_tap(&recorder, "text/event-stream", true);
+        tap.absorb(
+            b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-4\",\"usage\":{\"input_tokens\":40,\"cache_read_input_tokens\":9000,\"cache_creation_input_tokens\":120,\"output_tokens\":1}}}\n\n",
+        );
+        tap.absorb(b"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":7}}\n\n");
+        tap.finish();
+
+        let events = recorded(&recorder);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].input_tokens, Some(40));
+        assert_eq!(events[0].cache_read_tokens, Some(9000));
+        assert_eq!(events[0].cache_write_tokens, Some(120));
+        assert_eq!(events[0].output_tokens, Some(7));
     }
 
     /// A vendor that ignores `include_usage` still yields a visible row —
