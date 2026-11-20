@@ -36,6 +36,9 @@ pub struct CatalogEntry {
     pub cache_read_usd_per_mtok: Option<f64>,
     pub cache_write_usd_per_mtok: Option<f64>,
     pub unit_price_usd: f64,
+    /// Other names the source knows this model by — a relay's `backendNames`
+    /// (the upstream models behind its own alias). Matched only loosely.
+    pub aliases: Vec<String>,
 }
 
 /// Round away float noise from `2.5e-06 * 1e6 = 2.4999999999999996`.
@@ -87,6 +90,11 @@ fn entry_from_object(map: &Map<String, Value>, key_hint: Option<&str>) -> Option
 
     let mut entry = CatalogEntry {
         key: name.to_owned(),
+        aliases: map
+            .get("backendNames")
+            .and_then(Value::as_array)
+            .map(|names| names.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+            .unwrap_or_default(),
         ..Default::default()
     };
 
@@ -295,7 +303,23 @@ pub fn find_match<'a>(model: &str, entries: &'a [CatalogEntry]) -> Option<Match<
         .iter()
         .filter(|e| normalize_model_name(&e.key) == wanted)
         .collect();
-    best(same_family).map(|entry| Match { entry, exact: false })
+    if let Some(entry) = best(same_family) {
+        return Some(Match { entry, exact: false });
+    }
+    // Last resort: a relay lists the upstream model behind its alias
+    // (`deepseek-flash-latest` → `deepseek-v4-1-flash-volc`). The vendor / route
+    // tag on the end of a backend name is not part of the model, so it is
+    // dropped before comparing; the result is always flagged as not exact.
+    let behind_alias: Vec<_> = entries
+        .iter()
+        .filter(|e| {
+            e.aliases.iter().any(|alias| {
+                let alias = normalize_model_name(alias);
+                alias == wanted || alias.rsplit_once('-').is_some_and(|(model, _tag)| model == wanted)
+            })
+        })
+        .collect();
+    best(behind_alias).map(|entry| Match { entry, exact: false })
 }
 
 // ---------------------------------------------------------------------------
@@ -748,9 +772,34 @@ mod tests {
             Some(0.0),
             "an explicit zero cache price stays zero, not 'default'"
         );
-        // The gateway's own alias is matched as given; a backend's name is not its alias.
+        // The gateway's own alias is an exact match; a backend's name reaches the
+        // same entry only loosely, and says so.
         assert!(find_match("deepseek-flash-latest", &entries).unwrap().exact);
-        assert!(find_match("deepseek-v4-1-flash-volc", &entries).is_none());
+        let via_backend = find_match("deepseek-v4-1-flash-volc", &entries).unwrap();
+        assert_eq!(
+            (via_backend.entry.key.as_str(), via_backend.exact),
+            ("deepseek-flash-latest", false)
+        );
+    }
+
+    /// A relay's alias models list the upstream models behind them; a member's
+    /// channel often uses the upstream's own dated name. That matches through
+    /// the backend name — and is flagged, never presented as exact.
+    #[test]
+    fn upstream_models_match_through_a_relays_backend_names() {
+        let list = json!({"models": [
+            {"modelName": "deepseek-flash-latest",
+             "backendNames": ["deepseek-flash-deepseek", "deepseek-v4-1-flash-volc"],
+             "pricing": {"inputCostPerMillion": 0.3, "outputCostPerMillion": 1.18}},
+            {"modelName": "glm-latest", "backendNames": ["glm-5-3-zhipu"],
+             "pricing": {"inputCostPerMillion": 1.1, "outputCostPerMillion": 3.9}}
+        ]});
+        let entries = parse_catalog(&list);
+        let m = find_match("deepseek-v4-1-flash-260910", &entries).unwrap();
+        assert_eq!((m.entry.key.as_str(), m.exact), ("deepseek-flash-latest", false));
+        // Another model that merely shares leading words is still not matched.
+        assert!(find_match("deepseek-v4-1-pro-260910", &entries).is_none());
+        assert!(find_match("deepseek-v4-1", &entries).is_none());
     }
 
     #[test]
