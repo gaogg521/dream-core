@@ -40,8 +40,9 @@
 
 ## 四、ONNX Runtime 来源（同日）
 
-- 事故：`github.com/microsoft/onnxruntime` 整个仓库 404，pin 里的 release 下载全挂，企业镜像构建失败（run 44737872048）。临时止血 `fed4b4d`（Dockerfile 回落到 1.0.17 镜像里的库）已被下面的正式方案取代并撤掉。
-- 现状：`scripts/onnxruntime-pin.txt` 每个目标多来源、逐个校验 sha256、按序尝试。①自家 COS 镜像（1.28.3，与线上同字节，写一次不覆盖）②PyPI 官方 1.28.0 wheel（zip，取 `onnxruntime/capi/` 下的库）。1.28.3 只发过 GitHub release，PyPI 没有。
-- 镜像内容取自已发布的 dreamcore v0.1.105 发版包（先核对 `dreamcore-checksums.txt`），四个库内嵌版本串均为 1.28.3；Linux x64 与 1.0.17 镜像里的库逐字节相同。
-- 验证：三个版本（1.28.3 镜像、1.28.0 wheel、1.29.0）都通过 `local_embedding_fresh_install`（真加载库、下模型、语义检索排序）；给不存在的库路径则该测试失败，说明测试确实依赖所加载的库。脚本覆盖：正常 / 主来源不通回落 / 主来源字节被改（sha 不符）回落 / 全部不符硬失败且不写文件。
-- 升级：先把新版库传到 COS 新目录再加 pin 行，不要覆盖旧目录。`ort` 升级前保持 1.28.x。
+- 事故：`github.com/microsoft/onnxruntime` 整个仓库 404，pin 里的 release 下载全挂，企业镜像构建失败（run 44737872048）。临时止血 `fed4b4d`（Dockerfile 回落到 1.0.17 镜像里的库）随后被正式方案取代并撤掉。
+- 现状（`3a8a8fd`）：`scripts/onnxruntime-pin.txt` 每个目标两个来源、逐个校验 sha256、按序尝试。①自家 COS 镜像 `onework-1521070673/build-deps/onnxruntime/<版本>/<target>/<file>`（裸库，写一次不覆盖）②PyPI 官方同版本 wheel（zip）。当前版本 **1.29.0**。
+- 1.28.3 只发过 GitHub release、PyPI 没有，所以 COS 里那份是从已发布 dreamcore v0.1.105 发版包里取出的（先核对 `dreamcore-checksums.txt`，四库内嵌版本均为 1.28.3）；它仍保留在 COS `…/1.28.3/…`，pin 文件里留着注释行，**降级 = 把每个目标的两行换成注释里的两行**（已实测可用）。1.29.0 的库取自 PyPI 官方 wheel（对 PyPI 登记的 sha256 校验），Linux 库依赖在 trixie-slim 里全部满足。
+- **验证方法（换库必做）**：①`local_embedding_fresh_install`（`ORT_DYLIB_PATH` 指向库；给不存在的路径会失败，说明测试确实依赖所加载的库）。②企业镜像真实嵌入：起容器、`resetpass` 取密码登录，`GET /api/one/devops/rag/health`（不配嵌入端点即走本地模型，会真的加载 ONNX 并嵌入，返回维度），日志应有 `ONNX Runtime library loaded`。**镜像工作流自带冒烟只跑 `--help`，不加载 ONNX，CI 绿不能证明库可用。** 脚本在会话 scratchpad `verify_image_ort.sh`。
+- 结果：1.28.3（1.0.18 镜像）与 1.29.0（run 44750308857，`sha256:1e8acbd12aeacf3237e6c719ab353a1cbbed91f4f06fd7fc98a098a46aac4b0d`）都返回 384 维、`ok:true`；Windows 上 1.28.3 / 1.28.0 / 1.29.0 三个库都通过验收测试。
+- 该 1.29.0 镜像只用于验证，**没有发给客户**（线上仍是 1.0.18 的 1.28.3 镜像）；`:latest` 标签已移到它。mac / Windows / arm64 的真实发版 CI 尚未用新来源跑过。
