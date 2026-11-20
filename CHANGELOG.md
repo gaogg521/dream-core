@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.1.106](https://github.com/gaogg521/dream-core/compare/v0.1.105...v0.1.106) (2026-11-20)
+
+
+### Features
+
+* **billing:** 价格查找可通过中转站后端名匹配上游型号 ([04e02e1](https://github.com/gaogg521/dream-core/commit/04e02e142e8b835f9653ea07ac1bbdf525a1d589))
+* **billing:** 价格查找支持直接收浏览器里读到/复制的价格 JSON，并返回需登录接口的地址 ([c7986d7](https://github.com/gaogg521/dream-core/commit/c7986d73bfe45905153efee71a90cba599be826b))
+* **billing:** 企业通道支持管理员配置模型 token 单价，成本计入缓存 ([6b16eb5](https://github.com/gaogg521/dream-core/commit/6b16eb5407fbe4d22350a189239d2ae3949fb48e))
+* **billing:** 模型价格每个价格自选 USD/RMB，人民币固定按 7 折成美元计成本 ([b669abe](https://github.com/gaogg521/dream-core/commit/b669abe41a9b4c44d774d84197443423289f10d0))
+* **billing:** 模型价格表支持按张/按输出秒/按次计费，新增价格查找与同步 ([4f5a4fe](https://github.com/gaogg521/dream-core/commit/4f5a4feb622d27529cbe21485d70ebcf9b919c20))
+* **billing:** 模型单价改为按模型名独立存储，所有计费路径统一读取 ([94ae816](https://github.com/gaogg521/dream-core/commit/94ae816d90652a4c0c4d8c27e3e567750b34064b))
+
+
+### Bug Fixes
+
+* **billing:** 价格查找加固——重定向目标检查、官方库失败短时记忆、媒体用量溢出饱和 ([c8e7b97](https://github.com/gaogg521/dream-core/commit/c8e7b97f501a29e139b252b979ea47ec4dad8b3a))
+* **billing:** 企业通道代理补抓 OpenAI 兼容协议的缓存命中数 ([05d006f](https://github.com/gaogg521/dream-core/commit/05d006f0313bde028078237ea3d8c1a1bb5824eb))
+* **build:** ONNX Runtime 改用自家 COS 镜像 + PyPI 官方 wheel，不再依赖 GitHub release ([57d97ad](https://github.com/gaogg521/dream-core/commit/57d97ad2771ed0a22d82473c69f716b0befe9392))
+* **docker:** 官方 ONNX Runtime 下载失效时回落到 1.0.17 镜像里的同版本库 ([fed4b4d](https://github.com/gaogg521/dream-core/commit/fed4b4df4b2e05f15c900a97683cc603a1a082a1))
+
+
+### Documentation
+
+* ONNX Runtime 升到 1.29.0 的验证结果与换库必做的两项真实验证 ([71b0a5b](https://github.com/gaogg521/dream-core/commit/71b0a5b41654ae1917c5a132fa1bc241748c6238))
+
 ## [0.1.105](https://github.com/gaogg521/dream-core/compare/v0.1.104...v0.1.105) (2026-11-17)
 
 
