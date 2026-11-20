@@ -32,6 +32,13 @@
 
 # ONNX Runtime needs newer libstdc++ symbols than Bookworm provides.
 # Keep the compiler and runtime distributions aligned.
+# Fallback source for libonnxruntime.so (x86_64 only). The upstream
+# microsoft/onnxruntime repository was taken down on 2026-11-20 (every release
+# URL 404s), so the pinned download below cannot succeed. This is the same
+# 1.28.3 library already shipped in the published 1.0.17 enterprise image; it
+# is only used when the official download fails.
+FROM ghcr.io/gaogg521/dream-core-enterprise@sha256:9cbcd89cc5ad8b350643d816f366d6766139ddb90b5c3bad34895ea36b9c6d42 AS ort-fallback
+
 FROM rust:1.95-trixie AS builder
 
 # git: `.cargo/config.toml` sets `net.git-fetch-with-cli = true` (needed for
@@ -52,7 +59,19 @@ COPY .cargo .cargo
 # crates/dream-domain-devops/src/onnxruntime.rs): fetch the pinned official
 # build for this architecture; it is copied next to the binaries below.
 COPY scripts/onnxruntime-pin.txt scripts/fetch-onnxruntime.sh scripts/
-RUN case "$(uname -m)" in         x86_64) ort_target=x86_64-unknown-linux-gnu ;;         aarch64) ort_target=aarch64-unknown-linux-gnu ;;         *) echo "unsupported architecture $(uname -m)" >&2; exit 1 ;;     esac     && bash scripts/fetch-onnxruntime.sh "$ort_target" /build/onnxruntime     && test -f /build/onnxruntime/libonnxruntime.so
+COPY --from=ort-fallback /app/libonnxruntime.so /opt/ort-fallback/libonnxruntime.so
+RUN case "$(uname -m)" in \
+        x86_64) ort_target=x86_64-unknown-linux-gnu ;; \
+        aarch64) ort_target=aarch64-unknown-linux-gnu ;; \
+        *) echo "unsupported architecture $(uname -m)" >&2; exit 1 ;; \
+    esac \
+    && if ! bash scripts/fetch-onnxruntime.sh "$ort_target" /build/onnxruntime; then \
+         echo "WARNING: official ONNX Runtime download failed; using the 1.28.3 library from the 1.0.17 image" >&2; \
+         [ "$ort_target" = x86_64-unknown-linux-gnu ] || { echo "no fallback for $ort_target" >&2; exit 1; }; \
+         echo "5a1ce74e56e8c4b278d5a9e9d12b7192d9f70811084dde9616da4fa1710efc5a  /opt/ort-fallback/libonnxruntime.so" | sha256sum -c - \
+         && mkdir -p /build/onnxruntime && cp /opt/ort-fallback/libonnxruntime.so /build/onnxruntime/; \
+       fi \
+    && test -f /build/onnxruntime/libonnxruntime.so
 
 COPY crates crates
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
