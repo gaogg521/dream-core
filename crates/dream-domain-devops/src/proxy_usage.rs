@@ -32,11 +32,13 @@
 //! `include_usage`), the row still lands with the model it does know, so the
 //! call is visible even where the cost is not.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Instant;
 
 use axum::body::{Body, Bytes};
+use dream_core_common::license::TokenPricesUsdPerMtok;
 // StreamExt only, deliberately: importing TryStreamExt as well would make
 // `.next()` ambiguous on the `Result`-item streams below.
 use futures_util::{Stream, StreamExt};
@@ -82,6 +84,9 @@ pub struct ProxyUsageEvent {
     pub cache_write_tokens: Option<i64>,
     pub request_id: Option<String>,
     pub user_ip: Option<String>,
+    /// The administrator's prices for this model on the serving channel,
+    /// when they entered any. `None` = the built-in rate table applies.
+    pub prices: Option<TokenPricesUsdPerMtok>,
     /// Wall time from the moment the tap was built to the end of the upstream
     /// stream. It is the whole point of the per-call trace — without it the
     /// admin console's latency percentiles have nothing to compute over for
@@ -243,6 +248,8 @@ struct TapContext {
     /// unattributed rather than guessing.
     conversation_id: Option<String>,
     user_ip: Option<String>,
+    /// The channel's admin-entered token prices, by model name.
+    prices: HashMap<String, TokenPricesUsdPerMtok>,
     /// When the tap was built — as close to "the call started" as this layer
     /// gets, which is after the request body probe and before the upstream
     /// request is sent.
@@ -291,6 +298,7 @@ impl UsageTap {
             request_model,
             conversation_id,
             user_ip,
+            prices: HashMap::new(),
             success: upstream_success,
             started_at: Instant::now(),
         });
@@ -313,6 +321,16 @@ impl UsageTap {
             failed: false,
             terminal: false,
         }
+    }
+
+    /// Attach the serving channel's admin-entered token prices. Looked up at
+    /// `finish` by the model the client asked for (the name the admin listed),
+    /// then by the one the upstream echoed back.
+    pub fn with_prices(mut self, prices: HashMap<String, TokenPricesUsdPerMtok>) -> Self {
+        if let Some(context) = self.context.as_mut() {
+            context.prices = prices;
+        }
+        self
     }
 
     /// Feed one chunk of the upstream response. The bytes themselves are
@@ -362,6 +380,10 @@ impl UsageTap {
         if model.is_none() && self.input_tokens.is_none() && self.output_tokens.is_none() {
             return;
         }
+        let prices = [context.request_model.as_deref(), self.model.as_deref()]
+            .into_iter()
+            .flatten()
+            .find_map(|name| context.prices.get(name).copied());
         let input_tokens = match (self.input_tokens, self.cache_read_tokens) {
             (Some(input), Some(cached)) if self.input_includes_cache => Some((input - cached).max(0)),
             (input, _) => input,
@@ -377,6 +399,7 @@ impl UsageTap {
             cache_write_tokens: self.cache_write_tokens,
             request_id: self.request_id.clone(),
             user_ip: context.user_ip,
+            prices,
             duration_ms: i64::try_from(context.started_at.elapsed().as_millis()).ok(),
         });
     }
@@ -813,6 +836,54 @@ mod tests {
         assert_eq!(events[0].cache_read_tokens, Some(9000));
         assert_eq!(events[0].cache_write_tokens, Some(120));
         assert_eq!(events[0].output_tokens, Some(7));
+    }
+
+    /// The admin lists a channel model by the name members request; the
+    /// upstream may echo a different (dated) name. The price must follow the
+    /// requested name first, and a model with no price must carry none.
+    #[test]
+    fn channel_prices_attach_by_requested_model_then_by_echoed_model() {
+        let price = TokenPricesUsdPerMtok {
+            input: 0.3,
+            output: 1.2,
+            cache_read: Some(0.03),
+            cache_write: None,
+        };
+        let prices = HashMap::from([("deepseek-flash".to_owned(), price)]);
+        let build = |recorder: &Arc<RecordingSink>, request_model: Option<&str>| {
+            UsageTap::new(
+                Some(recorder.clone() as Arc<dyn ProxyUsageRecorder>),
+                "member-1".into(),
+                "ch-1".into(),
+                "application/json",
+                true,
+                request_model.map(str::to_owned),
+                None,
+                None,
+            )
+            .with_prices(prices.clone())
+        };
+        let body = br#"{"model":"deepseek-v4-1-flash-261017","usage":{"prompt_tokens":10,"completion_tokens":2}}"#;
+
+        let recorder = sink();
+        let mut tap = build(&recorder, Some("deepseek-flash"));
+        tap.absorb(body);
+        tap.finish();
+        assert_eq!(
+            recorded(&recorder)[0].prices,
+            Some(price),
+            "requested name is the admin's key"
+        );
+
+        let recorder = sink();
+        let mut tap = build(&recorder, Some("glm-flash"));
+        tap.absorb(body);
+        tap.finish();
+        assert_eq!(
+            recorded(&recorder)[0].prices,
+            None,
+            "an unpriced model falls back to the built-in table"
+        );
     }
 
     /// A vendor that ignores `include_usage` still yields a visible row —

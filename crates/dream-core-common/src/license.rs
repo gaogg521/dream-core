@@ -142,6 +142,61 @@ pub fn estimate_cost_micros(model: &str, input_tokens: i64, output_tokens: i64) 
     (input * in_rate) / 1000 + (output * out_rate) / 1000
 }
 
+/// Administrator-entered chat prices for one model, in USD per million
+/// tokens. A price of 1 USD per million tokens is exactly 1 USD-micro per
+/// token, which is why the arithmetic below needs no scale factor.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TokenPricesUsdPerMtok {
+    pub input: f64,
+    pub output: f64,
+    /// `None` = 10% of `input`, the discount most vendors give cache hits
+    /// (Anthropic, DeepSeek, GLM). An admin whose vendor differs enters it.
+    pub cache_read: Option<f64>,
+    /// `None` = `input`: OpenAI-compatible vendors do not bill writes
+    /// separately, they are ordinary input the first time round.
+    pub cache_write: Option<f64>,
+}
+
+/// One call's token counts, split the way vendors bill them. `input` is
+/// FRESH input — tokens the cache did not serve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TokenUsage {
+    pub input: i64,
+    pub output: i64,
+    pub cache_read: i64,
+    pub cache_write: i64,
+}
+
+/// Share of the input rate the built-in table charges for a cache hit. Same
+/// default as an admin price with no cache-read entry.
+const CACHE_READ_SHARE_OF_INPUT: f64 = 0.1;
+
+/// Estimate a call's cost in USD-micros, counting cache traffic.
+///
+/// `prices` wins when present — it is the company's own contract with its
+/// vendor. Without it the built-in table applies, with cache hits at 10% of
+/// its input rate and cache writes at the full input rate.
+pub fn estimate_cost_with_cache_micros(model: &str, usage: TokenUsage, prices: Option<TokenPricesUsdPerMtok>) -> i64 {
+    let prices = prices.unwrap_or_else(|| {
+        // Table rates are per 1K tokens in micros; per million in USD is the
+        // same number divided by 1000.
+        let (input, output) = model_rate_micros_per_1k(model);
+        TokenPricesUsdPerMtok {
+            input: input as f64 / 1000.0,
+            output: output as f64 / 1000.0,
+            cache_read: None,
+            cache_write: None,
+        }
+    });
+    let cache_read = prices.cache_read.unwrap_or(prices.input * CACHE_READ_SHARE_OF_INPUT);
+    let cache_write = prices.cache_write.unwrap_or(prices.input);
+    let cost = usage.input.max(0) as f64 * prices.input
+        + usage.output.max(0) as f64 * prices.output
+        + usage.cache_read.max(0) as f64 * cache_read
+        + usage.cache_write.max(0) as f64 * cache_write;
+    cost.round() as i64
+}
+
 /// Per-image cost in USD-micros. Media is not metered in tokens, so it needs its
 /// own table — charging it at a token rate would report zero and let the most
 /// expensive calls in the product sit invisibly under any spend cap.
@@ -204,6 +259,89 @@ mod tests {
         assert_eq!(Tier::parse("ENTERPRISE"), Tier::Enterprise);
         assert_eq!(Tier::parse("bogus"), Tier::Free);
         assert_eq!(Tier::parse(""), Tier::Free);
+    }
+
+    /// An admin price is the company's vendor contract and must replace the
+    /// built-in table outright — including for models the table prices.
+    #[test]
+    fn admin_token_prices_replace_the_built_in_table() {
+        let usage = TokenUsage {
+            input: 1_000_000,
+            output: 500_000,
+            cache_read: 0,
+            cache_write: 0,
+        };
+        let prices = TokenPricesUsdPerMtok {
+            input: 2.0,
+            output: 8.0,
+            cache_read: None,
+            cache_write: None,
+        };
+        // 1M fresh input at $2/M + 0.5M output at $8/M = $6 = 6,000,000 micros.
+        assert_eq!(
+            estimate_cost_with_cache_micros("claude-opus-4", usage, Some(prices)),
+            6_000_000
+        );
+        // A model the table has never heard of is priced too.
+        assert_eq!(
+            estimate_cost_with_cache_micros("my-gateway-model", usage, Some(prices)),
+            6_000_000
+        );
+    }
+
+    /// Cache hits default to 10% of the input price and cache writes to the
+    /// full input price; explicit cache prices override both.
+    #[test]
+    fn cache_traffic_is_priced_with_defaults_and_overrides() {
+        let usage = TokenUsage {
+            input: 0,
+            output: 0,
+            cache_read: 1_000_000,
+            cache_write: 100_000,
+        };
+        let defaults = TokenPricesUsdPerMtok {
+            input: 4.0,
+            output: 0.0,
+            cache_read: None,
+            cache_write: None,
+        };
+        // 1M hits at $0.4/M + 0.1M writes at $4/M = $0.8.
+        assert_eq!(estimate_cost_with_cache_micros("m", usage, Some(defaults)), 800_000);
+        let explicit = TokenPricesUsdPerMtok {
+            cache_read: Some(1.0),
+            cache_write: Some(5.0),
+            ..defaults
+        };
+        // 1M at $1/M + 0.1M at $5/M = $1.5.
+        assert_eq!(estimate_cost_with_cache_micros("m", usage, Some(explicit)), 1_500_000);
+    }
+
+    /// Without admin prices the built-in table still applies, and must agree
+    /// with the plain estimator when there is no cache traffic.
+    #[test]
+    fn built_in_table_still_applies_and_bills_cache_hits_at_a_tenth() {
+        let plain = TokenUsage {
+            input: 10_000,
+            output: 2_000,
+            cache_read: 0,
+            cache_write: 0,
+        };
+        assert_eq!(
+            estimate_cost_with_cache_micros("deepseek-v4-flash", plain, None),
+            estimate_cost_micros("deepseek-v4-flash", 10_000, 2_000)
+        );
+        // deepseek table input rate is 500 micros/1K = $0.5/M → hits at $0.05/M.
+        let cached = TokenUsage {
+            input: 0,
+            output: 0,
+            cache_read: 1_000_000,
+            cache_write: 0,
+        };
+        assert_eq!(
+            estimate_cost_with_cache_micros("deepseek-v4-flash", cached, None),
+            50_000
+        );
+        assert_eq!(estimate_cost_with_cache_micros("unknown-model", cached, None), 0);
     }
 
     /// Media is metered per asset / per second, never per token. Regressing

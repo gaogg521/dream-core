@@ -9,7 +9,8 @@
 use std::sync::Arc;
 
 use dream_core_common::license::{
-    Feature, Tier, estimate_cost_micros, estimate_media_cost_micros, tier_allows, tier_seat_limit,
+    Feature, Tier, TokenPricesUsdPerMtok, TokenUsage, estimate_cost_micros, estimate_cost_with_cache_micros,
+    estimate_media_cost_micros, tier_allows, tier_seat_limit,
 };
 use dream_core_common::{generate_prefixed_id, now_ms, snapshot_conversation_id};
 use dream_core_db::{DbPool, day_bucket_expr, db_params};
@@ -46,6 +47,23 @@ impl BillingProvider for ManualBillingProvider {
     fn name(&self) -> &'static str {
         "manual"
     }
+}
+
+/// One proxied model call, as the enterprise model proxy saw it — the input
+/// to [`BillingService::record_metered_turn`]. `input_tokens` is FRESH input
+/// (the proxy subtracts cache hits back out of OpenAI-style `prompt_tokens`).
+pub struct MeteredTurn<'a> {
+    pub user_id: &'a str,
+    pub conversation_id: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub channel_id: Option<&'a str>,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    /// The administrator's prices for this model on the serving channel.
+    /// `None` = the built-in rate table.
+    pub prices: Option<TokenPricesUsdPerMtok>,
 }
 
 /// One completed MODEL CALL, as reported for the per-call LLM trace (P2-5).
@@ -1209,6 +1227,69 @@ impl BillingService {
         input_tokens: Option<i64>,
         output_tokens: Option<i64>,
     ) -> Result<(), BillingError> {
+        let cost = model.map(|m| estimate_cost_micros(m, input_tokens.unwrap_or(0), output_tokens.unwrap_or(0)));
+        self.insert_turn(
+            user_id,
+            conversation_id,
+            model,
+            channel_id,
+            input_tokens,
+            output_tokens,
+            cost,
+        )
+        .await
+    }
+
+    /// [`Self::record_turn`] for a caller that also knows the call's cache
+    /// traffic and, possibly, the administrator's prices for the model — the
+    /// enterprise model proxy. Cache tokens are costed (hits at a discount,
+    /// see [`estimate_cost_with_cache_micros`]) but, like everywhere else in
+    /// this ledger, not added to `total_tokens`: they are a billed dimension
+    /// of the input, not extra volume.
+    pub async fn record_metered_turn(&self, turn: MeteredTurn<'_>) -> Result<(), BillingError> {
+        let MeteredTurn {
+            user_id,
+            conversation_id,
+            model,
+            channel_id,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            prices,
+        } = turn;
+        let cost = model.map(|m| {
+            let usage = TokenUsage {
+                input: input_tokens.unwrap_or(0),
+                output: output_tokens.unwrap_or(0),
+                cache_read: cache_read_tokens,
+                cache_write: cache_write_tokens,
+            };
+            estimate_cost_with_cache_micros(m, usage, prices)
+        });
+        self.insert_turn(
+            user_id,
+            conversation_id,
+            model,
+            channel_id,
+            input_tokens,
+            output_tokens,
+            cost,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_turn(
+        &self,
+        user_id: &str,
+        conversation_id: Option<&str>,
+        model: Option<&str>,
+        channel_id: Option<&str>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        cost: Option<i64>,
+    ) -> Result<(), BillingError> {
         let enterprise_id = self.resolve_enterprise_id(user_id).await?;
         // T7: stamped from the user's department AT THIS MOMENT, not resolved
         // live when a report is later pulled — see the migration's doc
@@ -1219,7 +1300,6 @@ impl BillingService {
             (None, None) => None,
             (a, b) => Some(a.unwrap_or(0) + b.unwrap_or(0)),
         };
-        let cost = model.map(|m| estimate_cost_micros(m, input_tokens.unwrap_or(0), output_tokens.unwrap_or(0)));
         // Same diagnosis hatch as `record_media_usage`: a turn costed at 0
         // consumes none of the company's spend cap, so the cap silently stops
         // binding for that model. The built-in rate table matches on model
@@ -3097,6 +3177,61 @@ mod tests {
         assert_eq!(plan.tier, "free");
         assert_eq!(plan.license_status, "unofficial");
         assert_eq!(plan.seat_limit, Some(3));
+    }
+
+    /// A proxied call costs at the administrator's price when one exists —
+    /// cache hits included — and its cache tokens stay out of `total_tokens`
+    /// (a billed dimension of the input, not extra volume).
+    #[tokio::test]
+    async fn metered_turn_costs_at_admin_prices_including_cache_traffic() {
+        let (svc, sqlite) = service().await;
+        add_members(&svc, &sqlite, "ent1", 1).await;
+        sqlx::query("UPDATE one_enterprise_members SET user_id = 'alice' WHERE enterprise_id = 'ent1'")
+            .execute(&sqlite)
+            .await
+            .unwrap();
+        let turn = |prices| MeteredTurn {
+            user_id: "alice",
+            conversation_id: Some("c1"),
+            model: Some("deepseek-v4-1-flash-261017"),
+            channel_id: Some("prov_chan_ch1"),
+            input_tokens: Some(1_260),
+            output_tokens: Some(2_048),
+            cache_read_tokens: 97_536,
+            cache_write_tokens: 0,
+            prices,
+        };
+        let admin = TokenPricesUsdPerMtok {
+            input: 1.0,
+            output: 4.0,
+            cache_read: Some(0.2),
+            cache_write: None,
+        };
+        svc.record_metered_turn(turn(Some(admin))).await.unwrap();
+        let (total, cost): (i64, i64) = sqlx::query_as(
+            "SELECT total_tokens, estimated_cost_micros FROM one_usage_events WHERE user_id = 'alice' ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_one(&sqlite)
+        .await
+        .unwrap();
+        assert_eq!(total, 1_260 + 2_048, "cache hits are not volume");
+        // 1260*1 + 2048*4 + 97536*0.2 = 1260 + 8192 + 19507.2 → 28959 micros.
+        assert_eq!(cost, 28_959);
+
+        // Same call with no admin price: the built-in table, hits at a tenth
+        // of its deepseek input rate ($0.5/M → $0.05/M), still not free.
+        sqlx::query("DELETE FROM one_usage_events")
+            .execute(&sqlite)
+            .await
+            .unwrap();
+        svc.record_metered_turn(turn(None)).await.unwrap();
+        let cost: i64 =
+            sqlx::query_scalar("SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'alice'")
+                .fetch_one(&sqlite)
+                .await
+                .unwrap();
+        // 1260*0.5 + 2048*1.5 + 97536*0.05 = 630 + 3072 + 4876.8 → 8579.
+        assert_eq!(cost, 8_579);
     }
 
     #[tokio::test]

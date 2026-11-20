@@ -859,18 +859,25 @@ impl dream_domain_devops::ProxyUsageRecorder for BillingProxyUsageRecorder {
                 );
             }
             if let Err(e) = service
-                .record_turn(
-                    &event.user_id,
+                .record_metered_turn(dream_domain_billing::MeteredTurn {
+                    user_id: &event.user_id,
                     // C1-4: the client stamped `x-dream-conversation-id` on the
                     // proxied request; this is what lands the spend on the
                     // conversation the member actually ran. None = unattributed
                     // (an old client or a non-conversation call), never a guess.
-                    event.conversation_id.as_deref(),
-                    event.model.as_deref(),
-                    Some(&channel_id),
-                    event.input_tokens,
-                    event.output_tokens,
-                )
+                    conversation_id: event.conversation_id.as_deref(),
+                    model: event.model.as_deref(),
+                    channel_id: Some(&channel_id),
+                    input_tokens: event.input_tokens,
+                    output_tokens: event.output_tokens,
+                    // Costed (hits at a discount) so a cache-heavy agent loop
+                    // is not priced as if every prompt were fresh — nor, now
+                    // that the proxy splits hits out of `prompt_tokens`, as if
+                    // they were free.
+                    cache_read_tokens: event.cache_read_tokens.unwrap_or(0),
+                    cache_write_tokens: event.cache_write_tokens.unwrap_or(0),
+                    prices: event.prices,
+                })
                 .await
             {
                 tracing::warn!(error = %e, "model proxy usage record failed (non-fatal)");
