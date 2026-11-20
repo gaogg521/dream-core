@@ -239,6 +239,35 @@ impl BillingUnit {
     }
 }
 
+/// What currency an administrator entered a price in. Costs, spend caps and reports
+/// are USD, so an RMB price is converted at [`CNY_PER_USD`] when a call is costed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PriceCurrency {
+    #[default]
+    Usd,
+    Cny,
+}
+
+impl PriceCurrency {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Usd => "USD",
+            Self::Cny => "CNY",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "USD" => Some(Self::Usd),
+            "CNY" => Some(Self::Cny),
+            _ => None,
+        }
+    }
+}
+
+/// Yuan per US dollar. Fixed on purpose — there is no exchange-rate setting.
+pub const CNY_PER_USD: f64 = 7.0;
+
 /// An administrator's price for one model, in whichever unit it is billed.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AdminModelPrice {
@@ -253,6 +282,20 @@ pub struct AdminModelPrice {
 }
 
 impl AdminModelPrice {
+    /// This price with every amount divided by [`CNY_PER_USD`]: an RMB price expressed
+    /// in US dollars. Everything downstream costs in USD.
+    pub fn cny_to_usd(mut self) -> Self {
+        self.tokens.input /= CNY_PER_USD;
+        self.tokens.output /= CNY_PER_USD;
+        self.tokens.cache_read = self.tokens.cache_read.map(|p| p / CNY_PER_USD);
+        self.tokens.cache_write = self.tokens.cache_write.map(|p| p / CNY_PER_USD);
+        self.unit_price_usd /= CNY_PER_USD;
+        for price in self.tiers.values_mut() {
+            *price /= CNY_PER_USD;
+        }
+        self
+    }
+
     /// USD-micros for one unit, honouring the resolution tier when it has one.
     pub fn unit_price_micros(&self, tier: Option<&str>) -> i64 {
         let usd = tier
@@ -532,6 +575,45 @@ mod tests {
         assert_eq!(price.media_cost_micros(i64::MAX, i64::MAX, None), Some(i64::MAX));
         assert!(estimate_media_cost_micros("video", "veo-3", i64::MAX, i64::MAX) >= 0);
         assert!(estimate_media_cost_micros("image", "dall-e-3", i64::MAX, 0) >= 0);
+    }
+
+    #[test]
+    fn an_rmb_price_costs_in_dollars_at_the_fixed_rate() {
+        let rmb = AdminModelPrice {
+            unit: BillingUnit::Token,
+            tokens: TokenPricesUsdPerMtok {
+                input: 7.0,
+                output: 14.0,
+                cache_read: Some(0.7),
+                cache_write: None,
+            },
+            ..Default::default()
+        };
+        let usd = rmb.cny_to_usd();
+        // Floating point: costs round to whole micro-dollars afterwards, so compare loosely.
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert!(close(usd.tokens.input, 1.0) && close(usd.tokens.output, 2.0));
+        assert!(close(usd.tokens.cache_read.unwrap(), 0.1));
+        assert_eq!(usd.tokens.cache_write, None);
+
+        let image = AdminModelPrice {
+            unit: BillingUnit::Image,
+            unit_price_usd: 0.28,
+            tiers: [("hd".to_owned(), 0.7)].into(),
+            ..Default::default()
+        }
+        .cny_to_usd();
+        assert_eq!(image.media_cost_micros(1, 0, None), Some(40_000));
+        assert_eq!(image.media_cost_micros(1, 0, Some("hd")), Some(100_000));
+    }
+
+    #[test]
+    fn price_currency_round_trips_through_its_wire_name() {
+        for currency in [PriceCurrency::Usd, PriceCurrency::Cny] {
+            assert_eq!(PriceCurrency::parse(currency.as_str()), Some(currency));
+        }
+        assert_eq!(PriceCurrency::parse("EUR"), None);
+        assert_eq!(PriceCurrency::default(), PriceCurrency::Usd);
     }
 
     #[test]

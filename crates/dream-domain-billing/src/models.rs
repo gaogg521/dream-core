@@ -416,6 +416,8 @@ pub struct ModelPriceDto {
     pub model: String,
     /// `token` | `image` | `second` | `request`.
     pub billing_unit: String,
+    /// `USD` | `CNY`: the currency every amount below is in.
+    pub currency: String,
     pub input_usd_per_mtok: f64,
     pub output_usd_per_mtok: f64,
     pub cache_read_usd_per_mtok: Option<f64>,
@@ -492,6 +494,8 @@ pub struct PriceLookupDto {
 pub struct ModelPriceListDto {
     pub prices: Vec<ModelPriceDto>,
     pub builtin: Vec<BuiltinModelPriceDto>,
+    /// The fixed rate RMB prices are costed at: yuan per US dollar.
+    pub cny_per_usd: f64,
 }
 
 /// One generated media asset, for the T8 consolidated ledger.

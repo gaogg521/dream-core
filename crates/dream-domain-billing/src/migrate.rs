@@ -70,6 +70,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "billing_015_model_price_units",
         include_str!("../migrations/billing_015_model_price_units.sql"),
     ),
+    (
+        "billing_016_price_currency",
+        include_str!("../migrations/billing_016_price_currency.sql"),
+    ),
 ];
 
 const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
@@ -120,6 +124,10 @@ const MIGRATIONS_MYSQL: &[(&str, &str)] = &[
     (
         "billing_015_model_price_units",
         include_str!("../migrations_mysql/billing_015_model_price_units.sql"),
+    ),
+    (
+        "billing_016_price_currency",
+        include_str!("../migrations_mysql/billing_016_price_currency.sql"),
     ),
     (
         "billing_009_conversation_audit_requests",

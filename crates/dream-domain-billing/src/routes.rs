@@ -1004,13 +1004,20 @@ async fn billing_list_model_prices(
             })
         })
         .collect();
-    Ok(Json(ApiResponse::ok(ModelPriceListDto { prices, builtin })))
+    Ok(Json(ApiResponse::ok(ModelPriceListDto {
+        prices,
+        builtin,
+        cny_per_usd: dream_core_common::license::CNY_PER_USD,
+    })))
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SetModelPriceBody {
     model: String,
+    /// `USD` (default) | `CNY`: what the amounts below are in.
+    #[serde(default)]
+    currency: Option<String>,
     /// `token` (default) | `image` | `second` | `request`.
     #[serde(default)]
     billing_unit: Option<String>,
@@ -1045,6 +1052,11 @@ async fn billing_set_model_price(
         Some(raw) => dream_core_common::license::BillingUnit::parse(raw)
             .ok_or_else(|| BillingError::BadRequest("billingUnit must be token, image, second or request".into()))?,
     };
+    let currency = match body.currency.as_deref() {
+        None => dream_core_common::license::PriceCurrency::Usd,
+        Some(raw) => dream_core_common::license::PriceCurrency::parse(raw)
+            .ok_or_else(|| BillingError::BadRequest("currency must be USD or CNY".into()))?,
+    };
     let price = dream_core_common::license::AdminModelPrice {
         unit,
         tokens: dream_core_common::license::TokenPricesUsdPerMtok {
@@ -1062,6 +1074,7 @@ async fn billing_set_model_price(
             &eid,
             crate::service::ModelPriceWrite {
                 model: &body.model,
+                currency,
                 price,
                 source: body.source.as_deref().unwrap_or("manual"),
                 source_note: body.source_note.as_deref().map(str::trim).filter(|n| !n.is_empty()),
@@ -1072,6 +1085,7 @@ async fn billing_set_model_price(
     Ok(Json(ApiResponse::ok(ModelPriceListDto {
         prices: state.service.list_model_prices(&eid).await?,
         builtin: Vec::new(),
+        cny_per_usd: dream_core_common::license::CNY_PER_USD,
     })))
 }
 
@@ -1132,6 +1146,7 @@ async fn billing_delete_model_price(
     Ok(Json(ApiResponse::ok(ModelPriceListDto {
         prices: state.service.list_model_prices(&eid).await?,
         builtin: Vec::new(),
+        cny_per_usd: dream_core_common::license::CNY_PER_USD,
     })))
 }
 

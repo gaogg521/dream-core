@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use dream_core_common::license::{
-    AdminModelPrice, BillingUnit, Feature, Tier, TokenPricesUsdPerMtok, TokenUsage, estimate_cost_with_cache_micros,
-    estimate_media_cost_micros, tier_allows, tier_seat_limit,
+    AdminModelPrice, BillingUnit, Feature, PriceCurrency, Tier, TokenPricesUsdPerMtok, TokenUsage,
+    estimate_cost_with_cache_micros, estimate_media_cost_micros, tier_allows, tier_seat_limit,
 };
 use dream_core_common::{generate_prefixed_id, now_ms, snapshot_conversation_id};
 use dream_core_db::{DbPool, day_bucket_expr, db_params};
@@ -74,6 +74,8 @@ pub struct MeteredTurn<'a> {
 /// from (`manual` | `official` | `sync`), plus a note naming the catalog entry.
 pub struct ModelPriceWrite<'a> {
     pub model: &'a str,
+    /// The currency `price`'s amounts are in.
+    pub currency: PriceCurrency,
     pub price: AdminModelPrice,
     pub source: &'a str,
     pub source_note: Option<&'a str>,
@@ -1356,20 +1358,20 @@ impl BillingService {
     /// path — a failed lookup costs the call at the built-in rate rather than
     /// failing the record.
     async fn admin_model_price(&self, enterprise_id: &str, names: &[&str]) -> Option<AdminModelPrice> {
-        type Row = (f64, f64, Option<f64>, Option<f64>, String, f64, Option<String>);
+        type Row = (f64, f64, Option<f64>, Option<f64>, String, f64, Option<String>, String);
         for name in names {
             let row: Option<Row> = self
                 .db
                 .fetch_optional_as(
                     "SELECT input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok, cache_write_usd_per_mtok, \
-                            billing_unit, unit_price_usd, tier_prices_json \
+                            billing_unit, unit_price_usd, tier_prices_json, currency \
                      FROM one_model_prices WHERE enterprise_id = ? AND model = ?",
                     &db_params![enterprise_id, *name],
                 )
                 .await
                 .unwrap_or(None);
-            if let Some((input, output, cache_read, cache_write, unit, unit_price_usd, tiers)) = row {
-                return Some(AdminModelPrice {
+            if let Some((input, output, cache_read, cache_write, unit, unit_price_usd, tiers, currency)) = row {
+                let price = AdminModelPrice {
                     unit: BillingUnit::parse(&unit).unwrap_or_default(),
                     tokens: TokenPricesUsdPerMtok {
                         input,
@@ -1381,6 +1383,11 @@ impl BillingService {
                     tiers: tiers
                         .and_then(|raw| serde_json::from_str(&raw).ok())
                         .unwrap_or_default(),
+                };
+                // Costs are USD: an RMB price is converted at the fixed rate.
+                return Some(match PriceCurrency::parse(&currency) {
+                    Some(PriceCurrency::Cny) => price.cny_to_usd(),
+                    _ => price,
                 });
             }
         }
@@ -1402,13 +1409,14 @@ impl BillingService {
             Option<String>,
             String,
             i64,
+            String,
         );
         let rows: Vec<Row> = self
             .db
             .fetch_all_as::<Row>(
                 "SELECT model, input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok, \
                         cache_write_usd_per_mtok, billing_unit, unit_price_usd, tier_prices_json, \
-                        source, source_note, updated_by, updated_at \
+                        source, source_note, updated_by, updated_at, currency \
                  FROM one_model_prices WHERE enterprise_id = ? ORDER BY model",
                 &db_params![enterprise_id],
             )
@@ -1416,10 +1424,25 @@ impl BillingService {
         Ok(rows
             .into_iter()
             .map(
-                |(model, input, output, cache_read, cache_write, unit, unit_price, tiers, source, note, by, at)| {
+                |(
+                    model,
+                    input,
+                    output,
+                    cache_read,
+                    cache_write,
+                    unit,
+                    unit_price,
+                    tiers,
+                    source,
+                    note,
+                    by,
+                    at,
+                    currency,
+                )| {
                     ModelPriceDto {
                         model,
                         billing_unit: unit,
+                        currency,
                         input_usd_per_mtok: input,
                         output_usd_per_mtok: output,
                         cache_read_usd_per_mtok: cache_read,
@@ -1450,6 +1473,7 @@ impl BillingService {
     ) -> Result<(), BillingError> {
         let ModelPriceWrite {
             model,
+            currency,
             price,
             source,
             source_note,
@@ -1484,8 +1508,8 @@ impl BillingService {
             "INSERT INTO one_model_prices \
                 (enterprise_id, model, input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok, \
                  cache_write_usd_per_mtok, billing_unit, unit_price_usd, tier_prices_json, source, source_note, \
-                 updated_by, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 updated_by, updated_at, currency) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(enterprise_id, model) DO UPDATE SET \
                  input_usd_per_mtok = excluded.input_usd_per_mtok, \
                  output_usd_per_mtok = excluded.output_usd_per_mtok, \
@@ -1493,13 +1517,13 @@ impl BillingService {
                  cache_write_usd_per_mtok = excluded.cache_write_usd_per_mtok, \
                  billing_unit = excluded.billing_unit, unit_price_usd = excluded.unit_price_usd, \
                  tier_prices_json = excluded.tier_prices_json, source = excluded.source, \
-                 source_note = excluded.source_note, \
+                 source_note = excluded.source_note, currency = excluded.currency, \
                  updated_by = excluded.updated_by, updated_at = excluded.updated_at",
             "INSERT INTO one_model_prices \
                 (enterprise_id, model, input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok, \
                  cache_write_usd_per_mtok, billing_unit, unit_price_usd, tier_prices_json, source, source_note, \
-                 updated_by, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
+                 updated_by, updated_at, currency) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
              ON DUPLICATE KEY UPDATE \
                  input_usd_per_mtok = new.input_usd_per_mtok, \
                  output_usd_per_mtok = new.output_usd_per_mtok, \
@@ -1507,7 +1531,7 @@ impl BillingService {
                  cache_write_usd_per_mtok = new.cache_write_usd_per_mtok, \
                  billing_unit = new.billing_unit, unit_price_usd = new.unit_price_usd, \
                  tier_prices_json = new.tier_prices_json, source = new.source, \
-                 source_note = new.source_note, \
+                 source_note = new.source_note, currency = new.currency, \
                  updated_by = new.updated_by, updated_at = new.updated_at",
             &db_params![
                 enterprise_id,
@@ -1522,7 +1546,8 @@ impl BillingService {
                 source,
                 source_note,
                 updated_by,
-                now_ms()
+                now_ms(),
+                currency.as_str()
             ],
         )
         .await?;
@@ -3410,6 +3435,7 @@ mod tests {
             enterprise_id,
             ModelPriceWrite {
                 model,
+                currency: PriceCurrency::Usd,
                 price: AdminModelPrice {
                     tokens,
                     ..Default::default()
@@ -3554,6 +3580,7 @@ mod tests {
                     "ent1",
                     ModelPriceWrite {
                         model,
+                        currency: PriceCurrency::Usd,
                         price: AdminModelPrice {
                             unit,
                             unit_price_usd: usd,
@@ -3633,6 +3660,109 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(cost_of("per-call-chat").await, 20_000);
+    }
+
+    /// A price entered in RMB costs in dollars at the fixed rate (7), for tokens and for
+    /// media alike; the same digits entered in USD are dollars; the list hands the
+    /// price back as entered.
+    #[tokio::test]
+    async fn rmb_prices_are_costed_in_dollars_at_the_fixed_rate() {
+        let (svc, sqlite) = service().await;
+        add_members(&svc, &sqlite, "ent1", 1).await;
+        sqlx::query("UPDATE one_enterprise_members SET user_id = 'alice' WHERE enterprise_id = 'ent1'")
+            .execute(&sqlite)
+            .await
+            .unwrap();
+        let write = |model: &'static str, currency, price| ModelPriceWrite {
+            model,
+            currency,
+            price,
+            source: "manual",
+            source_note: None,
+        };
+        let tokens = |input: f64| AdminModelPrice {
+            tokens: TokenPricesUsdPerMtok {
+                input,
+                output: input * 2.0,
+                cache_read: None,
+                cache_write: None,
+            },
+            ..Default::default()
+        };
+        let turn = || MeteredTurn {
+            user_id: "alice",
+            conversation_id: None,
+            model: Some("rmb-model"),
+            channel_id: None,
+            input_tokens: Some(1_000_000),
+            output_tokens: Some(1_000_000),
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            requested_model: None,
+        };
+        let last_cost = |model: &'static str| {
+            let sqlite = sqlite.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT estimated_cost_micros FROM one_usage_events WHERE model = ? ORDER BY rowid DESC LIMIT 1",
+                )
+                .bind(model)
+                .fetch_one(&sqlite)
+                .await
+                .unwrap()
+            }
+        };
+
+        // ¥7 in / ¥14 out per million → $1 + $2.
+        svc.set_model_price("ent1", write("rmb-model", PriceCurrency::Cny, tokens(7.0)), "admin")
+            .await
+            .unwrap();
+        svc.record_metered_turn(turn()).await.unwrap();
+        assert_eq!(last_cost("rmb-model").await, 3_000_000);
+
+        // The list hands the price back as entered (RMB), not converted.
+        let listed = svc.list_model_prices("ent1").await.unwrap();
+        assert_eq!(
+            (listed[0].currency.as_str(), listed[0].input_usd_per_mtok),
+            ("CNY", 7.0)
+        );
+
+        // The same digits in USD are dollars.
+        svc.set_model_price("ent1", write("rmb-model", PriceCurrency::Usd, tokens(7.0)), "admin")
+            .await
+            .unwrap();
+        svc.record_metered_turn(turn()).await.unwrap();
+        assert_eq!(last_cost("rmb-model").await, 21_000_000);
+
+        // Media: ¥0.28 per image is $0.04; ¥0.7 per second of output is $0.10.
+        svc.set_model_price(
+            "ent1",
+            write(
+                "rmb-image",
+                PriceCurrency::Cny,
+                AdminModelPrice {
+                    unit: BillingUnit::Image,
+                    unit_price_usd: 0.28,
+                    ..Default::default()
+                },
+            ),
+            "admin",
+        )
+        .await
+        .unwrap();
+        svc.record_media_usage(MediaUsage {
+            user_id: "alice",
+            kind: "image",
+            model: "rmb-image",
+            count: 2,
+            duration_seconds: 0,
+            unit_price_micros: None,
+            tier: None,
+            conversation_id: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(last_cost("rmb-image").await, 80_000);
     }
 
     /// A malformed price would silently cost calls at zero or negative; it is

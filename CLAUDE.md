@@ -13,6 +13,8 @@
 > 跨仓完整叙述（含前端 bug 与 CodeMirror 排查）见 dream-ui 同名文档。本 CLAUDE.md 只保留
 > 长期有效的规则，过程性细节请去读那份文档。
 
+> **2026-11-20（企业模型价格表 + 通道缓存计量）**：企业通道缓存读取恒为 0 的根因是代理漏认 `prompt_tokens_details.cached_tokens` / `prompt_cache_hit_tokens`（`05d006f`）；价格改为独立的 `one_model_prices` 表（按模型名存、计费单位 token/image/second/request、分辨率档位、每个价格自选 USD/RMB，**RMB 按固定常量 7 折成美元**，刻意没有汇率设置），所有计费路径统一查表；查价可走公司 LiteLLM/中转站再回落公开价格库（`price_catalog.rs`）。需要登录的来源**用管理员自己的浏览器**，不做服务端 Chromium。媒体用量的乘法一律饱和乘法（客户端上报的 count/duration 会溢出）。详见 [session-2026-11-20-model-prices-and-proxy-cache-metering.zh-CN.md](./docs/guides/session-2026-11-20-model-prices-and-proxy-cache-metering.zh-CN.md)。
+
 > **2026-10-17（ONNX Runtime 改为运行时加载）**：知识库的本地嵌入（`fastembed`→`ort`）曾用 pyke 预编译的**静态**库，v0.1.88 发版 4 个平台链接失败（Linux 要 glibc 2.38、Windows 要动态 CRT、macOS Intel 没有预编译库）。现在 `dreamcore` 不链接 onnxruntime，微软官方 1.28.3 共享库随包放在二进制旁边、首次用时加载（`dream-domain-devops/src/onnxruntime.rs`；`scripts/fetch-onnxruntime.*` + `onnxruntime-pin.txt`）。**别把 `ort` 改回 `download-binaries`。** macOS Intel 没有库，本地嵌入不可用（要配远程端点）。详见 [session-2026-10-17-onnxruntime-dynamic-loading.zh-CN.md](./docs/guides/session-2026-10-17-onnxruntime-dynamic-loading.zh-CN.md)。
 
 > **2026-10-09（外部安全测试 21 项）**：`52c6502` `60bd2a7` `af52674`。逐项状态（含报告判断错的根因）在
