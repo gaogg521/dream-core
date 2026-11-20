@@ -37,3 +37,11 @@
 - 轮询曾经每 2 秒打 4 个候选地址 × 5 分钟（约 600 次）：现在只打确实存在的接口，指数放慢，连续两次读不到任何响应即停。
 - 内置浏览器面板里 `window.open` 会开成独立弹窗并阻塞页面：用普通链接新标签。
 - Bash 工具会吞反斜杠；含 `\'` 的 TS 字符串用 Write 工具，别走 heredoc。
+
+## 四、ONNX Runtime 来源（同日）
+
+- 事故：`github.com/microsoft/onnxruntime` 整个仓库 404，pin 里的 release 下载全挂，企业镜像构建失败（run 44737872048）。临时止血 `fed4b4d`（Dockerfile 回落到 1.0.17 镜像里的库）已被下面的正式方案取代并撤掉。
+- 现状：`scripts/onnxruntime-pin.txt` 每个目标多来源、逐个校验 sha256、按序尝试。①自家 COS 镜像（1.28.3，与线上同字节，写一次不覆盖）②PyPI 官方 1.28.0 wheel（zip，取 `onnxruntime/capi/` 下的库）。1.28.3 只发过 GitHub release，PyPI 没有。
+- 镜像内容取自已发布的 dreamcore v0.1.105 发版包（先核对 `dreamcore-checksums.txt`），四个库内嵌版本串均为 1.28.3；Linux x64 与 1.0.17 镜像里的库逐字节相同。
+- 验证：三个版本（1.28.3 镜像、1.28.0 wheel、1.29.0）都通过 `local_embedding_fresh_install`（真加载库、下模型、语义检索排序）；给不存在的库路径则该测试失败，说明测试确实依赖所加载的库。脚本覆盖：正常 / 主来源不通回落 / 主来源字节被改（sha 不符）回落 / 全部不符硬失败且不写文件。
+- 升级：先把新版库传到 COS 新目录再加 pin 行，不要覆盖旧目录。`ort` 升级前保持 1.28.x。
