@@ -7,8 +7,8 @@
 //! request is matched against each memory's name, description, index line and bounded body.
 //! Unchanged text is cached; only matching files are put in front of the prompt.
 //!
-//! The same word and character-pair matching as company memory (`dream_core_common::recall_terms`)
-//! is used, so Chinese questions find Chinese memories.
+//! Uses the shared word and character-pair tokenizer, with a stricter relevance gate
+//! for injecting saved memories into an individual turn.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -41,6 +41,109 @@ pub struct RecalledMemory {
     pub modified: SystemTime,
 }
 
+// Operational boilerplate is common in both prompts and saved notes.
+const WEAK_WORDS: &[&str] = &[
+    "this", "that", "with", "from", "about", "please", "then", "file", "files", "test", "tool", "json", "markdown",
+    "work",
+];
+const WEAK_PAIRS: &[&str] = &[
+    "执行", "运行", "查找", "测试", "工具", "文件", "读取", "内容", "工作", "作区", "会话", "结果", "最后", "不要",
+    "本次", "使用", "只读", "匹配", "配数", "数量", "访问", "其他", "目录", "临时", "界面", "回归",
+];
+
+/// Prefer skipping a turn's recall over injecting text on incidental overlap.
+struct RecallQuery {
+    terms: QueryTerms,
+    phrases: Vec<String>,
+    identifiers: HashSet<String>,
+    single_word: bool,
+}
+
+impl RecallQuery {
+    fn new(query: &str) -> Self {
+        let mut terms = QueryTerms::from_query(query);
+        terms.words.retain(|word| !WEAK_WORDS.contains(&word.as_str()));
+        terms.pairs.retain(|pair| !WEAK_PAIRS.contains(&pair.as_str()));
+        let mut phrases = Vec::new();
+        for chars in query.chars().collect::<Vec<_>>().windows(3) {
+            if chars
+                .windows(2)
+                .all(|pair| terms.pairs.contains(&pair.iter().collect()))
+            {
+                let phrase: String = chars.iter().collect();
+                if !phrases.contains(&phrase) {
+                    phrases.push(phrase);
+                }
+            }
+        }
+        let identifiers = query
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|token| {
+                token.len() >= 3
+                    && token.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                    && token.bytes().any(|c| c.is_ascii_digit())
+            })
+            .map(str::to_ascii_lowercase)
+            .collect();
+        let single_word = terms.words.iter().any(|word| query.trim().eq_ignore_ascii_case(word));
+        Self {
+            terms,
+            phrases,
+            identifiers,
+            single_word,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.terms.is_empty() && self.identifiers.is_empty()
+    }
+
+    fn score(&self, text: &str) -> usize {
+        let words = self.terms.words.iter().filter(|word| contains_word(text, word)).count();
+        let pairs = self.terms.pairs.iter().filter(|p| text.contains(p.as_str())).count();
+        let identifiers = self.identifiers.iter().filter(|word| contains_word(text, word)).count();
+        let phrases = self.phrases.iter().filter(|p| text.contains(p.as_str())).count();
+        words * 2 + pairs + identifiers * 3 + phrases
+    }
+
+    fn matches(&self, text: &str) -> bool {
+        if self.identifiers.iter().any(|word| contains_word(text, word)) {
+            return true;
+        }
+        let words = self
+            .terms
+            .words
+            .iter()
+            .filter(|word| contains_word(text, word))
+            .take(2)
+            .count();
+        if words >= 2 || (words == 1 && self.single_word) {
+            return true;
+        }
+        let pairs = self
+            .terms
+            .pairs
+            .iter()
+            .filter(|pair| text.contains(pair.as_str()))
+            .take(3)
+            .count();
+        (words == 1 && pairs >= 2) || (pairs >= 3 && self.phrases.iter().any(|phrase| text.contains(phrase.as_str())))
+    }
+}
+
+fn contains_word(text: &str, word: &str) -> bool {
+    text.match_indices(word).any(|(start, _)| {
+        !text[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+            && !text[start + word.len()..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphanumeric())
+    })
+}
+
 /// Memory files in `dir` whose name, description, index line or text match `query`, best first.
 ///
 /// `already_sent` maps a file to the modification time it had when it was last brought into this
@@ -55,7 +158,7 @@ pub fn recall_engine_memory(
     query: &str,
     already_sent: &HashMap<String, SystemTime>,
 ) -> Vec<RecalledMemory> {
-    let terms = QueryTerms::from_query(query);
+    let terms = RecallQuery::new(query);
     if terms.is_empty() {
         return Vec::new();
     }
@@ -74,7 +177,6 @@ pub fn recall_engine_memory(
             Some((name, line))
         })
         .collect();
-    let required = terms.required_score();
     let mut seen = HashSet::new();
     let mut scored = Vec::new();
     for (file_path, metadata) in files {
@@ -127,8 +229,9 @@ pub fn recall_engine_memory(
             index_lines.get(filename.as_str()).copied().unwrap_or_default()
         )
         .to_lowercase();
-        let total = terms.score(&format!("{header_text} {}", entry.body));
-        if total >= required {
+        let text = format!("{header_text} {}", entry.body);
+        if terms.matches(&text) {
+            let total = terms.score(&text);
             scored.push(Candidate {
                 header_score: terms.score(&header_text),
                 total,
@@ -147,7 +250,6 @@ pub fn recall_engine_memory(
 
     scored
         .into_iter()
-        .take(MAX_FILES)
         .filter_map(|candidate| {
             let entry = read_memory(&candidate.file_path).ok()?;
             let body = select_body(entry.content.trim(), &terms);
@@ -163,6 +265,7 @@ pub fn recall_engine_memory(
                 modified: candidate.modified,
             })
         })
+        .take(MAX_FILES)
         .collect()
 }
 
@@ -267,7 +370,7 @@ fn collect_files(dir: &Path, files: &mut Vec<(PathBuf, std::fs::Metadata)>) {
 /// match the request are brought in — a merged file is far too long to send whole.
 pub const MERGED_MARKER: &str = "<!-- merged-memory -->";
 
-fn select_body(content: &str, terms: &QueryTerms) -> String {
+fn select_body(content: &str, terms: &RecallQuery) -> String {
     if !content.starts_with(MERGED_MARKER) {
         return truncate(content);
     }
@@ -276,8 +379,10 @@ fn select_body(content: &str, terms: &QueryTerms) -> String {
         .split("\n## ")
         .map(str::trim)
         .filter(|section| !section.is_empty())
-        .map(|section| (terms.score(&section.to_lowercase()), section))
-        .filter(|(score, _)| *score > 0)
+        .filter_map(|section| {
+            let text = section.to_lowercase();
+            terms.matches(&text).then(|| (terms.score(&text), section))
+        })
         .collect();
     sections.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
 

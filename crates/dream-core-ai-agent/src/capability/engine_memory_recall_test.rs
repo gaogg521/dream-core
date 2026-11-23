@@ -60,6 +60,46 @@ fn a_request_that_mentions_nothing_brings_in_nothing() {
 }
 
 #[test]
+fn a_glob_regression_request_does_not_recall_unrelated_projects_or_preferences() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(
+        tmp.path(),
+        "project-ro3-security.md",
+        "project-ro3-security",
+        "RO3 安全项目",
+        "审查项目工作区内的文件，执行测试后汇报结果。",
+    );
+    write(
+        tmp.path(),
+        "interview.md",
+        "招聘-信息安全岗位面试",
+        "面试培训",
+        "查找文件内容后给出匹配数量。",
+    );
+    write(
+        tmp.path(),
+        "feedback-feishu-direct-links.md",
+        "feedback-feishu-direct-links",
+        "飞书直链",
+        "不要读取附件，不要访问其他目录。历史笔记提过 globbing 和 JSON。",
+    );
+
+    let query = "这是 One Work 界面回归测试。请使用内置 Glob 工具在本会话的临时工作区内依次执行 4 次独立的只读查找，模式分别为 *.txt、*.md、*.json、*.csv。每次拿到结果后再继续下一次，最后只汇报各自匹配数量。不要访问其他目录，不要读取文件内容，不要创建或修改文件。";
+    assert!(recall_engine_memory(tmp.path(), query, &HashMap::new()).is_empty());
+    let ro3 = recall_engine_memory(tmp.path(), "说说 RO3 项目的进展", &HashMap::new());
+    assert_eq!(ro3[0].filename, "project-ro3-security.md");
+    let feishu = recall_engine_memory(tmp.path(), "之前说的飞书直链偏好是什么", &HashMap::new());
+    assert_eq!(feishu[0].filename, "feedback-feishu-direct-links.md");
+}
+
+#[test]
+fn a_single_incidental_english_word_or_substring_does_not_qualify() {
+    let tmp = fixture();
+    assert!(recall_engine_memory(tmp.path(), "deploy an unrelated example", &HashMap::new()).is_empty());
+    assert!(recall_engine_memory(tmp.path(), "rota", &HashMap::new()).is_empty());
+}
+
+#[test]
 fn the_index_line_counts_as_a_keyword_source() {
     let tmp = fixture();
     // The description has no "报销"; only the index line does.
