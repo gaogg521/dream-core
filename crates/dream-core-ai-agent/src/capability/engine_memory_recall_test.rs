@@ -60,7 +60,7 @@ fn a_request_that_mentions_nothing_brings_in_nothing() {
 }
 
 #[test]
-fn a_glob_regression_request_does_not_recall_unrelated_projects_or_preferences() {
+fn read_only_tool_requests_do_not_recall_unrelated_projects_or_preferences() {
     let tmp = tempfile::tempdir().unwrap();
     write(
         tmp.path(),
@@ -86,6 +86,8 @@ fn a_glob_regression_request_does_not_recall_unrelated_projects_or_preferences()
 
     let query = "这是 One Work 界面回归测试。请使用内置 Glob 工具在本会话的临时工作区内依次执行 4 次独立的只读查找，模式分别为 *.txt、*.md、*.json、*.csv。每次拿到结果后再继续下一次，最后只汇报各自匹配数量。不要访问其他目录，不要读取文件内容，不要创建或修改文件。";
     assert!(recall_engine_memory(tmp.path(), query, &HashMap::new()).is_empty());
+    let browser_query = "这是 MCP 只读回归测试。请实际调用场景提供的 one-page-reader（网页正文读取）工具，读取公开示例网页 https://example.com/，只回复页面标题。请勿访问其他网页、读取本机文件或创建文件。";
+    assert!(recall_engine_memory(tmp.path(), browser_query, &HashMap::new()).is_empty());
     let ro3 = recall_engine_memory(tmp.path(), "说说 RO3 项目的进展", &HashMap::new());
     assert_eq!(ro3[0].filename, "project-ro3-security.md");
     let feishu = recall_engine_memory(tmp.path(), "之前说的飞书直链偏好是什么", &HashMap::new());
