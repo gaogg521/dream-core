@@ -376,8 +376,33 @@ impl DreamEngineAgentManager {
     /// true on the settings page and false in the product: the recall port was
     /// only ever consulted on the ACP path, and this is the default one.
     async fn with_recalled_memory(&self, content: &str) -> String {
-        let saved = self.recall_saved_memory(content).await;
-        let company = self.recall_company_memory(content).await;
+        let query = content
+            .rsplit_once("\n\n[SYSTEM NOTE: ")
+            .filter(|(_, note)| {
+                note.ends_with(']')
+                    && (note.starts_with("Continue in this conversation.")
+                        || note.starts_with("Stay in this conversation"))
+            })
+            .map_or(content, |(user_text, _)| user_text);
+        let normalized = query.to_ascii_lowercase();
+        if [
+            "只使用下面的材料",
+            "只使用以下材料",
+            "仅依据题面",
+            "所有材料都在本条消息",
+            "只读下列文件",
+            "仅使用本条消息",
+            "do not use memory",
+            "use only the materials below",
+            "use only the information in this message",
+        ]
+        .iter()
+        .any(|scope| normalized.contains(scope))
+        {
+            return content.to_owned();
+        }
+        let saved = self.recall_saved_memory(query).await;
+        let company = self.recall_company_memory(query).await;
         format!("{saved}{company}{content}")
     }
 

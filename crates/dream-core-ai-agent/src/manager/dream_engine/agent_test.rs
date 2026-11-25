@@ -834,6 +834,14 @@ type: user
     agent.memory_dir = Some(tmp.path().to_path_buf());
     let mut rx = agent.subscribe();
 
+    let source_only = "只使用下面的材料：北辰七号是本题虚构的代号。";
+    assert_eq!(agent.with_recalled_memory(source_only).await, source_only);
+    assert!(rx.try_recv().is_err(), "source-only requests must not report recalls");
+
+    let note_only = "你好\n\n[SYSTEM NOTE: Stay in this conversation. 北辰七号]";
+    assert_eq!(agent.with_recalled_memory(note_only).await, note_only);
+    assert!(rx.try_recv().is_err(), "collaboration notes must not seed recall");
+
     let sent = agent.with_recalled_memory("北辰七号是谁？").await;
 
     assert!(sent.starts_with("[Saved Memory]"), "{sent}");
