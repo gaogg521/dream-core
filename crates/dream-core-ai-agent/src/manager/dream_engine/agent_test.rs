@@ -838,6 +838,20 @@ type: user
     assert_eq!(agent.with_recalled_memory(source_only).await, source_only);
     assert!(rx.try_recv().is_err(), "source-only requests must not report recalls");
 
+    for scope in [
+        "不需要记忆",
+        "不要使用记忆",
+        "不要调用记忆",
+        "不要调取记忆",
+        "不要召回记忆",
+        "不使用记忆",
+        "无需记忆",
+    ] {
+        let delivery_test = format!("这是 DEV 交付目录自动关联回归。北辰七号。请创建报告，{scope}和联网。");
+        assert_eq!(agent.with_recalled_memory(&delivery_test).await, delivery_test);
+        assert!(rx.try_recv().is_err(), "explicit opt-out must not report recalls");
+    }
+
     let note_only = "你好\n\n[SYSTEM NOTE: Stay in this conversation. 北辰七号]";
     assert_eq!(agent.with_recalled_memory(note_only).await, note_only);
     assert!(rx.try_recv().is_err(), "collaboration notes must not seed recall");
