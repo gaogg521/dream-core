@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.107](https://github.com/gaogg521/dream-core/compare/v0.1.106...v0.1.107) (2026-11-26)
+
+
+### Bug Fixes
+
+* **memory:** honor Chinese recall opt-out requests ([6a5cf54](https://github.com/gaogg521/dream-core/commit/6a5cf54a222151c67ce76878d85590d5c8f18b3d))
+* **memory:** honor turn source scope during recall ([ff242bf](https://github.com/gaogg521/dream-core/commit/ff242bff7ae48c2b3dd0541f21f3ccc92ff06339))
+* reduce unrelated saved memory recall ([a6c57dc](https://github.com/gaogg521/dream-core/commit/a6c57dc7be66db2a5d3fbda2b2adf2fd37deb369))
+
 ## [0.1.106](https://github.com/gaogg521/dream-core/compare/v0.1.105...v0.1.106) (2026-11-20)
 
 
